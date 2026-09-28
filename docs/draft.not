@@ -1,0 +1,111 @@
+
+== Roadmap
+
+=== 2026-09-28
+
+*地基*
+
+- 真 lexer 产出带 span 的 token 流，parser 只工作在 token 上
+- CST 用 rowan（lossless，trivia 全保留）
+- 分层：lexer → CST → AST（CST 的类型化视图）→ Content 树
+- 分析只作用于 core 树（check / sectionize / 渲染）；CST 服务 tooling；core 节点携带产生它的 surface span
+- 单 crate 分模块；依赖：rowan；dev-dep：insta（snapshot 测试）
+
+*切片*
+
+- S0 — 骨架竖切：仅段落 + heading 走通全管线，定下 token / CST / lowering / span / dump / 测试的全部约定
+- S1 — markup 全语法 CST（语法节全部内容；`#` 占位、math 不透明；注解语法待 draft 落定后并入）
+- S2 — core 树（Item）+ lowering（desugar）+ 段落成型
+- S3 — sectionize
+- P2 — check：路径解析、item 引用
+
+== 语法
+
+=== 2026-09-28
+
+拼写对齐 Typst，此处只列决策与拼写。
+
+*模式*
+
+- Markup 默认；`#` 进入 Code；`$..$` 进入 Math；Code 中 `[..]` 回到 Markup
+- P1：`#` 后只做平衡扫描的占位节点，不求值；`$..$` 内容不透明
+
+*块级*
+
+- 段落 — 空行分隔
+- Heading — `=` 开头，层级 = `=` 个数
+- 列表 — `- ` bullet、`+ ` 编号
+- Raw 块 — ``` 围栏，可带语言 tag
+
+*行内*
+
+- Strong — `*x*`
+- Emphasis — `_x_`
+- Raw — `x`
+- 换行 — 单换行为 soft break；`\` 为强制换行
+- 链接 — `[文本](target)`、`[[target]]` / `[[target|文本]]`（语义见 == 组织）
+
+*词法*
+
+- 转义 — `\` 前缀
+- 注释 — `//` 行、`/* */` 块（可嵌套）
+
+*暂缓*
+
+- URL autolink — 链接统一走 `[]()` / `[[]]`
+- Math 内部文法 — `$..$` 先作不透明 payload
+- Term list — 没什么需求
+- Smart quote、Symbol shorthand
+- typst `<label>` / `@ref` — 由注解系统取代
+
+*Code 类型与字面量*
+
+== 类型
+
+=== 2026-09-28
+
+*标量*
+
+- Unit — 唯一值 `()`
+- Bool — `true` / `false`
+- Int — i64 十进制
+- Float — f64 十进制（`0.5`；`.5`、`1.` 不合法）
+
+数字无科学计数法；负号是一元 `-` 运算，不属于字面量。
+
+*String*
+
+UTF-8，四种形态，产出同一类型：
+
+- `"..."` — 行内，转义
+- `"""..."""` — 多行，转义
+- `r#"..."#` — raw 行内（`#` 层级 ≥1，任意）
+- `r#"""..."""#` — raw 多行
+
+转义集恰好五个：`\"` `\\` `\n` `\r` `\t`；raw 形态不处理转义。行内形态不跨行。多行形态：开引号后须立即换行（该换行不计入值），收尾去掉一个换行，不做 dedent。
+
+*内容*
+
+- Item — 文档内容（调用森林），字面量 `[...]`（code 中回到 markup）；不透明：无相等性、不可模式匹配
+
+*集合*
+
+- Array — 有序不可变：`(1, 2, 3)`；单元素须尾逗号 `(1,)`；空 `(,)`
+- Dict — 有序不可变：`("k": v)`；裸标识符 key 是字符串 key 的糖；空 `(:)`；重复 key 后者覆盖、位置不动；key 限 Unit / Bool / Int / String，带类型标签（`1` / `true` / `"1"` 互不相同）
+
+集合字面量判别完全局部：出现 `k: v` 项 → Dict；否则出现逗号 → Array；否则为 grouping（`(x)` 永远不是集合，`()` 是 Unit）。
+
+*函数*
+
+- Function — 闭包；P3 才进入实现
+
+== 组织
+
+=== 2026-09-28
+
+- 语言无根概念；check / LSP 以命令给定的目录为工作范围
+- 链接 target 是字符串路径；两种写法，desugar 到同一 link 节点：`[文本](target)` 与 `[[target]]` / `[[target|文本]]`
+- 路径一律相对当前文件目录（`./`、`../`、裸路径），`/` 分隔段，含 `.not` 扩展名
+- target 带 scheme（`https:` 等）视为外部链接，不参与路径解析
+- `#` 引入 item：`[[path#item]]`；`[[#item]]` 指当前文件内；item 解析规则后定（预留扩展为链式约束）
+- check 静态解析字面量 target；computed target 与 code 模式 import 的检查后置 P3

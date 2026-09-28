@@ -14,7 +14,7 @@
 *切片*
 
 - S0 — 骨架竖切：仅段落 + heading 走通全管线，定下 token / CST / lowering / span / dump / 测试的全部约定
-- S1 — markup 全语法 CST（语法节全部内容；`#` 占位、math 不透明；注解语法待 draft 落定后并入）
+- S1 — markup 全语法 CST（语法节全部内容；`#` 占位、math 不透明；注解语法待 draft 落定后并入）；实施步骤见 [S1.md](../notes/S1.md)
 - S2 — core 树（Item）+ lowering（desugar）+ 段落成型
 - S3 — sectionize
 - P2 — check：路径解析、item 引用

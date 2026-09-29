@@ -14,12 +14,14 @@ Document@0..76
         Star@15..16 "*"
   Newline@16..17 "\n"
   Newline@17..18 "\n"
-  Paragraph@18..38
-    Inline@18..38
+  Paragraph@18..24
+    Inline@18..24
       Text@18..24 "行尾"
-      HardBreak@24..26
-        Backslash@24..25 "\\"
-        Newline@25..26 "\n"
+  ParBreak@24..26
+    Backslash@24..25 "\\"
+    Newline@25..26 "\n"
+  Paragraph@26..38
+    Inline@26..38
       Text@26..38 "换行继续"
   Newline@38..39 "\n"
   Newline@39..40 "\n"
@@ -44,14 +46,14 @@ Document@0..76
   (paragraph @0..16
     (text @0..16 :text "*不是强调*")
   )
-  (paragraph @18..38
+  (paragraph @18..24
     (text @18..24 :text "行尾")
-    (hardbreak @24..26)
+  )
+  (paragraph @26..38
     (text @26..38 :text "换行继续")
   )
   (paragraph @40..75
     (text @40..56 :text "普通 \\a 保留")
-    (softbreak @56..57)
     (text @57..75 :text "\\ 转义反斜杠")
   )
 )

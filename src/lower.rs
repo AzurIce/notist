@@ -65,7 +65,6 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
             NodeOrToken::Token(token) => match token.kind() {
                 SyntaxKind::Newline => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
-                    items.push(Item::new(Ctor::SoftBreak, token.text_range()));
                 }
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => {}
                 SyntaxKind::Whitespace => buf.push_str(token.text()),
@@ -91,10 +90,6 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                     buf.push_str(escaped.text());
                     content_len = buf.len();
                     content_end = Some(node.text_range().end());
-                }
-                SyntaxKind::HardBreak => {
-                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
-                    items.push(Item::new(Ctor::HardBreak, node.text_range()));
                 }
                 SyntaxKind::RawInline => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);

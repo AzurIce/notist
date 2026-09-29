@@ -43,7 +43,6 @@ Document@0..63
 (doc @0..63
   (paragraph @0..22
     (text @0..10 :text "first line")
-    (softbreak @10..11)
     (text @11..22 :text "second line")
   )
   (paragraph @24..35

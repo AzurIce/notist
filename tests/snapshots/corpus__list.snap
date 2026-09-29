@@ -124,7 +124,6 @@ Document@0..150
   (list @68..106 :ordered false
     (listitem @68..94
       (text @70..76 :text "续行")
-      (softbreak @76..77)
       (text @79..94 :text "属于同一项")
     )
     (listitem @95..106

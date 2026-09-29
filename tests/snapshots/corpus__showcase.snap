@@ -2,7 +2,7 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..130
+Document@0..144
   Heading@0..15
     Eq@0..1 "="
     Whitespace@1..2 " "
@@ -45,24 +45,31 @@ Document@0..130
       Text@62..68 "段落"
   Newline@68..69 "\n"
   Newline@69..70 "\n"
-  Paragraph@70..115
-    Inline@70..115
-      Text@70..82 "单换行是"
-      Whitespace@82..83 " "
-      Text@83..87 "soft"
-      Whitespace@87..88 " "
-      Text@88..93 "break"
-      Newline@93..94 "\n"
-      Text@94..115 "同一段落内继续"
-  Newline@115..116 "\n"
-  Newline@116..117 "\n"
-  Paragraph@117..129
-    Inline@117..129
-      Text@117..129 "空行分段"
-  Newline@129..130 "\n"
+  Paragraph@70..113
+    Inline@70..113
+      Text@70..91 "单换行直接拼接"
+      Newline@91..92 "\n"
+      Text@92..113 "同一段落内继续"
+  Newline@113..114 "\n"
+  Newline@114..115 "\n"
+  Paragraph@115..127
+    Inline@115..127
+      Text@115..127 "空行分段"
+  Newline@127..128 "\n"
+  Newline@128..129 "\n"
+  Paragraph@129..135
+    Inline@129..135
+      Text@129..135 "强制"
+  ParBreak@135..137
+    Backslash@135..136 "\\"
+    Newline@136..137 "\n"
+  Paragraph@137..143
+    Inline@137..143
+      Text@137..143 "分段"
+  Newline@143..144 "\n"
 
 === core ===
-(doc @0..130
+(doc @0..144
   (heading @0..15 :level 1
     (text @2..15 :text "Notist 巡览")
   )
@@ -81,12 +88,17 @@ Document@0..130
   (heading @59..68 :level 2
     (text @62..68 :text "段落")
   )
-  (paragraph @70..115
-    (text @70..93 :text "单换行是 soft break")
-    (softbreak @93..94)
-    (text @94..115 :text "同一段落内继续")
+  (paragraph @70..113
+    (text @70..91 :text "单换行直接拼接")
+    (text @92..113 :text "同一段落内继续")
   )
-  (paragraph @117..129
-    (text @117..129 :text "空行分段")
+  (paragraph @115..127
+    (text @115..127 :text "空行分段")
+  )
+  (paragraph @129..135
+    (text @129..135 :text "强制")
+  )
+  (paragraph @137..143
+    (text @137..143 :text "分段")
   )
 )

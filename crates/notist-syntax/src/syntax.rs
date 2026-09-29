@@ -38,7 +38,7 @@ pub enum SyntaxKind {
     List,
     ListItem,
     Escape,
-    HardBreak,
+    ParBreak,
     Error,
 }
 

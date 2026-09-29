@@ -20,8 +20,9 @@ impl Parse {
     }
 }
 
-/// Chars whose special meaning `\` cancels. `\<newline>` is a hard break
-/// instead; `\` followed by anything else stays literal.
+/// Chars whose special meaning `\` cancels. `\`+newline never reaches the
+/// inline escape path (it ends the block); `\` followed by anything else
+/// stays literal.
 /// The closing convention of the enclosing inline construct. `Flanked` is
 /// for emphasis delimiters (whitespace flanking); `Single`/`Pair` close on a
 /// literal token, no flanking involved.
@@ -88,6 +89,9 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Minus | SyntaxKind::Plus if self.at_list_marker() => self.list_at(0),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
+                SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
+                    self.parbreak()
+                }
                 _ => self.paragraph(),
             }
         }
@@ -115,6 +119,15 @@ impl<'a> Parser<'a> {
     /// An unclosed block swallows to EOF and is reported; the `Error` wrapper
     /// is attached retroactively via the checkpoint taken at entry, so a
     /// broken block is structurally marked, not just diagnosed.
+    /// `\`+newline at block level: an explicit paragraph break, equivalent
+    /// to a blank line.
+    fn parbreak(&mut self) {
+        self.builder.start_node(SyntaxKind::ParBreak.into());
+        self.eat();
+        self.eat();
+        self.builder.finish_node();
+    }
+
     fn raw_block(&mut self) {
         let checkpoint = self.builder.checkpoint();
         self.builder.start_node(SyntaxKind::Raw.into());
@@ -197,7 +210,8 @@ impl<'a> Parser<'a> {
                     self.eat();
                 }
                 Some(kind) if self.active_closes(active, kind) => break,
-                Some(SyntaxKind::Backslash) => self.escape_or_break(),
+                Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => break,
+                Some(SyntaxKind::Backslash) => self.escape(),
                 Some(SyntaxKind::Backtick) => self.raw_inline(),
                 Some(SyntaxKind::Star) => self.delimited(SyntaxKind::Star, SyntaxKind::Strong, stop),
                 Some(SyntaxKind::Underscore) => {
@@ -508,14 +522,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn escape_or_break(&mut self) {
+    fn escape(&mut self) {
         match self.peek(1) {
-            Some(SyntaxKind::Newline) => {
-                self.builder.start_node(SyntaxKind::HardBreak.into());
-                self.eat();
-                self.eat();
-                self.builder.finish_node();
-            }
             Some(kind) if is_escapable(kind) => {
                 self.builder.start_node(SyntaxKind::Escape.into());
                 self.eat();

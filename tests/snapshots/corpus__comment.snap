@@ -48,7 +48,6 @@ error @181..194: unclosed block comment
 (doc @0..194
   (paragraph @80..125
     (text @80..86 :text "段落")
-    (softbreak @102..103)
     (text @119..125 :text "继续")
   )
   (paragraph @127..147

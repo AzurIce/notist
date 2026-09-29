@@ -48,7 +48,7 @@
 
 - Strong — `*x*`；Emphasis — `_x_`。配对规则：开 = 后随非空白；闭 = 前随非空白；扫描用深度计数（可开则 +1、可闭则 −1、两者皆可则闭优先），允许互相嵌套与跨 soft break；空内容或未配对 → 字面文本。`_` 不设 intraword 限制（CJK 友好；代价是 `foo_bar_baz` 会解析成 emph，已知妥协）
 - Raw — `x`；反引号串定界，闭合须等长；围栏长度任意，故任意内容可表达（内容含长度 n 的串就用 n+1 围）
-- 换行 — 单换行为 soft break；`\` 为强制换行
+- 换行 — 单换行忽略（行直接拼接）；`\`+换行 与空行同为段落分隔（CST 中为 ParBreak 节点，core 无对应物）
 - 链接 — `[文本](target)`、`[[target]]` / `[[target|文本]]`（语义见 == 组织）
 
 *词法*
@@ -104,6 +104,21 @@ UTF-8，四种形态，产出同一类型：
 *函数*
 
 - Function — 闭包；P3 才进入实现
+
+== Desugar
+
+=== 2026-09-29
+
+markup 构造到构造器调用的映射。Expr 与 Item 同构（ctor + fields + children），P1 的 eval 平凡。
+
+- `Expr::Call` 的 name 是未解析的 String；eval 时经注册表解析为内建 Ctor（P3 加用户作用域）
+- 文本 `text("…")`；段落 `paragraph([…])`；heading `heading(level: n, […])`
+- `*x*` → `strong([x])`；`_x_` → `emph([x])`；`` `x` `` → `raw("x")`；`$x$` → `math("x")`（payload 不透明）
+- 链接 → `link(target, [文本])` / `link(target)`
+- 列表 → `list(ordered: bool, [item([…]), …])`
+- 围栏块 → `raw("…", block: true, lang: "…")`
+- `#…` → `Expr::Embed`（P3 解析）
+- 换行无构造对应物：单换行忽略；`\`+换行与空行同为段落分隔
 
 == 组织
 

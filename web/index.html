@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>notist viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>notist viewer</h1>
+  <label><input type="checkbox" id="showws" checked> 空白字符</label>
+</header>
+<main>
+  <section class="pane">
+    <div class="editor">
+      <pre id="tokens" aria-hidden="true"></pre>
+      <textarea id="src" spellcheck="false" wrap="off"></textarea>
+    </div>
+  </section>
+  <section class="pane">
+    <div id="tree"></div>
+  </section>
+</main>
+<script type="module" src="main.js"></script>
+</body>
+</html>

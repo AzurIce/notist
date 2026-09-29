@@ -41,6 +41,8 @@
           packages = with pkgs; [
             cargo-edit
             samply
+            wasm-bindgen-cli
+            miniserve
           ];
         };
       }

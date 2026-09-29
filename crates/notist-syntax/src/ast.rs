@@ -85,6 +85,39 @@ pub struct Link(pub(crate) SyntaxNode);
 pub struct WikiLink(pub(crate) SyntaxNode);
 pub struct List(pub(crate) SyntaxNode);
 pub struct ListItem(pub(crate) SyntaxNode);
+/// The text between the first balanced `()` pair of a node (depth-aware),
+/// and its absolute start offset.
+fn paren_interior(node: &SyntaxNode) -> (String, u32) {
+    let mut depth = 0usize;
+    let mut text = String::new();
+    let mut base = None;
+    for token in node.children_with_tokens().filter_map(|e| e.into_token()) {
+        match token.kind() {
+            SyntaxKind::LParen => {
+                depth += 1;
+                if depth > 1 {
+                    text.push_str(token.text());
+                }
+            }
+            SyntaxKind::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+                text.push_str(token.text());
+            }
+            _ if depth >= 1 => {
+                if base.is_none() {
+                    base = Some(u32::from(token.text_range().start()));
+                }
+                text.push_str(token.text());
+            }
+            _ => {}
+        }
+    }
+    (text, base.unwrap_or(0))
+}
+
 pub struct Annotation(pub(crate) SyntaxNode);
 
 impl Annotation {
@@ -101,41 +134,46 @@ impl Annotation {
 
     /// The text between the parens, and its absolute start offset.
     pub fn payload(&self) -> (String, u32) {
-        let mut depth = 0usize;
-        let mut text = String::new();
-        let mut base = None;
-        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
-            match token.kind() {
-                SyntaxKind::LParen => {
-                    depth += 1;
-                    if depth > 1 {
-                        if base.is_none() {
-                            base = Some(u32::from(token.text_range().start()));
-                        }
-                        text.push_str(token.text());
-                    }
-                }
-                SyntaxKind::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                    text.push_str(token.text());
-                }
-                _ if depth >= 1 => {
-                    if base.is_none() {
-                        base = Some(u32::from(token.text_range().start()));
-                    }
-                    text.push_str(token.text());
-                }
-                _ => {}
-            }
-        }
-        (text, base.unwrap_or(0))
+        paren_interior(&self.0)
     }
 
     pub fn range(&self) -> TextRange {
         self.0.text_range()
+    }
+}
+
+pub struct CodeCall(pub(crate) SyntaxNode);
+
+impl CodeCall {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::CodeCall).then_some(Self(node))
+    }
+
+    /// The constructor name: the first token after `#`, if it is text.
+    pub fn name(&self) -> Option<String> {
+        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
+            match token.kind() {
+                SyntaxKind::Hash => {}
+                SyntaxKind::Text => return Some(token.text().to_string()),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The argument group's text and offset, if a `()` group is present.
+    pub fn args(&self) -> Option<(String, u32)> {
+        let has_parens = self
+            .0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == SyntaxKind::LParen);
+        has_parens.then(|| paren_interior(&self.0))
+    }
+
+    /// The `[…]` body, parsed as inline markup.
+    pub fn body(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
     }
 }
 

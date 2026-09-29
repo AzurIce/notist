@@ -1,0 +1,11 @@
+#callout(kind: "warning")[注意内容]
+
+#link("https://example.com")[带文字]
+
+#strong[直接 body]
+
+#(42)
+
+#fn(嵌套 (深度))
+
+裸 # 只是字符

@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ctor {
     Doc,
     Paragraph,
@@ -11,13 +11,13 @@ pub enum Ctor {
     Emph,
     Math,
     Link,
-    CodeEmbed,
     List,
     ListItem,
+    Custom(String),
 }
 
 impl Ctor {
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Ctor::Doc => "Doc",
             Ctor::Paragraph => "Paragraph",
@@ -28,9 +28,9 @@ impl Ctor {
             Ctor::Emph => "Emph",
             Ctor::Math => "Math",
             Ctor::Link => "Link",
-            Ctor::CodeEmbed => "CodeEmbed",
             Ctor::List => "List",
             Ctor::ListItem => "ListItem",
+            Ctor::Custom(name) => name,
         }
     }
 }

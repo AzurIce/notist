@@ -1,8 +1,8 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
-use notist_syntax::ast::{Block, Document, Inline, Link, List, ListItem, WikiLink};
+use notist_syntax::ast::{Block, CodeCall, Document, Inline, Link, List, ListItem, WikiLink};
 use notist_syntax::parser::Diagnostic;
-use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
+use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::code;
 use crate::expr::Expr;
@@ -42,7 +42,7 @@ pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, 
             }
             _ => {
                 seen_content = true;
-                let mut expr = desugar_block(&block);
+                let mut expr = desugar_block(&block, diags);
                 expr.set_attrs(pending.take());
                 forest.push(expr);
             }
@@ -51,44 +51,94 @@ pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, 
     (forest, module_attrs)
 }
 
-fn desugar_block(block: &Block) -> Expr {
+fn desugar_block(block: &Block, diags: &mut Vec<Diagnostic>) -> Expr {
     match block {
         Block::Heading(heading) => {
             let level = heading.level() as i64;
-            let children = heading.inline().map(|i| desugar_inline(&i)).unwrap_or_default();
+            let children = heading
+                .inline()
+                .map(|i| desugar_inline(&i, diags))
+                .unwrap_or_default();
             Expr::call("heading", heading.range())
                 .with_field("level", Value::Int(level))
                 .with_children(children)
         }
         Block::Paragraph(paragraph) => {
-            let children = paragraph.inline().map(|i| desugar_inline(&i)).unwrap_or_default();
+            let children = paragraph
+                .inline()
+                .map(|i| desugar_inline(&i, diags))
+                .unwrap_or_default();
             Expr::call("paragraph", paragraph.range()).with_children(children)
         }
-        Block::List(list) => desugar_list(list),
+        Block::List(list) => desugar_list(list, diags),
         Block::Annotation(_) => unreachable!("annotations are handled by the document loop"),
     }
 }
 
-fn desugar_list(list: &List) -> Expr {
+fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
     let ordered =
         list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
     Expr::call("list", list.range())
         .with_field("ordered", Value::Bool(ordered))
-        .with_children(list.items().map(|item| desugar_list_item(&item)).collect())
+        .with_children(
+            list.items()
+                .map(|item| desugar_list_item(&item, diags))
+                .collect(),
+        )
 }
 
-fn desugar_list_item(item: &ListItem) -> Expr {
+fn desugar_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
     let mut children = Vec::new();
     if let Some(inline) = item.inline() {
-        children.extend(desugar_inline(&inline));
+        children.extend(desugar_inline(&inline, diags));
     }
     for nested in item.lists() {
-        children.push(desugar_list(&nested));
+        children.push(desugar_list(&nested, diags));
     }
     Expr::call("item", item.range()).with_children(children)
 }
 
-fn desugar_inline(inline: &Inline) -> Vec<Expr> {
+fn desugar_code_call(node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {
+    let call = CodeCall::cast(node.clone()).unwrap();
+    let span = node.text_range();
+    let mut args = Vec::new();
+    let mut fields = Dict::default();
+    if let Some((text, base)) = call.args() {
+        let (positional, named, d) = code::parse_args(&text, base);
+        diags.extend(d);
+        args = positional.into_iter().map(|v| Expr::Literal(v, span)).collect();
+        fields = named;
+    }
+    match call.name() {
+        Some(name) => {
+            let children = call
+                .body()
+                .map(|i| desugar_inline(&i, diags))
+                .unwrap_or_default();
+            Expr::Call {
+                name,
+                args,
+                fields,
+                children,
+                attrs: Dict::default(),
+                span,
+            }
+        }
+        None => {
+            if fields.iter().next().is_none() && args.len() == 1 {
+                args.pop().unwrap()
+            } else {
+                diags.push(Diagnostic {
+                    span,
+                    message: "`#(…)` takes exactly one literal".to_string(),
+                });
+                Expr::Literal(Value::Unit, span)
+            }
+        }
+    }
+}
+
+fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
     let mut items = Vec::new();
     let mut buf = String::new();
     let mut start: Option<TextSize> = None;
@@ -160,7 +210,7 @@ fn desugar_inline(inline: &Inline) -> Vec<Expr> {
                     let children = node
                         .children()
                         .find_map(Inline::cast)
-                        .map(|i| desugar_inline(&i))
+                        .map(|i| desugar_inline(&i, diags))
                         .unwrap_or_default();
                     items.push(Expr::call(name, node.text_range()).with_children(children));
                 }
@@ -170,13 +220,13 @@ fn desugar_inline(inline: &Inline) -> Vec<Expr> {
                         let link = Link::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline().map(|i| desugar_inline(&i)).unwrap_or_default(),
+                            link.inline().map(|i| desugar_inline(&i, diags)).unwrap_or_default(),
                         )
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline().map(|i| desugar_inline(&i)).unwrap_or_default(),
+                            link.inline().map(|i| desugar_inline(&i, diags)).unwrap_or_default(),
                         )
                     };
                     items.push(
@@ -185,12 +235,9 @@ fn desugar_inline(inline: &Inline) -> Vec<Expr> {
                             .with_children(children),
                     );
                 }
-                SyntaxKind::CodeEmbed => {
+                SyntaxKind::CodeCall => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
-                    items.push(Expr::Embed {
-                        text: node.text().to_string(),
-                        span: node.text_range(),
-                    });
+                    items.push(desugar_code_call(&node, diags));
                 }
                 _ => {}
             },

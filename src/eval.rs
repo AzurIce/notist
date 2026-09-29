@@ -6,9 +6,10 @@ use crate::expr::Expr;
 use crate::item::{Ctor, Dict, Item, Value};
 
 /// The builtin constructor registry: the single bridge from source-level
-/// names to core ctors. User scopes and plugin namespaces join here later.
-pub fn resolve(name: &str) -> Option<Ctor> {
-    Some(match name {
+/// names to core ctors. Unknown names are not errors — they become atomic
+/// custom elements (`Ctor::Custom`), data rather than behavior.
+pub fn resolve(name: &str) -> Ctor {
+    match name {
         "paragraph" => Ctor::Paragraph,
         "heading" => Ctor::Heading,
         "text" => Ctor::Text,
@@ -19,8 +20,17 @@ pub fn resolve(name: &str) -> Option<Ctor> {
         "link" => Ctor::Link,
         "list" => Ctor::List,
         "item" => Ctor::ListItem,
-        _ => return None,
-    })
+        _ => Ctor::Custom(name.to_string()),
+    }
+}
+
+/// Which field a builtin's n-th positional argument maps to.
+fn positional_field(name: &str, index: usize) -> Option<&'static str> {
+    match (name, index) {
+        ("link", 0) => Some("target"),
+        ("raw", 0) | ("math", 0) => Some("text"),
+        _ => None,
+    }
 }
 
 /// Evaluate a document: a module body is a top-level expression sequence,
@@ -38,9 +48,9 @@ pub fn eval_doc(
     doc
 }
 
-/// Trivial evaluation: markup desugars to constructor calls with literal
-/// arguments only. A literal inserts as text (the markup insertion rule);
-/// an unresolved name is a diagnostic plus an empty text placeholder.
+/// M1 evaluation: no environments, no computation — constructor resolution
+/// and literal normalization only. A literal inserts as text (the markup
+/// insertion rule).
 pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
     match expr {
         Expr::Literal(value, span) => {
@@ -50,30 +60,40 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             };
             Item::new(Ctor::Text, *span).with_field("text", Value::Str(text))
         }
-        Expr::Embed { text, span } => {
-            Item::new(Ctor::CodeEmbed, *span).with_field("text", Value::Str(text.clone()))
-        }
         Expr::Call {
             name,
+            args,
             fields,
             children,
             attrs,
             span,
-        } => match resolve(name) {
-            Some(ctor) => {
-                let mut item = Item::new(ctor, *span);
-                item.fields = fields.clone();
-                item.children = children.iter().map(|c| eval(c, diagnostics)).collect();
-                item.attrs = attrs.clone();
-                item
+        } => {
+            let ctor = resolve(name);
+            let mut item = Item::new(ctor, *span);
+            item.fields = fields.clone();
+            let mut extra = Vec::new();
+            for (i, arg) in args.iter().enumerate() {
+                let Some(value) = arg.literal_value() else {
+                    continue;
+                };
+                match positional_field(name, i) {
+                    Some(field) => item.fields.insert(field, value),
+                    None => extra.push(value),
+                }
             }
-            None => {
-                diagnostics.push(Diagnostic {
-                    span: *span,
-                    message: format!("unknown constructor: {name}"),
-                });
-                Item::new(Ctor::Text, *span)
+            if !extra.is_empty() {
+                if matches!(item.ctor, Ctor::Custom(_)) {
+                    item.fields.insert("args", Value::Array(extra));
+                } else {
+                    diagnostics.push(Diagnostic {
+                        span: *span,
+                        message: format!("too many positional arguments for `{name}`"),
+                    });
+                }
             }
-        },
+            item.children = children.iter().map(|c| eval(c, diagnostics)).collect();
+            item.attrs = attrs.clone();
+            item
+        }
     }
 }

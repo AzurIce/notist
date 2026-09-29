@@ -1,0 +1,112 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..152
+  Paragraph@0..39
+    Inline@0..39
+      CodeCall@0..39
+        Hash@0..1 "#"
+        Text@1..8 "callout"
+        LParen@8..9 "("
+        Text@9..14 "kind:"
+        Whitespace@14..15 " "
+        Text@15..24 "\"warning\""
+        RParen@24..25 ")"
+        LBracket@25..26 "["
+        Inline@26..38
+          Text@26..38 "注意内容"
+        RBracket@38..39 "]"
+  Newline@39..40 "\n"
+  Newline@40..41 "\n"
+  Paragraph@41..80
+    Inline@41..80
+      CodeCall@41..80
+        Hash@41..42 "#"
+        Text@42..46 "link"
+        LParen@46..47 "("
+        Text@47..54 "\"https:"
+        Text@54..55 "/"
+        Text@55..56 "/"
+        Text@56..68 "example.com\""
+        RParen@68..69 ")"
+        LBracket@69..70 "["
+        Inline@70..79
+          Text@70..79 "带文字"
+        RBracket@79..80 "]"
+  Newline@80..81 "\n"
+  Newline@81..82 "\n"
+  Paragraph@82..102
+    Inline@82..102
+      CodeCall@82..102
+        Hash@82..83 "#"
+        Text@83..89 "strong"
+        LBracket@89..90 "["
+        Inline@90..101
+          Text@90..96 "直接"
+          Whitespace@96..97 " "
+          Text@97..101 "body"
+        RBracket@101..102 "]"
+  Newline@102..103 "\n"
+  Newline@103..104 "\n"
+  Paragraph@104..109
+    Inline@104..109
+      CodeCall@104..109
+        Hash@104..105 "#"
+        LParen@105..106 "("
+        Text@106..108 "42"
+        RParen@108..109 ")"
+  Newline@109..110 "\n"
+  Newline@110..111 "\n"
+  Paragraph@111..131
+    Inline@111..131
+      CodeCall@111..131
+        Hash@111..112 "#"
+        Text@112..114 "fn"
+        LParen@114..115 "("
+        Text@115..121 "嵌套"
+        Whitespace@121..122 " "
+        LParen@122..123 "("
+        Text@123..129 "深度"
+        RParen@129..130 ")"
+        RParen@130..131 ")"
+  Newline@131..132 "\n"
+  Newline@132..133 "\n"
+  Paragraph@133..151
+    Inline@133..151
+      Text@133..136 "裸"
+      Whitespace@136..137 " "
+      Hash@137..138 "#"
+      Whitespace@138..139 " "
+      Text@139..151 "只是字符"
+  Newline@151..152 "\n"
+
+=== core ===
+error @115..115: bare names are only valid as keys
+error @129..129: expected `,` between entries
+(doc @0..152
+  (paragraph @0..39
+    (callout @0..39 :kind "warning"
+      (text @26..38 :text "注意内容")
+    )
+  )
+  (paragraph @41..80
+    (link @41..80 :target "https://example.com"
+      (text @70..79 :text "带文字")
+    )
+  )
+  (paragraph @82..102
+    (strong @82..102
+      (text @90..101 :text "直接 body")
+    )
+  )
+  (paragraph @104..109
+    (text @104..109 :text "42")
+  )
+  (paragraph @111..131
+    (fn @111..131)
+  )
+  (paragraph @133..151
+    (text @133..151 :text "裸 # 只是字符")
+  )
+)

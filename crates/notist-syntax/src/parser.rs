@@ -220,7 +220,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Dollar) => self.math_inline(),
                 Some(SyntaxKind::LBracket) => self.link(stop),
-                Some(SyntaxKind::Hash) => self.code_embed(),
+                Some(SyntaxKind::Hash) => self.code_call(stop),
                 Some(_) => self.eat(),
             }
         }
@@ -466,23 +466,18 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    /// Code-mode placeholder: `#` + optional identifier + any number of
-    /// immediately adjacent balanced `()`/`[]` groups. Never evaluated at
-    /// this stage. A lone `#`, or a `#` whose group fails to balance within
-    /// the block, degrades to a literal character.
-    fn code_embed(&mut self) {
+    /// `#name(args)[body]` — an atomic constructor call; `#(…)` embeds a
+    /// single literal. The argument group stays opaque tokens (desugar
+    /// interprets them as literals); the `[…]` body is parsed as inline
+    /// markup. A lone `#`, or an unbalanced group, degrades to a literal
+    /// character.
+    fn code_call(&mut self, stop: &impl Fn(&Self) -> bool) {
         let mut end = self.pos + 1;
         if matches!(self.tokens.get(end).map(|t| t.0), Some(SyntaxKind::Text)) {
             end += 1;
         }
-        loop {
-            let kind = self.tokens.get(end).map(|t| t.0);
-            let (open, close) = match kind {
-                Some(SyntaxKind::LParen) => (SyntaxKind::LParen, SyntaxKind::RParen),
-                Some(SyntaxKind::LBracket) => (SyntaxKind::LBracket, SyntaxKind::RBracket),
-                _ => break,
-            };
-            match self.balanced(end, open, close) {
+        if self.tokens.get(end).map(|t| t.0) == Some(SyntaxKind::LParen) {
+            match self.balanced(end, SyntaxKind::LParen, SyntaxKind::RParen) {
                 Some(e) => end = e + 1,
                 None => {
                     self.eat();
@@ -490,12 +485,21 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        if end == self.pos + 1 {
+        let has_body = self.tokens.get(end).map(|t| t.0) == Some(SyntaxKind::LBracket)
+            && self
+                .balanced(end, SyntaxKind::LBracket, SyntaxKind::RBracket)
+                .is_some();
+        if end == self.pos + 1 && !has_body {
             self.eat();
             return;
         }
-        self.builder.start_node(SyntaxKind::CodeEmbed.into());
+        self.builder.start_node(SyntaxKind::CodeCall.into());
         while self.pos < end {
+            self.eat();
+        }
+        if has_body {
+            self.eat();
+            self.inline_delimited(stop, Some(Active::Single(SyntaxKind::RBracket)));
             self.eat();
         }
         self.builder.finish_node();

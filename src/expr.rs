@@ -12,6 +12,7 @@ pub enum Expr {
         name: String,
         fields: Dict,
         children: Vec<Expr>,
+        attrs: Dict,
         span: TextRange,
     },
     Embed {
@@ -26,6 +27,7 @@ impl Expr {
             name: name.to_string(),
             fields: Dict::default(),
             children: Vec::new(),
+            attrs: Dict::default(),
             span,
         }
     }
@@ -51,6 +53,12 @@ impl Expr {
     pub fn span(&self) -> TextRange {
         match self {
             Expr::Literal(_, span) | Expr::Call { span, .. } | Expr::Embed { span, .. } => *span,
+        }
+    }
+
+    pub fn set_attrs(&mut self, new_attrs: Dict) {
+        if let Expr::Call { attrs, .. } = self {
+            *attrs = new_attrs;
         }
     }
 }

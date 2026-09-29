@@ -1,10 +1,12 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
 use notist_syntax::ast::{Block, Document, Inline, Link, List, ListItem, WikiLink};
+use notist_syntax::parser::Diagnostic;
 use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
 
+use crate::code;
 use crate::expr::Expr;
-use crate::item::Value;
+use crate::item::{Dict, Value};
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
     tokens.iter().map(|t| t.text()).collect::<String>().trim().to_string()
@@ -12,8 +14,41 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 
 /// CST → Expr 森林：desugar 步骤。文档是模块体（顶层表达式序列），
 /// 不是任何构造器调用；`doc` 根节点由 eval 在求值时引入。
-pub fn desugar(document: &Document) -> Vec<Expr> {
-    document.blocks().map(|b| desugar_block(&b)).collect()
+///
+/// 注解在这里落地：`@(…)` 的 payload（dict 字面量）成为紧随其后的块的
+/// attrs，`@!(…)` 成为模块 attrs。
+pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
+    let mut forest = Vec::new();
+    let mut pending = Dict::default();
+    let mut module_attrs = Dict::default();
+    let mut seen_content = false;
+    for block in document.blocks() {
+        match block {
+            Block::Annotation(annotation) => {
+                let (text, base) = annotation.payload();
+                let (dict, d) = code::parse_dict_entries(&text, base);
+                diags.extend(d);
+                if annotation.is_module() {
+                    if seen_content {
+                        diags.push(Diagnostic {
+                            span: annotation.range(),
+                            message: "module annotation must precede all content".to_string(),
+                        });
+                    }
+                    module_attrs.extend(dict);
+                } else {
+                    pending.extend(dict);
+                }
+            }
+            _ => {
+                seen_content = true;
+                let mut expr = desugar_block(&block);
+                expr.set_attrs(pending.take());
+                forest.push(expr);
+            }
+        }
+    }
+    (forest, module_attrs)
 }
 
 fn desugar_block(block: &Block) -> Expr {
@@ -30,6 +65,7 @@ fn desugar_block(block: &Block) -> Expr {
             Expr::call("paragraph", paragraph.range()).with_children(children)
         }
         Block::List(list) => desugar_list(list),
+        Block::Annotation(_) => unreachable!("annotations are handled by the document loop"),
     }
 }
 

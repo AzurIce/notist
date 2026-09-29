@@ -14,8 +14,8 @@ pub fn dump_str(src: &str) -> String {
     let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
         return String::new();
     };
-    let expr = desugar::desugar(&document);
-    let item = eval::eval_doc(&expr, document.range(), &mut diagnostics);
+    let expr = desugar::desugar(&document, &mut diagnostics);
+    let item = eval::eval_doc(&expr.0, document.range(), expr.1, &mut diagnostics);
     let mut out = String::new();
     for d in &diagnostics {
         out.push_str(&format!(

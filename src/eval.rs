@@ -3,7 +3,7 @@ use rowan::TextRange;
 use notist_syntax::parser::Diagnostic;
 
 use crate::expr::Expr;
-use crate::item::{Ctor, Item, Value};
+use crate::item::{Ctor, Dict, Item, Value};
 
 /// The builtin constructor registry: the single bridge from source-level
 /// names to core ctors. User scopes and plugin namespaces join here later.
@@ -26,9 +26,15 @@ pub fn resolve(name: &str) -> Option<Ctor> {
 /// Evaluate a document: a module body is a top-level expression sequence,
 /// and its result is wrapped in the `Doc` root item here — `Doc` is the
 /// module boundary, not a constructor anyone can call.
-pub fn eval_doc(forest: &[Expr], span: TextRange, diagnostics: &mut Vec<Diagnostic>) -> Item {
+pub fn eval_doc(
+    forest: &[Expr],
+    span: TextRange,
+    module_attrs: Dict,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Item {
     let mut doc = Item::new(Ctor::Doc, span);
     doc.children = forest.iter().map(|e| eval(e, diagnostics)).collect();
+    doc.attrs = module_attrs;
     doc
 }
 
@@ -51,12 +57,14 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             name,
             fields,
             children,
+            attrs,
             span,
         } => match resolve(name) {
             Some(ctor) => {
                 let mut item = Item::new(ctor, *span);
                 item.fields = fields.clone();
                 item.children = children.iter().map(|c| eval(c, diagnostics)).collect();
+                item.attrs = attrs.clone();
                 item
             }
             None => {

@@ -1,0 +1,93 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..147
+  Annotation@0..18
+    At@0..1 "@"
+    Bang@1..2 "!"
+    LParen@2..3 "("
+    Text@3..8 "type:"
+    Whitespace@8..9 " "
+    Text@9..17 "\"design\""
+    RParen@17..18 ")"
+  Newline@18..19 "\n"
+  Newline@19..20 "\n"
+  Annotation@20..52
+    At@20..21 "@"
+    LParen@21..22 "("
+    Text@22..25 "id:"
+    Whitespace@25..26 " "
+    Text@26..34 "\"intro\","
+    Whitespace@34..35 " "
+    Text@35..40 "tags:"
+    Whitespace@40..41 " "
+    LParen@41..42 "("
+    Text@42..46 "\"a\","
+    Whitespace@46..47 " "
+    Text@47..50 "\"b\""
+    RParen@50..51 ")"
+    RParen@51..52 ")"
+  Newline@52..53 "\n"
+  Heading@53..61
+    Eq@53..54 "="
+    Whitespace@54..55 " "
+    Inline@55..61
+      Text@55..61 "标题"
+  Newline@61..62 "\n"
+  Newline@62..63 "\n"
+  Annotation@63..75
+    At@63..64 "@"
+    LParen@64..65 "("
+    Text@65..69 "wip:"
+    Whitespace@69..70 " "
+    Text@70..74 "true"
+    RParen@74..75 ")"
+  Newline@75..76 "\n"
+  Paragraph@76..88
+    Inline@76..88
+      Text@76..88 "段落内容"
+  Newline@88..89 "\n"
+  Newline@89..90 "\n"
+  Annotation@90..95
+    At@90..91 "@"
+    LParen@91..92 "("
+    Text@92..94 "42"
+    RParen@94..95 ")"
+  Newline@95..96 "\n"
+  Paragraph@96..108
+    Inline@96..108
+      Text@96..108 "错误负载"
+  Newline@108..109 "\n"
+  Newline@109..110 "\n"
+  Annotation@110..124
+    At@110..111 "@"
+    Bang@111..112 "!"
+    LParen@112..113 "("
+    Text@113..118 "late:"
+    Whitespace@118..119 " "
+    Text@119..123 "true"
+    RParen@123..124 ")"
+  Newline@124..125 "\n"
+  Paragraph@125..146
+    Inline@125..146
+      Text@125..146 "迟到的模块注解"
+  Newline@146..147 "\n"
+
+=== core ===
+error @94..94: annotation entries must be `key: value`
+error @110..124: module annotation must precede all content
+(doc @0..147 @type "design" @late true
+  (heading @53..61 :level 1 @id "intro" @tags ("a", "b")
+    (text @55..61 :text "标题")
+  )
+  (paragraph @76..88 @wip true
+    (text @76..88 :text "段落内容")
+  )
+  (paragraph @96..108
+    (text @96..108 :text "错误负载")
+  )
+  (paragraph @125..146
+    (text @125..146 :text "迟到的模块注解")
+  )
+)

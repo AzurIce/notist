@@ -19,6 +19,9 @@ fn write_item(out: &mut String, item: &Item, indent: usize) {
     for (key, value) in item.fields.iter() {
         write!(line, " :{key} {value}").unwrap();
     }
+    for (key, value) in item.attrs.iter() {
+        write!(line, " @{key} {value}").unwrap();
+    }
     if item.children.is_empty() {
         line.push(')');
         out.push_str(&line);

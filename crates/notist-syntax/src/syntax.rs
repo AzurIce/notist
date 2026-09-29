@@ -22,6 +22,8 @@ pub enum SyntaxKind {
     Dollar,
     Minus,
     Plus,
+    At,
+    Bang,
 
     Document,
     Heading,
@@ -37,6 +39,7 @@ pub enum SyntaxKind {
     Emph,
     List,
     ListItem,
+    Annotation,
     Escape,
     ParBreak,
     Error,

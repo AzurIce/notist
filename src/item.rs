@@ -65,6 +65,16 @@ impl Dict {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
+
+    pub fn extend(&mut self, other: Dict) {
+        for (k, v) in other.0 {
+            self.insert(k, v);
+        }
+    }
+
+    pub fn take(&mut self) -> Dict {
+        std::mem::take(self)
+    }
 }
 
 impl std::fmt::Display for Value {

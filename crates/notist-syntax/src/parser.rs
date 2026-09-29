@@ -89,6 +89,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Minus | SyntaxKind::Plus if self.at_list_marker() => self.list_at(0),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
+                SyntaxKind::At => self.annotation(),
                 SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
@@ -520,6 +521,51 @@ impl<'a> Parser<'a> {
             }
             i += 1;
         }
+    }
+
+    /// `@(…)` annotates the immediately following block; `@!(…)` at the top
+    /// of the file annotates the module. The payload is a dict literal.
+    fn annotation(&mut self) {
+        self.builder.start_node(SyntaxKind::Annotation.into());
+        self.eat();
+        if self.cur() == Some(SyntaxKind::Bang) {
+            self.eat();
+        }
+        match self.cur() {
+            Some(SyntaxKind::LParen) => {
+                match self.balanced(self.pos, SyntaxKind::LParen, SyntaxKind::RParen) {
+                    Some(end) => {
+                        while self.pos <= end {
+                            self.eat();
+                        }
+                    }
+                    None => {
+                        let start = self.pos;
+                        while let Some(kind) = self.cur() {
+                            if kind == SyntaxKind::Newline {
+                                break;
+                            }
+                            self.eat();
+                        }
+                        self.diagnostics.push(Diagnostic {
+                            span: TextRange::new(
+                                self.offset_at(start),
+                                self.offset_at(self.pos),
+                            ),
+                            message: "unclosed annotation".to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {
+                let point = self.offset_at(self.pos);
+                self.diagnostics.push(Diagnostic {
+                    span: TextRange::new(point, point),
+                    message: "expected `(` after `@`".to_string(),
+                });
+            }
+        }
+        self.builder.finish_node();
     }
 
     fn escape(&mut self) {

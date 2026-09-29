@@ -15,8 +15,8 @@ pub fn analyze_json(src: &str) -> String {
         out.push_str(",\"ast\":");
         write_ast(&mut out, &document);
         out.push_str(",\"core\":");
-        let expr = desugar::desugar(&document);
-        let item = eval::eval_doc(&expr, document.range(), &mut diagnostics);
+        let expr = desugar::desugar(&document, &mut diagnostics);
+        let item = eval::eval_doc(&expr.0, document.range(), expr.1, &mut diagnostics);
         write_item(&mut out, &item);
     }
     out.push_str(",\"diagnostics\":[");
@@ -122,6 +122,16 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                 }
                 out.push_str("]}");
             }
+            ast::Block::Annotation(annotation) => {
+                let range = annotation.range();
+                let (text, _) = annotation.payload();
+                out.push_str(&format!(
+                    "{{\"kind\":\"Annotation\",\"start\":{},\"end\":{},\"label\":{}}}",
+                    u32::from(range.start()),
+                    u32::from(range.end()),
+                    escape(&format!("{}({text})", if annotation.is_module() { "@!" } else { "@" })),
+                ));
+            }
             ast::Block::List(list) => write_ast_list(out, &list),
         }
     }
@@ -184,6 +194,9 @@ fn write_item(out: &mut String, item: &Item) {
     let mut label = String::new();
     for (key, value) in item.fields.iter() {
         label.push_str(&format!(" :{key} {value}"));
+    }
+    for (key, value) in item.attrs.iter() {
+        label.push_str(&format!(" @{key} {value}"));
     }
     if !label.is_empty() {
         out.push_str(&format!(",\"label\":{}", escape(&label)));

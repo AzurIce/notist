@@ -11,6 +11,7 @@ pub enum Block {
     Heading(Heading),
     Paragraph(Paragraph),
     List(List),
+    Annotation(Annotation),
 }
 
 impl Block {
@@ -19,6 +20,7 @@ impl Block {
             SyntaxKind::Heading => Some(Block::Heading(Heading(node))),
             SyntaxKind::Paragraph => Some(Block::Paragraph(Paragraph(node))),
             SyntaxKind::List => Some(Block::List(List(node))),
+            SyntaxKind::Annotation => Some(Block::Annotation(Annotation(node))),
             _ => None,
         }
     }
@@ -83,6 +85,59 @@ pub struct Link(pub(crate) SyntaxNode);
 pub struct WikiLink(pub(crate) SyntaxNode);
 pub struct List(pub(crate) SyntaxNode);
 pub struct ListItem(pub(crate) SyntaxNode);
+pub struct Annotation(pub(crate) SyntaxNode);
+
+impl Annotation {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Annotation).then_some(Self(node))
+    }
+
+    pub fn is_module(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == SyntaxKind::Bang)
+    }
+
+    /// The text between the parens, and its absolute start offset.
+    pub fn payload(&self) -> (String, u32) {
+        let mut depth = 0usize;
+        let mut text = String::new();
+        let mut base = None;
+        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
+            match token.kind() {
+                SyntaxKind::LParen => {
+                    depth += 1;
+                    if depth > 1 {
+                        if base.is_none() {
+                            base = Some(u32::from(token.text_range().start()));
+                        }
+                        text.push_str(token.text());
+                    }
+                }
+                SyntaxKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    text.push_str(token.text());
+                }
+                _ if depth >= 1 => {
+                    if base.is_none() {
+                        base = Some(u32::from(token.text_range().start()));
+                    }
+                    text.push_str(token.text());
+                }
+                _ => {}
+            }
+        }
+        (text, base.unwrap_or(0))
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
 
 impl List {
     pub fn cast(node: SyntaxNode) -> Option<Self> {

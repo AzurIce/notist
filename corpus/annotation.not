@@ -1,0 +1,13 @@
+@!(type: "design")
+
+@(id: "intro", tags: ("a", "b"))
+= 标题
+
+@(wip: true)
+段落内容
+
+@(42)
+错误负载
+
+@!(late: true)
+迟到的模块注解

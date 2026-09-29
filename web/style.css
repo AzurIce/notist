@@ -59,7 +59,8 @@ main {
 
 .pane {
   flex: 1;
-  position: relative;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   background: var(--pane);
   border: 1px solid var(--border);
@@ -67,8 +68,17 @@ main {
   overflow: hidden;
 }
 
+.pane h2 {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
 /* 编辑区：textarea（透明文字）叠在 token 渲染层上 */
-.editor { position: absolute; inset: 0; }
+.editor { position: relative; flex: 1; min-height: 0; }
 
 #tokens, #src {
   margin: 0;
@@ -101,23 +111,25 @@ main {
 .hl { background: var(--hl); border-radius: 2px; }
 
 /* 树 */
-#tree {
-  position: absolute;
-  inset: 0;
+.tree {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 12px;
   font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-#tree details {
+.tree details {
   margin-left: 12px;
   border-left: 1px solid var(--border);
   padding-left: 8px;
 }
-#tree summary { cursor: pointer; list-style: none; }
-#tree summary::before { content: "▾ "; color: var(--muted); }
-#tree details:not([open]) > summary::before { content: "▸ "; }
-#tree .leaf { margin-left: 20px; color: var(--muted); }
+.tree summary { cursor: pointer; list-style: none; }
+.tree summary::before { content: "▾ "; color: var(--muted); }
+.tree details:not([open]) > summary::before { content: "▸ "; }
+.tree .leaf { margin-left: 20px; color: var(--muted); }
 
-.kind.Document { color: var(--document); }
+.kind.Document, .kind.Doc { color: var(--document); }
 .kind.Heading { color: var(--heading); font-weight: 600; }
 .kind.Paragraph { color: var(--paragraph); }
+.kind.Text, .kind.SoftBreak { color: var(--muted); }
+.kind.Line { color: var(--muted); font-style: italic; }

@@ -3,7 +3,10 @@ import init, { analyze } from "./pkg/notist.js";
 const srcEl = document.querySelector("#src");
 const tokensEl = document.querySelector("#tokens");
 const treeEl = document.querySelector("#tree");
+const astEl = document.querySelector("#ast");
+const coreEl = document.querySelector("#core");
 const showwsEl = document.querySelector("#showws");
+const corpusEl = document.querySelector("#corpus");
 
 const SAMPLE = "= Title\n\nfirst line\nsecond\tline\n   \n== Sub\n\n=x\n";
 
@@ -44,10 +47,13 @@ function kindLabel(node) {
 }
 
 function renderTreeNode(node) {
-  if (!node.children) {
+  const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+  const extra = node.label ?? (node.text !== undefined ? JSON.stringify(node.text) : "");
+  if (!hasChildren) {
     const el = document.createElement("div");
     el.className = `leaf ${node.kind}`;
-    el.append(kindLabel(node), `  ${JSON.stringify(node.text)}`);
+    el.append(kindLabel(node));
+    if (extra) el.append("  " + extra);
     el.dataset.s = node.start;
     el.dataset.e = node.end;
     return el;
@@ -56,6 +62,7 @@ function renderTreeNode(node) {
   det.open = true;
   const sum = document.createElement("summary");
   sum.append(kindLabel(node));
+  if (extra) sum.append("  " + extra);
   sum.dataset.s = node.start;
   sum.dataset.e = node.end;
   det.appendChild(sum);
@@ -70,11 +77,13 @@ function highlight(s, e) {
   }
 }
 
-treeEl.addEventListener("mouseover", (ev) => {
-  const el = ev.target.closest("[data-s]");
-  if (el) highlight(+el.dataset.s, +el.dataset.e);
-});
-treeEl.addEventListener("mouseleave", () => highlight(-1, -1));
+for (const pane of [treeEl, astEl, coreEl]) {
+  pane.addEventListener("mouseover", (ev) => {
+    const el = ev.target.closest("[data-s]");
+    if (el) highlight(+el.dataset.s, +el.dataset.e);
+  });
+  pane.addEventListener("mouseleave", () => highlight(-1, -1));
+}
 
 // 编辑区联动：光标所在 token ↔ 树叶
 function caretHighlight() {
@@ -96,10 +105,38 @@ srcEl.addEventListener("scroll", () => {
   tokensEl.scrollLeft = srcEl.scrollLeft;
 });
 
+async function loadCorpus() {
+  try {
+    const res = await fetch("../corpus/");
+    if (!res.ok) return;
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    for (const a of doc.querySelectorAll("a")) {
+      const href = a.getAttribute("href");
+      if (!href?.endsWith(".not")) continue;
+      const opt = document.createElement("option");
+      opt.value = new URL(href, res.url).href;
+      opt.textContent = href.split("/").pop();
+      corpusEl.appendChild(opt);
+    }
+  } catch {
+    // 目录列表不可用时只保留手输
+  }
+}
+
+corpusEl.addEventListener("change", async () => {
+  if (!corpusEl.value) return;
+  const res = await fetch(corpusEl.value);
+  srcEl.value = await res.text();
+  render();
+});
+
 function render() {
   const data = JSON.parse(analyze(srcEl.value));
   renderTokens(data.tree);
   treeEl.replaceChildren(renderTreeNode(data.tree));
+  astEl.replaceChildren(renderTreeNode(data.ast));
+  coreEl.replaceChildren(renderTreeNode(data.core));
 }
 
 async function main() {
@@ -107,6 +144,7 @@ async function main() {
   srcEl.value = SAMPLE;
   srcEl.addEventListener("input", render);
   showwsEl.addEventListener("change", render);
+  loadCorpus();
   render();
 }
 

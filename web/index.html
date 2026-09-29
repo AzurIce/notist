@@ -9,17 +9,28 @@
 <body>
 <header>
   <h1>notist viewer</h1>
+  <select id="corpus"><option value="">（从 corpus 载入…）</option></select>
   <label><input type="checkbox" id="showws" checked> 空白字符</label>
 </header>
 <main>
   <section class="pane">
+    <h2>editor</h2>
     <div class="editor">
       <pre id="tokens" aria-hidden="true"></pre>
       <textarea id="src" spellcheck="false" wrap="off"></textarea>
     </div>
   </section>
   <section class="pane">
-    <div id="tree"></div>
+    <h2>cst</h2>
+    <div id="tree" class="tree"></div>
+  </section>
+  <section class="pane">
+    <h2>ast（视图）</h2>
+    <div id="ast" class="tree"></div>
+  </section>
+  <section class="pane">
+    <h2>core</h2>
+    <div id="core" class="tree"></div>
   </section>
 </main>
 <script type="module" src="main.js"></script>

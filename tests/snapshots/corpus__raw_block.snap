@@ -56,11 +56,12 @@ Document@0..200
     Inline@129..171
       Text@129..135 "行内"
       Whitespace@135..136 " "
-      Backtick@136..138 "``"
-      Text@138..150 "双反引号"
-      Backtick@150..152 "``"
+      RawInline@136..152
+        Backtick@136..138 "``"
+        Text@138..150 "双反引号"
+        Backtick@150..152 "``"
       Whitespace@152..153 " "
-      Text@153..171 "目前只是文本"
+      Text@153..171 "与块互不干扰"
   Newline@171..172 "\n"
   Newline@172..173 "\n"
   Error@173..200
@@ -79,6 +80,8 @@ error @173..200: unclosed raw block
     (text @97..106 :text "段落被")
   )
   (paragraph @129..171
-    (text @129..171 :text "行内 ``双反引号`` 目前只是文本")
+    (text @129..135 :text "行内")
+    (rawinline @136..152 :text "双反引号")
+    (text @153..171 :text "与块互不干扰")
   )
 )

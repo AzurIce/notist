@@ -7,6 +7,8 @@ pub enum Ctor {
     Heading,
     Text,
     SoftBreak,
+    HardBreak,
+    RawInline,
 }
 
 impl Ctor {
@@ -17,6 +19,8 @@ impl Ctor {
             Ctor::Heading => "Heading",
             Ctor::Text => "Text",
             Ctor::SoftBreak => "SoftBreak",
+            Ctor::HardBreak => "HardBreak",
+            Ctor::RawInline => "RawInline",
         }
     }
 }

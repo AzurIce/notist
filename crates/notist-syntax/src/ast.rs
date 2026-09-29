@@ -1,4 +1,4 @@
-use rowan::TextRange;
+use rowan::{NodeOrToken, TextRange};
 
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -87,6 +87,10 @@ impl Inline {
             .children_with_tokens()
             .filter_map(|e| e.into_token())
             .collect()
+    }
+
+    pub fn elements(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> {
+        self.0.children_with_tokens()
     }
 
     pub fn lines(&self) -> Vec<Line> {

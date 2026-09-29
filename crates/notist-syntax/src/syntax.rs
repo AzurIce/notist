@@ -25,7 +25,10 @@ pub enum SyntaxKind {
     Heading,
     Paragraph,
     Raw,
+    RawInline,
     Inline,
+    Escape,
+    HardBreak,
     Error,
 }
 

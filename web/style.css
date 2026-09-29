@@ -110,6 +110,7 @@ main {
 .tok.Backtick { color: var(--paragraph); }
 .tok.LineComment, .tok.BlockComment { color: var(--muted); font-style: italic; }
 .kind.Raw { color: var(--paragraph); font-weight: 600; }
+.kind.RawInline { color: var(--paragraph); }
 .kind.Error { color: var(--punct); font-weight: 600; }
 
 .hl { background: var(--hl); border-radius: 2px; }
@@ -138,3 +139,5 @@ main {
 .kind.Text, .kind.SoftBreak { color: var(--muted); }
 .kind.Line { color: var(--muted); font-style: italic; }
 .kind.Inline { color: var(--document); }
+.kind.Escape { color: var(--punct); }
+.kind.HardBreak { color: var(--muted); font-style: italic; }

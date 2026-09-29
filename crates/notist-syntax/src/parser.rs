@@ -20,6 +20,24 @@ impl Parse {
     }
 }
 
+fn is_escapable(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Eq
+            | SyntaxKind::Star
+            | SyntaxKind::Underscore
+            | SyntaxKind::Backslash
+            | SyntaxKind::LBracket
+            | SyntaxKind::RBracket
+            | SyntaxKind::LParen
+            | SyntaxKind::RParen
+            | SyntaxKind::Pipe
+            | SyntaxKind::Hash
+            | SyntaxKind::Dollar
+            | SyntaxKind::Backtick
+    )
+}
+
 pub fn parse(src: &str) -> Parse {
     Parser::new(src).run()
 }
@@ -131,18 +149,68 @@ impl<'a> Parser<'a> {
     fn inline(&mut self, stop: impl Fn(&Self) -> bool) {
         self.builder.start_node(SyntaxKind::Inline.into());
         loop {
-            while let Some(kind) = self.cur() {
-                if kind == SyntaxKind::Newline {
-                    break;
+            match self.cur() {
+                None => break,
+                Some(SyntaxKind::Newline) => {
+                    if stop(self) {
+                        break;
+                    }
+                    self.eat();
                 }
-                self.eat();
+                Some(SyntaxKind::Backslash) => self.escape_or_break(),
+                Some(SyntaxKind::Backtick) => self.raw_inline(),
+                Some(_) => self.eat(),
             }
-            if self.cur().is_none() || stop(self) {
-                break;
-            }
-            self.eat();
         }
         self.builder.finish_node();
+    }
+
+    fn raw_inline(&mut self) {
+        let len = self.tokens[self.pos].1.len();
+        let mut i = self.pos + 1;
+        let closed = loop {
+            match self.tokens.get(i) {
+                None => break false,
+                Some((SyntaxKind::Newline, _)) => break false,
+                Some((SyntaxKind::Backtick, text)) if text.len() == len => break true,
+                Some(_) => i += 1,
+            }
+        };
+        if !closed {
+            self.eat();
+            return;
+        }
+        self.builder.start_node(SyntaxKind::RawInline.into());
+        self.eat();
+        loop {
+            match self.cur() {
+                None => break,
+                Some(SyntaxKind::Backtick) if self.tokens[self.pos].1.len() == len => {
+                    self.eat();
+                    break;
+                }
+                Some(_) => self.eat(),
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    fn escape_or_break(&mut self) {
+        match self.peek(1) {
+            Some(SyntaxKind::Newline) => {
+                self.builder.start_node(SyntaxKind::HardBreak.into());
+                self.eat();
+                self.eat();
+                self.builder.finish_node();
+            }
+            Some(kind) if is_escapable(kind) => {
+                self.builder.start_node(SyntaxKind::Escape.into());
+                self.eat();
+                self.eat();
+                self.builder.finish_node();
+            }
+            _ => self.eat(),
+        }
     }
 
     fn line_ends_block(&self) -> bool {

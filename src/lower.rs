@@ -1,7 +1,7 @@
-use rowan::TextRange;
+use rowan::{NodeOrToken, TextRange, TextSize};
 
-use notist_syntax::ast::{Block, Document, Line};
-use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
+use notist_syntax::ast::{Block, Document, Inline};
+use notist_syntax::syntax::SyntaxKind;
 
 use crate::item::{Ctor, Item, Value};
 
@@ -14,57 +14,97 @@ fn lower_block(block: &Block) -> Item {
     match block {
         Block::Heading(heading) => {
             let level = heading.level() as i64;
+            let children = heading.inline().map(|i| lower_inline(&i)).unwrap_or_default();
             Item::new(Ctor::Heading, heading.range())
                 .with_field("level", Value::Int(level))
-                .with_children(lower_lines(vec![Line {
-                    tokens: heading.content_tokens(),
-                    newline: None,
-                }]))
+                .with_children(children)
         }
-        Block::Paragraph(paragraph) => Item::new(Ctor::Paragraph, paragraph.range())
-            .with_children(lower_lines(paragraph.lines())),
-    }
-}
-
-fn lower_lines(lines: Vec<Line>) -> Vec<Item> {
-    let mut children: Vec<Item> = Vec::new();
-    let mut pending_break: Option<TextRange> = None;
-    for line in lines {
-        if let Some(text) = line_text(&line.tokens) {
-            if let Some(span) = pending_break.take() {
-                children.push(Item::new(Ctor::SoftBreak, span));
-            }
-            children.push(text);
-        }
-        if let Some(newline) = line.newline {
-            pending_break = Some(newline.text_range());
+        Block::Paragraph(paragraph) => {
+            let children = paragraph.inline().map(|i| lower_inline(&i)).unwrap_or_default();
+            Item::new(Ctor::Paragraph, paragraph.range()).with_children(children)
         }
     }
-    children
 }
 
-fn is_trivia(token: &SyntaxToken) -> bool {
-    matches!(
-        token.kind(),
-        SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment
-    )
+fn lower_inline(inline: &Inline) -> Vec<Item> {
+    let mut items = Vec::new();
+    let mut buf = String::new();
+    let mut start: Option<TextSize> = None;
+    let mut content_len = 0usize;
+    let mut content_end: Option<TextSize> = None;
+
+    for element in inline.elements() {
+        match element {
+            NodeOrToken::Token(token) => match token.kind() {
+                SyntaxKind::Newline => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    items.push(Item::new(Ctor::SoftBreak, token.text_range()));
+                }
+                SyntaxKind::LineComment | SyntaxKind::BlockComment => {}
+                SyntaxKind::Whitespace => buf.push_str(token.text()),
+                _ => {
+                    if start.is_none() {
+                        start = Some(token.text_range().start());
+                    }
+                    buf.push_str(token.text());
+                    content_len = buf.len();
+                    content_end = Some(token.text_range().end());
+                }
+            },
+            NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::Escape => {
+                    let escaped = node
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .nth(1)
+                        .unwrap();
+                    if start.is_none() {
+                        start = Some(node.text_range().start());
+                    }
+                    buf.push_str(escaped.text());
+                    content_len = buf.len();
+                    content_end = Some(node.text_range().end());
+                }
+                SyntaxKind::HardBreak => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    items.push(Item::new(Ctor::HardBreak, node.text_range()));
+                }
+                SyntaxKind::RawInline => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    let tokens: Vec<_> = node
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .collect();
+                    let text: String =
+                        tokens[1..tokens.len() - 1].iter().map(|t| t.text()).collect();
+                    items.push(
+                        Item::new(Ctor::RawInline, node.text_range())
+                            .with_field("text", Value::Str(text)),
+                    );
+                }
+                _ => {}
+            },
+        }
+    }
+    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+    items
 }
 
-fn is_comment(token: &SyntaxToken) -> bool {
-    matches!(token.kind(), SyntaxKind::LineComment | SyntaxKind::BlockComment)
-}
-
-fn line_text(tokens: &[SyntaxToken]) -> Option<Item> {
-    let first = tokens.iter().position(|t| !is_trivia(t))?;
-    let last = tokens.iter().rposition(|t| !is_trivia(t))?;
-    let text: String = tokens[first..=last]
-        .iter()
-        .filter(|t| !is_comment(t))
-        .map(|t| t.text())
-        .collect();
-    let span = TextRange::new(
-        tokens[first].text_range().start(),
-        tokens[last].text_range().end(),
-    );
-    Some(Item::text(text, span))
+fn flush_text(
+    items: &mut Vec<Item>,
+    buf: &mut String,
+    start: &mut Option<TextSize>,
+    content_len: &mut usize,
+    content_end: &mut Option<TextSize>,
+) {
+    if let (Some(s), Some(e)) = (*start, *content_end) {
+        let text = buf[..*content_len].trim_start().to_string();
+        if !text.is_empty() {
+            items.push(Item::text(text, TextRange::new(s, e)));
+        }
+    }
+    buf.clear();
+    *start = None;
+    *content_len = 0;
+    *content_end = None;
 }

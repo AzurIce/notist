@@ -1,6 +1,6 @@
-use rowan::{GreenNode, GreenNodeBuilder, TextRange, TextSize};
+use rowan::{GreenNode, GreenNodeBuilder, TextRange};
 
-use crate::lexer::lex;
+use crate::lexer::{Lexed, lex};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,17 +23,8 @@ impl Parse {
 /// Chars whose special meaning `\` cancels. `\`+newline never reaches the
 /// inline escape path (it ends the block); `\` followed by anything else
 /// stays literal.
-/// The closing convention of the enclosing inline construct. `Flanked` is
-/// for emphasis delimiters (whitespace flanking); `Single`/`Pair` close on a
-/// literal token, no flanking involved.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Active {
-    Flanked(SyntaxKind),
-    Single(SyntaxKind),
-    Pair(SyntaxKind),
-}
-
-fn is_escapable(kind: SyntaxKind) -> bool {    matches!(
+fn is_escapable(kind: SyntaxKind) -> bool {
+    matches!(
         kind,
         SyntaxKind::Eq
             | SyntaxKind::Star
@@ -50,15 +41,25 @@ fn is_escapable(kind: SyntaxKind) -> bool {    matches!(
     )
 }
 
+/// The closing convention of the enclosing inline construct. `Flanked` is
+/// for emphasis delimiters (whitespace flanking); `Single`/`Pair` close on a
+/// literal token, no flanking involved.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Active {
+    Flanked(SyntaxKind),
+    Single(SyntaxKind),
+    Pair(SyntaxKind),
+}
+
 pub fn parse(src: &str) -> Parse {
     Parser::new(src).run()
 }
 
-/// Recursive-descent over a pre-lexed token vector, emitting a lossless
-/// green tree. `pos` only moves forward: every decision is made by bounded
+/// Recursive-descent over the lexed token stream, emitting a lossless green
+/// tree. `pos` only moves forward: every decision is made by bounded
 /// peeking, never by reparsing.
 struct Parser<'a> {
-    tokens: Vec<(SyntaxKind, &'a str)>,
+    lexed: Lexed<'a>,
     pos: usize,
     builder: GreenNodeBuilder<'static>,
     diagnostics: Vec<Diagnostic>,
@@ -67,7 +68,7 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
         Self {
-            tokens: lex(src),
+            lexed: lex(src),
             pos: 0,
             builder: GreenNodeBuilder::new(),
             diagnostics: Vec::new(),
@@ -113,13 +114,6 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    /// Entry: at a fence (`>= 3` backticks) at a line start. Consumes through
-    /// the closing fence (equal or longer run) or EOF; the closing fence's
-    /// trailing newline belongs to `Document`.
-    ///
-    /// An unclosed block swallows to EOF and is reported; the `Error` wrapper
-    /// is attached retroactively via the checkpoint taken at entry, so a
-    /// broken block is structurally marked, not just diagnosed.
     /// `\`+newline at block level: an explicit paragraph break, equivalent
     /// to a blank line.
     fn parbreak(&mut self) {
@@ -129,10 +123,17 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
+    /// Entry: at a fence (`>= 3` backticks) at a line start. Consumes through
+    /// the closing fence (equal or longer run) or EOF; the closing fence's
+    /// trailing newline belongs to `Document`.
+    ///
+    /// An unclosed block swallows to EOF and is reported; the `Error` wrapper
+    /// is attached retroactively via the checkpoint taken at entry, so a
+    /// broken block is structurally marked, not just diagnosed.
     fn raw_block(&mut self) {
         let checkpoint = self.builder.checkpoint();
         self.builder.start_node(SyntaxKind::Raw.into());
-        let fence_len = self.tokens[self.pos].1.len();
+        let fence_len = self.lexed.len(self.pos);
         let fence_start = self.pos;
         self.eat();
         while let Some(kind) = self.cur() {
@@ -148,7 +149,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.cur() {
                 None => break,
-                Some(SyntaxKind::Backtick) if self.tokens[self.pos].1.len() >= fence_len => {
+                Some(SyntaxKind::Backtick) if self.lexed.len(self.pos) >= fence_len => {
                     self.eat();
                     while let Some(kind) = self.cur() {
                         if kind == SyntaxKind::Newline {
@@ -175,7 +176,7 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
         if !closed {
             self.diagnostics.push(Diagnostic {
-                span: TextRange::new(self.offset_at(fence_start), self.offset_at(self.pos)),
+                span: TextRange::new(self.lexed.offset(fence_start), self.lexed.offset(self.pos)),
                 message: "unclosed raw block".to_string(),
             });
             self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
@@ -272,7 +273,7 @@ impl<'a> Parser<'a> {
     fn find_close(&self, mut i: usize, delim: SyntaxKind) -> Option<usize> {
         let mut depth = 0usize;
         loop {
-            let (kind, _) = *self.tokens.get(i)?;
+            let kind = self.lexed.kind(i)?;
             if kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
                 return None;
             }
@@ -293,7 +294,7 @@ impl<'a> Parser<'a> {
     /// Whitespace flanking, open side: the next token must exist and not be
     /// whitespace.
     fn can_open_at(&self, i: usize) -> bool {
-        let Some((next, _)) = self.tokens.get(i + 1) else {
+        let Some(next) = self.lexed.kind(i + 1) else {
             return false;
         };
         !matches!(next, SyntaxKind::Whitespace | SyntaxKind::Newline)
@@ -302,15 +303,15 @@ impl<'a> Parser<'a> {
     /// Whitespace flanking, close side: the previous token must exist and not
     /// be whitespace.
     fn can_close_at(&self, i: usize) -> bool {
-        i > 0 && !matches!(
-            self.tokens[i - 1].0,
-            SyntaxKind::Whitespace | SyntaxKind::Newline
-        )
+        if i == 0 {
+            return false;
+        }
+        let Some(prev) = self.lexed.kind(i - 1) else {
+            return false;
+        };
+        !matches!(prev, SyntaxKind::Whitespace | SyntaxKind::Newline)
     }
 
-    /// Inline raw: a backtick run closed by an equal-length run on the same
-    /// line. Longer/shorter runs inside are content. Unclosed means it never
-    /// was raw: the opening run stays literal text, no diagnostic.
     /// Inline math: `$…$`, same flanking rules as paired delimiters, but the
     /// content is an opaque payload (the math grammar is not parsed). Empty
     /// or unclosed means the dollars are plain text.
@@ -321,10 +322,10 @@ impl<'a> Parser<'a> {
         }
         let mut i = self.pos + 1;
         let close = loop {
-            match self.tokens.get(i) {
+            match self.lexed.kind(i) {
                 None => break None,
-                Some((SyntaxKind::Newline, _)) if self.line_ends_block_at(i) => break None,
-                Some((SyntaxKind::Dollar, _)) if self.can_close_at(i) => break Some(i),
+                Some(SyntaxKind::Newline) if self.line_ends_block_at(i) => break None,
+                Some(SyntaxKind::Dollar) if self.can_close_at(i) => break Some(i),
                 Some(_) => i += 1,
             }
         };
@@ -340,14 +341,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Inline raw: a backtick run closed by an equal-length run on the same
+    /// line. Longer/shorter runs inside are content. Unclosed means it never
+    /// was raw: the opening run stays literal text, no diagnostic.
     fn raw_inline(&mut self) {
-        let len = self.tokens[self.pos].1.len();
+        let len = self.lexed.len(self.pos);
         let mut i = self.pos + 1;
         let closed = loop {
-            match self.tokens.get(i) {
+            match self.lexed.kind(i) {
                 None => break false,
-                Some((SyntaxKind::Newline, _)) => break false,
-                Some((SyntaxKind::Backtick, text)) if text.len() == len => break true,
+                Some(SyntaxKind::Newline) => break false,
+                Some(SyntaxKind::Backtick) if self.lexed.len(i) == len => break true,
                 Some(_) => i += 1,
             }
         };
@@ -360,7 +364,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.cur() {
                 None => break,
-                Some(SyntaxKind::Backtick) if self.tokens[self.pos].1.len() == len => {
+                Some(SyntaxKind::Backtick) if self.lexed.len(self.pos) == len => {
                     self.eat();
                     break;
                 }
@@ -370,8 +374,6 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    /// Entry: at `\`. `\`+newline is a hard break, `\`+special char is an
-    /// escape, anything else leaves the backslash as literal text.
     /// Links, both spellings: `[[target]]` / `[[target|text]]` and
     /// `[text](target)`. Entry: at `[`. Any shape mismatch (no `]]`, no `]`,
     /// no `(...)`, or a block boundary in between) leaves the bracket as
@@ -388,15 +390,15 @@ impl<'a> Parser<'a> {
         let mut i = self.pos + 2;
         let mut pipe = None;
         let close = loop {
-            match self.tokens.get(i) {
+            match self.lexed.kind(i) {
                 None => break None,
-                Some((SyntaxKind::Newline, _)) => break None,
-                Some((SyntaxKind::Pipe, _)) if pipe.is_none() => {
+                Some(SyntaxKind::Newline) => break None,
+                Some(SyntaxKind::Pipe) if pipe.is_none() => {
                     pipe = Some(i);
                     i += 1;
                 }
-                Some((SyntaxKind::RBracket, _))
-                    if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::RBracket) =>
+                Some(SyntaxKind::RBracket)
+                    if self.lexed.kind(i + 1) == Some(SyntaxKind::RBracket) =>
                 {
                     break Some(i)
                 }
@@ -426,10 +428,10 @@ impl<'a> Parser<'a> {
     fn md_link(&mut self, stop: &impl Fn(&Self) -> bool) {
         let mut i = self.pos + 1;
         let close = loop {
-            match self.tokens.get(i) {
+            match self.lexed.kind(i) {
                 None => break None,
-                Some((SyntaxKind::Newline, _)) if self.line_ends_block_at(i) => break None,
-                Some((SyntaxKind::RBracket, _)) => break Some(i),
+                Some(SyntaxKind::Newline) if self.line_ends_block_at(i) => break None,
+                Some(SyntaxKind::RBracket) => break Some(i),
                 Some(_) => i += 1,
             }
         };
@@ -437,16 +439,16 @@ impl<'a> Parser<'a> {
             self.eat();
             return;
         };
-        if self.tokens.get(close + 1).map(|t| t.0) != Some(SyntaxKind::LParen) {
+        if self.lexed.kind(close + 1) != Some(SyntaxKind::LParen) {
             self.eat();
             return;
         }
         let mut j = close + 2;
         let close_paren = loop {
-            match self.tokens.get(j) {
+            match self.lexed.kind(j) {
                 None => break None,
-                Some((SyntaxKind::Newline, _)) => break None,
-                Some((SyntaxKind::RParen, _)) => break Some(j),
+                Some(SyntaxKind::Newline) => break None,
+                Some(SyntaxKind::RParen) => break Some(j),
                 Some(_) => j += 1,
             }
         };
@@ -473,10 +475,10 @@ impl<'a> Parser<'a> {
     /// character.
     fn code_call(&mut self, stop: &impl Fn(&Self) -> bool) {
         let mut end = self.pos + 1;
-        if matches!(self.tokens.get(end).map(|t| t.0), Some(SyntaxKind::Text)) {
+        if self.lexed.kind(end) == Some(SyntaxKind::Text) {
             end += 1;
         }
-        if self.tokens.get(end).map(|t| t.0) == Some(SyntaxKind::LParen) {
+        if self.lexed.kind(end) == Some(SyntaxKind::LParen) {
             match self.balanced(end, SyntaxKind::LParen, SyntaxKind::RParen) {
                 Some(e) => end = e + 1,
                 None => {
@@ -485,7 +487,7 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        let has_body = self.tokens.get(end).map(|t| t.0) == Some(SyntaxKind::LBracket)
+        let has_body = self.lexed.kind(end) == Some(SyntaxKind::LBracket)
             && self
                 .balanced(end, SyntaxKind::LBracket, SyntaxKind::RBracket)
                 .is_some();
@@ -510,7 +512,7 @@ impl<'a> Parser<'a> {
     fn balanced(&self, mut i: usize, open: SyntaxKind, close: SyntaxKind) -> Option<usize> {
         let mut depth = 0usize;
         loop {
-            let (kind, _) = *self.tokens.get(i)?;
+            let kind = self.lexed.kind(i)?;
             if kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
                 return None;
             }
@@ -553,8 +555,8 @@ impl<'a> Parser<'a> {
                         }
                         self.diagnostics.push(Diagnostic {
                             span: TextRange::new(
-                                self.offset_at(start),
-                                self.offset_at(self.pos),
+                                self.lexed.offset(start),
+                                self.lexed.offset(self.pos),
                             ),
                             message: "unclosed annotation".to_string(),
                         });
@@ -562,7 +564,7 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => {
-                let point = self.offset_at(self.pos);
+                let point = self.lexed.offset(self.pos);
                 self.diagnostics.push(Diagnostic {
                     span: TextRange::new(point, point),
                     message: "expected `(` after `@`".to_string(),
@@ -572,6 +574,8 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
+    /// Entry: at `\`. `\`+special char is an escape; anything else leaves the
+    /// backslash as literal text.
     fn escape(&mut self) {
         match self.peek(1) {
             Some(kind) if is_escapable(kind) => {
@@ -631,13 +635,13 @@ impl<'a> Parser<'a> {
         }
         let mut i = self.pos + 1;
         let mut indent = 0;
-        while let Some((SyntaxKind::Whitespace, text)) = self.tokens.get(i) {
-            indent += text.len();
+        while self.lexed.kind(i) == Some(SyntaxKind::Whitespace) {
+            indent += self.lexed.len(i);
             i += 1;
         }
-        match self.tokens.get(i).map(|t| t.0) {
+        match self.lexed.kind(i) {
             Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
-                if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::Whitespace) =>
+                if self.lexed.kind(i + 1) == Some(SyntaxKind::Whitespace) =>
             {
                 Some(indent)
             }
@@ -652,14 +656,14 @@ impl<'a> Parser<'a> {
     fn line_ends_list_item(&self, pos: usize, indent: usize) -> bool {
         let mut i = pos + 1;
         let mut next_indent = 0;
-        while let Some((SyntaxKind::Whitespace, text)) = self.tokens.get(i) {
-            next_indent += text.len();
+        while self.lexed.kind(i) == Some(SyntaxKind::Whitespace) {
+            next_indent += self.lexed.len(i);
             i += 1;
         }
-        match self.tokens.get(i).map(|t| t.0) {
+        match self.lexed.kind(i) {
             None | Some(SyntaxKind::Newline) => true,
             Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
-                if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::Whitespace) =>
+                if self.lexed.kind(i + 1) == Some(SyntaxKind::Whitespace) =>
             {
                 true
             }
@@ -682,24 +686,21 @@ impl<'a> Parser<'a> {
 
     /// Whether a block ends after the newline at `pos`: a blank line follows
     /// (whitespace-only counts), or the next line starts a new block
-    /// (heading marker, fence). Block markers are column-0 only; a marker
-    /// preceded by whitespace is paragraph text.
+    /// (heading marker, fence, list marker). Block markers are column-0
+    /// only; a marker preceded by whitespace is paragraph text.
     fn line_ends_block_at(&self, pos: usize) -> bool {
         let mut i = pos + 1;
-        while self.tokens.get(i).map(|t| t.0) == Some(SyntaxKind::Whitespace) {
+        while self.lexed.kind(i) == Some(SyntaxKind::Whitespace) {
             i += 1;
         }
-        if matches!(self.tokens.get(i).map(|t| t.0), None | Some(SyntaxKind::Newline)) {
+        if matches!(self.lexed.kind(i), None | Some(SyntaxKind::Newline)) {
             return true;
         }
-        let next = self.tokens.get(pos + 1);
-        match next.map(|t| t.0) {
-            Some(SyntaxKind::Eq) => {
-                self.tokens.get(pos + 2).map(|t| t.0) == Some(SyntaxKind::Whitespace)
-            }
-            Some(SyntaxKind::Backtick) => next.is_some_and(|t| t.1.len() >= 3),
+        match self.lexed.kind(pos + 1) {
+            Some(SyntaxKind::Eq) => self.lexed.kind(pos + 2) == Some(SyntaxKind::Whitespace),
+            Some(SyntaxKind::Backtick) => self.lexed.len(pos + 1) >= 3,
             Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) => {
-                self.tokens.get(pos + 2).map(|t| t.0) == Some(SyntaxKind::Whitespace)
+                self.lexed.kind(pos + 2) == Some(SyntaxKind::Whitespace)
             }
             _ => false,
         }
@@ -712,15 +713,15 @@ impl<'a> Parser<'a> {
 
     fn at_fence(&self, ws_skip: usize) -> bool {
         self.peek(ws_skip) == Some(SyntaxKind::Backtick)
-            && self.tokens.get(self.pos + ws_skip).is_some_and(|t| t.1.len() >= 3)
+            && self.lexed.len(self.pos + ws_skip) >= 3
     }
 
     fn at_blank_line(&self) -> bool {
         let mut i = self.pos;
-        while self.tokens.get(i).map(|t| t.0) == Some(SyntaxKind::Whitespace) {
+        while self.lexed.kind(i) == Some(SyntaxKind::Whitespace) {
             i += 1;
         }
-        matches!(self.tokens.get(i).map(|t| t.0), None | Some(SyntaxKind::Newline))
+        matches!(self.lexed.kind(i), None | Some(SyntaxKind::Newline))
     }
 
     fn eat_blank_line(&mut self) {
@@ -729,29 +730,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Token index to absolute byte offset. O(n); only used on diagnostic
-    /// paths.
-    fn offset_at(&self, pos: usize) -> TextSize {
-        let bytes: usize = self.tokens[..pos].iter().map(|t| t.1.len()).sum();
-        TextSize::new(bytes as u32)
-    }
-
     fn cur(&self) -> Option<SyntaxKind> {
-        self.tokens.get(self.pos).map(|t| t.0)
+        self.lexed.kind(self.pos)
     }
 
     fn peek(&self, offset: usize) -> Option<SyntaxKind> {
-        self.tokens.get(self.pos + offset).map(|t| t.0)
+        self.lexed.kind(self.pos + offset)
     }
 
     /// The single funnel for consuming a token into the tree; also reports
     /// unterminated block comments (a lexical, trivia-level breakage, hence
     /// no `Error` wrapper).
     fn eat(&mut self) {
-        let (kind, text) = self.tokens[self.pos];
+        let kind = self.lexed.kind(self.pos).unwrap();
+        let text = self.lexed.text(self.pos);
         if kind == SyntaxKind::BlockComment && !text.ends_with("*/") {
             self.diagnostics.push(Diagnostic {
-                span: TextRange::new(self.offset_at(self.pos), self.offset_at(self.pos + 1)),
+                span: TextRange::new(self.lexed.offset(self.pos), self.lexed.offset(self.pos + 1)),
                 message: "unclosed block comment".to_string(),
             });
         }

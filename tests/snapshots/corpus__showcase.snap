@@ -1,7 +1,59 @@
 ---
 source: tests/corpus.rs
-expression: "notist::dump_str(&src)"
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
+Document@0..130
+  Heading@0..15
+    Eq@0..1 "="
+    Whitespace@1..2 " "
+    Text@2..8 "Notist"
+    Whitespace@8..9 " "
+    Text@9..15 "巡览"
+  Newline@15..16 "\n"
+  Newline@16..17 "\n"
+  Heading@17..26
+    Eq@17..19 "=="
+    Whitespace@19..20 " "
+    Text@20..26 "标题"
+  Newline@26..27 "\n"
+  Newline@27..28 "\n"
+  Heading@28..36
+    Eq@28..29 "="
+    Whitespace@29..30 " "
+    Text@30..36 "一级"
+  Newline@36..37 "\n"
+  Heading@37..46
+    Eq@37..39 "=="
+    Whitespace@39..40 " "
+    Text@40..46 "二级"
+  Newline@46..47 "\n"
+  Heading@47..57
+    Eq@47..50 "==="
+    Whitespace@50..51 " "
+    Text@51..57 "三级"
+  Newline@57..58 "\n"
+  Newline@58..59 "\n"
+  Heading@59..68
+    Eq@59..61 "=="
+    Whitespace@61..62 " "
+    Text@62..68 "段落"
+  Newline@68..69 "\n"
+  Newline@69..70 "\n"
+  Paragraph@70..115
+    Text@70..82 "单换行是"
+    Whitespace@82..83 " "
+    Text@83..87 "soft"
+    Whitespace@87..88 " "
+    Text@88..93 "break"
+    Newline@93..94 "\n"
+    Text@94..115 "同一段落内继续"
+  Newline@115..116 "\n"
+  Newline@116..117 "\n"
+  Paragraph@117..129
+    Text@117..129 "空行分段"
+  Newline@129..130 "\n"
+
+=== core ===
 (doc @0..130
   (heading @0..15 :level 1
     (text @2..15 :text "Notist 巡览")

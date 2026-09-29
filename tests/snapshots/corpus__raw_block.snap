@@ -1,0 +1,80 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..200
+  Raw@0..24
+    Backtick@0..3 "```"
+    Text@3..7 "rust"
+    Newline@7..8 "\n"
+    Text@8..10 "fn"
+    Whitespace@10..11 " "
+    Text@11..17 "main()"
+    Whitespace@17..18 " "
+    Text@18..20 "{}"
+    Newline@20..21 "\n"
+    Backtick@21..24 "```"
+  Newline@24..25 "\n"
+  Newline@25..26 "\n"
+  Raw@26..63
+    Backtick@26..29 "```"
+    Newline@29..30 "\n"
+    Text@30..39 "无语言"
+    Whitespace@39..40 " "
+    Text@40..58 "tag，闭合更长"
+    Newline@58..59 "\n"
+    Backtick@59..63 "````"
+  Newline@63..64 "\n"
+  Newline@64..65 "\n"
+  Raw@65..95
+    Backtick@65..69 "````"
+    Newline@69..70 "\n"
+    Text@70..76 "内含"
+    Whitespace@76..77 " "
+    Backtick@77..80 "```"
+    Whitespace@80..81 " "
+    Text@81..90 "较短串"
+    Newline@90..91 "\n"
+    Backtick@91..95 "````"
+  Newline@95..96 "\n"
+  Newline@96..97 "\n"
+  Paragraph@97..106
+    Text@97..106 "段落被"
+  Newline@106..107 "\n"
+  Raw@107..127
+    Backtick@107..110 "```"
+    Newline@110..111 "\n"
+    Text@111..123 "围栏截断"
+    Newline@123..124 "\n"
+    Backtick@124..127 "```"
+  Newline@127..128 "\n"
+  Newline@128..129 "\n"
+  Paragraph@129..171
+    Text@129..135 "行内"
+    Whitespace@135..136 " "
+    Backtick@136..138 "``"
+    Text@138..150 "双反引号"
+    Backtick@150..152 "``"
+    Whitespace@152..153 " "
+    Text@153..171 "目前只是文本"
+  Newline@171..172 "\n"
+  Newline@172..173 "\n"
+  Error@173..200
+    Raw@173..200
+      Backtick@173..176 "```"
+      Newline@176..177 "\n"
+      Text@177..195 "未闭合，直到"
+      Whitespace@195..196 " "
+      Text@196..199 "EOF"
+      Newline@199..200 "\n"
+
+=== core ===
+error @173..200: unclosed raw block
+(doc @0..200
+  (paragraph @97..106
+    (text @97..106 :text "段落被")
+  )
+  (paragraph @129..171
+    (text @129..171 :text "行内 ``双反引号`` 目前只是文本")
+  )
+)

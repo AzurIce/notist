@@ -12,6 +12,8 @@ fn corpus() {
     for path in entries {
         let src = fs::read_to_string(&path).unwrap();
         let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-        insta::assert_snapshot!(name, notist::dump_str(&src));
+        let cst = format!("{:#?}", notist_syntax::parser::parse(&src).syntax());
+        let core = notist::dump_str(&src);
+        insta::assert_snapshot!(name, format!("{cst}\n=== core ===\n{core}"));
     }
 }

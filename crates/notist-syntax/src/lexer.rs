@@ -14,12 +14,16 @@ pub fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
                 let len = rest.len() - rest.trim_start_matches('=').len();
                 (SyntaxKind::Eq, len)
             }
+            '`' => {
+                let len = rest.len() - rest.trim_start_matches('`').len();
+                (SyntaxKind::Backtick, len)
+            }
             ' ' | '\t' => {
                 let len = rest.len() - rest.trim_start_matches([' ', '\t']).len();
                 (SyntaxKind::Whitespace, len)
             }
             _ => {
-                let len = rest.find(['=', ' ', '\t', '\n', '\r']).unwrap_or(rest.len());
+                let len = rest.find(['=', '`', ' ', '\t', '\n', '\r']).unwrap_or(rest.len());
                 (SyntaxKind::Text, len)
             }
         };

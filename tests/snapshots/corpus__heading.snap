@@ -1,7 +1,52 @@
 ---
 source: tests/corpus.rs
-expression: "notist::dump_str(&src)"
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
+Document@0..69
+  Heading@0..9
+    Eq@0..1 "="
+    Whitespace@1..2 " "
+    Text@2..7 "Level"
+    Whitespace@7..8 " "
+    Text@8..9 "1"
+  Newline@9..10 "\n"
+  Newline@10..11 "\n"
+  Heading@11..21
+    Eq@11..13 "=="
+    Whitespace@13..14 " "
+    Text@14..19 "Level"
+    Whitespace@19..20 " "
+    Text@20..21 "2"
+  Newline@21..22 "\n"
+  Newline@22..23 "\n"
+  Heading@23..34
+    Eq@23..26 "==="
+    Whitespace@26..27 " "
+    Text@27..32 "Level"
+    Whitespace@32..33 " "
+    Text@33..34 "3"
+  Newline@34..35 "\n"
+  Newline@35..36 "\n"
+  Paragraph@36..38
+    Eq@36..37 "="
+    Text@37..38 "x"
+  Newline@38..39 "\n"
+  Newline@39..40 "\n"
+  Heading@40..42
+    Eq@40..41 "="
+    Whitespace@41..42 " "
+  Newline@42..43 "\n"
+  Newline@43..44 "\n"
+  Paragraph@44..53
+    Text@44..53 "段落被"
+  Newline@53..54 "\n"
+  Heading@54..68
+    Eq@54..55 "="
+    Whitespace@55..56 " "
+    Text@56..68 "标题截断"
+  Newline@68..69 "\n"
+
+=== core ===
 (doc @0..69
   (heading @0..9 :level 1
     (text @2..9 :text "Level 1")

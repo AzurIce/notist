@@ -107,6 +107,9 @@ main {
 
 .tok.Whitespace, .tok.Newline { color: var(--ws-glyph); }
 .tok.Eq { color: var(--punct); font-weight: 600; }
+.tok.Backtick { color: var(--paragraph); }
+.kind.Raw { color: var(--paragraph); font-weight: 600; }
+.kind.Error { color: var(--punct); font-weight: 600; }
 
 .hl { background: var(--hl); border-radius: 2px; }
 

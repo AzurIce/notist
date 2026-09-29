@@ -1,4 +1,4 @@
-use rowan::{GreenNode, GreenNodeBuilder, TextRange};
+use rowan::{GreenNode, GreenNodeBuilder, TextRange, TextSize};
 
 use crate::lexer::lex;
 use crate::syntax::{SyntaxKind, SyntaxNode};
@@ -46,7 +46,8 @@ impl<'a> Parser<'a> {
         while let Some(kind) = self.cur() {
             match kind {
                 SyntaxKind::Newline => self.eat(),
-                SyntaxKind::Eq if self.peek(1) == Some(SyntaxKind::Whitespace) => self.heading(),
+                SyntaxKind::Eq if self.at_heading_marker(0) => self.heading(),
+                SyntaxKind::Backtick if self.at_fence(0) => self.raw_block(),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 _ => self.paragraph(),
             }
@@ -69,6 +70,60 @@ impl<'a> Parser<'a> {
             self.eat();
         }
         self.builder.finish_node();
+    }
+
+    fn raw_block(&mut self) {
+        let checkpoint = self.builder.checkpoint();
+        self.builder.start_node(SyntaxKind::Raw.into());
+        let fence_len = self.tokens[self.pos].1.len();
+        let fence_start = self.pos;
+        self.eat();
+        while let Some(kind) = self.cur() {
+            if kind == SyntaxKind::Newline {
+                break;
+            }
+            self.eat();
+        }
+        if self.cur() == Some(SyntaxKind::Newline) {
+            self.eat();
+        }
+        let mut closed = false;
+        loop {
+            match self.cur() {
+                None => break,
+                Some(SyntaxKind::Backtick) if self.tokens[self.pos].1.len() >= fence_len => {
+                    self.eat();
+                    while let Some(kind) = self.cur() {
+                        if kind == SyntaxKind::Newline {
+                            break;
+                        }
+                        self.eat();
+                    }
+                    closed = true;
+                    break;
+                }
+                Some(_) => {
+                    while let Some(kind) = self.cur() {
+                        if kind == SyntaxKind::Newline {
+                            break;
+                        }
+                        self.eat();
+                    }
+                    if self.cur() == Some(SyntaxKind::Newline) {
+                        self.eat();
+                    }
+                }
+            }
+        }
+        self.builder.finish_node();
+        if !closed {
+            self.diagnostics.push(Diagnostic {
+                span: TextRange::new(self.offset_at(fence_start), self.offset_at(self.pos)),
+                message: "unclosed raw block".to_string(),
+            });
+            self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+            self.builder.finish_node();
+        }
     }
 
     fn paragraph(&mut self) {
@@ -96,16 +151,31 @@ impl<'a> Parser<'a> {
                 while self.tokens.get(i).map(|t| t.0) == Some(SyntaxKind::Whitespace) {
                     i += 1;
                 }
-                match self.tokens.get(i).map(|t| t.0) {
-                    None | Some(SyntaxKind::Newline) => true,
+                if matches!(self.tokens.get(i).map(|t| t.0), None | Some(SyntaxKind::Newline)) {
+                    return true;
+                }
+                let next = self.tokens.get(self.pos + 1);
+                match next.map(|t| t.0) {
                     Some(SyntaxKind::Eq) => {
-                        self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::Whitespace)
+                        self.tokens.get(self.pos + 2).map(|t| t.0)
+                            == Some(SyntaxKind::Whitespace)
                     }
+                    Some(SyntaxKind::Backtick) => next.is_some_and(|t| t.1.len() >= 3),
                     _ => false,
                 }
             }
             _ => unreachable!(),
         }
+    }
+
+    fn at_heading_marker(&self, ws_skip: usize) -> bool {
+        self.peek(ws_skip) == Some(SyntaxKind::Eq)
+            && self.peek(ws_skip + 1) == Some(SyntaxKind::Whitespace)
+    }
+
+    fn at_fence(&self, ws_skip: usize) -> bool {
+        self.peek(ws_skip) == Some(SyntaxKind::Backtick)
+            && self.tokens.get(self.pos + ws_skip).is_some_and(|t| t.1.len() >= 3)
     }
 
     fn at_blank_line(&self) -> bool {
@@ -120,6 +190,11 @@ impl<'a> Parser<'a> {
         while self.cur() == Some(SyntaxKind::Whitespace) {
             self.eat();
         }
+    }
+
+    fn offset_at(&self, pos: usize) -> TextSize {
+        let bytes: usize = self.tokens[..pos].iter().map(|t| t.1.len()).sum();
+        TextSize::new(bytes as u32)
     }
 
     fn cur(&self) -> Option<SyntaxKind> {

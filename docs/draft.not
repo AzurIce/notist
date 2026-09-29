@@ -9,7 +9,8 @@
 - CST 用 rowan（lossless，trivia 全保留）
 - 分层：lexer → CST → AST（CST 的类型化视图）→ Content 树
 - 分析只作用于 core 树（check / sectionize / 渲染）；CST 服务 tooling；core 节点携带产生它的 surface span
-- 单 crate 分模块；依赖：rowan；dev-dep：insta（snapshot 测试）
+- 错误处理：parser 永不失败——诊断（给人）+ 恢复点（给树）+ Error 节点包裹结构性破坏（给工具）
+- workspace：crates/notist-syntax（CST 及以下）+ 根 crate（core 及以上）；依赖：rowan；dev-dep：insta（snapshot 测试）
 
 *切片*
 
@@ -40,6 +41,8 @@
 - Heading — `=` 开头，层级 = `=` 个数
 - 列表 — `- ` bullet、`+ ` 编号
 - Raw 块 — ``` 围栏，可带语言 tag
+
+块级 marker 须在行首列 0（无前导空白）；围栏闭合须等长或更长；未闭合到 EOF 并诊断。
 
 *行内*
 

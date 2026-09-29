@@ -7,10 +7,13 @@ pub enum SyntaxKind {
     Whitespace,
     Text,
     Newline,
+    Backtick,
 
     Document,
     Heading,
     Paragraph,
+    Raw,
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,20 +29,13 @@ impl Language for Lang {
     type Kind = SyntaxKind;
 
     fn kind_to_raw(kind: Self::Kind) -> rowan::SyntaxKind {
-        rowan::SyntaxKind(kind as u16)
+        kind.into()
     }
 
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        match raw.0 {
-            0 => SyntaxKind::Eq,
-            1 => SyntaxKind::Whitespace,
-            2 => SyntaxKind::Text,
-            3 => SyntaxKind::Newline,
-            4 => SyntaxKind::Document,
-            5 => SyntaxKind::Heading,
-            6 => SyntaxKind::Paragraph,
-            _ => unreachable!(),
-        }
+        // SAFETY: raw kind 只会来自 kind_to_raw（builder 是唯一的建树入口，
+        // 树不落盘、不经外部构造），故取值必为合法判别值。
+        unsafe { std::mem::transmute(raw.0) }
     }
 }
 

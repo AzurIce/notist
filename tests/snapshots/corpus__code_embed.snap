@@ -1,0 +1,91 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..121
+  Paragraph@0..42
+    Inline@0..42
+      Text@0..6 "调用"
+      Whitespace@6..7 " "
+      CodeEmbed@7..32
+        Hash@7..8 "#"
+        Text@8..15 "callout"
+        LParen@15..16 "("
+        Text@16..21 "kind:"
+        Whitespace@21..22 " "
+        Text@22..31 "\"warning\""
+        RParen@31..32 ")"
+      Whitespace@32..33 " "
+      Text@33..42 "的样子"
+  Newline@42..43 "\n"
+  Newline@43..44 "\n"
+  Paragraph@44..59
+    Inline@44..59
+      CodeEmbed@44..52
+        Hash@44..45 "#"
+        LParen@45..46 "("
+        Text@46..47 "1"
+        Whitespace@47..48 " "
+        Text@48..49 "+"
+        Whitespace@49..50 " "
+        Text@50..51 "2"
+        RParen@51..52 ")"
+      Whitespace@52..53 " "
+      Text@53..59 "括号"
+  Newline@59..60 "\n"
+  Newline@60..61 "\n"
+  Paragraph@61..85
+    Inline@61..85
+      CodeEmbed@61..81
+        Hash@61..62 "#"
+        Text@62..64 "fn"
+        LParen@64..65 "("
+        Text@65..71 "嵌套"
+        Whitespace@71..72 " "
+        LParen@72..73 "("
+        Text@73..79 "深度"
+        RParen@79..80 ")"
+        RParen@80..81 ")"
+      Whitespace@81..82 " "
+      Text@82..85 "组"
+  Newline@85..86 "\n"
+  Newline@86..87 "\n"
+  Paragraph@87..105
+    Inline@87..105
+      Text@87..90 "裸"
+      Whitespace@90..91 " "
+      Hash@91..92 "#"
+      Whitespace@92..93 " "
+      Text@93..105 "只是字符"
+  Newline@105..106 "\n"
+  Newline@106..107 "\n"
+  Paragraph@107..120
+    Inline@107..120
+      Hash@107..108 "#"
+      Text@108..110 "fn"
+      LParen@110..111 "("
+      Text@111..120 "未闭合"
+  Newline@120..121 "\n"
+
+=== core ===
+(doc @0..121
+  (paragraph @0..42
+    (text @0..6 :text "调用")
+    (codeembed @7..32 :text "#callout(kind: \"warning\")")
+    (text @33..42 :text "的样子")
+  )
+  (paragraph @44..59
+    (codeembed @44..52 :text "#(1 + 2)")
+    (text @53..59 :text "括号")
+  )
+  (paragraph @61..85
+    (codeembed @61..81 :text "#fn(嵌套 (深度))")
+    (text @82..85 :text "组")
+  )
+  (paragraph @87..105
+    (text @87..105 :text "裸 # 只是字符")
+  )
+  (paragraph @107..120
+    (text @107..120 :text "#fn(未闭合")
+  )
+)

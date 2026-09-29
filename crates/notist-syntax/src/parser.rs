@@ -204,6 +204,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Dollar) => self.math_inline(),
                 Some(SyntaxKind::LBracket) => self.link(stop),
+                Some(SyntaxKind::Hash) => self.code_embed(),
                 Some(_) => self.eat(),
             }
         }
@@ -447,6 +448,63 @@ impl<'a> Parser<'a> {
         }
         self.eat();
         self.builder.finish_node();
+    }
+
+    /// Code-mode placeholder: `#` + optional identifier + any number of
+    /// immediately adjacent balanced `()`/`[]` groups. Never evaluated at
+    /// this stage. A lone `#`, or a `#` whose group fails to balance within
+    /// the block, degrades to a literal character.
+    fn code_embed(&mut self) {
+        let mut end = self.pos + 1;
+        if matches!(self.tokens.get(end).map(|t| t.0), Some(SyntaxKind::Text)) {
+            end += 1;
+        }
+        loop {
+            let kind = self.tokens.get(end).map(|t| t.0);
+            let (open, close) = match kind {
+                Some(SyntaxKind::LParen) => (SyntaxKind::LParen, SyntaxKind::RParen),
+                Some(SyntaxKind::LBracket) => (SyntaxKind::LBracket, SyntaxKind::RBracket),
+                _ => break,
+            };
+            match self.balanced(end, open, close) {
+                Some(e) => end = e + 1,
+                None => {
+                    self.eat();
+                    return;
+                }
+            }
+        }
+        if end == self.pos + 1 {
+            self.eat();
+            return;
+        }
+        self.builder.start_node(SyntaxKind::CodeEmbed.into());
+        while self.pos < end {
+            self.eat();
+        }
+        self.builder.finish_node();
+    }
+
+    /// Index of the token closing the group opened at `from`, bounded by the
+    /// enclosing block.
+    fn balanced(&self, mut i: usize, open: SyntaxKind, close: SyntaxKind) -> Option<usize> {
+        let mut depth = 0usize;
+        loop {
+            let (kind, _) = *self.tokens.get(i)?;
+            if kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
+                return None;
+            }
+            if kind == open {
+                depth += 1;
+            }
+            if kind == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            i += 1;
+        }
     }
 
     fn escape_or_break(&mut self) {

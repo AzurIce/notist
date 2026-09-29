@@ -30,6 +30,7 @@ pub enum SyntaxKind {
     Inline,
     Link,
     WikiLink,
+    CodeEmbed,
     Strong,
     Emph,
     Escape,

@@ -99,6 +99,13 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                             .with_field("text", Value::Str(text)),
                     );
                 }
+                SyntaxKind::CodeEmbed => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    items.push(
+                        Item::new(Ctor::CodeEmbed, node.text_range())
+                            .with_field("text", Value::Str(node.text().to_string())),
+                    );
+                }
                 SyntaxKind::Strong | SyntaxKind::Emph => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
                     let ctor = if node.kind() == SyntaxKind::Strong {

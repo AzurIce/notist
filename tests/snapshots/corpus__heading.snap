@@ -1,0 +1,25 @@
+---
+source: tests/corpus.rs
+expression: "notist::dump_str(&src)"
+---
+(doc @0..69
+  (heading @0..9 :level 1
+    (text @2..9 :text "Level 1")
+  )
+  (heading @11..21 :level 2
+    (text @14..21 :text "Level 2")
+  )
+  (heading @23..34 :level 3
+    (text @27..34 :text "Level 3")
+  )
+  (paragraph @36..38
+    (text @36..38 :text "=x")
+  )
+  (heading @40..42 :level 1)
+  (paragraph @44..53
+    (text @44..53 :text "段落被")
+  )
+  (heading @54..68 :level 1
+    (text @56..68 :text "标题截断")
+  )
+)

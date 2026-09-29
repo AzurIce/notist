@@ -1,0 +1,32 @@
+---
+source: tests/corpus.rs
+expression: "notist::dump_str(&src)"
+---
+(doc @0..130
+  (heading @0..15 :level 1
+    (text @2..15 :text "Notist 巡览")
+  )
+  (heading @17..26 :level 2
+    (text @20..26 :text "标题")
+  )
+  (heading @28..36 :level 1
+    (text @30..36 :text "一级")
+  )
+  (heading @37..46 :level 2
+    (text @40..46 :text "二级")
+  )
+  (heading @47..57 :level 3
+    (text @51..57 :text "三级")
+  )
+  (heading @59..68 :level 2
+    (text @62..68 :text "段落")
+  )
+  (paragraph @70..115
+    (text @70..93 :text "单换行是 soft break")
+    (softbreak @93..94)
+    (text @94..115 :text "同一段落内继续")
+  )
+  (paragraph @117..129
+    (text @117..129 :text "空行分段")
+  )
+)

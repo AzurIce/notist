@@ -1,0 +1,23 @@
+---
+source: tests/corpus.rs
+expression: "notist::dump_str(&src)"
+---
+(doc @0..63
+  (paragraph @0..22
+    (text @0..10 :text "first line")
+    (softbreak @10..11)
+    (text @11..22 :text "second line")
+  )
+  (paragraph @24..35
+    (text @24..35 :text "second para")
+  )
+  (paragraph @37..38
+    (text @37..38 :text "a")
+  )
+  (paragraph @43..44
+    (text @43..44 :text "b")
+  )
+  (paragraph @46..62
+    (text @48..60 :text "两端空白")
+  )
+)

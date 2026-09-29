@@ -4,17 +4,20 @@ use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use notist_syntax::{ast, parser};
 
 use crate::item::Item;
-use crate::lower;
+use crate::{desugar, eval};
 
 pub fn analyze_json(src: &str) -> String {
     let parse = parser::parse(src);
     let mut out = String::from("{\"tree\":");
     write_element(&mut out, NodeOrToken::Node(parse.syntax()));
+    let mut diagnostics = parse.diagnostics.clone();
     if let Some(document) = ast::Document::cast(parse.syntax()) {
         out.push_str(",\"ast\":");
         write_ast(&mut out, &document);
         out.push_str(",\"core\":");
-        write_item(&mut out, &lower::lower(&document));
+        let expr = desugar::desugar(&document);
+        let item = eval::eval_doc(&expr, document.range(), &mut diagnostics);
+        write_item(&mut out, &item);
     }
     out.push_str(",\"diagnostics\":[");
     for (i, d) in parse.diagnostics.iter().enumerate() {

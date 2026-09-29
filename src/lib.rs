@@ -1,14 +1,23 @@
+pub mod code;
 pub mod cst_json;
+pub mod desugar;
 pub mod dump;
+pub mod eval;
+pub mod expr;
 pub mod item;
-pub mod lower;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 pub fn dump_str(src: &str) -> String {
     let parse = notist_syntax::parser::parse(src);
+    let mut diagnostics = parse.diagnostics.clone();
+    let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
+        return String::new();
+    };
+    let expr = desugar::desugar(&document);
+    let item = eval::eval_doc(&expr, document.range(), &mut diagnostics);
     let mut out = String::new();
-    for d in &parse.diagnostics {
+    for d in &diagnostics {
         out.push_str(&format!(
             "error @{}..{}: {}\n",
             u32::from(d.span.start()),
@@ -16,9 +25,6 @@ pub fn dump_str(src: &str) -> String {
             d.message
         ));
     }
-    let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
-        return out;
-    };
-    out.push_str(&dump::dump(&lower::lower(&document)));
+    out.push_str(&dump::dump(&item));
     out
 }

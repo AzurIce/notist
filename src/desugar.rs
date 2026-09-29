@@ -3,57 +3,56 @@ use rowan::{NodeOrToken, TextRange, TextSize};
 use notist_syntax::ast::{Block, Document, Inline, Link, List, ListItem, WikiLink};
 use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
 
-use crate::item::{Ctor, Item, Value};
+use crate::expr::Expr;
+use crate::item::Value;
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
     tokens.iter().map(|t| t.text()).collect::<String>().trim().to_string()
 }
 
-pub fn lower(document: &Document) -> Item {
-    let span = document.range();
-    Item::new(Ctor::Doc, span).with_children(document.blocks().map(|b| lower_block(&b)).collect())
+/// CST → Expr 森林：desugar 步骤。文档是模块体（顶层表达式序列），
+/// 不是任何构造器调用；`doc` 根节点由 eval 在求值时引入。
+pub fn desugar(document: &Document) -> Vec<Expr> {
+    document.blocks().map(|b| desugar_block(&b)).collect()
 }
 
-fn lower_block(block: &Block) -> Item {
+fn desugar_block(block: &Block) -> Expr {
     match block {
         Block::Heading(heading) => {
             let level = heading.level() as i64;
-            let children = heading.inline().map(|i| lower_inline(&i)).unwrap_or_default();
-            Item::new(Ctor::Heading, heading.range())
+            let children = heading.inline().map(|i| desugar_inline(&i)).unwrap_or_default();
+            Expr::call("heading", heading.range())
                 .with_field("level", Value::Int(level))
                 .with_children(children)
         }
         Block::Paragraph(paragraph) => {
-            let children = paragraph.inline().map(|i| lower_inline(&i)).unwrap_or_default();
-            Item::new(Ctor::Paragraph, paragraph.range()).with_children(children)
+            let children = paragraph.inline().map(|i| desugar_inline(&i)).unwrap_or_default();
+            Expr::call("paragraph", paragraph.range()).with_children(children)
         }
-        Block::List(list) => lower_list(list),
+        Block::List(list) => desugar_list(list),
     }
 }
 
-fn lower_list(list: &List) -> Item {
-    let ordered = list
-        .items()
-        .next()
-        .and_then(|item| item.marker())
-        == Some(SyntaxKind::Plus);
-    Item::new(Ctor::List, list.range())
+fn desugar_list(list: &List) -> Expr {
+    let ordered =
+        list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
+    Expr::call("list", list.range())
         .with_field("ordered", Value::Bool(ordered))
-        .with_children(list.items().map(|item| lower_list_item(&item)).collect())
+        .with_children(list.items().map(|item| desugar_list_item(&item)).collect())
 }
 
-fn lower_list_item(item: &ListItem) -> Item {
+fn desugar_list_item(item: &ListItem) -> Expr {
     let mut children = Vec::new();
     if let Some(inline) = item.inline() {
-        children.extend(lower_inline(&inline));
+        children.extend(desugar_inline(&inline));
     }
     for nested in item.lists() {
-        children.push(lower_list(&nested));
+        children.push(desugar_list(&nested));
     }
-    Item::new(Ctor::ListItem, item.range()).with_children(children)
+    Expr::call("item", item.range()).with_children(children)
 }
 
-fn lower_inline(inline: &Inline) -> Vec<Item> {
+fn desugar_inline(inline: &Inline) -> Vec<Expr> {
     let mut items = Vec::new();
     let mut buf = String::new();
     let mut start: Option<TextSize> = None;
@@ -100,8 +99,7 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                     let text: String =
                         tokens[1..tokens.len() - 1].iter().map(|t| t.text()).collect();
                     items.push(
-                        Item::new(Ctor::RawInline, node.text_range())
-                            .with_field("text", Value::Str(text)),
+                        Expr::call("raw", node.text_range()).with_field("text", Value::Str(text)),
                     );
                 }
                 SyntaxKind::Math => {
@@ -113,30 +111,22 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                     let text: String =
                         tokens[1..tokens.len() - 1].iter().map(|t| t.text()).collect();
                     items.push(
-                        Item::new(Ctor::Math, node.text_range())
-                            .with_field("text", Value::Str(text)),
-                    );
-                }
-                SyntaxKind::CodeEmbed => {
-                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
-                    items.push(
-                        Item::new(Ctor::CodeEmbed, node.text_range())
-                            .with_field("text", Value::Str(node.text().to_string())),
+                        Expr::call("math", node.text_range()).with_field("text", Value::Str(text)),
                     );
                 }
                 SyntaxKind::Strong | SyntaxKind::Emph => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
-                    let ctor = if node.kind() == SyntaxKind::Strong {
-                        Ctor::Strong
+                    let name = if node.kind() == SyntaxKind::Strong {
+                        "strong"
                     } else {
-                        Ctor::Emph
+                        "emph"
                     };
                     let children = node
                         .children()
                         .find_map(Inline::cast)
-                        .map(|i| lower_inline(&i))
+                        .map(|i| desugar_inline(&i))
                         .unwrap_or_default();
-                    items.push(Item::new(ctor, node.text_range()).with_children(children));
+                    items.push(Expr::call(name, node.text_range()).with_children(children));
                 }
                 SyntaxKind::Link | SyntaxKind::WikiLink => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
@@ -144,20 +134,27 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                         let link = Link::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline().map(|i| lower_inline(&i)).unwrap_or_default(),
+                            link.inline().map(|i| desugar_inline(&i)).unwrap_or_default(),
                         )
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline().map(|i| lower_inline(&i)).unwrap_or_default(),
+                            link.inline().map(|i| desugar_inline(&i)).unwrap_or_default(),
                         )
                     };
                     items.push(
-                        Item::new(Ctor::Link, node.text_range())
+                        Expr::call("link", node.text_range())
                             .with_field("target", Value::Str(target))
                             .with_children(children),
                     );
+                }
+                SyntaxKind::CodeEmbed => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    items.push(Expr::Embed {
+                        text: node.text().to_string(),
+                        span: node.text_range(),
+                    });
                 }
                 _ => {}
             },
@@ -168,7 +165,7 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
 }
 
 fn flush_text(
-    items: &mut Vec<Item>,
+    items: &mut Vec<Expr>,
     buf: &mut String,
     start: &mut Option<TextSize>,
     content_len: &mut usize,
@@ -177,7 +174,7 @@ fn flush_text(
     if let (Some(s), Some(e)) = (*start, *content_end) {
         let text = buf[..*content_len].trim_start().to_string();
         if !text.is_empty() {
-            items.push(Item::text(text, TextRange::new(s, e)));
+            items.push(Expr::text(text, TextRange::new(s, e)));
         }
     }
     buf.clear();

@@ -1,0 +1,56 @@
+use rowan::TextRange;
+
+use crate::item::{Dict, Value};
+
+/// Unevaluated core expression: the desugar target of markup, and (later)
+/// the parse product of code mode. Unlike `Item`, a call's name is an
+/// unresolved source-level name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    Literal(Value, TextRange),
+    Call {
+        name: String,
+        fields: Dict,
+        children: Vec<Expr>,
+        span: TextRange,
+    },
+    Embed {
+        text: String,
+        span: TextRange,
+    },
+}
+
+impl Expr {
+    pub fn call(name: &str, span: TextRange) -> Self {
+        Expr::Call {
+            name: name.to_string(),
+            fields: Dict::default(),
+            children: Vec::new(),
+            span,
+        }
+    }
+
+    pub fn text(text: String, span: TextRange) -> Self {
+        Expr::call("text", span).with_field("text", Value::Str(text))
+    }
+
+    pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
+        if let Expr::Call { fields, .. } = &mut self {
+            fields.insert(key, value);
+        }
+        self
+    }
+
+    pub fn with_children(mut self, children: Vec<Expr>) -> Self {
+        if let Expr::Call { children: c, .. } = &mut self {
+            *c = children;
+        }
+        self
+    }
+
+    pub fn span(&self) -> TextRange {
+        match self {
+            Expr::Literal(_, span) | Expr::Call { span, .. } | Expr::Embed { span, .. } => *span,
+        }
+    }
+}

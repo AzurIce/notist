@@ -42,6 +42,8 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
+    Array(Vec<Value>),
+    Dict(Dict),
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -73,6 +75,26 @@ impl std::fmt::Display for Value {
             Value::Int(i) => write!(f, "{i}"),
             Value::Float(x) => write!(f, "{x}"),
             Value::Str(s) => write!(f, "{s:?}"),
+            Value::Array(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, ")")
+            }
+            Value::Dict(dict) => {
+                write!(f, "(")?;
+                for (i, (key, value)) in dict.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{key:?}: {value}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -82,6 +104,7 @@ pub struct Item {
     pub ctor: Ctor,
     pub fields: Dict,
     pub children: Vec<Item>,
+    pub attrs: Dict,
     pub span: TextRange,
 }
 
@@ -91,6 +114,7 @@ impl Item {
             ctor,
             fields: Dict::default(),
             children: Vec::new(),
+            attrs: Dict::default(),
             span,
         }
     }

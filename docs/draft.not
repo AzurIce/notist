@@ -3,6 +3,10 @@
 
 === 2026-09-28
 
+*里程碑*
+
+- M1 — 无完整 script 能力。类型系统与 function call 形态保留；call 参数只支持字面量与内容体——无变量、无绑定、无求值环境。所见即所得：树的结构即写出的结构，展开只是可选投影
+
 *地基*
 
 - 真 lexer 产出带 span 的 token 流，parser 只工作在 token 上；token = kind tag + 源文本切片，不持有自有数据（可从 (kind, span) 恢复的信息一律不存）
@@ -103,21 +107,21 @@ UTF-8，四种形态，产出同一类型：
 
 *函数*
 
-- Function — 闭包；P3 才进入实现
+- Function — 闭包；不属于 M1（M1 的 call 是原子构造器调用，非求值）
 
 == Desugar
 
 === 2026-09-29
 
-markup 构造到构造器调用的映射。Expr 与 Item 同构（ctor + fields + children），P1 的 eval 平凡。
+markup 构造到构造器调用的映射。Expr 与 Item 同构（ctor + fields + children），M1 的 eval 平凡（无求值，仅解析与归一化）。
 
-- `Expr::Call` 的 name 是未解析的 String；eval 时经注册表解析为内建 Ctor（P3 加用户作用域）
+- `Expr::Call` 的 name 是未解析的 String；eval 时经注册表解析：内建 → Ctor，未知 → Custom（原子自定义元素，数据而非行为）
 - 文本 `text("…")`；段落 `paragraph([…])`；heading `heading(level: n, […])`
 - `*x*` → `strong([x])`；`_x_` → `emph([x])`；`` `x` `` → `raw("x")`；`$x$` → `math("x")`（payload 不透明）
 - 链接 → `link(target, [文本])` / `link(target)`
 - 列表 → `list(ordered: bool, [item([…]), …])`
 - 围栏块 → `raw("…", block: true, lang: "…")`
-- `#…` → `Expr::Embed`（P3 解析）
+- `#name(字面量)[内容]` → 原子调用节点；无变量、无运算、无绑定（M1 无 script 能力）
 - 换行无构造对应物：单换行忽略；`\`+换行与空行同为段落分隔
 
 == 组织

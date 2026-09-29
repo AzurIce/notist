@@ -78,7 +78,7 @@ pub struct Line {
 }
 
 impl Inline {
-    pub(crate) fn cast(node: SyntaxNode) -> Option<Self> {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::Inline).then_some(Self(node))
     }
 

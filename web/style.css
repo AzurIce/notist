@@ -141,3 +141,5 @@ main {
 .kind.Inline { color: var(--document); }
 .kind.Escape { color: var(--punct); }
 .kind.HardBreak { color: var(--muted); font-style: italic; }
+.kind.Strong { font-weight: 700; }
+.kind.Emph { font-style: italic; }

@@ -9,6 +9,8 @@ pub enum Ctor {
     SoftBreak,
     HardBreak,
     RawInline,
+    Strong,
+    Emph,
 }
 
 impl Ctor {
@@ -21,6 +23,8 @@ impl Ctor {
             Ctor::SoftBreak => "SoftBreak",
             Ctor::HardBreak => "HardBreak",
             Ctor::RawInline => "RawInline",
+            Ctor::Strong => "Strong",
+            Ctor::Emph => "Emph",
         }
     }
 }

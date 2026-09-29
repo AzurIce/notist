@@ -27,6 +27,8 @@ pub enum SyntaxKind {
     Raw,
     RawInline,
     Inline,
+    Strong,
+    Emph,
     Escape,
     HardBreak,
     Error,

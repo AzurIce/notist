@@ -82,6 +82,19 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                             .with_field("text", Value::Str(text)),
                     );
                 }
+                SyntaxKind::Math => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    let tokens: Vec<_> = node
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .collect();
+                    let text: String =
+                        tokens[1..tokens.len() - 1].iter().map(|t| t.text()).collect();
+                    items.push(
+                        Item::new(Ctor::Math, node.text_range())
+                            .with_field("text", Value::Str(text)),
+                    );
+                }
                 SyntaxKind::Strong | SyntaxKind::Emph => {
                     flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
                     let ctor = if node.kind() == SyntaxKind::Strong {

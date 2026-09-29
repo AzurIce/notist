@@ -1,0 +1,64 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..93
+  Paragraph@0..19
+    Inline@0..19
+      Text@0..6 "面积"
+      Whitespace@6..7 " "
+      Math@7..12
+        Dollar@7..8 "$"
+        Text@8..11 "a^2"
+        Dollar@11..12 "$"
+      Whitespace@12..13 " "
+      Text@13..19 "搞定"
+  Newline@19..20 "\n"
+  Newline@20..21 "\n"
+  Paragraph@21..51
+    Inline@21..51
+      Dollar@21..22 "$"
+      Whitespace@22..23 " "
+      Text@23..38 "两侧有空格"
+      Dollar@38..39 "$"
+      Whitespace@39..40 " "
+      Text@40..46 "不是"
+      Whitespace@46..47 " "
+      Text@47..51 "math"
+  Newline@51..52 "\n"
+  Newline@52..53 "\n"
+  Paragraph@53..78
+    Inline@53..78
+      Text@53..62 "未闭合"
+      Whitespace@62..63 " "
+      Dollar@63..64 "$"
+      Text@64..65 "x"
+      Whitespace@65..66 " "
+      Text@66..78 "只是文本"
+  Newline@78..79 "\n"
+  Newline@79..80 "\n"
+  Paragraph@80..92
+    Inline@80..92
+      Dollar@80..81 "$"
+      Dollar@81..82 "$"
+      Whitespace@82..83 " "
+      Text@83..92 "空内容"
+  Newline@92..93 "\n"
+
+=== core ===
+(doc @0..93
+  (paragraph @0..19
+    (text @0..6 :text "面积")
+    (math @7..12 :text "a^2")
+    (text @13..19 :text "搞定")
+  )
+  (paragraph @21..51
+    (text @21..51 :text "$ 两侧有空格$ 不是 math")
+  )
+  (paragraph @53..78
+    (text @53..78 :text "未闭合 $x 只是文本")
+  )
+  (paragraph @80..92
+    (text @80..92 :text "$$ 空内容")
+  )
+)

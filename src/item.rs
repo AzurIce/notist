@@ -11,6 +11,7 @@ pub enum Ctor {
     RawInline,
     Strong,
     Emph,
+    Math,
 }
 
 impl Ctor {
@@ -25,6 +26,7 @@ impl Ctor {
             Ctor::RawInline => "RawInline",
             Ctor::Strong => "Strong",
             Ctor::Emph => "Emph",
+            Ctor::Math => "Math",
         }
     }
 }

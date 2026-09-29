@@ -26,6 +26,7 @@ pub enum SyntaxKind {
     Paragraph,
     Raw,
     RawInline,
+    Math,
     Inline,
     Strong,
     Emph,

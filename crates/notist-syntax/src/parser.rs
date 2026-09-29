@@ -193,6 +193,7 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::Underscore) => {
                     self.delimited(SyntaxKind::Underscore, SyntaxKind::Emph, stop)
                 }
+                Some(SyntaxKind::Dollar) => self.math_inline(),
                 Some(_) => self.eat(),
             }
         }
@@ -272,6 +273,35 @@ impl<'a> Parser<'a> {
     /// Inline raw: a backtick run closed by an equal-length run on the same
     /// line. Longer/shorter runs inside are content. Unclosed means it never
     /// was raw: the opening run stays literal text, no diagnostic.
+    /// Inline math: `$…$`, same flanking rules as paired delimiters, but the
+    /// content is an opaque payload (the math grammar is not parsed). Empty
+    /// or unclosed means the dollars are plain text.
+    fn math_inline(&mut self) {
+        if !self.can_open_at(self.pos) {
+            self.eat();
+            return;
+        }
+        let mut i = self.pos + 1;
+        let close = loop {
+            match self.tokens.get(i) {
+                None => break None,
+                Some((SyntaxKind::Newline, _)) if self.line_ends_block_at(i) => break None,
+                Some((SyntaxKind::Dollar, _)) if self.can_close_at(i) => break Some(i),
+                Some(_) => i += 1,
+            }
+        };
+        match close {
+            Some(close) if close > self.pos + 1 => {
+                self.builder.start_node(SyntaxKind::Math.into());
+                while self.pos <= close {
+                    self.eat();
+                }
+                self.builder.finish_node();
+            }
+            _ => self.eat(),
+        }
+    }
+
     fn raw_inline(&mut self) {
         let len = self.tokens[self.pos].1.len();
         let mut i = self.pos + 1;

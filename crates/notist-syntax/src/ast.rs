@@ -22,7 +22,7 @@ impl Block {
 }
 
 impl Document {
-    pub(crate) fn cast(node: SyntaxNode) -> Option<Self> {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::Document).then_some(Self(node))
     }
 

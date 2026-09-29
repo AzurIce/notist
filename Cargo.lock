@@ -120,8 +120,16 @@ name = "notist"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "notist-syntax",
  "rowan",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "notist-syntax"
+version = "0.1.0"
+dependencies = [
+ "rowan",
 ]
 
 [[package]]

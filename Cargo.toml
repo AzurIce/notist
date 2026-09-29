@@ -6,7 +6,11 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[workspace]
+members = ["crates/notist-syntax"]
+
 [dependencies]
+notist-syntax = { path = "crates/notist-syntax" }
 rowan = "0.17.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

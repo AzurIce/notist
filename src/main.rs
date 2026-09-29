@@ -22,7 +22,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let parse = notist::parser::parse(&src);
+    let parse = notist_syntax::parser::parse(&src);
     if json {
         println!("{}", notist::cst_json::analyze_json(&src));
     } else if cst {

@@ -1,8 +1,9 @@
 use rowan::TextRange;
 
-use crate::ast::{Block, Document};
+use notist_syntax::ast::{Block, Document};
+use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
+
 use crate::item::{Ctor, Item, Value};
-use crate::syntax::{SyntaxKind, SyntaxToken};
 
 pub fn lower(document: &Document) -> Item {
     let span = document.range();

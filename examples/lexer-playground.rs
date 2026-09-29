@@ -1,4 +1,4 @@
-use notist::syntax::{Lang, SyntaxKind};
+use notist_syntax::syntax::{Lang, SyntaxKind};
 use rowan::{GreenNodeBuilder, Language};
 
 fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {

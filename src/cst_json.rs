@@ -1,8 +1,10 @@
 use rowan::NodeOrToken;
 
+use notist_syntax::syntax::{SyntaxNode, SyntaxToken};
+use notist_syntax::{ast, parser};
+
 use crate::item::Item;
-use crate::syntax::{SyntaxNode, SyntaxToken};
-use crate::{ast, lower, parser};
+use crate::lower;
 
 pub fn analyze_json(src: &str) -> String {
     let parse = parser::parse(src);

@@ -1,0 +1,111 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..169
+  Paragraph@0..12
+    Inline@0..12
+      WikiLink@0..12
+        LBracket@0..1 "["
+        LBracket@1..2 "["
+        Text@2..10 "page.not"
+        RBracket@10..11 "]"
+        RBracket@11..12 "]"
+  Newline@12..13 "\n"
+  Newline@13..14 "\n"
+  Paragraph@14..39
+    Inline@14..39
+      WikiLink@14..39
+        LBracket@14..15 "["
+        LBracket@15..16 "["
+        Text@16..24 "page.not"
+        Pipe@24..25 "|"
+        Inline@25..37
+          Text@25..37 "显示文本"
+        RBracket@37..38 "]"
+        RBracket@38..39 "]"
+  Newline@39..40 "\n"
+  Newline@40..41 "\n"
+  Paragraph@41..60
+    Inline@41..60
+      WikiLink@41..60
+        LBracket@41..42 "["
+        LBracket@42..43 "["
+        Text@43..46 "dir"
+        Text@46..47 "/"
+        Text@47..54 "sub.not"
+        Hash@54..55 "#"
+        Text@55..58 "节"
+        RBracket@58..59 "]"
+        RBracket@59..60 "]"
+  Newline@60..61 "\n"
+  Newline@61..62 "\n"
+  Paragraph@62..91
+    Inline@62..91
+      Link@62..91
+        LBracket@62..63 "["
+        Inline@63..69
+          Text@63..69 "文字"
+        RBracket@69..70 "]"
+        LParen@70..71 "("
+        Text@71..77 "https:"
+        Text@77..78 "/"
+        Text@78..79 "/"
+        Text@79..90 "example.com"
+        RParen@90..91 ")"
+  Newline@91..92 "\n"
+  Newline@92..93 "\n"
+  Paragraph@93..116
+    Inline@93..116
+      LBracket@93..94 "["
+      Text@94..103 "裸括号"
+      Whitespace@103..104 " "
+      Text@104..116 "不成链接"
+  Newline@116..117 "\n"
+  Newline@117..118 "\n"
+  Paragraph@118..142
+    Inline@118..142
+      LBracket@118..119 "["
+      LBracket@119..120 "["
+      Text@120..129 "未闭合"
+      Whitespace@129..130 " "
+      Text@130..142 "只是文本"
+  Newline@142..143 "\n"
+  Newline@143..144 "\n"
+  Paragraph@144..168
+    Inline@144..168
+      LBracket@144..145 "["
+      Text@145..151 "文本"
+      RBracket@151..152 "]"
+      LParen@152..153 "("
+      Text@153..168 "目标未闭合"
+  Newline@168..169 "\n"
+
+=== core ===
+(doc @0..169
+  (paragraph @0..12
+    (link @0..12 :target "page.not")
+  )
+  (paragraph @14..39
+    (link @14..39 :target "page.not"
+      (text @25..37 :text "显示文本")
+    )
+  )
+  (paragraph @41..60
+    (link @41..60 :target "dir/sub.not#节")
+  )
+  (paragraph @62..91
+    (link @62..91 :target "https://example.com"
+      (text @63..69 :text "文字")
+    )
+  )
+  (paragraph @93..116
+    (text @93..116 :text "[裸括号 不成链接")
+  )
+  (paragraph @118..142
+    (text @118..142 :text "[[未闭合 只是文本")
+  )
+  (paragraph @144..168
+    (text @144..168 :text "[文本](目标未闭合")
+  )
+)

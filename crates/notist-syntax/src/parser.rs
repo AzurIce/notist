@@ -22,8 +22,17 @@ impl Parse {
 
 /// Chars whose special meaning `\` cancels. `\<newline>` is a hard break
 /// instead; `\` followed by anything else stays literal.
-fn is_escapable(kind: SyntaxKind) -> bool {
-    matches!(
+/// The closing convention of the enclosing inline construct. `Flanked` is
+/// for emphasis delimiters (whitespace flanking); `Single`/`Pair` close on a
+/// literal token, no flanking involved.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Active {
+    Flanked(SyntaxKind),
+    Single(SyntaxKind),
+    Pair(SyntaxKind),
+}
+
+fn is_escapable(kind: SyntaxKind) -> bool {    matches!(
         kind,
         SyntaxKind::Eq
             | SyntaxKind::Star
@@ -175,7 +184,7 @@ impl<'a> Parser<'a> {
     /// whether the inline run ends there. `active` is the delimiter of the
     /// enclosing construct (e.g. `*` while inside a strong): the loop breaks
     /// before it if it may legally close, letting the caller consume it.
-    fn inline_delimited(&mut self, stop: &impl Fn(&Self) -> bool, active: Option<SyntaxKind>) {
+    fn inline_delimited(&mut self, stop: &impl Fn(&Self) -> bool, active: Option<Active>) {
         self.builder.start_node(SyntaxKind::Inline.into());
         loop {
             match self.cur() {
@@ -186,7 +195,7 @@ impl<'a> Parser<'a> {
                     }
                     self.eat();
                 }
-                Some(kind) if Some(kind) == active && self.can_close_at(self.pos) => break,
+                Some(kind) if self.active_closes(active, kind) => break,
                 Some(SyntaxKind::Backslash) => self.escape_or_break(),
                 Some(SyntaxKind::Backtick) => self.raw_inline(),
                 Some(SyntaxKind::Star) => self.delimited(SyntaxKind::Star, SyntaxKind::Strong, stop),
@@ -194,10 +203,22 @@ impl<'a> Parser<'a> {
                     self.delimited(SyntaxKind::Underscore, SyntaxKind::Emph, stop)
                 }
                 Some(SyntaxKind::Dollar) => self.math_inline(),
+                Some(SyntaxKind::LBracket) => self.link(stop),
                 Some(_) => self.eat(),
             }
         }
         self.builder.finish_node();
+    }
+
+    fn active_closes(&self, active: Option<Active>, kind: SyntaxKind) -> bool {
+        let Some(active) = active else {
+            return false;
+        };
+        match active {
+            Active::Flanked(delim) => kind == delim && self.can_close_at(self.pos),
+            Active::Single(close) => kind == close,
+            Active::Pair(close) => kind == close && self.peek(1) == Some(close),
+        }
     }
 
     /// A paired-delimiter construct (`*…*`, `_…_`). Entry: at the delimiter.
@@ -219,7 +240,7 @@ impl<'a> Parser<'a> {
             Some(close) if close > self.pos + 1 => {
                 self.builder.start_node(node.into());
                 self.eat();
-                self.inline_delimited(stop, Some(delim));
+                self.inline_delimited(stop, Some(Active::Flanked(delim)));
                 self.eat();
                 self.builder.finish_node();
             }
@@ -334,6 +355,100 @@ impl<'a> Parser<'a> {
 
     /// Entry: at `\`. `\`+newline is a hard break, `\`+special char is an
     /// escape, anything else leaves the backslash as literal text.
+    /// Links, both spellings: `[[target]]` / `[[target|text]]` and
+    /// `[text](target)`. Entry: at `[`. Any shape mismatch (no `]]`, no `]`,
+    /// no `(...)`, or a block boundary in between) leaves the bracket as
+    /// literal text.
+    fn link(&mut self, stop: &impl Fn(&Self) -> bool) {
+        if self.peek(1) == Some(SyntaxKind::LBracket) {
+            self.wikilink(stop);
+        } else {
+            self.md_link(stop);
+        }
+    }
+
+    fn wikilink(&mut self, stop: &impl Fn(&Self) -> bool) {
+        let mut i = self.pos + 2;
+        let mut pipe = None;
+        let close = loop {
+            match self.tokens.get(i) {
+                None => break None,
+                Some((SyntaxKind::Newline, _)) => break None,
+                Some((SyntaxKind::Pipe, _)) if pipe.is_none() => {
+                    pipe = Some(i);
+                    i += 1;
+                }
+                Some((SyntaxKind::RBracket, _))
+                    if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::RBracket) =>
+                {
+                    break Some(i)
+                }
+                Some(_) => i += 1,
+            }
+        };
+        let Some(close) = close else {
+            self.eat();
+            return;
+        };
+        self.builder.start_node(SyntaxKind::WikiLink.into());
+        self.eat();
+        self.eat();
+        let target_end = pipe.unwrap_or(close);
+        while self.pos < target_end {
+            self.eat();
+        }
+        if pipe.is_some() {
+            self.eat();
+            self.inline_delimited(stop, Some(Active::Pair(SyntaxKind::RBracket)));
+        }
+        self.eat();
+        self.eat();
+        self.builder.finish_node();
+    }
+
+    fn md_link(&mut self, stop: &impl Fn(&Self) -> bool) {
+        let mut i = self.pos + 1;
+        let close = loop {
+            match self.tokens.get(i) {
+                None => break None,
+                Some((SyntaxKind::Newline, _)) if self.line_ends_block_at(i) => break None,
+                Some((SyntaxKind::RBracket, _)) => break Some(i),
+                Some(_) => i += 1,
+            }
+        };
+        let Some(close) = close else {
+            self.eat();
+            return;
+        };
+        if self.tokens.get(close + 1).map(|t| t.0) != Some(SyntaxKind::LParen) {
+            self.eat();
+            return;
+        }
+        let mut j = close + 2;
+        let close_paren = loop {
+            match self.tokens.get(j) {
+                None => break None,
+                Some((SyntaxKind::Newline, _)) => break None,
+                Some((SyntaxKind::RParen, _)) => break Some(j),
+                Some(_) => j += 1,
+            }
+        };
+        let Some(close_paren) = close_paren else {
+            self.eat();
+            return;
+        };
+        self.builder.start_node(SyntaxKind::Link.into());
+        self.eat();
+        self.inline_delimited(stop, Some(Active::Single(SyntaxKind::RBracket)));
+        self.eat();
+        self.eat();
+        while self.pos < close_paren {
+            self.eat();
+        }
+        self.eat();
+        self.builder.finish_node();
+    }
+
     fn escape_or_break(&mut self) {
         match self.peek(1) {
             Some(SyntaxKind::Newline) => {

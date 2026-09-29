@@ -77,6 +77,59 @@ pub struct Line {
     pub newline: Option<SyntaxToken>,
 }
 
+pub struct Link(pub(crate) SyntaxNode);
+pub struct WikiLink(pub(crate) SyntaxNode);
+
+impl Link {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Link).then_some(Self(node))
+    }
+
+    pub fn inline(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+
+    pub fn target_tokens(&self) -> Vec<SyntaxToken> {
+        let mut inside = false;
+        let mut out = Vec::new();
+        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
+            match token.kind() {
+                SyntaxKind::LParen => inside = true,
+                SyntaxKind::RParen if inside => break,
+                _ if inside => out.push(token),
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+impl WikiLink {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::WikiLink).then_some(Self(node))
+    }
+
+    pub fn inline(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+
+    pub fn target_tokens(&self) -> Vec<SyntaxToken> {
+        let mut out = Vec::new();
+        for token in self
+            .0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .skip(2)
+        {
+            if matches!(token.kind(), SyntaxKind::Pipe | SyntaxKind::RBracket) {
+                break;
+            }
+            out.push(token);
+        }
+        out
+    }
+}
+
 impl Inline {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::Inline).then_some(Self(node))

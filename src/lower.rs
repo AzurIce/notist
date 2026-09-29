@@ -1,9 +1,13 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
-use notist_syntax::ast::{Block, Document, Inline};
-use notist_syntax::syntax::SyntaxKind;
+use notist_syntax::ast::{Block, Document, Inline, Link, WikiLink};
+use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
 
 use crate::item::{Ctor, Item, Value};
+
+fn tokens_text(tokens: &[SyntaxToken]) -> String {
+    tokens.iter().map(|t| t.text()).collect::<String>().trim().to_string()
+}
 
 pub fn lower(document: &Document) -> Item {
     let span = document.range();
@@ -108,6 +112,27 @@ fn lower_inline(inline: &Inline) -> Vec<Item> {
                         .map(|i| lower_inline(&i))
                         .unwrap_or_default();
                     items.push(Item::new(ctor, node.text_range()).with_children(children));
+                }
+                SyntaxKind::Link | SyntaxKind::WikiLink => {
+                    flush_text(&mut items, &mut buf, &mut start, &mut content_len, &mut content_end);
+                    let (target, children) = if node.kind() == SyntaxKind::Link {
+                        let link = Link::cast(node.clone()).unwrap();
+                        (
+                            tokens_text(&link.target_tokens()),
+                            link.inline().map(|i| lower_inline(&i)).unwrap_or_default(),
+                        )
+                    } else {
+                        let link = WikiLink::cast(node.clone()).unwrap();
+                        (
+                            tokens_text(&link.target_tokens()),
+                            link.inline().map(|i| lower_inline(&i)).unwrap_or_default(),
+                        )
+                    };
+                    items.push(
+                        Item::new(Ctor::Link, node.text_range())
+                            .with_field("target", Value::Str(target))
+                            .with_children(children),
+                    );
                 }
                 _ => {}
             },

@@ -1,7 +1,7 @@
 use crate::syntax::SyntaxKind;
 
 pub fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
-    let mut tokens = Vec::new();
+    let mut tokens: Vec<(SyntaxKind, &str)> = Vec::new();
     let mut rest = src;
     while !rest.is_empty() {
         let (kind, len) = match rest.chars().next().unwrap() {
@@ -19,7 +19,8 @@ pub fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
                 (SyntaxKind::Backtick, len)
             }
             '/' => {
-                if rest[1..].starts_with('/') {
+                let prev = tokens.last().and_then(|t| t.1.chars().last());
+                if rest[1..].starts_with('/') && prev != Some(':') {
                     let mut len = rest.find('\n').unwrap_or(rest.len());
                     if rest[..len].ends_with('\r') {
                         len -= 1;

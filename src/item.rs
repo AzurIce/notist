@@ -12,6 +12,7 @@ pub enum Ctor {
     Strong,
     Emph,
     Math,
+    Link,
 }
 
 impl Ctor {
@@ -27,6 +28,7 @@ impl Ctor {
             Ctor::Strong => "Strong",
             Ctor::Emph => "Emph",
             Ctor::Math => "Math",
+            Ctor::Link => "Link",
         }
     }
 }

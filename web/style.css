@@ -143,3 +143,7 @@ main {
 .kind.HardBreak { color: var(--muted); font-style: italic; }
 .kind.Strong { font-weight: 700; }
 .kind.Emph { font-style: italic; }
+.kind.Math { color: #9333ea; }
+@media (prefers-color-scheme: dark) {
+  .kind.Math { color: #c084fc; }
+}

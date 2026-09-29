@@ -28,6 +28,8 @@ pub enum SyntaxKind {
     RawInline,
     Math,
     Inline,
+    Link,
+    WikiLink,
     Strong,
     Emph,
     Escape,

@@ -64,12 +64,7 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::Heading.into());
         self.eat();
         self.eat();
-        while let Some(kind) = self.cur() {
-            if kind == SyntaxKind::Newline {
-                break;
-            }
-            self.eat();
-        }
+        self.inline(|_: &Self| true);
         self.builder.finish_node();
     }
 
@@ -129,6 +124,12 @@ impl<'a> Parser<'a> {
 
     fn paragraph(&mut self) {
         self.builder.start_node(SyntaxKind::Paragraph.into());
+        self.inline(Self::line_ends_block);
+        self.builder.finish_node();
+    }
+
+    fn inline(&mut self, stop: impl Fn(&Self) -> bool) {
+        self.builder.start_node(SyntaxKind::Inline.into());
         loop {
             while let Some(kind) = self.cur() {
                 if kind == SyntaxKind::Newline {
@@ -136,7 +137,7 @@ impl<'a> Parser<'a> {
                 }
                 self.eat();
             }
-            if self.line_ends_block() {
+            if self.cur().is_none() || stop(self) {
                 break;
             }
             self.eat();

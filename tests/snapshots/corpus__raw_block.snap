@@ -9,7 +9,9 @@ Document@0..200
     Newline@7..8 "\n"
     Text@8..10 "fn"
     Whitespace@10..11 " "
-    Text@11..17 "main()"
+    Text@11..15 "main"
+    LParen@15..16 "("
+    RParen@16..17 ")"
     Whitespace@17..18 " "
     Text@18..20 "{}"
     Newline@20..21 "\n"
@@ -39,7 +41,8 @@ Document@0..200
   Newline@95..96 "\n"
   Newline@96..97 "\n"
   Paragraph@97..106
-    Text@97..106 "段落被"
+    Inline@97..106
+      Text@97..106 "段落被"
   Newline@106..107 "\n"
   Raw@107..127
     Backtick@107..110 "```"
@@ -50,13 +53,14 @@ Document@0..200
   Newline@127..128 "\n"
   Newline@128..129 "\n"
   Paragraph@129..171
-    Text@129..135 "行内"
-    Whitespace@135..136 " "
-    Backtick@136..138 "``"
-    Text@138..150 "双反引号"
-    Backtick@150..152 "``"
-    Whitespace@152..153 " "
-    Text@153..171 "目前只是文本"
+    Inline@129..171
+      Text@129..135 "行内"
+      Whitespace@135..136 " "
+      Backtick@136..138 "``"
+      Text@138..150 "双反引号"
+      Backtick@150..152 "``"
+      Whitespace@152..153 " "
+      Text@153..171 "目前只是文本"
   Newline@171..172 "\n"
   Newline@172..173 "\n"
   Error@173..200

@@ -137,3 +137,4 @@ main {
 .kind.Paragraph { color: var(--paragraph); }
 .kind.Text, .kind.SoftBreak { color: var(--muted); }
 .kind.Line { color: var(--muted); font-style: italic; }
+.kind.Inline { color: var(--document); }

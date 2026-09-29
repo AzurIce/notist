@@ -52,8 +52,20 @@ pub fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
                 let len = rest.len() - rest.trim_start_matches([' ', '\t']).len();
                 (SyntaxKind::Whitespace, len)
             }
+            '*' => (SyntaxKind::Star, 1),
+            '_' => (SyntaxKind::Underscore, 1),
+            '\\' => (SyntaxKind::Backslash, 1),
+            '[' => (SyntaxKind::LBracket, 1),
+            ']' => (SyntaxKind::RBracket, 1),
+            '(' => (SyntaxKind::LParen, 1),
+            ')' => (SyntaxKind::RParen, 1),
+            '|' => (SyntaxKind::Pipe, 1),
+            '#' => (SyntaxKind::Hash, 1),
+            '$' => (SyntaxKind::Dollar, 1),
             _ => {
-                let len = rest.find(['=', '`', '/', ' ', '\t', '\n', '\r']).unwrap_or(rest.len());
+                let len = rest
+                    .find(['=', '`', '/', '*', '_', '\\', '[', ']', '(', ')', '|', '#', '$', ' ', '\t', '\n', '\r'])
+                    .unwrap_or(rest.len());
                 (SyntaxKind::Text, len)
             }
         };

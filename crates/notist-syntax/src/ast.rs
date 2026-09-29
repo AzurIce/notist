@@ -5,6 +5,7 @@ use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 pub struct Document(pub(crate) SyntaxNode);
 pub struct Heading(pub(crate) SyntaxNode);
 pub struct Paragraph(pub(crate) SyntaxNode);
+pub struct Inline(pub(crate) SyntaxNode);
 
 pub enum Block {
     Heading(Heading),
@@ -44,14 +45,26 @@ impl Heading {
             .map_or(0, |t| t.text().len())
     }
 
+    pub fn inline(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+
     pub fn content_tokens(&self) -> Vec<SyntaxToken> {
-        let mut tokens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|e| e.into_token());
-        tokens.next();
-        tokens.next();
-        tokens.collect()
+        self.inline().map(|i| i.tokens()).unwrap_or_default()
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
+
+impl Paragraph {
+    pub fn inline(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+
+    pub fn lines(&self) -> Vec<Line> {
+        self.inline().map(|i| i.lines()).unwrap_or_default()
     }
 
     pub fn range(&self) -> TextRange {
@@ -64,7 +77,18 @@ pub struct Line {
     pub newline: Option<SyntaxToken>,
 }
 
-impl Paragraph {
+impl Inline {
+    pub(crate) fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Inline).then_some(Self(node))
+    }
+
+    pub fn tokens(&self) -> Vec<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .collect()
+    }
+
     pub fn lines(&self) -> Vec<Line> {
         let mut lines = Vec::new();
         let mut tokens = Vec::new();

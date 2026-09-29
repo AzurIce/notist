@@ -10,11 +10,22 @@ pub enum SyntaxKind {
     Backtick,
     LineComment,
     BlockComment,
+    Star,
+    Underscore,
+    Backslash,
+    LBracket,
+    RBracket,
+    LParen,
+    RParen,
+    Pipe,
+    Hash,
+    Dollar,
 
     Document,
     Heading,
     Paragraph,
     Raw,
+    Inline,
     Error,
 }
 

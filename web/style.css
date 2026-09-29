@@ -111,6 +111,8 @@ main {
 .tok.LineComment, .tok.BlockComment { color: var(--muted); font-style: italic; }
 .kind.Raw { color: var(--paragraph); font-weight: 600; }
 .kind.RawInline { color: var(--paragraph); }
+.kind.List { color: var(--heading); }
+.kind.ListItem { color: var(--document); }
 .kind.Error { color: var(--punct); font-weight: 600; }
 
 .hl { background: var(--hl); border-radius: 2px; }

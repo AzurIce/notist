@@ -10,6 +10,7 @@ pub struct Inline(pub(crate) SyntaxNode);
 pub enum Block {
     Heading(Heading),
     Paragraph(Paragraph),
+    List(List),
 }
 
 impl Block {
@@ -17,6 +18,7 @@ impl Block {
         match node.kind() {
             SyntaxKind::Heading => Some(Block::Heading(Heading(node))),
             SyntaxKind::Paragraph => Some(Block::Paragraph(Paragraph(node))),
+            SyntaxKind::List => Some(Block::List(List(node))),
             _ => None,
         }
     }
@@ -79,6 +81,48 @@ pub struct Line {
 
 pub struct Link(pub(crate) SyntaxNode);
 pub struct WikiLink(pub(crate) SyntaxNode);
+pub struct List(pub(crate) SyntaxNode);
+pub struct ListItem(pub(crate) SyntaxNode);
+
+impl List {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::List).then_some(Self(node))
+    }
+
+    pub fn items(&self) -> impl Iterator<Item = ListItem> {
+        self.0.children().filter_map(ListItem::cast)
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
+
+impl ListItem {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::ListItem).then_some(Self(node))
+    }
+
+    pub fn marker(&self) -> Option<SyntaxKind> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .map(|t| t.kind())
+            .find(|k| matches!(k, SyntaxKind::Minus | SyntaxKind::Plus))
+    }
+
+    pub fn inline(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+
+    pub fn lists(&self) -> impl Iterator<Item = List> {
+        self.0.children().filter_map(List::cast)
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
 
 impl Link {
     pub fn cast(node: SyntaxNode) -> Option<Self> {

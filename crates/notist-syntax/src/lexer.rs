@@ -63,9 +63,11 @@ pub fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
             '|' => (SyntaxKind::Pipe, 1),
             '#' => (SyntaxKind::Hash, 1),
             '$' => (SyntaxKind::Dollar, 1),
+            '-' => (SyntaxKind::Minus, 1),
+            '+' => (SyntaxKind::Plus, 1),
             _ => {
                 let len = rest
-                    .find(['=', '`', '/', '*', '_', '\\', '[', ']', '(', ')', '|', '#', '$', ' ', '\t', '\n', '\r'])
+                    .find(['=', '`', '/', '*', '_', '\\', '[', ']', '(', ')', '|', '#', '$', '-', '+', ' ', '\t', '\n', '\r'])
                     .unwrap_or(rest.len());
                 (SyntaxKind::Text, len)
             }

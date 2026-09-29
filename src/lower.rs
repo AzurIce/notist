@@ -1,6 +1,6 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
-use notist_syntax::ast::{Block, Document, Inline, Link, WikiLink};
+use notist_syntax::ast::{Block, Document, Inline, Link, List, ListItem, WikiLink};
 use notist_syntax::syntax::{SyntaxKind, SyntaxToken};
 
 use crate::item::{Ctor, Item, Value};
@@ -27,7 +27,30 @@ fn lower_block(block: &Block) -> Item {
             let children = paragraph.inline().map(|i| lower_inline(&i)).unwrap_or_default();
             Item::new(Ctor::Paragraph, paragraph.range()).with_children(children)
         }
+        Block::List(list) => lower_list(list),
     }
+}
+
+fn lower_list(list: &List) -> Item {
+    let ordered = list
+        .items()
+        .next()
+        .and_then(|item| item.marker())
+        == Some(SyntaxKind::Plus);
+    Item::new(Ctor::List, list.range())
+        .with_field("ordered", Value::Bool(ordered))
+        .with_children(list.items().map(|item| lower_list_item(&item)).collect())
+}
+
+fn lower_list_item(item: &ListItem) -> Item {
+    let mut children = Vec::new();
+    if let Some(inline) = item.inline() {
+        children.extend(lower_inline(&inline));
+    }
+    for nested in item.lists() {
+        children.push(lower_list(&nested));
+    }
+    Item::new(Ctor::ListItem, item.range()).with_children(children)
 }
 
 fn lower_inline(inline: &Inline) -> Vec<Item> {

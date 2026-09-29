@@ -1,6 +1,6 @@
 use rowan::NodeOrToken;
 
-use notist_syntax::syntax::{SyntaxNode, SyntaxToken};
+use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use notist_syntax::{ast, parser};
 
 use crate::item::Item;
@@ -119,7 +119,54 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                 }
                 out.push_str("]}");
             }
+            ast::Block::List(list) => write_ast_list(out, &list),
         }
+    }
+    out.push_str("]}");
+}
+
+fn write_ast_list_item(out: &mut String, item: &ast::ListItem) {
+    let range = item.range();
+    out.push_str(&format!(
+        "{{\"kind\":\"ListItem\",\"start\":{},\"end\":{},\"children\":[",
+        u32::from(range.start()),
+        u32::from(range.end()),
+    ));
+    let mut first = true;
+    if let Some(inline) = item.inline() {
+        for token in inline.tokens() {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            write_element(out, NodeOrToken::Token(token));
+        }
+    }
+    for nested in item.lists() {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        write_ast_list(out, &nested);
+    }
+    out.push_str("]}");
+}
+
+fn write_ast_list(out: &mut String, list: &ast::List) {
+    let range = list.range();
+    let ordered =
+        list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
+    out.push_str(&format!(
+        "{{\"kind\":\"List\",\"start\":{},\"end\":{},\"label\":{},\"children\":[",
+        u32::from(range.start()),
+        u32::from(range.end()),
+        escape(&format!("ordered = {ordered}")),
+    ));
+    for (j, item) in list.items().enumerate() {
+        if j > 0 {
+            out.push(',');
+        }
+        write_ast_list_item(out, &item);
     }
     out.push_str("]}");
 }

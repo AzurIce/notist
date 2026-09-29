@@ -14,6 +14,8 @@ pub enum Ctor {
     Math,
     Link,
     CodeEmbed,
+    List,
+    ListItem,
 }
 
 impl Ctor {
@@ -31,6 +33,8 @@ impl Ctor {
             Ctor::Math => "Math",
             Ctor::Link => "Link",
             Ctor::CodeEmbed => "CodeEmbed",
+            Ctor::List => "List",
+            Ctor::ListItem => "ListItem",
         }
     }
 }

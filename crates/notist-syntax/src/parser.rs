@@ -85,6 +85,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Newline => self.eat(),
                 SyntaxKind::Eq if self.at_heading_marker(0) => self.heading(),
                 SyntaxKind::Backtick if self.at_fence(0) => self.raw_block(),
+                SyntaxKind::Minus | SyntaxKind::Plus if self.at_list_marker() => self.list_at(0),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
                 _ => self.paragraph(),
@@ -525,6 +526,94 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Entry: at a `- ` / `+ ` marker, column 0. A list is a run of sibling
+    /// items at one indent level; items deeper than `indent` nest, a blank
+    /// line or dedent ends the list.
+    fn list_at(&mut self, indent: usize) {
+        self.builder.start_node(SyntaxKind::List.into());
+        loop {
+            self.list_item(indent);
+            if self.cur() != Some(SyntaxKind::Newline) {
+                break;
+            }
+            match self.next_line_marker_indent() {
+                Some(next) if next == indent => self.eat(),
+                _ => break,
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    /// Entry: at the (possibly indented) marker of one item. Consumes the
+    /// marker line's inline content, then any nested list.
+    fn list_item(&mut self, indent: usize) {
+        self.builder.start_node(SyntaxKind::ListItem.into());
+        while self.cur() == Some(SyntaxKind::Whitespace) {
+            self.eat();
+        }
+        self.eat();
+        self.eat();
+        self.inline(|p: &Self| p.line_ends_list_item(p.pos, indent));
+        if self.cur() == Some(SyntaxKind::Newline) {
+            if let Some(next) = self.next_line_marker_indent() {
+                if next > indent {
+                    self.eat();
+                    self.list_at(next);
+                }
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    /// Indent width of the next line's marker, if the next line is a list
+    /// item. Entry: current token is a newline.
+    fn next_line_marker_indent(&self) -> Option<usize> {
+        if self.cur() != Some(SyntaxKind::Newline) {
+            return None;
+        }
+        let mut i = self.pos + 1;
+        let mut indent = 0;
+        while let Some((SyntaxKind::Whitespace, text)) = self.tokens.get(i) {
+            indent += text.len();
+            i += 1;
+        }
+        match self.tokens.get(i).map(|t| t.0) {
+            Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
+                if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::Whitespace) =>
+            {
+                Some(indent)
+            }
+            _ => None,
+        }
+    }
+
+    /// Stop condition for an item's inline content: the item ends at a blank
+    /// line, at any further marker (sibling or nested — the item/list layer
+    /// sorts out which), or at a continuation line indented no deeper than
+    /// the marker.
+    fn line_ends_list_item(&self, pos: usize, indent: usize) -> bool {
+        let mut i = pos + 1;
+        let mut next_indent = 0;
+        while let Some((SyntaxKind::Whitespace, text)) = self.tokens.get(i) {
+            next_indent += text.len();
+            i += 1;
+        }
+        match self.tokens.get(i).map(|t| t.0) {
+            None | Some(SyntaxKind::Newline) => true,
+            Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
+                if self.tokens.get(i + 1).map(|t| t.0) == Some(SyntaxKind::Whitespace) =>
+            {
+                true
+            }
+            _ => next_indent <= indent,
+        }
+    }
+
+    fn at_list_marker(&self) -> bool {
+        matches!(self.cur(), Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus))
+            && self.peek(1) == Some(SyntaxKind::Whitespace)
+    }
+
     fn line_ends_block(&self) -> bool {
         match self.cur() {
             None => true,
@@ -551,6 +640,9 @@ impl<'a> Parser<'a> {
                 self.tokens.get(pos + 2).map(|t| t.0) == Some(SyntaxKind::Whitespace)
             }
             Some(SyntaxKind::Backtick) => next.is_some_and(|t| t.1.len() >= 3),
+            Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) => {
+                self.tokens.get(pos + 2).map(|t| t.0) == Some(SyntaxKind::Whitespace)
+            }
             _ => false,
         }
     }

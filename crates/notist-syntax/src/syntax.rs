@@ -20,6 +20,8 @@ pub enum SyntaxKind {
     Pipe,
     Hash,
     Dollar,
+    Minus,
+    Plus,
 
     Document,
     Heading,
@@ -33,6 +35,8 @@ pub enum SyntaxKind {
     CodeEmbed,
     Strong,
     Emph,
+    List,
+    ListItem,
     Escape,
     HardBreak,
     Error,

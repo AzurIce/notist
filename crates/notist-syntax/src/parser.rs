@@ -49,6 +49,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Eq if self.at_heading_marker(0) => self.heading(),
                 SyntaxKind::Backtick if self.at_fence(0) => self.raw_block(),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
+                SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
                 _ => self.paragraph(),
             }
         }
@@ -207,6 +208,12 @@ impl<'a> Parser<'a> {
 
     fn eat(&mut self) {
         let (kind, text) = self.tokens[self.pos];
+        if kind == SyntaxKind::BlockComment && !text.ends_with("*/") {
+            self.diagnostics.push(Diagnostic {
+                span: TextRange::new(self.offset_at(self.pos), self.offset_at(self.pos + 1)),
+                message: "unclosed block comment".to_string(),
+            });
+        }
         self.builder.token(kind.into(), text);
         self.pos += 1;
     }

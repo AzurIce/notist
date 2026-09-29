@@ -8,6 +8,8 @@ pub enum SyntaxKind {
     Text,
     Newline,
     Backtick,
+    LineComment,
+    BlockComment,
 
     Document,
     Heading,

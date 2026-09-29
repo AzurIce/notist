@@ -1,0 +1,35 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..140
+  LineComment@0..27 "// 独占一行的行 ..."
+  Newline@27..28 "\n"
+  Newline@28..29 "\n"
+  BlockComment@29..44 "/* 块注释 */"
+  Newline@44..45 "\n"
+  Newline@45..46 "\n"
+  BlockComment@46..78 "/* 嵌套 /* 内层 * ..."
+  Newline@78..79 "\n"
+  Newline@79..80 "\n"
+  Paragraph@80..125
+    Text@80..86 "段落"
+    Whitespace@86..87 " "
+    LineComment@87..102 "// 行尾注释"
+    Newline@102..103 "\n"
+    BlockComment@103..118 "/* 行内块 */"
+    Whitespace@118..119 " "
+    Text@119..125 "继续"
+  Newline@125..126 "\n"
+  Newline@126..127 "\n"
+  BlockComment@127..140 "/* 未闭合\n"
+
+=== core ===
+error @127..140: unclosed block comment
+(doc @0..140
+  (paragraph @80..125
+    (text @80..86 :text "段落")
+    (softbreak @102..103)
+    (text @119..125 :text "继续")
+  )
+)

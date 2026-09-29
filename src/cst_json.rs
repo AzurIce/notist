@@ -102,14 +102,14 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                     if j > 0 {
                         out.push(',');
                     }
-                    let start = line.first().map_or(range.start(), |t| t.text_range().start());
-                    let end = line.last().map_or(range.end(), |t| t.text_range().end());
+                    let start = line.tokens.first().map_or(range.start(), |t| t.text_range().start());
+                    let end = line.tokens.last().map_or(range.end(), |t| t.text_range().end());
                     out.push_str(&format!(
                         "{{\"kind\":\"Line\",\"start\":{},\"end\":{},\"children\":[",
                         u32::from(start),
                         u32::from(end),
                     ));
-                    for (k, token) in line.iter().enumerate() {
+                    for (k, token) in line.tokens.iter().enumerate() {
                         if k > 0 {
                             out.push(',');
                         }

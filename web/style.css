@@ -108,6 +108,7 @@ main {
 .tok.Whitespace, .tok.Newline { color: var(--ws-glyph); }
 .tok.Eq { color: var(--punct); font-weight: 600; }
 .tok.Backtick { color: var(--paragraph); }
+.tok.LineComment, .tok.BlockComment { color: var(--muted); font-style: italic; }
 .kind.Raw { color: var(--paragraph); font-weight: 600; }
 .kind.Error { color: var(--punct); font-weight: 600; }
 

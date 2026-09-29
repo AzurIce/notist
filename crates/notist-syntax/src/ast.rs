@@ -59,18 +59,33 @@ impl Heading {
     }
 }
 
+pub struct Line {
+    pub tokens: Vec<SyntaxToken>,
+    pub newline: Option<SyntaxToken>,
+}
+
 impl Paragraph {
-    pub fn lines(&self) -> Vec<Vec<SyntaxToken>> {
-        let mut lines = vec![Vec::new()];
+    pub fn lines(&self) -> Vec<Line> {
+        let mut lines = Vec::new();
+        let mut tokens = Vec::new();
         for element in self.0.children_with_tokens() {
             let Some(token) = element.into_token() else {
                 continue;
             };
             if token.kind() == SyntaxKind::Newline {
-                lines.push(Vec::new());
+                lines.push(Line {
+                    tokens: std::mem::take(&mut tokens),
+                    newline: Some(token),
+                });
             } else {
-                lines.last_mut().unwrap().push(token);
+                tokens.push(token);
             }
+        }
+        if !tokens.is_empty() {
+            lines.push(Line {
+                tokens,
+                newline: None,
+            });
         }
         lines
     }

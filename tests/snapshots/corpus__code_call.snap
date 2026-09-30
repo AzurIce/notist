@@ -7,11 +7,13 @@ Document@0..152
     Inline@0..39
       CodeCall@0..39
         Hash@0..1 "#"
-        Text@1..8 "callout"
+        Ident@1..8 "callout"
         LParen@8..9 "("
-        Text@9..14 "kind:"
-        Whitespace@14..15 " "
-        Text@15..24 "\"warning\""
+        Entry@9..24
+          Ident@9..13 "kind"
+          Colon@13..14 ":"
+          Whitespace@14..15 " "
+          Str@15..24 "\"warning\""
         RParen@24..25 ")"
         LBracket@25..26 "["
         Inline@26..38
@@ -23,12 +25,9 @@ Document@0..152
     Inline@41..80
       CodeCall@41..80
         Hash@41..42 "#"
-        Text@42..46 "link"
+        Ident@42..46 "link"
         LParen@46..47 "("
-        Text@47..54 "\"https:"
-        Text@54..55 "/"
-        Text@55..56 "/"
-        Text@56..68 "example.com\""
+        Str@47..68 "\"https://example.com\""
         RParen@68..69 ")"
         LBracket@69..70 "["
         Inline@70..79
@@ -40,7 +39,7 @@ Document@0..152
     Inline@82..102
       CodeCall@82..102
         Hash@82..83 "#"
-        Text@83..89 "strong"
+        Ident@83..89 "strong"
         LBracket@89..90 "["
         Inline@90..101
           Text@90..96 "直接"
@@ -54,7 +53,7 @@ Document@0..152
       CodeCall@104..109
         Hash@104..105 "#"
         LParen@105..106 "("
-        Text@106..108 "42"
+        Number@106..108 "42"
         RParen@108..109 ")"
   Newline@109..110 "\n"
   Newline@110..111 "\n"
@@ -62,12 +61,12 @@ Document@0..152
     Inline@111..131
       CodeCall@111..131
         Hash@111..112 "#"
-        Text@112..114 "fn"
+        Ident@112..114 "fn"
         LParen@114..115 "("
-        Text@115..121 "嵌套"
+        Ident@115..121 "嵌套"
         Whitespace@121..122 " "
         LParen@122..123 "("
-        Text@123..129 "深度"
+        Ident@123..129 "深度"
         RParen@129..130 ")"
         RParen@130..131 ")"
   Newline@131..132 "\n"
@@ -82,8 +81,7 @@ Document@0..152
   Newline@151..152 "\n"
 
 === core ===
-error @115..115: bare names are only valid as keys
-error @129..129: expected `,` between entries
+error @115..121: bare names are not literals
 (doc @0..152
   (paragraph @0..39
     (callout @0..39 :kind "warning"

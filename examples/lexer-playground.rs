@@ -20,7 +20,9 @@ fn lex(src: &str) -> Vec<(SyntaxKind, &str)> {
                 (SyntaxKind::Whitespace, len)
             }
             _ => {
-                let len = rest.find(['=', ' ', '\t', '\n', '\r']).unwrap_or(rest.len());
+                let len = rest
+                    .find(['=', ' ', '\t', '\n', '\r'])
+                    .unwrap_or(rest.len());
                 (SyntaxKind::Text, len)
             }
         };

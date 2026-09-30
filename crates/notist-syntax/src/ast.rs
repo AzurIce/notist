@@ -137,6 +137,33 @@ impl Annotation {
         paren_interior(&self.0)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = Entry> + '_ {
+        self.0.children().filter_map(Entry::cast)
+    }
+
+    /// Payload elements that are not entries (stray values; a payload must
+    /// be all `key: value`).
+    pub fn stray_elements(&self) -> Vec<NodeOrToken<SyntaxNode, SyntaxToken>> {
+        self.0
+            .children_with_tokens()
+            .filter(|el| {
+                !matches!(
+                    el.kind(),
+                    SyntaxKind::At
+                        | SyntaxKind::Bang
+                        | SyntaxKind::LParen
+                        | SyntaxKind::RParen
+                        | SyntaxKind::Comma
+                        | SyntaxKind::Whitespace
+                        | SyntaxKind::Newline
+                        | SyntaxKind::LineComment
+                        | SyntaxKind::BlockComment
+                        | SyntaxKind::Entry
+                )
+            })
+            .collect()
+    }
+
     pub fn range(&self) -> TextRange {
         self.0.text_range()
     }
@@ -149,31 +176,94 @@ impl CodeCall {
         (node.kind() == SyntaxKind::CodeCall).then_some(Self(node))
     }
 
-    /// The constructor name: the first token after `#`, if it is text.
+    /// The constructor name: the `Ident` token after `#`.
     pub fn name(&self) -> Option<String> {
-        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
-            match token.kind() {
-                SyntaxKind::Hash => {}
-                SyntaxKind::Text => return Some(token.text().to_string()),
-                _ => return None,
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == SyntaxKind::Ident)
+            .map(|t| t.text().to_string())
+    }
+
+    /// The argument members: `Entry` nodes and bare literal elements between
+    /// the parens (trivia and commas excluded).
+    pub fn args(&self) -> Vec<NodeOrToken<SyntaxNode, SyntaxToken>> {
+        let mut depth = 0usize;
+        let mut out = Vec::new();
+        for element in self.0.children_with_tokens() {
+            match element.kind() {
+                SyntaxKind::LParen => depth += 1,
+                SyntaxKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ if depth == 1 => {
+                    let is_trivia = matches!(
+                        element.kind(),
+                        SyntaxKind::Whitespace
+                            | SyntaxKind::Newline
+                            | SyntaxKind::LineComment
+                            | SyntaxKind::BlockComment
+                            | SyntaxKind::Comma
+                    );
+                    if !is_trivia {
+                        out.push(element);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The `[..]` body, parsed as inline markup.
+    pub fn body(&self) -> Option<Inline> {
+        self.0.children().find_map(Inline::cast)
+    }
+}
+
+/// A `key: value` entry in a dict literal, annotation payload, or call
+/// argument list.
+pub struct Entry(pub(crate) SyntaxNode);
+
+impl Entry {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Entry).then_some(Self(node))
+    }
+
+    pub fn key_token(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::Str))
+    }
+
+    pub fn value(&self) -> Option<NodeOrToken<SyntaxNode, SyntaxToken>> {
+        let mut seen_colon = false;
+        for element in self.0.children_with_tokens() {
+            match &element {
+                NodeOrToken::Token(t) if t.kind() == SyntaxKind::Colon => {
+                    seen_colon = true;
+                    continue;
+                }
+                NodeOrToken::Token(t)
+                    if matches!(
+                        t.kind(),
+                        SyntaxKind::Whitespace
+                            | SyntaxKind::Newline
+                            | SyntaxKind::LineComment
+                            | SyntaxKind::BlockComment
+                    ) =>
+                {
+                    continue;
+                }
+                _ if seen_colon => return Some(element),
+                _ => {}
             }
         }
         None
-    }
-
-    /// The argument group's text and offset, if a `()` group is present.
-    pub fn args(&self) -> Option<(String, u32)> {
-        let has_parens = self
-            .0
-            .children_with_tokens()
-            .filter_map(|e| e.into_token())
-            .any(|t| t.kind() == SyntaxKind::LParen);
-        has_parens.then(|| paren_interior(&self.0))
-    }
-
-    /// The `[…]` body, parsed as inline markup.
-    pub fn body(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
     }
 }
 

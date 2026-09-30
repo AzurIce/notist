@@ -109,6 +109,10 @@ main {
 .tok.Eq { color: var(--punct); font-weight: 600; }
 .tok.Backtick { color: var(--paragraph); }
 .tok.LineComment, .tok.BlockComment { color: var(--muted); font-style: italic; }
+.tok.Str { color: #22863a; }
+.tok.Number { color: #9333ea; }
+.tok.Ident { color: var(--fg); }
+.kind.Entry, .kind.Dict, .kind.Array, .kind.Unit, .kind.Neg { color: var(--muted); }
 .kind.Raw { color: var(--paragraph); font-weight: 600; }
 .kind.RawInline { color: var(--paragraph); }
 .kind.List { color: var(--heading); }

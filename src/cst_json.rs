@@ -105,8 +105,14 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                     if j > 0 {
                         out.push(',');
                     }
-                    let start = line.tokens.first().map_or(range.start(), |t| t.text_range().start());
-                    let end = line.tokens.last().map_or(range.end(), |t| t.text_range().end());
+                    let start = line
+                        .tokens
+                        .first()
+                        .map_or(range.start(), |t| t.text_range().start());
+                    let end = line
+                        .tokens
+                        .last()
+                        .map_or(range.end(), |t| t.text_range().end());
                     out.push_str(&format!(
                         "{{\"kind\":\"Line\",\"start\":{},\"end\":{},\"children\":[",
                         u32::from(start),
@@ -129,7 +135,10 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                     "{{\"kind\":\"Annotation\",\"start\":{},\"end\":{},\"label\":{}}}",
                     u32::from(range.start()),
                     u32::from(range.end()),
-                    escape(&format!("{}({text})", if annotation.is_module() { "@!" } else { "@" })),
+                    escape(&format!(
+                        "{}({text})",
+                        if annotation.is_module() { "@!" } else { "@" }
+                    )),
                 ));
             }
             ast::Block::List(list) => write_ast_list(out, &list),
@@ -167,8 +176,7 @@ fn write_ast_list_item(out: &mut String, item: &ast::ListItem) {
 
 fn write_ast_list(out: &mut String, list: &ast::List) {
     let range = list.range();
-    let ordered =
-        list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
+    let ordered = list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
     out.push_str(&format!(
         "{{\"kind\":\"List\",\"start\":{},\"end\":{},\"label\":{},\"children\":[",
         u32::from(range.start()),

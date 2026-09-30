@@ -35,7 +35,7 @@ Document@0..169
         Text@46..47 "/"
         Text@47..54 "sub.not"
         Hash@54..55 "#"
-        Text@55..58 "节"
+        Ident@55..58 "节"
         RBracket@58..59 "]"
         RBracket@59..60 "]"
   Newline@60..61 "\n"

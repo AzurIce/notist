@@ -24,6 +24,11 @@ pub enum SyntaxKind {
     Plus,
     At,
     Bang,
+    Str,
+    Number,
+    Ident,
+    Colon,
+    Comma,
 
     Document,
     Heading,
@@ -40,6 +45,11 @@ pub enum SyntaxKind {
     ListItem,
     Annotation,
     CodeCall,
+    Entry,
+    Dict,
+    Array,
+    Unit,
+    Neg,
     Escape,
     ParBreak,
     Error,
@@ -62,8 +72,9 @@ impl Language for Lang {
     }
 
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        // SAFETY: raw kind 只会来自 kind_to_raw（builder 是唯一的建树入口，
-        // 树不落盘、不经外部构造），故取值必为合法判别值。
+        // SAFETY: raw kinds only ever come from kind_to_raw (the builder is
+        // the sole tree constructor; trees are never persisted or produced
+        // elsewhere), so the value is always a valid discriminant.
         unsafe { std::mem::transmute(raw.0) }
     }
 }

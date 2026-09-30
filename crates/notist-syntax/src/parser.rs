@@ -20,27 +20,6 @@ impl Parse {
     }
 }
 
-/// Chars whose special meaning `\` cancels. `\`+newline never reaches the
-/// inline escape path (it ends the block); `\` followed by anything else
-/// stays literal.
-fn is_escapable(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Eq
-            | SyntaxKind::Star
-            | SyntaxKind::Underscore
-            | SyntaxKind::Backslash
-            | SyntaxKind::LBracket
-            | SyntaxKind::RBracket
-            | SyntaxKind::LParen
-            | SyntaxKind::RParen
-            | SyntaxKind::Pipe
-            | SyntaxKind::Hash
-            | SyntaxKind::Dollar
-            | SyntaxKind::Backtick
-    )
-}
-
 /// The closing convention of the enclosing inline construct. `Flanked` is
 /// for emphasis delimiters (whitespace flanking); `Single`/`Pair` close on a
 /// literal token, no flanking involved.
@@ -214,7 +193,6 @@ impl<'a> Parser<'a> {
                 }
                 Some(kind) if self.active_closes(active, kind) => break,
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => break,
-                Some(SyntaxKind::Backslash) => self.escape(),
                 Some(SyntaxKind::Backtick) => self.raw_inline(),
                 Some(SyntaxKind::Star) => {
                     self.delimited(SyntaxKind::Star, SyntaxKind::Strong, stop)
@@ -706,18 +684,6 @@ impl<'a> Parser<'a> {
         if let Some(kind) = wrap {
             self.builder.start_node_at(checkpoint, kind.into());
             self.builder.finish_node();
-        }
-    }
-
-    fn escape(&mut self) {
-        match self.peek(1) {
-            Some(kind) if is_escapable(kind) => {
-                self.builder.start_node(SyntaxKind::Escape.into());
-                self.eat();
-                self.eat();
-                self.builder.finish_node();
-            }
-            _ => self.eat(),
         }
     }
 

@@ -372,6 +372,14 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                 }
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => {}
                 SyntaxKind::Whitespace => buf.push_str(token.text()),
+                SyntaxKind::Escape => {
+                    if start.is_none() {
+                        start = Some(token.text_range().start());
+                    }
+                    buf.push_str(&token.text()[1..]);
+                    content_len = buf.len();
+                    content_end = Some(token.text_range().end());
+                }
                 _ => {
                     if start.is_none() {
                         start = Some(token.text_range().start());
@@ -382,19 +390,6 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                 }
             },
             NodeOrToken::Node(node) => match node.kind() {
-                SyntaxKind::Escape => {
-                    let escaped = node
-                        .children_with_tokens()
-                        .filter_map(|e| e.into_token())
-                        .nth(1)
-                        .unwrap();
-                    if start.is_none() {
-                        start = Some(node.text_range().start());
-                    }
-                    buf.push_str(escaped.text());
-                    content_len = buf.len();
-                    content_end = Some(node.text_range().end());
-                }
                 SyntaxKind::RawInline => {
                     flush_text(
                         &mut items,

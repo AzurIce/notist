@@ -2,16 +2,12 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..76
+Document@0..140
   Paragraph@0..16
     Inline@0..16
-      Escape@0..2
-        Backslash@0..1 "\\"
-        Star@1..2 "*"
+      Escape@0..2 "\\*"
       Text@2..14 "不是强调"
-      Escape@14..16
-        Backslash@14..15 "\\"
-        Star@15..16 "*"
+      Escape@14..16 "\\*"
   Newline@16..17 "\n"
   Newline@17..18 "\n"
   Paragraph@18..24
@@ -34,15 +30,32 @@ Document@0..76
       Whitespace@49..50 " "
       Text@50..56 "保留"
       Newline@56..57 "\n"
-      Escape@57..59
-        Backslash@57..58 "\\"
-        Backslash@58..59 "\\"
+      Escape@57..59 "\\\\"
       Whitespace@59..60 " "
       Text@60..75 "转义反斜杠"
   Newline@75..76 "\n"
+  Newline@76..77 "\n"
+  Paragraph@77..113
+    Inline@77..113
+      Text@77..86 "转义的"
+      Whitespace@86..87 " "
+      Underscore@87..88 "_"
+      Text@88..89 "a"
+      Whitespace@89..90 " "
+      Escape@90..92 "\\_"
+      Whitespace@92..93 " "
+      Text@93..94 "b"
+      Whitespace@94..95 " "
+      Text@95..113 "不算闭界定符"
+  Newline@113..114 "\n"
+  Newline@114..115 "\n"
+  Paragraph@115..139
+    Inline@115..139
+      Text@115..139 "段落边界保持正常"
+  Newline@139..140 "\n"
 
 === core ===
-(doc @0..76
+(doc @0..140
   (paragraph @0..16
     (text @0..16 :text "*不是强调*")
   )
@@ -55,5 +68,11 @@ Document@0..76
   (paragraph @40..75
     (text @40..56 :text "普通 \\a 保留")
     (text @57..75 :text "\\ 转义反斜杠")
+  )
+  (paragraph @77..113
+    (text @77..113 :text "转义的 _a _ b 不算闭界定符")
+  )
+  (paragraph @115..139
+    (text @115..139 :text "段落边界保持正常")
   )
 )

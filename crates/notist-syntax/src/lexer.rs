@@ -144,7 +144,14 @@ impl Lexer<'_> {
             }
             '*' => (SyntaxKind::Star, 1),
             '_' => (SyntaxKind::Underscore, 1),
-            '\\' => (SyntaxKind::Backslash, 1),
+            '\\' => {
+                // `\`+escapable is assembled into a single Escape token here,
+                // so parser lookahead scans never see an escaped delimiter.
+                match rest[1..].chars().next() {
+                    Some(c) if is_escapable(c) => (SyntaxKind::Escape, 1 + c.len_utf8()),
+                    _ => (SyntaxKind::Backslash, 1),
+                }
+            }
             '[' => (SyntaxKind::LBracket, 1),
             ']' => (SyntaxKind::RBracket, 1),
             '(' => (SyntaxKind::LParen, 1),
@@ -348,6 +355,15 @@ impl Lexer<'_> {
         }
         (SyntaxKind::Str, n)
     }
+}
+
+/// Chars whose special meaning `\` cancels. `\`+newline is not among them:
+/// it is the explicit paragraph break, which the parser decides.
+fn is_escapable(c: char) -> bool {
+    matches!(
+        c,
+        '=' | '*' | '_' | '\\' | '[' | ']' | '(' | ')' | '|' | '#' | '$' | '`'
+    )
 }
 
 fn block_comment_len(rest: &str) -> usize {

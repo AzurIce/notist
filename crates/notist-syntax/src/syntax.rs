@@ -29,6 +29,7 @@ pub enum SyntaxKind {
     Ident,
     Colon,
     Comma,
+    Escape,
 
     Document,
     Heading,
@@ -50,7 +51,6 @@ pub enum SyntaxKind {
     Array,
     Unit,
     Neg,
-    Escape,
     ParBreak,
     Error,
 }

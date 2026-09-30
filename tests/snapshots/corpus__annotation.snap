@@ -2,41 +2,43 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..147
+Document@0..196
   Annotation@0..18
     At@0..1 "@"
     Bang@1..2 "!"
-    LParen@2..3 "("
-    Entry@3..17
-      Ident@3..7 "type"
-      Colon@7..8 ":"
-      Whitespace@8..9 " "
-      Str@9..17 "\"design\""
-    RParen@17..18 ")"
+    Dict@2..18
+      LParen@2..3 "("
+      Entry@3..17
+        Ident@3..7 "type"
+        Colon@7..8 ":"
+        Whitespace@8..9 " "
+        Str@9..17 "\"design\""
+      RParen@17..18 ")"
   Newline@18..19 "\n"
   Newline@19..20 "\n"
   Annotation@20..52
     At@20..21 "@"
-    LParen@21..22 "("
-    Entry@22..33
-      Ident@22..24 "id"
-      Colon@24..25 ":"
-      Whitespace@25..26 " "
-      Str@26..33 "\"intro\""
-    Comma@33..34 ","
-    Whitespace@34..35 " "
-    Entry@35..51
-      Ident@35..39 "tags"
-      Colon@39..40 ":"
-      Whitespace@40..41 " "
-      Array@41..51
-        LParen@41..42 "("
-        Str@42..45 "\"a\""
-        Comma@45..46 ","
-        Whitespace@46..47 " "
-        Str@47..50 "\"b\""
-        RParen@50..51 ")"
-    RParen@51..52 ")"
+    Dict@21..52
+      LParen@21..22 "("
+      Entry@22..33
+        Ident@22..24 "id"
+        Colon@24..25 ":"
+        Whitespace@25..26 " "
+        Str@26..33 "\"intro\""
+      Comma@33..34 ","
+      Whitespace@34..35 " "
+      Entry@35..51
+        Ident@35..39 "tags"
+        Colon@39..40 ":"
+        Whitespace@40..41 " "
+        Array@41..51
+          LParen@41..42 "("
+          Str@42..45 "\"a\""
+          Comma@45..46 ","
+          Whitespace@46..47 " "
+          Str@47..50 "\"b\""
+          RParen@50..51 ")"
+      RParen@51..52 ")"
   Newline@52..53 "\n"
   Heading@53..61
     Eq@53..54 "="
@@ -47,13 +49,14 @@ Document@0..147
   Newline@62..63 "\n"
   Annotation@63..75
     At@63..64 "@"
-    LParen@64..65 "("
-    Entry@65..74
-      Ident@65..68 "wip"
-      Colon@68..69 ":"
-      Whitespace@69..70 " "
-      Ident@70..74 "true"
-    RParen@74..75 ")"
+    Dict@64..75
+      LParen@64..65 "("
+      Entry@65..74
+        Ident@65..68 "wip"
+        Colon@68..69 ":"
+        Whitespace@69..70 " "
+        Ident@70..74 "true"
+      RParen@74..75 ")"
   Newline@75..76 "\n"
   Paragraph@76..88
     Inline@76..88
@@ -74,23 +77,52 @@ Document@0..147
   Annotation@110..124
     At@110..111 "@"
     Bang@111..112 "!"
-    LParen@112..113 "("
-    Entry@113..123
-      Ident@113..117 "late"
-      Colon@117..118 ":"
-      Whitespace@118..119 " "
-      Ident@119..123 "true"
-    RParen@123..124 ")"
+    Dict@112..124
+      LParen@112..113 "("
+      Entry@113..123
+        Ident@113..117 "late"
+        Colon@117..118 ":"
+        Whitespace@118..119 " "
+        Ident@119..123 "true"
+      RParen@123..124 ")"
   Newline@124..125 "\n"
   Paragraph@125..146
     Inline@125..146
       Text@125..146 "迟到的模块注解"
   Newline@146..147 "\n"
+  Newline@147..148 "\n"
+  Annotation@148..151
+    At@148..149 "@"
+    Unit@149..151
+      LParen@149..150 "("
+      RParen@150..151 ")"
+  Newline@151..152 "\n"
+  Paragraph@152..167
+    Inline@152..167
+      Text@152..167 "空注解报错"
+  Newline@167..168 "\n"
+  Newline@168..169 "\n"
+  Annotation@169..173
+    At@169..170 "@"
+    Dict@170..173
+      LParen@170..171 "("
+      Colon@171..172 ":"
+      RParen@172..173 ")"
+  Newline@173..174 "\n"
+  Paragraph@174..195
+    Inline@174..195
+      Text@174..177 "空"
+      Whitespace@177..178 " "
+      Text@178..182 "dict"
+      Whitespace@182..183 " "
+      Text@183..195 "注解合法"
+  Newline@195..196 "\n"
 
 === core ===
-error @92..94: annotation entries must be `key: value`
+error @91..95: annotation payload must be a dict literal
+error @149..151: annotation payload must be a dict literal
 error @110..124: module annotation must precede all content
-(doc @0..147 @type "design" @late true
+(doc @0..196 @type "design" @late true
   (heading @53..61 :level 1 @id "intro" @tags ("a", "b")
     (text @55..61 :text "标题")
   )
@@ -102,5 +134,11 @@ error @110..124: module annotation must precede all content
   )
   (paragraph @125..146
     (text @125..146 :text "迟到的模块注解")
+  )
+  (paragraph @152..167
+    (text @152..167 :text "空注解报错")
+  )
+  (paragraph @174..195
+    (text @174..195 :text "空 dict 注解合法")
   )
 )

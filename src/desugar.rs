@@ -22,8 +22,8 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 /// top-level expression sequence), not a constructor call; the `Doc` root
 /// is introduced by eval.
 ///
-/// Annotations land here: `@(..)` payloads (dict literals) become the attrs
-/// of the immediately following block; `@!(..)` become the module's.
+/// Annotations land here: `@(dict)` payloads become the attrs of the
+/// immediately following block; `@!(dict)` become the module's.
 pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
     let mut forest = Vec::new();
     let mut pending = Dict::default();
@@ -32,27 +32,20 @@ pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, 
     for block in document.blocks() {
         match block {
             Block::Annotation(annotation) => {
-                for stray in annotation.stray_elements() {
-                    diags.push(Diagnostic {
-                        span: stray.text_range(),
-                        message: "annotation entries must be `key: value`".to_string(),
-                    });
-                }
                 let mut dict = Dict::default();
-                for entry in annotation.entries() {
-                    let Some(key) = entry.key_token() else {
-                        continue;
-                    };
-                    let Some(key) = key_text(&key, diags) else {
-                        continue;
-                    };
-                    let Some(value_el) = entry.value() else {
-                        continue;
-                    };
-                    let Some(value) = syntax_value(&value_el, diags) else {
-                        continue;
-                    };
-                    dict.insert(key, value);
+                if let Some(node) = annotation.payload_dict() {
+                    for el in value_children(&node) {
+                        // the colon of the empty-dict spelling `(:)` is structural
+                        if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
+                            diags.push(Diagnostic {
+                                span: el.text_range(),
+                                message: "annotation entries must be `key: value`".to_string(),
+                            });
+                        }
+                    }
+                    if let Some(Value::Dict(d)) = syntax_value(&NodeOrToken::Node(node), diags) {
+                        dict = d;
+                    }
                 }
                 if annotation.is_module() {
                     if seen_content {

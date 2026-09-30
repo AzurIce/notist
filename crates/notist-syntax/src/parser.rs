@@ -510,8 +510,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `@(..)` annotates the immediately following block; `@!(..)` at the top
-    /// of the file annotates the module. The payload is a dict-entry list.
+    /// `@(dict)` annotates the immediately following block; `@!(dict)` at the
+    /// top of the file annotates the module. The payload must be a complete
+    /// dict literal (empty: `@(:)`); anything else is diagnosed.
     fn annotation(&mut self) {
         self.builder.start_node(SyntaxKind::Annotation.into());
         self.eat();
@@ -519,29 +520,24 @@ impl<'a> Parser<'a> {
             self.eat();
         }
         if self.cur() == Some(SyntaxKind::LParen) {
-            self.eat();
-            self.code_args();
-            if self.cur() == Some(SyntaxKind::RParen) {
-                self.eat();
-            } else {
-                let point = self.lexed.offset(self.pos);
+            let start = self.lexed.offset(self.pos);
+            if self.code_group() != Some(SyntaxKind::Dict) {
+                let span = TextRange::new(start, self.lexed.offset(self.pos));
                 self.diagnostics.push(Diagnostic {
-                    span: TextRange::new(point, point),
-                    message: "unclosed annotation".to_string(),
+                    span,
+                    message: "annotation payload must be a dict literal".to_string(),
                 });
             }
         } else {
             let point = self.lexed.offset(self.pos);
             self.diagnostics.push(Diagnostic {
                 span: TextRange::new(point, point),
-                message: "expected `(` after `@`".to_string(),
+                message: "expected a dict literal after `@`".to_string(),
             });
         }
         self.builder.finish_node();
     }
 
-    /// Entry: at `\`. `\`+special char is an escape; anything else leaves the
-    /// backslash as literal text.
     /// A comma-separated run of literal entries (`key: value` or bare
     /// values), shared by annotation payloads and call arguments.
     fn code_args(&mut self) {
@@ -599,7 +595,9 @@ impl<'a> Parser<'a> {
                 self.eat();
                 self.builder.finish_node();
             }
-            Some(SyntaxKind::LParen) => self.code_group(),
+            Some(SyntaxKind::LParen) => {
+                self.code_group();
+            }
             _ => {
                 let point = self.lexed.offset(self.pos);
                 self.diagnostics.push(Diagnostic {
@@ -616,14 +614,15 @@ impl<'a> Parser<'a> {
     /// `(..)` — unit / array / dict / grouping, discriminated by content:
     /// any `Entry` child makes a dict, a lone value without comma is
     /// grouping (no wrapper), otherwise an array. The node kind is attached
-    /// retroactively via checkpoint.
-    fn code_group(&mut self) {
+    /// retroactively via checkpoint. Returns the produced node kind (`None`
+    /// for a bare grouping).
+    fn code_group(&mut self) -> Option<SyntaxKind> {
         if self.peek(1) == Some(SyntaxKind::RParen) {
             self.builder.start_node(SyntaxKind::Unit.into());
             self.eat();
             self.eat();
             self.builder.finish_node();
-            return;
+            return Some(SyntaxKind::Unit);
         }
         if self.peek(1) == Some(SyntaxKind::Colon) && self.peek(2) == Some(SyntaxKind::RParen) {
             self.builder.start_node(SyntaxKind::Dict.into());
@@ -631,7 +630,7 @@ impl<'a> Parser<'a> {
             self.eat();
             self.eat();
             self.builder.finish_node();
-            return;
+            return Some(SyntaxKind::Dict);
         }
         if self.peek(1) == Some(SyntaxKind::Comma) && self.peek(2) == Some(SyntaxKind::RParen) {
             self.builder.start_node(SyntaxKind::Array.into());
@@ -639,7 +638,7 @@ impl<'a> Parser<'a> {
             self.eat();
             self.eat();
             self.builder.finish_node();
-            return;
+            return Some(SyntaxKind::Array);
         }
         let checkpoint = self.builder.checkpoint();
         self.eat();
@@ -685,6 +684,7 @@ impl<'a> Parser<'a> {
             self.builder.start_node_at(checkpoint, kind.into());
             self.builder.finish_node();
         }
+        wrap
     }
 
     /// Entry: at a `- ` / `+ ` marker, column 0. A list is a run of sibling

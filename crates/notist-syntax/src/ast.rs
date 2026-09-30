@@ -91,7 +91,7 @@ fn paren_interior(node: &SyntaxNode) -> (String, u32) {
     let mut depth = 0usize;
     let mut text = String::new();
     let mut base = None;
-    for token in node.children_with_tokens().filter_map(|e| e.into_token()) {
+    for token in node.descendants_with_tokens().filter_map(|e| e.into_token()) {
         match token.kind() {
             SyntaxKind::LParen => {
                 depth += 1;
@@ -137,31 +137,9 @@ impl Annotation {
         paren_interior(&self.0)
     }
 
-    pub fn entries(&self) -> impl Iterator<Item = Entry> + '_ {
-        self.0.children().filter_map(Entry::cast)
-    }
-
-    /// Payload elements that are not entries (stray values; a payload must
-    /// be all `key: value`).
-    pub fn stray_elements(&self) -> Vec<NodeOrToken<SyntaxNode, SyntaxToken>> {
-        self.0
-            .children_with_tokens()
-            .filter(|el| {
-                !matches!(
-                    el.kind(),
-                    SyntaxKind::At
-                        | SyntaxKind::Bang
-                        | SyntaxKind::LParen
-                        | SyntaxKind::RParen
-                        | SyntaxKind::Comma
-                        | SyntaxKind::Whitespace
-                        | SyntaxKind::Newline
-                        | SyntaxKind::LineComment
-                        | SyntaxKind::BlockComment
-                        | SyntaxKind::Entry
-                )
-            })
-            .collect()
+    /// The payload node when it parsed as a dict literal.
+    pub fn payload_dict(&self) -> Option<SyntaxNode> {
+        self.0.children().find(|n| n.kind() == SyntaxKind::Dict)
     }
 
     pub fn range(&self) -> TextRange {

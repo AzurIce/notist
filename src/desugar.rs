@@ -1,12 +1,12 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
 use notist_syntax::ast::{
-    Block, CodeCall, Document, Entry, Inline, Link, List, ListItem, WikiLink,
+    Annotation, Block, CodeCall, Document, Entry, Link, List, ListItem, WikiLink,
 };
 use notist_syntax::parser::Diagnostic;
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::expr::Expr;
+use crate::expr::{BodyFlavor, Expr};
 use crate::item::{Dict, Value};
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
@@ -25,28 +25,24 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 /// Annotations land here: `@(dict)` payloads become the attrs of the
 /// immediately following block; `@!(dict)` become the module's.
 pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
+    desugar_blocks(document.blocks(), diags)
+}
+
+/// A block sequence → Expr forest, sharing the annotation-pending logic
+/// between the document body and block-level `[...]` bodies. The returned
+/// Dict collects module (`@!`) attrs; `[...]` bodies ignore it.
+fn desugar_blocks(
+    blocks: impl Iterator<Item = Block>,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<Expr>, Dict) {
     let mut forest = Vec::new();
     let mut pending = Dict::default();
     let mut module_attrs = Dict::default();
     let mut seen_content = false;
-    for block in document.blocks() {
+    for block in blocks {
         match block {
             Block::Annotation(annotation) => {
-                let mut dict = Dict::default();
-                if let Some(node) = annotation.payload_dict() {
-                    for el in value_children(&node) {
-                        // the colon of the empty-dict spelling `(:)` is structural
-                        if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
-                            diags.push(Diagnostic {
-                                span: el.text_range(),
-                                message: "annotation entries must be `key: value`".to_string(),
-                            });
-                        }
-                    }
-                    if let Some(Value::Dict(d)) = syntax_value(&NodeOrToken::Node(node), diags) {
-                        dict = d;
-                    }
-                }
+                let dict = annotation_dict(&annotation, diags);
                 if annotation.is_module() {
                     if seen_content {
                         diags.push(Diagnostic {
@@ -74,24 +70,42 @@ fn desugar_block(block: &Block, diags: &mut Vec<Diagnostic>) -> Expr {
     match block {
         Block::Heading(heading) => {
             let level = heading.level() as i64;
-            let children = heading
-                .inline()
-                .map(|i| desugar_inline(&i, diags))
-                .unwrap_or_default();
+            let children = desugar_inline(heading.content(), diags);
             Expr::call("heading", heading.range())
                 .with_field("level", Value::Int(level))
                 .with_children(children)
         }
         Block::Paragraph(paragraph) => {
-            let children = paragraph
-                .inline()
-                .map(|i| desugar_inline(&i, diags))
-                .unwrap_or_default();
+            let children = desugar_inline(paragraph.content(), diags);
             Expr::call("paragraph", paragraph.range()).with_children(children)
         }
         Block::List(list) => desugar_list(list, diags),
+        Block::CodeCall(call) => desugar_code_call(call, diags)
+            .into_iter()
+            .next()
+            .expect("a call desugars to exactly one expr"),
         Block::Annotation(_) => unreachable!("annotations are handled by the document loop"),
     }
+}
+
+/// The dict carried by an `@(dict)` annotation (stray members diagnosed).
+fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> Dict {
+    let mut dict = Dict::default();
+    if let Some(node) = annotation.payload_dict() {
+        for el in value_children(&node) {
+            // the colon of the empty-dict spelling `(:)` is structural
+            if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
+                diags.push(Diagnostic {
+                    span: el.text_range(),
+                    message: "annotation entries must be `key: value`".to_string(),
+                });
+            }
+        }
+        if let Some(Value::Dict(d)) = syntax_value(&NodeOrToken::Node(node), diags) {
+            dict = d;
+        }
+    }
+    dict
 }
 
 fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
@@ -107,72 +121,143 @@ fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
 
 fn desugar_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
     let mut children = Vec::new();
-    if let Some(inline) = item.inline() {
-        children.extend(desugar_inline(&inline, diags));
-    }
+    children.extend(desugar_inline(item.content(), diags));
     for nested in item.lists() {
         children.push(desugar_list(&nested, diags));
     }
     Expr::call("item", item.range()).with_children(children)
 }
 
-fn desugar_code_call(node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {
-    let call = CodeCall::cast(node.clone()).unwrap();
-    let span = node.text_range();
+fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
+    let span = call.range();
     let mut args = Vec::new();
     let mut fields = Dict::default();
-    for member in call.args() {
-        match &member {
+    let arg_els = call.args();
+    let mut i = 0;
+    while i < arg_els.len() {
+        match &arg_els[i] {
             NodeOrToken::Node(n) if n.kind() == SyntaxKind::Entry => {
                 let entry = Entry::cast(n.clone()).unwrap();
                 let Some(key_token) = entry.key_token() else {
+                    i += 1;
                     continue;
                 };
                 let Some(key) = key_text(&key_token, diags) else {
+                    i += 1;
                     continue;
                 };
                 let Some(value_el) = entry.value() else {
+                    i += 1;
                     continue;
                 };
-                let Some(value) = syntax_value(&value_el, diags) else {
+                if value_el.kind() == SyntaxKind::LBracket {
+                    diags.push(Diagnostic {
+                        span: value_el.text_range(),
+                        message: "content literals as entry values are not supported yet"
+                            .to_string(),
+                    });
+                    i += 1;
                     continue;
-                };
-                fields.insert(key, value);
+                }
+                if let Some(value) = syntax_value(&value_el, diags) {
+                    fields.insert(key, value);
+                }
+                i += 1;
+            }
+            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LBracket => {
+                // content is mounted via the body slot, never passed as an argument
+                let open_span = t.text_range();
+                diags.push(Diagnostic {
+                    span: open_span,
+                    message: "content is mounted with `[..]` after the call, not passed as an argument"
+                        .to_string(),
+                });
+                let mut depth = 0usize;
+                i += 1;
+                while i < arg_els.len() {
+                    match arg_els[i].kind() {
+                        SyntaxKind::LBracket => depth += 1,
+                        SyntaxKind::RBracket => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                i += 1;
             }
             other => {
                 if let Some(value) = syntax_value(other, diags) {
                     args.push(Expr::Literal(value, span));
                 }
+                i += 1;
             }
         }
     }
-    match call.name() {
-        Some(name) => {
-            let children = call
-                .body()
-                .map(|i| desugar_inline(&i, diags))
-                .unwrap_or_default();
-            Expr::Call {
-                name,
-                args,
-                fields,
-                children,
-                attrs: Dict::default(),
-                span,
-            }
-        }
-        None => {
-            if fields.iter().next().is_none() && args.len() == 1 {
-                args.pop().unwrap()
-            } else {
-                diags.push(Diagnostic {
-                    span,
-                    message: "`#(..)` takes exactly one literal".to_string(),
-                });
-                Expr::Literal(Value::Unit, span)
-            }
-        }
+    let (children, flavor) = call_body(call, diags);
+    // `#[..]` is the anonymous constructor call: a transparent group node
+    let name = call.name().unwrap_or_else(|| "group".to_string());
+    vec![Expr::Call {
+        name,
+        args,
+        fields,
+        children,
+        body: flavor,
+        attrs: Dict::default(),
+        span,
+    }]
+}
+
+/// Flavor derived from a bracketed content region: block iff it contains a
+/// block-level node.
+fn is_block_content(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> bool {
+    elements.iter().any(|el| {
+        matches!(
+            el.kind(),
+            SyntaxKind::Paragraph
+                | SyntaxKind::Heading
+                | SyntaxKind::List
+                | SyntaxKind::ListItem
+                | SyntaxKind::Raw
+                | SyntaxKind::ParBreak
+                | SyntaxKind::Error
+        )
+    })
+}
+
+/// Desugar a bracketed content region with its derived flavor.
+fn content_children(
+    elements: &[NodeOrToken<SyntaxNode, SyntaxToken>],
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Expr> {
+    if is_block_content(elements) {
+        desugar_blocks(
+            elements
+                .iter()
+                .filter_map(|el| el.as_node().and_then(|n| Block::cast(n.clone()))),
+            diags,
+        )
+        .0
+    } else {
+        desugar_inline(elements.iter().cloned(), diags)
     }
+}
+
+/// The `[..]` body of a call as desugared children plus its derived flavor.
+fn call_body(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, BodyFlavor) {
+    if !call.has_body() {
+        return (Vec::new(), BodyFlavor::None);
+    }
+    let elements = call.body();
+    let flavor = if is_block_content(&elements) {
+        BodyFlavor::Block
+    } else {
+        BodyFlavor::Inline
+    };
+    (content_children(&elements, diags), flavor)
 }
 
 /// code CST → Value. The four string forms are resolved here (escapes, raw,
@@ -344,14 +429,43 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
     Some(out)
 }
 
-fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
+fn desugar_inline(
+    elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Expr> {
     let mut items = Vec::new();
     let mut buf = String::new();
     let mut start: Option<TextSize> = None;
     let mut content_len = 0usize;
     let mut content_end: Option<TextSize> = None;
+    let mut pending = Dict::default();
+    let mut pending_range: Option<TextRange> = None;
 
-    for element in inline.elements() {
+    for element in elements {
+        // an inline annotation must be immediately followed by an element
+        if !pending.is_empty() {
+            let followed = match &element {
+                NodeOrToken::Node(n) => matches!(
+                    n.kind(),
+                    SyntaxKind::Strong
+                        | SyntaxKind::Emph
+                        | SyntaxKind::RawInline
+                        | SyntaxKind::Math
+                        | SyntaxKind::Link
+                        | SyntaxKind::WikiLink
+                        | SyntaxKind::CodeCall
+                        | SyntaxKind::Annotation
+                ),
+                NodeOrToken::Token(_) => false,
+            };
+            if !followed {
+                diags.push(Diagnostic {
+                    span: element.text_range(),
+                    message: "annotation must be immediately followed by an element".to_string(),
+                });
+                pending = Dict::default();
+            }
+        }
         match element {
             NodeOrToken::Token(token) => match token.kind() {
                 SyntaxKind::Newline => {
@@ -383,6 +497,18 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                 }
             },
             NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::Annotation => {
+                    let annotation = Annotation::cast(node.clone()).unwrap();
+                    if annotation.is_module() {
+                        diags.push(Diagnostic {
+                            span: node.text_range(),
+                            message: "module annotation is only valid at the document top"
+                                .to_string(),
+                        });
+                    }
+                    pending.extend(annotation_dict(&annotation, diags));
+                    pending_range = Some(node.text_range());
+                }
                 SyntaxKind::RawInline => {
                     flush_text(
                         &mut items,
@@ -399,9 +525,10 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                         .iter()
                         .map(|t| t.text())
                         .collect();
-                    items.push(
-                        Expr::call("raw", node.text_range()).with_field("text", Value::Str(text)),
-                    );
+                    let mut expr =
+                        Expr::call("raw", node.text_range()).with_field("text", Value::Str(text));
+                    expr.set_attrs(pending.take());
+                    items.push(expr);
                 }
                 SyntaxKind::Math => {
                     flush_text(
@@ -419,9 +546,10 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                         .iter()
                         .map(|t| t.text())
                         .collect();
-                    items.push(
-                        Expr::call("math", node.text_range()).with_field("text", Value::Str(text)),
-                    );
+                    let mut expr =
+                        Expr::call("math", node.text_range()).with_field("text", Value::Str(text));
+                    expr.set_attrs(pending.take());
+                    items.push(expr);
                 }
                 SyntaxKind::Strong | SyntaxKind::Emph => {
                     flush_text(
@@ -431,17 +559,21 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                         &mut content_len,
                         &mut content_end,
                     );
-                    let name = if node.kind() == SyntaxKind::Strong {
-                        "strong"
+                    let (name, delim) = if node.kind() == SyntaxKind::Strong {
+                        ("strong", SyntaxKind::Star)
                     } else {
-                        "emph"
+                        ("emph", SyntaxKind::Underscore)
                     };
-                    let children = node
-                        .children()
-                        .find_map(Inline::cast)
-                        .map(|i| desugar_inline(&i, diags))
-                        .unwrap_or_default();
-                    items.push(Expr::call(name, node.text_range()).with_children(children));
+                    let elements: Vec<_> = node.children_with_tokens().collect();
+                    let end = if elements.last().is_some_and(|el| el.kind() == delim) {
+                        elements.len() - 1
+                    } else {
+                        elements.len()
+                    };
+                    let children = desugar_inline(elements[1..end].iter().cloned(), diags);
+                    let mut expr = Expr::call(name, node.text_range()).with_children(children);
+                    expr.set_attrs(pending.take());
+                    items.push(expr);
                 }
                 SyntaxKind::Link | SyntaxKind::WikiLink => {
                     flush_text(
@@ -455,24 +587,20 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                         let link = Link::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline()
-                                .map(|i| desugar_inline(&i, diags))
-                                .unwrap_or_default(),
+                            desugar_inline(link.content(), diags),
                         )
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            link.inline()
-                                .map(|i| desugar_inline(&i, diags))
-                                .unwrap_or_default(),
+                            desugar_inline(link.content(), diags),
                         )
                     };
-                    items.push(
-                        Expr::call("link", node.text_range())
-                            .with_field("target", Value::Str(target))
-                            .with_children(children),
-                    );
+                    let mut expr = Expr::call("link", node.text_range())
+                        .with_field("target", Value::Str(target))
+                        .with_children(children);
+                    expr.set_attrs(pending.take());
+                    items.push(expr);
                 }
                 SyntaxKind::CodeCall => {
                     flush_text(
@@ -482,11 +610,21 @@ fn desugar_inline(inline: &Inline, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
                         &mut content_len,
                         &mut content_end,
                     );
-                    items.push(desugar_code_call(&node, diags));
+                    let mut exprs = desugar_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
+                    for expr in &mut exprs {
+                        expr.set_attrs(pending.take());
+                    }
+                    items.extend(exprs);
                 }
                 _ => {}
             },
         }
+    }
+    if !pending.is_empty() {
+        diags.push(Diagnostic {
+            span: pending_range.unwrap_or_default(),
+            message: "annotation without a following element".to_string(),
+        });
     }
     flush_text(
         &mut items,

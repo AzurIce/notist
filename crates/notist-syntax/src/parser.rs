@@ -30,6 +30,14 @@ enum Active {
     Pair(SyntaxKind),
 }
 
+/// Outcome of a balanced-group scan: the closer's index, or why the scan
+/// failed — the newline ending the enclosing block, or EOF.
+enum Balanced {
+    Closed(usize),
+    BlockEnd,
+    Unclosed(usize),
+}
+
 pub fn parse(src: &str) -> Parse {
     Parser::new(src).run()
 }
@@ -42,6 +50,9 @@ struct Parser<'a> {
     pos: usize,
     builder: GreenNodeBuilder<'static>,
     diagnostics: Vec<Diagnostic>,
+    /// Inside a `[...]` body: `]` terminates any inline run (see
+    /// `inline_delimited`). Set by `bracket_body`, restored on exit.
+    in_body: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -51,6 +62,44 @@ impl<'a> Parser<'a> {
             pos: 0,
             builder: GreenNodeBuilder::new(),
             diagnostics: Vec::new(),
+            in_body: false,
+        }
+    }
+
+    /// Whether a code call starting at `#` (cur) parses and is a block-level
+    /// element. The level is the callee's return type: builtins returning
+    /// Content are blocks; `group` (transparent) and `Custom` (undefined)
+    /// fall back to the body's derived flavor.
+    fn at_block_call(&self) -> bool {
+        let named = self.peek(1) == Some(SyntaxKind::Ident);
+        let args_at = self.pos + 1 + named as usize;
+        let has_args = self.lexed.kind(args_at) == Some(SyntaxKind::LParen);
+        let mut after = args_at;
+        if has_args {
+            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen, false) {
+                Balanced::Closed(end) => after = end + 1,
+                _ => return false,
+            }
+        }
+        if self.lexed.kind(after) != Some(SyntaxKind::LBracket) {
+            return false;
+        }
+        let Balanced::Closed(close) =
+            self.balanced(after, SyntaxKind::LBracket, SyntaxKind::RBracket, true)
+        else {
+            return false;
+        };
+        if !(named || !has_args) {
+            return false;
+        }
+        let flavor_block = self.is_block_body(after, close);
+        if !named {
+            return flavor_block;
+        }
+        match self.lexed.text(self.pos + 1) {
+            "paragraph" | "heading" | "list" | "item" => true,
+            "strong" | "emph" | "raw" | "math" | "link" | "text" => false,
+            _ => flavor_block,
         }
     }
 
@@ -70,6 +119,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
                 SyntaxKind::At => self.annotation(),
+                SyntaxKind::Hash if self.at_block_call() => self.code_call(),
                 SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
@@ -181,7 +231,6 @@ impl<'a> Parser<'a> {
     /// enclosing construct (e.g. `*` while inside a strong): the loop breaks
     /// before it if it may legally close, letting the caller consume it.
     fn inline_delimited(&mut self, stop: &impl Fn(&Self) -> bool, active: Option<Active>) {
-        self.builder.start_node(SyntaxKind::Inline.into());
         loop {
             match self.cur() {
                 None => break,
@@ -191,6 +240,7 @@ impl<'a> Parser<'a> {
                     }
                     self.eat();
                 }
+                Some(SyntaxKind::RBracket) if self.in_body => break,
                 Some(kind) if self.active_closes(active, kind) => break,
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => break,
                 Some(SyntaxKind::Backtick) => self.raw_inline(),
@@ -202,11 +252,20 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Dollar) => self.math_inline(),
                 Some(SyntaxKind::LBracket) => self.link(stop),
-                Some(SyntaxKind::Hash) => self.code_call(stop),
+                Some(SyntaxKind::Hash) if self.at_block_call() => break,
+                Some(SyntaxKind::Hash) => self.code_call(),
+                // `@(..)` inline annotates the immediately following element;
+                // bare `@` stays prose
+                Some(SyntaxKind::At)
+                    if self.peek(1) == Some(SyntaxKind::LParen)
+                        || (self.peek(1) == Some(SyntaxKind::Bang)
+                            && self.peek(2) == Some(SyntaxKind::LParen)) =>
+                {
+                    self.annotation()
+                }
                 Some(_) => self.eat(),
             }
         }
-        self.builder.finish_node();
     }
 
     fn active_closes(&self, active: Option<Active>, kind: SyntaxKind) -> bool {
@@ -235,7 +294,10 @@ impl<'a> Parser<'a> {
                 self.builder.start_node(node.into());
                 self.eat();
                 self.inline_delimited(stop, Some(Active::Flanked(delim)));
-                self.eat();
+                // the walk may have stopped at a body's `]` instead of the closer
+                if self.cur() == Some(delim) {
+                    self.eat();
+                }
                 self.builder.finish_node();
             }
             _ => self.eat(),
@@ -444,29 +506,45 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    /// `#name(args)[body]` — an atomic constructor call. Bare `#name`
-    /// without an adjacent `()`/`[]` group is literal text (prose hashtags
-    /// stay prose). `#(literal)` embeds a single value; `#[body]` is an
-    /// anonymous content call.
-    fn code_call(&mut self, stop: &impl Fn(&Self) -> bool) {
+    /// `#name(args)[body]` — an atomic constructor call; `#[body]` is the
+    /// anonymous form, producing a transparent group node. Anything else
+    /// after `#` (bare `#name`, `#(..)`) is literal text.
+    fn code_call(&mut self) {
         let named = self.peek(1) == Some(SyntaxKind::Ident);
         let args_at = self.pos + 1 + named as usize;
         let has_args = self.lexed.kind(args_at) == Some(SyntaxKind::LParen);
         let mut after = args_at;
         if has_args {
-            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen) {
-                Some(end) => after = end + 1,
-                None => {
+            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen, false) {
+                Balanced::Closed(end) => after = end + 1,
+                _ => {
                     self.eat();
                     return;
                 }
             }
         }
-        let has_body = self.lexed.kind(after) == Some(SyntaxKind::LBracket)
-            && self
-                .balanced(after, SyntaxKind::LBracket, SyntaxKind::RBracket)
-                .is_some();
-        if !(named && (has_args || has_body)) && !has_args && !has_body {
+        let mut body_close = None;
+        let has_body = if self.lexed.kind(after) == Some(SyntaxKind::LBracket) {
+            match self.balanced(after, SyntaxKind::LBracket, SyntaxKind::RBracket, true) {
+                Balanced::Closed(close) => {
+                    body_close = Some(close);
+                    true
+                }
+                Balanced::Unclosed(eof) => {
+                    let point = self.lexed.offset(eof);
+                    self.diagnostics.push(Diagnostic {
+                        span: TextRange::new(point, point),
+                        message: "unclosed code call body".to_string(),
+                    });
+                    false
+                }
+                Balanced::BlockEnd => unreachable!("body scans cross blocks"),
+            }
+        } else {
+            false
+        };
+        let is_call = (named && (has_args || has_body)) || (!named && !has_args && has_body);
+        if !is_call {
             self.eat();
             return;
         }
@@ -481,21 +559,121 @@ impl<'a> Parser<'a> {
             self.eat();
         }
         if has_body {
-            self.eat();
-            self.inline_delimited(stop, Some(Active::Single(SyntaxKind::RBracket)));
-            self.eat();
+            let close = body_close.unwrap();
+            let block = self.is_block_body(after, close);
+            if !block {
+                self.diagnose_inline_parbreak(after, close);
+            }
+            self.bracket_body(block);
         }
         self.builder.finish_node();
     }
 
-    /// Index of the token closing the group opened at `from`, bounded by the
-    /// enclosing block.
-    fn balanced(&self, mut i: usize, open: SyntaxKind, close: SyntaxKind) -> Option<usize> {
+    /// Whether the bracketed content spanning `open..=close` is block-level:
+    /// both brackets have whitespace immediately inside (`[ x ]` vs `[x]`).
+    fn is_block_body(&self, open: usize, close: usize) -> bool {
+        let flank = |i: usize| {
+            matches!(
+                self.lexed.kind(i),
+                Some(SyntaxKind::Whitespace | SyntaxKind::Newline)
+            )
+        };
+        flank(open + 1) && flank(close - 1)
+    }
+
+    /// An inline-flanked body must not contain a paragraph break; diagnose
+    /// the first one (the parser recovers by absorbing it as a soft break).
+    fn diagnose_inline_parbreak(&mut self, open: usize, close: usize) {
+        for i in open + 1..close {
+            if self.lexed.kind(i) == Some(SyntaxKind::Newline) && self.line_ends_block_at(i) {
+                let point = self.lexed.offset(i);
+                self.diagnostics.push(Diagnostic {
+                    span: TextRange::new(point, point),
+                    message: "inline content cannot contain a blank line".to_string(),
+                });
+                return;
+            }
+        }
+    }
+
+    /// Parse the bracketed content at cur == `[` with known flavor. `]`
+    /// terminates any inline run inside via `in_body`.
+    fn bracket_body(&mut self, block: bool) {
+        self.eat();
+        let was = std::mem::replace(&mut self.in_body, true);
+        if block {
+            self.block_body();
+        } else {
+            self.inline_delimited(&|_: &Self| false, Some(Active::Single(SyntaxKind::RBracket)));
+        }
+        self.in_body = was;
+        self.eat();
+    }
+
+    /// A block-level `[...]` body: full block grammar up to the closing `]`.
+    /// Inter-block trivia (blank lines, comment lines) belongs to the body.
+    fn block_body(&mut self) {
+        loop {
+            match self.cur() {
+                None | Some(SyntaxKind::RBracket) => break,
+                Some(SyntaxKind::Newline) => self.eat(),
+                Some(SyntaxKind::Eq) if self.at_heading_marker(0) => self.heading(),
+                Some(SyntaxKind::Backtick) if self.at_fence(0) => self.raw_block(),
+                Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) if self.at_list_marker() => {
+                    self.list_at(0)
+                }
+                Some(SyntaxKind::Whitespace) if self.at_blank_line() => self.eat_blank_line(),
+                Some(SyntaxKind::LineComment) | Some(SyntaxKind::BlockComment) => self.eat(),
+                Some(SyntaxKind::At) => self.annotation(),
+                Some(SyntaxKind::Hash) if self.at_block_call() => self.code_call(),
+                Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => {
+                    self.parbreak()
+                }
+                _ => self.paragraph(),
+            }
+        }
+    }
+
+    /// A `[...]` content literal in code: parsed like a call body.
+    fn content_literal(&mut self) {
+        let open = self.pos;
+        match self.balanced(open, SyntaxKind::LBracket, SyntaxKind::RBracket, true) {
+            Balanced::Closed(close) => {
+                let block = self.is_block_body(open, close);
+                if !block {
+                    self.diagnose_inline_parbreak(open, close);
+                }
+                self.bracket_body(block);
+            }
+            Balanced::Unclosed(eof) => {
+                let point = self.lexed.offset(eof);
+                self.diagnostics.push(Diagnostic {
+                    span: TextRange::new(point, point),
+                    message: "unclosed content literal".to_string(),
+                });
+                self.eat();
+            }
+            Balanced::BlockEnd => unreachable!(),
+        }
+    }
+
+    /// Scan for the closer of the group opened at `from`. When
+    /// `cross_blocks` is set (for `[...]` bodies, which may span blank
+    /// lines), only EOF bounds the scan; otherwise the enclosing block does.
+    fn balanced(
+        &self,
+        mut i: usize,
+        open: SyntaxKind,
+        close: SyntaxKind,
+        cross_blocks: bool,
+    ) -> Balanced {
         let mut depth = 0usize;
         loop {
-            let kind = self.lexed.kind(i)?;
-            if kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
-                return None;
+            let Some(kind) = self.lexed.kind(i) else {
+                return Balanced::Unclosed(i);
+            };
+            if !cross_blocks && kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
+                return Balanced::BlockEnd;
             }
             if kind == open {
                 depth += 1;
@@ -503,7 +681,7 @@ impl<'a> Parser<'a> {
             if kind == close {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(i);
+                    return Balanced::Closed(i);
                 }
             }
             i += 1;
@@ -598,6 +776,7 @@ impl<'a> Parser<'a> {
             Some(SyntaxKind::LParen) => {
                 self.code_group();
             }
+            Some(SyntaxKind::LBracket) => self.content_literal(),
             _ => {
                 let point = self.lexed.offset(self.pos);
                 self.diagnostics.push(Diagnostic {

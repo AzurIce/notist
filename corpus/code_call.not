@@ -9,3 +9,34 @@
 #fn(嵌套 (深度))
 
 裸 # 只是字符
+
+#[匿名 *内容* 拼接]
+
+#strong[空行
+
+粉碎]
+
+#foo[未闭合
+#note(kind: "demo")[
+块 body 第一段
+
+- 列表项甲
+- 列表项乙
+
+第二段
+]
+
+#strong[ x ]
+块 body 喂给 inline 构造器
+
+#list[body]
+inline body 提升为段落
+
+#demo([x], [ y ])
+参数位置内容字面量
+
+#[
+块级匿名
+
+- 列表
+]

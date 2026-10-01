@@ -2,6 +2,16 @@ use rowan::TextRange;
 
 use crate::item::{Dict, Value};
 
+/// How a call's `[...]` body was written: hugging the brackets (`[x]`,
+/// inline) or padded on both ends (`[ x ]`, block). `None` marks
+/// structurally constructed calls, which skip the signature check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyFlavor {
+    None,
+    Inline,
+    Block,
+}
+
 /// Unevaluated core expression: the desugar target of markup, and (later)
 /// the parse product of code mode. Unlike `Item`, a call's name is an
 /// unresolved source-level name.
@@ -13,6 +23,7 @@ pub enum Expr {
         args: Vec<Expr>,
         fields: Dict,
         children: Vec<Expr>,
+        body: BodyFlavor,
         attrs: Dict,
         span: TextRange,
     },
@@ -25,6 +36,7 @@ impl Expr {
             args: Vec::new(),
             fields: Dict::default(),
             children: Vec::new(),
+            body: BodyFlavor::None,
             attrs: Dict::default(),
             span,
         }

@@ -2,7 +2,7 @@ use rowan::TextRange;
 
 use notist_syntax::parser::Diagnostic;
 
-use crate::expr::Expr;
+use crate::expr::{BodyFlavor, Expr};
 use crate::item::{Ctor, Dict, Item, Value};
 
 /// The builtin constructor registry: the single bridge from source-level
@@ -20,6 +20,7 @@ pub fn resolve(name: &str) -> Ctor {
         "link" => Ctor::Link,
         "list" => Ctor::List,
         "item" => Ctor::ListItem,
+        "group" => Ctor::Group,
         _ => Ctor::Custom(name.to_string()),
     }
 }
@@ -29,6 +30,24 @@ fn positional_field(name: &str, index: usize) -> Option<&'static str> {
     match (name, index) {
         ("link", 0) => Some("target"),
         ("raw", 0) | ("math", 0) => Some("text"),
+        _ => None,
+    }
+}
+
+/// What a builtin accepts as its `[...]` body: inline content only, or any
+/// content (an inline body is then promoted to a one-paragraph block).
+/// `None` — including `Custom` — accepts anything.
+enum BodySig {
+    Inline,
+    Content,
+}
+
+fn body_sig(ctor: &Ctor) -> Option<BodySig> {
+    match ctor {
+        Ctor::Paragraph | Ctor::Heading | Ctor::Strong | Ctor::Emph | Ctor::Link => {
+            Some(BodySig::Inline)
+        }
+        Ctor::List | Ctor::ListItem => Some(BodySig::Content),
         _ => None,
     }
 }
@@ -65,10 +84,12 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             args,
             fields,
             children,
+            body,
             attrs,
             span,
         } => {
             let ctor = resolve(name);
+            let sig = body_sig(&ctor);
             let mut item = Item::new(ctor, *span);
             item.fields = fields.clone();
             let mut extra = Vec::new();
@@ -92,6 +113,21 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
                 }
             }
             item.children = children.iter().map(|c| eval(c, diagnostics)).collect();
+            match (body, sig) {
+                (BodyFlavor::Block, Some(BodySig::Inline)) => {
+                    diagnostics.push(Diagnostic {
+                        span: *span,
+                        message: format!(
+                            "`{name}` takes inline content; write the body as `[..]` without inner padding"
+                        ),
+                    });
+                }
+                (BodyFlavor::Inline, Some(BodySig::Content)) => {
+                    let promoted = std::mem::take(&mut item.children);
+                    item.children = vec![Item::new(Ctor::Paragraph, *span).with_children(promoted)];
+                }
+                _ => {}
+            }
             item.attrs = attrs.clone();
             item
         }

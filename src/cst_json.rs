@@ -142,6 +142,15 @@ fn write_ast(out: &mut String, document: &ast::Document) -> () {
                 ));
             }
             ast::Block::List(list) => write_ast_list(out, &list),
+            ast::Block::CodeCall(call) => {
+                let range = call.range();
+                out.push_str(&format!(
+                    "{{\"kind\":\"CodeCall\",\"start\":{},\"end\":{},\"label\":{}}}",
+                    u32::from(range.start()),
+                    u32::from(range.end()),
+                    escape(&call.name().unwrap_or_else(|| "group".to_string())),
+                ));
+            }
         }
     }
     out.push_str("]}");
@@ -155,14 +164,12 @@ fn write_ast_list_item(out: &mut String, item: &ast::ListItem) {
         u32::from(range.end()),
     ));
     let mut first = true;
-    if let Some(inline) = item.inline() {
-        for token in inline.tokens() {
-            if !first {
-                out.push(',');
-            }
-            first = false;
-            write_element(out, NodeOrToken::Token(token));
+    for element in item.content() {
+        if !first {
+            out.push(',');
         }
+        first = false;
+        write_element(out, element);
     }
     for nested in item.lists() {
         if !first {

@@ -6,66 +6,56 @@ Document@0..144
   Heading@0..15
     Eq@0..1 "="
     Whitespace@1..2 " "
-    Inline@2..15
-      Text@2..8 "Notist"
-      Whitespace@8..9 " "
-      Text@9..15 "巡览"
+    Text@2..8 "Notist"
+    Whitespace@8..9 " "
+    Text@9..15 "巡览"
   Newline@15..16 "\n"
   Newline@16..17 "\n"
   Heading@17..26
     Eq@17..19 "=="
     Whitespace@19..20 " "
-    Inline@20..26
-      Text@20..26 "标题"
+    Text@20..26 "标题"
   Newline@26..27 "\n"
   Newline@27..28 "\n"
   Heading@28..36
     Eq@28..29 "="
     Whitespace@29..30 " "
-    Inline@30..36
-      Text@30..36 "一级"
+    Text@30..36 "一级"
   Newline@36..37 "\n"
   Heading@37..46
     Eq@37..39 "=="
     Whitespace@39..40 " "
-    Inline@40..46
-      Text@40..46 "二级"
+    Text@40..46 "二级"
   Newline@46..47 "\n"
   Heading@47..57
     Eq@47..50 "==="
     Whitespace@50..51 " "
-    Inline@51..57
-      Text@51..57 "三级"
+    Text@51..57 "三级"
   Newline@57..58 "\n"
   Newline@58..59 "\n"
   Heading@59..68
     Eq@59..61 "=="
     Whitespace@61..62 " "
-    Inline@62..68
-      Text@62..68 "段落"
+    Text@62..68 "段落"
   Newline@68..69 "\n"
   Newline@69..70 "\n"
   Paragraph@70..113
-    Inline@70..113
-      Text@70..91 "单换行直接拼接"
-      Newline@91..92 "\n"
-      Text@92..113 "同一段落内继续"
+    Text@70..91 "单换行直接拼接"
+    Newline@91..92 "\n"
+    Text@92..113 "同一段落内继续"
   Newline@113..114 "\n"
   Newline@114..115 "\n"
   Paragraph@115..127
-    Inline@115..127
-      Text@115..127 "空行分段"
+    Text@115..127 "空行分段"
   Newline@127..128 "\n"
   Newline@128..129 "\n"
   Paragraph@129..135
-    Inline@129..135
-      Text@129..135 "强制"
+    Text@129..135 "强制"
   ParBreak@135..137
     Backslash@135..136 "\\"
     Newline@136..137 "\n"
   Paragraph@137..143
-    Inline@137..143
-      Text@137..143 "分段"
+    Text@137..143 "分段"
   Newline@143..144 "\n"
 
 === core ===

@@ -37,7 +37,6 @@ pub enum SyntaxKind {
     Raw,
     RawInline,
     Math,
-    Inline,
     Link,
     WikiLink,
     Strong,

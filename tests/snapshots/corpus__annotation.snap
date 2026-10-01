@@ -43,8 +43,7 @@ Document@0..196
   Heading@53..61
     Eq@53..54 "="
     Whitespace@54..55 " "
-    Inline@55..61
-      Text@55..61 "标题"
+    Text@55..61 "标题"
   Newline@61..62 "\n"
   Newline@62..63 "\n"
   Annotation@63..75
@@ -59,8 +58,7 @@ Document@0..196
       RParen@74..75 ")"
   Newline@75..76 "\n"
   Paragraph@76..88
-    Inline@76..88
-      Text@76..88 "段落内容"
+    Text@76..88 "段落内容"
   Newline@88..89 "\n"
   Newline@89..90 "\n"
   Annotation@90..95
@@ -70,8 +68,7 @@ Document@0..196
     RParen@94..95 ")"
   Newline@95..96 "\n"
   Paragraph@96..108
-    Inline@96..108
-      Text@96..108 "错误负载"
+    Text@96..108 "错误负载"
   Newline@108..109 "\n"
   Newline@109..110 "\n"
   Annotation@110..124
@@ -87,8 +84,7 @@ Document@0..196
       RParen@123..124 ")"
   Newline@124..125 "\n"
   Paragraph@125..146
-    Inline@125..146
-      Text@125..146 "迟到的模块注解"
+    Text@125..146 "迟到的模块注解"
   Newline@146..147 "\n"
   Newline@147..148 "\n"
   Annotation@148..151
@@ -98,8 +94,7 @@ Document@0..196
       RParen@150..151 ")"
   Newline@151..152 "\n"
   Paragraph@152..167
-    Inline@152..167
-      Text@152..167 "空注解报错"
+    Text@152..167 "空注解报错"
   Newline@167..168 "\n"
   Newline@168..169 "\n"
   Annotation@169..173
@@ -110,12 +105,11 @@ Document@0..196
       RParen@172..173 ")"
   Newline@173..174 "\n"
   Paragraph@174..195
-    Inline@174..195
-      Text@174..177 "空"
-      Whitespace@177..178 " "
-      Text@178..182 "dict"
-      Whitespace@182..183 " "
-      Text@183..195 "注解合法"
+    Text@174..177 "空"
+    Whitespace@177..178 " "
+    Text@178..182 "dict"
+    Whitespace@182..183 " "
+    Text@183..195 "注解合法"
   Newline@195..196 "\n"
 
 === core ===

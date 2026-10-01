@@ -4,80 +4,74 @@ expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
 Document@0..180
   Paragraph@0..28
-    Inline@0..28
-      Text@0..6 "这是"
-      Whitespace@6..7 " "
-      RawInline@7..21
-        Backtick@7..8 "`"
-        Text@8..20 "行内代码"
-        Backtick@20..21 "`"
-      Whitespace@21..22 " "
-      Text@22..28 "示例"
+    Text@0..6 "这是"
+    Whitespace@6..7 " "
+    RawInline@7..21
+      Backtick@7..8 "`"
+      Text@8..20 "行内代码"
+      Backtick@20..21 "`"
+    Whitespace@21..22 " "
+    Text@22..28 "示例"
   Newline@28..29 "\n"
   Newline@29..30 "\n"
   Paragraph@30..55
-    Inline@30..55
-      RawInline@30..55
-        Backtick@30..32 "``"
-        Text@32..38 "内含"
-        Whitespace@38..39 " "
-        Backtick@39..40 "`"
-        Whitespace@40..41 " "
-        Text@41..53 "单反引号"
-        Backtick@53..55 "``"
+    RawInline@30..55
+      Backtick@30..32 "``"
+      Text@32..38 "内含"
+      Whitespace@38..39 " "
+      Backtick@39..40 "`"
+      Whitespace@40..41 " "
+      Text@41..53 "单反引号"
+      Backtick@53..55 "``"
   Newline@55..56 "\n"
   Newline@56..57 "\n"
   Paragraph@57..93
-    Inline@57..93
-      Text@57..69 "未闭合的"
-      Whitespace@69..70 " "
-      Backtick@70..71 "`"
-      Text@71..80 "反引号"
-      Whitespace@80..81 " "
-      Text@81..93 "只是文本"
+    Text@57..69 "未闭合的"
+    Whitespace@69..70 " "
+    Backtick@70..71 "`"
+    Text@71..80 "反引号"
+    Whitespace@80..81 " "
+    Text@81..93 "只是文本"
   Newline@93..94 "\n"
   Newline@94..95 "\n"
   Paragraph@95..109
-    Inline@95..109
-      RawInline@95..98
-        Backtick@95..96 "`"
-        Text@96..97 "a"
-        Backtick@97..98 "`"
-      Whitespace@98..99 " "
-      Text@99..105 "紧跟"
-      Whitespace@105..106 " "
-      RawInline@106..109
-        Backtick@106..107 "`"
-        Text@107..108 "b"
-        Backtick@108..109 "`"
+    RawInline@95..98
+      Backtick@95..96 "`"
+      Text@96..97 "a"
+      Backtick@97..98 "`"
+    Whitespace@98..99 " "
+    Text@99..105 "紧跟"
+    Whitespace@105..106 " "
+    RawInline@106..109
+      Backtick@106..107 "`"
+      Text@107..108 "b"
+      Backtick@108..109 "`"
   Newline@109..110 "\n"
   Newline@110..111 "\n"
   Paragraph@111..156
-    Inline@111..156
-      Text@111..120 "长围栏"
-      Whitespace@120..121 " "
-      RawInline@121..149
-        Backtick@121..124 "```"
-        Text@124..130 "内含"
-        Whitespace@130..131 " "
-        Backtick@131..133 "``"
-        Whitespace@133..134 " "
-        Text@134..146 "双反引号"
-        Backtick@146..149 "```"
-      Whitespace@149..150 " "
-      Text@150..156 "收尾"
+    Text@111..120 "长围栏"
+    Whitespace@120..121 " "
+    RawInline@121..149
+      Backtick@121..124 "```"
+      Text@124..130 "内含"
+      Whitespace@130..131 " "
+      Backtick@131..133 "``"
+      Whitespace@133..134 " "
+      Text@134..146 "双反引号"
+      Backtick@146..149 "```"
+    Whitespace@149..150 " "
+    Text@150..156 "收尾"
   Newline@156..157 "\n"
   Newline@157..158 "\n"
   Paragraph@158..179
-    Inline@158..179
-      RawInline@158..179
-        Backtick@158..159 "`"
-        Text@159..165 "内含"
-        Whitespace@165..166 " "
-        Backtick@166..168 "``"
-        Whitespace@168..169 " "
-        Text@169..178 "更长串"
-        Backtick@178..179 "`"
+    RawInline@158..179
+      Backtick@158..159 "`"
+      Text@159..165 "内含"
+      Whitespace@165..166 " "
+      Backtick@166..168 "``"
+      Whitespace@168..169 " "
+      Text@169..178 "更长串"
+      Backtick@178..179 "`"
   Newline@179..180 "\n"
 
 === core ===

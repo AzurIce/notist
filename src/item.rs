@@ -13,6 +13,9 @@ pub enum Ctor {
     Link,
     List,
     ListItem,
+    /// Transparent identity node: renders as its children; carries attrs
+    /// and structure without adding semantics. Produced by `#[..]`.
+    Group,
     Custom(String),
 }
 
@@ -30,6 +33,7 @@ impl Ctor {
             Ctor::Link => "Link",
             Ctor::List => "List",
             Ctor::ListItem => "ListItem",
+            Ctor::Group => "Group",
             Ctor::Custom(name) => name,
         }
     }
@@ -52,6 +56,10 @@ pub struct Dict(Vec<(String, Value)>);
 impl Dict {
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn insert(&mut self, key: impl Into<String>, value: Value) {

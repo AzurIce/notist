@@ -5,22 +5,23 @@ use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 pub struct Document(pub(crate) SyntaxNode);
 pub struct Heading(pub(crate) SyntaxNode);
 pub struct Paragraph(pub(crate) SyntaxNode);
-pub struct Inline(pub(crate) SyntaxNode);
 
 pub enum Block {
     Heading(Heading),
     Paragraph(Paragraph),
     List(List),
     Annotation(Annotation),
+    CodeCall(CodeCall),
 }
 
 impl Block {
-    fn cast(node: SyntaxNode) -> Option<Self> {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
         match node.kind() {
             SyntaxKind::Heading => Some(Block::Heading(Heading(node))),
             SyntaxKind::Paragraph => Some(Block::Paragraph(Paragraph(node))),
             SyntaxKind::List => Some(Block::List(List(node))),
             SyntaxKind::Annotation => Some(Block::Annotation(Annotation(node))),
+            SyntaxKind::CodeCall => Some(Block::CodeCall(CodeCall(node))),
             _ => None,
         }
     }
@@ -40,6 +41,39 @@ impl Document {
     }
 }
 
+/// Split an element sequence into lines at newline tokens.
+fn lines<'a>(
+    elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + 'a,
+) -> Vec<Line> {
+    let mut lines = Vec::new();
+    let mut tokens = Vec::new();
+    for element in elements {
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        if token.kind() == SyntaxKind::Newline {
+            lines.push(Line {
+                tokens: std::mem::take(&mut tokens),
+                newline: Some(token),
+            });
+        } else {
+            tokens.push(token);
+        }
+    }
+    if !tokens.is_empty() {
+        lines.push(Line {
+            tokens,
+            newline: None,
+        });
+    }
+    lines
+}
+
+pub struct Line {
+    pub tokens: Vec<SyntaxToken>,
+    pub newline: Option<SyntaxToken>,
+}
+
 impl Heading {
     pub fn level(&self) -> usize {
         self.0
@@ -49,12 +83,13 @@ impl Heading {
             .map_or(0, |t| t.text().len())
     }
 
-    pub fn inline(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The inline content after the marker and its following whitespace.
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0.children_with_tokens().skip(2)
     }
 
     pub fn content_tokens(&self) -> Vec<SyntaxToken> {
-        self.inline().map(|i| i.tokens()).unwrap_or_default()
+        self.content().filter_map(|e| e.into_token()).collect()
     }
 
     pub fn range(&self) -> TextRange {
@@ -63,22 +98,18 @@ impl Heading {
 }
 
 impl Paragraph {
-    pub fn inline(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The inline content: the paragraph's full element sequence.
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0.children_with_tokens()
     }
 
     pub fn lines(&self) -> Vec<Line> {
-        self.inline().map(|i| i.lines()).unwrap_or_default()
+        lines(self.content())
     }
 
     pub fn range(&self) -> TextRange {
         self.0.text_range()
     }
-}
-
-pub struct Line {
-    pub tokens: Vec<SyntaxToken>,
-    pub newline: Option<SyntaxToken>,
 }
 
 pub struct Link(pub(crate) SyntaxNode);
@@ -196,9 +227,55 @@ impl CodeCall {
         out
     }
 
-    /// The `[..]` body, parsed as inline markup.
-    pub fn body(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The `[` token opening the body: the first bracket outside the parens.
+    fn body_open(&self) -> Option<SyntaxToken> {
+        let mut paren = 0usize;
+        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
+            match token.kind() {
+                SyntaxKind::LParen => paren += 1,
+                SyntaxKind::RParen => paren -= 1,
+                SyntaxKind::LBracket if paren == 0 => return Some(token),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    pub fn has_body(&self) -> bool {
+        self.body_open().is_some()
+    }
+
+    /// The `[..]` body: elements between the outer brackets (empty when the
+    /// call has no body).
+    pub fn body(&self) -> Vec<NodeOrToken<SyntaxNode, SyntaxToken>> {
+        let Some(open) = self.body_open() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut depth = 0usize;
+        for element in self
+            .0
+            .children_with_tokens()
+            .skip_while(|el| *el != NodeOrToken::Token(open.clone()))
+            .skip(1)
+        {
+            match element.kind() {
+                SyntaxKind::LBracket => depth += 1,
+                SyntaxKind::RBracket => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            out.push(element);
+        }
+        out
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
     }
 }
 
@@ -272,8 +349,26 @@ impl ListItem {
             .find(|k| matches!(k, SyntaxKind::Minus | SyntaxKind::Plus))
     }
 
-    pub fn inline(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The inline content: elements between the marker's following
+    /// whitespace and any nested list.
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        let mut state = 0u8; // 0: pre-marker, 1: marker skipped, 2: post-ws skipped
+        self.0
+            .children_with_tokens()
+            .skip_while(move |el| match el.kind() {
+                SyntaxKind::Whitespace if state != 2 => {
+                    if state == 1 {
+                        state = 2;
+                    }
+                    true
+                }
+                SyntaxKind::Minus | SyntaxKind::Plus if state == 0 => {
+                    state = 1;
+                    true
+                }
+                _ => false,
+            })
+            .take_while(|el| el.kind() != SyntaxKind::List)
     }
 
     pub fn lists(&self) -> impl Iterator<Item = List> {
@@ -290,8 +385,13 @@ impl Link {
         (node.kind() == SyntaxKind::Link).then_some(Self(node))
     }
 
-    pub fn inline(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The link text: elements between the text brackets.
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0
+            .children_with_tokens()
+            .skip_while(|el| el.kind() != SyntaxKind::LBracket)
+            .skip(1)
+            .take_while(|el| el.kind() != SyntaxKind::RBracket)
     }
 
     pub fn target_tokens(&self) -> Vec<SyntaxToken> {
@@ -314,8 +414,13 @@ impl WikiLink {
         (node.kind() == SyntaxKind::WikiLink).then_some(Self(node))
     }
 
-    pub fn inline(&self) -> Option<Inline> {
-        self.0.children().find_map(Inline::cast)
+    /// The link text: elements after the pipe (empty when there is no pipe).
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0
+            .children_with_tokens()
+            .skip_while(|el| el.kind() != SyntaxKind::Pipe)
+            .skip(1)
+            .take_while(|el| el.kind() != SyntaxKind::RBracket)
     }
 
     pub fn target_tokens(&self) -> Vec<SyntaxToken> {
@@ -332,51 +437,5 @@ impl WikiLink {
             out.push(token);
         }
         out
-    }
-}
-
-impl Inline {
-    pub fn cast(node: SyntaxNode) -> Option<Self> {
-        (node.kind() == SyntaxKind::Inline).then_some(Self(node))
-    }
-
-    pub fn tokens(&self) -> Vec<SyntaxToken> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|e| e.into_token())
-            .collect()
-    }
-
-    pub fn elements(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> {
-        self.0.children_with_tokens()
-    }
-
-    pub fn lines(&self) -> Vec<Line> {
-        let mut lines = Vec::new();
-        let mut tokens = Vec::new();
-        for element in self.0.children_with_tokens() {
-            let Some(token) = element.into_token() else {
-                continue;
-            };
-            if token.kind() == SyntaxKind::Newline {
-                lines.push(Line {
-                    tokens: std::mem::take(&mut tokens),
-                    newline: Some(token),
-                });
-            } else {
-                tokens.push(token);
-            }
-        }
-        if !tokens.is_empty() {
-            lines.push(Line {
-                tokens,
-                newline: None,
-            });
-        }
-        lines
-    }
-
-    pub fn range(&self) -> TextRange {
-        self.0.text_range()
     }
 }

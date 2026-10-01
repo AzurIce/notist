@@ -5,9 +5,22 @@
 
 *里程碑*
 
-- M1 — 无完整 script 能力。类型系统与 function call 形态保留；call 参数只支持字面量与内容体——无变量、无绑定、无求值环境。所见即所得：树的结构即写出的结构，展开只是可选投影
+*M1*
 
-// TODO: 或许 M2 引入 script 能力？但是保持 `.not` 与 M1 相同的限制，要求必须在 `.notc` 中做定义（默认 Code 模式），这样相当于对于文档来说，是不透明的元素，这样也解决了树上的表示的问题。
+无完整 script 能力。类型系统与 function call 形态保留；call 参数只支持字面量与内容体——无变量、无绑定、无求值环境。所见即所得：树的结构即写出的结构，展开只是可选投影
+
+*M2（Drafting）*
+
+或许 M2 引入 script 能力？但是保持 `.not` 与 M1 相同的限制，要求必须在 `.notc` 中做定义（默认 Code 模式），这样相当于对于文档来说，是不透明的元素，这样也解决了树上的表示的问题。
+
+可以通过某种类 async 的函数染色机制做 not 与 notc 边界：
+- 定义返回值为 InlineContent/Content 类型的函数为 Content 函数。
+- Content 函数只能在 Content 函数中使用。
+- 只有 Content 函数能够进入 not 世界。
+
+在这个模型下，尾 Content 字面值语法 `foo(..)[..]` 就可以被建模为挂载在对应 Content 上的 Children。不需要形参声明。
+
+// TODO: 形参语法怎么设计？或许隐式 it 支持 it.attrs 和 it.children？或许还应该支持某种 slots 定义机制？
 
 *地基*
 
@@ -32,11 +45,11 @@
 
 == 语法
 
-见 [grammar.not](designs/grammar.not)。
+见 [grammar.not](designs/grammar.not) 与 [markup.not](designs/markup.not)。
 
 == 类型
 
-见 [types.not](designs/types.not)。
+见 [types.not](designs/code/types.not)。
 
 == Desugar
 
@@ -65,3 +78,5 @@ markup 构造到构造器调用的映射。Expr 与 Item 同构（ctor + fields 
 - check 静态解析字面量 target；computed target 与 code 模式 import 的检查后置 P3
 
 == TODO
+
+- 空 InlineContent 提升为 Content 时的形态：包一个空 paragraph 还是空森林（随使用再定）

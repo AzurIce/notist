@@ -1,0 +1,44 @@
+= 函数
+
+== Content 函数
+
+返回类型为 `InlineContent` 或 `Content` 的函数被称为 Content 函数，目前在 `.not` 中只支持该类函数的调用。
+
+语法和 typst 类似：
+
+```not
+name(args)
+name[children]
+name(args)[children]
+```
+
+区别在于 `[children]` 不是 args 中的一个参数的语法糖，而是被 *挂载* 到这个内容节点的 Children。
+
+_Content 函数产生 Content 节点，Content 节点可以被挂载 Children 以及 Attrs_
+
+*参数*
+
+对齐 typst：`(...)` 内逗号分隔的项，允许尾逗号；每项两种形态——
+
+- `value` — 位置参数
+- `key: value` — 具名参数（成为字段）；key 为裸标识符或字符串，裸标识符是字符串 key 的糖；重复 key 后者覆盖
+
+例：`name("positional", 42, key: "value", flag: true)`
+
+值目前限字面量（typst 为任意表达式）：标量、四种字符串、负号、Array / Dict。字面量细则见 [types.not](types.not)。
+
+列表内空白与换行是 trivia；空行不允许（含空行则整个调用退化为字面文本）。
+
+*children*
+
+`[...]` 是调用的内容槽，挂载为结果节点的 children；写法与 flavor 规则见 [types.not](types.not)。
+
+调用的级别由构造器的返回类型决定：返回 Content 的（`paragraph` / `heading` / `list` / `item`）是块级元素（行内序列遇到它会结束当前段落）；返回 InlineContent 的（`strong` / `emph` / `raw` / `math` / `link` / `text`）是行内元素。`group` 透明继承 children 的 flavor；Custom 无定义，回退按 children flavor 判定。
+
+*求值*
+
+- 内建名映射到对应构造器；未知名 → Custom（原子自定义元素，数据而非行为）
+- 签名：`strong` / `emph` / `heading` / `paragraph` / `link` 只接受 InlineContent；`list` / `item` 接受任意内容（inline children 提升为单段落）；`group` 与 Custom 不受限
+- 多余位置参数：内建诊断；Custom 收进 `args` 字段；`link` / `raw` / `math` 的第一个位置参数分别映射到 `target` / `text` 字段
+
+模式切换与词法规则见 [grammar.not](../grammar.not)。

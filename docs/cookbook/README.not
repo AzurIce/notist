@@ -1,0 +1,32 @@
+@!(date: "2026-09-30")
+
+= Cook Book
+
+== 基础 Markup 语法
+
+Notist 的基础 Markup 语法与 Typst 几乎一致，不过一些细节的行为上略有差异。
+
+`=` 标题，*加粗*，_强调（斜体）_
+
+- 无序列表
+- 无序列表
+    - 无序列表
+        + 有序列表
+        + 有序列表
+
+行内代码块 `code`，以及多行代码块：
+
+```rust
+fn main() {
+    println!("Hello World");
+}
+```
+
+== 构造函数调用
+
+所有 Markup 下的元素都有对应的构造函数，比如：
+
+- `#raw("code")`：#raw("code")
+- `#strong[加粗]`：#strong[加粗]
+
+这里 `#xxx[..]` 其实是 `#xxx(children: [..])` 的语法糖

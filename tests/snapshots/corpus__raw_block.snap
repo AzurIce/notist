@@ -40,8 +40,7 @@ Document@0..200
     Backtick@91..95 "````"
   Newline@95..96 "\n"
   Newline@96..97 "\n"
-  Paragraph@97..106
-    Text@97..106 "段落被"
+  Text@97..106 "段落被"
   Newline@106..107 "\n"
   Raw@107..127
     Backtick@107..110 "```"
@@ -51,15 +50,14 @@ Document@0..200
     Backtick@124..127 "```"
   Newline@127..128 "\n"
   Newline@128..129 "\n"
-  Paragraph@129..171
-    Text@129..135 "行内"
-    Whitespace@135..136 " "
-    RawInline@136..152
-      Backtick@136..138 "``"
-      Text@138..150 "双反引号"
-      Backtick@150..152 "``"
-    Whitespace@152..153 " "
-    Text@153..171 "与块互不干扰"
+  Text@129..135 "行内"
+  Whitespace@135..136 " "
+  RawInline@136..152
+    Backtick@136..138 "``"
+    Text@138..150 "双反引号"
+    Backtick@150..152 "``"
+  Whitespace@152..153 " "
+  Text@153..171 "与块互不干扰"
   Newline@171..172 "\n"
   Newline@172..173 "\n"
   Error@173..200
@@ -74,9 +72,13 @@ Document@0..200
 === core ===
 error @173..200: unclosed raw block
 (doc @0..200
+  (rawinline @0..24 :block true :text "fn main() {}" :lang "rust")
+  (rawinline @26..63 :block true :text "无语言 tag，闭合更长")
+  (rawinline @65..95 :block true :text "内含 ``` 较短串")
   (paragraph @97..106
     (text @97..106 :text "段落被")
   )
+  (rawinline @107..127 :block true :text "围栏截断")
   (paragraph @129..171
     (text @129..135 :text "行内")
     (rawinline @136..152 :text "双反引号")

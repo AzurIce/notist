@@ -40,3 +40,6 @@ inline body 提升为段落
 
 - 列表
 ]
+
+#raw[x]
+不接受 children

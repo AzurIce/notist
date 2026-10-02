@@ -61,8 +61,7 @@ Document@0..150
       Text@97..106 "下一项"
   Newline@106..107 "\n"
   Newline@107..108 "\n"
-  Paragraph@108..117
-    Text@108..117 "段落被"
+  Text@108..117 "段落被"
   Newline@117..118 "\n"
   List@118..132
     ListItem@118..132
@@ -71,11 +70,10 @@ Document@0..150
       Text@120..132 "列表截断"
   Newline@132..133 "\n"
   Newline@133..134 "\n"
-  Paragraph@134..149
-    Minus@134..135 "-"
-    Text@135..136 "x"
-    Whitespace@136..137 " "
-    Text@137..149 "不是列表"
+  Minus@134..135 "-"
+  Text@135..136 "x"
+  Whitespace@136..137 " "
+  Text@137..149 "不是列表"
   Newline@149..150 "\n"
 
 === core ===

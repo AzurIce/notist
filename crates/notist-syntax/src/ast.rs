@@ -4,36 +4,15 @@ use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub struct Document(pub(crate) SyntaxNode);
 pub struct Heading(pub(crate) SyntaxNode);
-pub struct Paragraph(pub(crate) SyntaxNode);
-
-pub enum Block {
-    Heading(Heading),
-    Paragraph(Paragraph),
-    List(List),
-    Annotation(Annotation),
-    CodeCall(CodeCall),
-}
-
-impl Block {
-    pub fn cast(node: SyntaxNode) -> Option<Self> {
-        match node.kind() {
-            SyntaxKind::Heading => Some(Block::Heading(Heading(node))),
-            SyntaxKind::Paragraph => Some(Block::Paragraph(Paragraph(node))),
-            SyntaxKind::List => Some(Block::List(List(node))),
-            SyntaxKind::Annotation => Some(Block::Annotation(Annotation(node))),
-            SyntaxKind::CodeCall => Some(Block::CodeCall(CodeCall(node))),
-            _ => None,
-        }
-    }
-}
 
 impl Document {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::Document).then_some(Self(node))
     }
 
-    pub fn blocks(&self) -> impl Iterator<Item = Block> {
-        self.0.children().filter_map(Block::cast)
+    /// The flat element sequence: block nodes, inline content, and trivia.
+    pub fn elements(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0.children_with_tokens()
     }
 
     pub fn range(&self) -> TextRange {
@@ -42,7 +21,7 @@ impl Document {
 }
 
 /// Split an element sequence into lines at newline tokens.
-fn lines<'a>(
+pub fn lines<'a>(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + 'a,
 ) -> Vec<Line> {
     let mut lines = Vec::new();
@@ -75,6 +54,10 @@ pub struct Line {
 }
 
 impl Heading {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Heading).then_some(Self(node))
+    }
+
     pub fn level(&self) -> usize {
         self.0
             .children_with_tokens()
@@ -90,21 +73,6 @@ impl Heading {
 
     pub fn content_tokens(&self) -> Vec<SyntaxToken> {
         self.content().filter_map(|e| e.into_token()).collect()
-    }
-
-    pub fn range(&self) -> TextRange {
-        self.0.text_range()
-    }
-}
-
-impl Paragraph {
-    /// The inline content: the paragraph's full element sequence.
-    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
-        self.0.children_with_tokens()
-    }
-
-    pub fn lines(&self) -> Vec<Line> {
-        lines(self.content())
     }
 
     pub fn range(&self) -> TextRange {

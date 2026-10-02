@@ -1,6 +1,9 @@
 use rowan::TextRange;
 
+use crate::builtins;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Ctor {
     Doc,
     Paragraph,
@@ -20,6 +23,27 @@ pub enum Ctor {
 }
 
 impl Ctor {
+    /// The element level of a builtin constructor, if statically known.
+    /// `Doc` and custom constructors return `None` (derive it structurally).
+    pub fn level(&self) -> Option<builtins::Level> {
+        let name = match self {
+            Ctor::Doc => return None,
+            Ctor::Paragraph => "paragraph",
+            Ctor::Heading => "heading",
+            Ctor::Text => "text",
+            Ctor::RawInline => "raw",
+            Ctor::Strong => "strong",
+            Ctor::Emph => "emph",
+            Ctor::Math => "math",
+            Ctor::Link => "link",
+            Ctor::List => "list",
+            Ctor::ListItem => "item",
+            Ctor::Group => "group",
+            Ctor::Custom(_) => return None,
+        };
+        builtins::builtin_signature(name).map(|s| s.level)
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Ctor::Doc => "Doc",
@@ -40,6 +64,7 @@ impl Ctor {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Value {
     Unit,
     Bool(bool),
@@ -51,6 +76,7 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Dict(Vec<(String, Value)>);
 
 impl Dict {
@@ -118,12 +144,19 @@ impl std::fmt::Display for Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Item {
     pub ctor: Ctor,
     pub fields: Dict,
     pub children: Vec<Item>,
     pub attrs: Dict,
+    #[cfg_attr(feature = "serde", serde(skip, default = "empty_span"))]
     pub span: TextRange,
+}
+
+#[cfg(feature = "serde")]
+fn empty_span() -> TextRange {
+    TextRange::empty(0.into())
 }
 
 impl Item {
@@ -149,5 +182,20 @@ impl Item {
     pub fn with_children(mut self, children: Vec<Item>) -> Self {
         self.children = children;
         self
+    }
+
+    /// Depth-first iteration over this item and all its descendants.
+    pub fn descendants(&self) -> impl Iterator<Item = &Item> {
+        let mut stack = vec![self];
+        std::iter::from_fn(move || {
+            let item = stack.pop()?;
+            stack.extend(item.children.iter().rev());
+            Some(item)
+        })
+    }
+
+    /// The first descendant (self included) matching `pred`.
+    pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
+        self.descendants().find(|item| pred(item))
     }
 }

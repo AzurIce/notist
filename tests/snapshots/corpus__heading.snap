@@ -27,9 +27,8 @@ Document@0..69
     Text@33..34 "3"
   Newline@34..35 "\n"
   Newline@35..36 "\n"
-  Paragraph@36..38
-    Eq@36..37 "="
-    Text@37..38 "x"
+  Eq@36..37 "="
+  Text@37..38 "x"
   Newline@38..39 "\n"
   Newline@39..40 "\n"
   Heading@40..42
@@ -37,8 +36,7 @@ Document@0..69
     Whitespace@41..42 " "
   Newline@42..43 "\n"
   Newline@43..44 "\n"
-  Paragraph@44..53
-    Text@44..53 "段落被"
+  Text@44..53 "段落被"
   Newline@53..54 "\n"
   Heading@54..68
     Eq@54..55 "="

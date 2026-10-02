@@ -1,5 +1,6 @@
 use rowan::TextRange;
 
+pub mod builtins;
 pub mod cst_json;
 pub mod desugar;
 pub mod dump;

@@ -2,6 +2,8 @@ use rowan::TextRange;
 
 use notist_syntax::parser::Diagnostic;
 
+use crate::builtins::Accepts;
+
 use crate::expr::{BodyFlavor, Expr};
 use crate::item::{Ctor, Dict, Item, Value};
 
@@ -34,23 +36,9 @@ fn positional_field(name: &str, index: usize) -> Option<&'static str> {
     }
 }
 
-/// What a builtin accepts as its `[...]` body: inline content only, or any
-/// content (an inline body is then promoted to a one-paragraph block).
-/// `None` — including `Custom` — accepts anything.
-enum BodySig {
-    Inline,
-    Content,
-}
-
-fn body_sig(ctor: &Ctor) -> Option<BodySig> {
-    match ctor {
-        Ctor::Paragraph | Ctor::Heading | Ctor::Strong | Ctor::Emph | Ctor::Link => {
-            Some(BodySig::Inline)
-        }
-        Ctor::List | Ctor::ListItem => Some(BodySig::Content),
-        _ => None,
-    }
-}
+/// What a builtin accepts as its children mount is declared in
+/// `crate::builtins` (the language's static constructor table);
+/// custom constructors are unconstrained.
 
 /// Evaluate a document: a module body is a top-level expression sequence,
 /// and its result is wrapped in the `Doc` root item here — `Doc` is the
@@ -89,7 +77,7 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             span,
         } => {
             let ctor = resolve(name);
-            let sig = body_sig(&ctor);
+            let sig = crate::builtins::builtin_signature(name).map(|s| s.accepts);
             let mut item = Item::new(ctor, *span);
             item.fields = fields.clone();
             let mut extra = Vec::new();
@@ -114,7 +102,13 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             }
             item.children = children.iter().map(|c| eval(c, diagnostics)).collect();
             match (body, sig) {
-                (BodyFlavor::Block, Some(BodySig::Inline)) => {
+                (BodyFlavor::Inline | BodyFlavor::Block, Some(Accepts::Nothing)) => {
+                    diagnostics.push(Diagnostic {
+                        span: *span,
+                        message: format!("`{name}` takes no children"),
+                    });
+                }
+                (BodyFlavor::Block, Some(Accepts::Inline)) => {
                     diagnostics.push(Diagnostic {
                         span: *span,
                         message: format!(
@@ -122,7 +116,7 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
                         ),
                     });
                 }
-                (BodyFlavor::Inline, Some(BodySig::Content)) => {
+                (BodyFlavor::Inline, Some(Accepts::Content)) => {
                     let promoted = std::mem::take(&mut item.children);
                     item.children = vec![Item::new(Ctor::Paragraph, *span).with_children(promoted)];
                 }

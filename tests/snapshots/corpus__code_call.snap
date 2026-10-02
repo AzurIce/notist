@@ -2,107 +2,98 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..468
-  Paragraph@0..39
-    CodeCall@0..39
-      Hash@0..1 "#"
-      Ident@1..8 "callout"
-      LParen@8..9 "("
-      Entry@9..24
-        Ident@9..13 "kind"
-        Colon@13..14 ":"
-        Whitespace@14..15 " "
-        Str@15..24 "\"warning\""
-      RParen@24..25 ")"
-      LBracket@25..26 "["
-      Text@26..38 "注意内容"
-      RBracket@38..39 "]"
+Document@0..496
+  CodeCall@0..39
+    Hash@0..1 "#"
+    Ident@1..8 "callout"
+    LParen@8..9 "("
+    Entry@9..24
+      Ident@9..13 "kind"
+      Colon@13..14 ":"
+      Whitespace@14..15 " "
+      Str@15..24 "\"warning\""
+    RParen@24..25 ")"
+    LBracket@25..26 "["
+    Text@26..38 "注意内容"
+    RBracket@38..39 "]"
   Newline@39..40 "\n"
   Newline@40..41 "\n"
-  Paragraph@41..80
-    CodeCall@41..80
-      Hash@41..42 "#"
-      Ident@42..46 "link"
-      LParen@46..47 "("
-      Str@47..68 "\"https://example.com\""
-      RParen@68..69 ")"
-      LBracket@69..70 "["
-      Text@70..79 "带文字"
-      RBracket@79..80 "]"
+  CodeCall@41..80
+    Hash@41..42 "#"
+    Ident@42..46 "link"
+    LParen@46..47 "("
+    Str@47..68 "\"https://example.com\""
+    RParen@68..69 ")"
+    LBracket@69..70 "["
+    Text@70..79 "带文字"
+    RBracket@79..80 "]"
   Newline@80..81 "\n"
   Newline@81..82 "\n"
-  Paragraph@82..102
-    CodeCall@82..102
-      Hash@82..83 "#"
-      Ident@83..89 "strong"
-      LBracket@89..90 "["
-      Text@90..96 "直接"
-      Whitespace@96..97 " "
-      Text@97..101 "body"
-      RBracket@101..102 "]"
+  CodeCall@82..102
+    Hash@82..83 "#"
+    Ident@83..89 "strong"
+    LBracket@89..90 "["
+    Text@90..96 "直接"
+    Whitespace@96..97 " "
+    Text@97..101 "body"
+    RBracket@101..102 "]"
   Newline@102..103 "\n"
   Newline@103..104 "\n"
-  Paragraph@104..109
-    Hash@104..105 "#"
-    LParen@105..106 "("
-    Number@106..108 "42"
-    RParen@108..109 ")"
+  Hash@104..105 "#"
+  LParen@105..106 "("
+  Number@106..108 "42"
+  RParen@108..109 ")"
   Newline@109..110 "\n"
   Newline@110..111 "\n"
-  Paragraph@111..131
-    CodeCall@111..131
-      Hash@111..112 "#"
-      Ident@112..114 "fn"
-      LParen@114..115 "("
-      Ident@115..121 "嵌套"
-      Whitespace@121..122 " "
-      LParen@122..123 "("
-      Ident@123..129 "深度"
-      RParen@129..130 ")"
-      RParen@130..131 ")"
+  CodeCall@111..131
+    Hash@111..112 "#"
+    Ident@112..114 "fn"
+    LParen@114..115 "("
+    Ident@115..121 "嵌套"
+    Whitespace@121..122 " "
+    LParen@122..123 "("
+    Ident@123..129 "深度"
+    RParen@129..130 ")"
+    RParen@130..131 ")"
   Newline@131..132 "\n"
   Newline@132..133 "\n"
-  Paragraph@133..151
-    Text@133..136 "裸"
-    Whitespace@136..137 " "
-    Hash@137..138 "#"
-    Whitespace@138..139 " "
-    Text@139..151 "只是字符"
+  Text@133..136 "裸"
+  Whitespace@136..137 " "
+  Hash@137..138 "#"
+  Whitespace@138..139 " "
+  Text@139..151 "只是字符"
   Newline@151..152 "\n"
   Newline@152..153 "\n"
-  Paragraph@153..178
-    CodeCall@153..178
-      Hash@153..154 "#"
-      LBracket@154..155 "["
-      Text@155..161 "匿名"
-      Whitespace@161..162 " "
-      Strong@162..170
-        Star@162..163 "*"
-        Text@163..169 "内容"
-        Star@169..170 "*"
-      Whitespace@170..171 " "
-      Text@171..177 "拼接"
-      RBracket@177..178 "]"
+  CodeCall@153..178
+    Hash@153..154 "#"
+    LBracket@154..155 "["
+    Text@155..161 "匿名"
+    Whitespace@161..162 " "
+    Strong@162..170
+      Star@162..163 "*"
+      Text@163..169 "内容"
+      Star@169..170 "*"
+    Whitespace@170..171 " "
+    Text@171..177 "拼接"
+    RBracket@177..178 "]"
   Newline@178..179 "\n"
   Newline@179..180 "\n"
-  Paragraph@180..203
-    CodeCall@180..203
-      Hash@180..181 "#"
-      Ident@181..187 "strong"
-      LBracket@187..188 "["
-      Text@188..194 "空行"
-      Newline@194..195 "\n"
-      Newline@195..196 "\n"
-      Text@196..202 "粉碎"
-      RBracket@202..203 "]"
+  CodeCall@180..203
+    Hash@180..181 "#"
+    Ident@181..187 "strong"
+    LBracket@187..188 "["
+    Text@188..194 "空行"
+    Newline@194..195 "\n"
+    Newline@195..196 "\n"
+    Text@196..202 "粉碎"
+    RBracket@202..203 "]"
   Newline@203..204 "\n"
   Newline@204..205 "\n"
-  Paragraph@205..220
-    Hash@205..206 "#"
-    Ident@206..209 "foo"
-    LBracket@209..210 "["
-    Text@210..219 "未闭合"
-    Newline@219..220 "\n"
+  Hash@205..206 "#"
+  Ident@206..209 "foo"
+  LBracket@209..210 "["
+  Text@210..219 "未闭合"
+  Newline@219..220 "\n"
   CodeCall@220..303
     Hash@220..221 "#"
     Ident@221..225 "note"
@@ -115,12 +106,11 @@ Document@0..468
     RParen@238..239 ")"
     LBracket@239..240 "["
     Newline@240..241 "\n"
-    Paragraph@241..259
-      Text@241..244 "块"
-      Whitespace@244..245 " "
-      Text@245..249 "body"
-      Whitespace@249..250 " "
-      Text@250..259 "第一段"
+    Text@241..244 "块"
+    Whitespace@244..245 " "
+    Text@245..249 "body"
+    Whitespace@249..250 " "
+    Text@250..259 "第一段"
     Newline@259..260 "\n"
     Newline@260..261 "\n"
     List@261..290
@@ -135,32 +125,29 @@ Document@0..468
         Text@278..290 "列表项乙"
     Newline@290..291 "\n"
     Newline@291..292 "\n"
-    Paragraph@292..302
-      Text@292..301 "第二段"
-      Newline@301..302 "\n"
+    Text@292..301 "第二段"
+    Newline@301..302 "\n"
     RBracket@302..303 "]"
   Newline@303..304 "\n"
   Newline@304..305 "\n"
-  Paragraph@305..350
-    CodeCall@305..317
-      Hash@305..306 "#"
-      Ident@306..312 "strong"
-      LBracket@312..313 "["
-      Paragraph@313..316
-        Whitespace@313..314 " "
-        Text@314..315 "x"
-        Whitespace@315..316 " "
-      RBracket@316..317 "]"
-    Newline@317..318 "\n"
-    Text@318..321 "块"
-    Whitespace@321..322 " "
-    Text@322..326 "body"
-    Whitespace@326..327 " "
-    Text@327..333 "喂给"
-    Whitespace@333..334 " "
-    Text@334..340 "inline"
-    Whitespace@340..341 " "
-    Text@341..350 "构造器"
+  CodeCall@305..317
+    Hash@305..306 "#"
+    Ident@306..312 "strong"
+    LBracket@312..313 "["
+    Whitespace@313..314 " "
+    Text@314..315 "x"
+    Whitespace@315..316 " "
+    RBracket@316..317 "]"
+  Newline@317..318 "\n"
+  Text@318..321 "块"
+  Whitespace@321..322 " "
+  Text@322..326 "body"
+  Whitespace@326..327 " "
+  Text@327..333 "喂给"
+  Whitespace@333..334 " "
+  Text@334..340 "inline"
+  Whitespace@340..341 " "
+  Text@341..350 "构造器"
   Newline@350..351 "\n"
   Newline@351..352 "\n"
   CodeCall@352..363
@@ -170,41 +157,37 @@ Document@0..468
     Text@358..362 "body"
     RBracket@362..363 "]"
   Newline@363..364 "\n"
-  Paragraph@364..391
-    Text@364..370 "inline"
-    Whitespace@370..371 " "
-    Text@371..375 "body"
-    Whitespace@375..376 " "
-    Text@376..391 "提升为段落"
+  Text@364..370 "inline"
+  Whitespace@370..371 " "
+  Text@371..375 "body"
+  Whitespace@375..376 " "
+  Text@376..391 "提升为段落"
   Newline@391..392 "\n"
   Newline@392..393 "\n"
-  Paragraph@393..438
-    CodeCall@393..410
-      Hash@393..394 "#"
-      Ident@394..398 "demo"
-      LParen@398..399 "("
-      LBracket@399..400 "["
-      Ident@400..401 "x"
-      RBracket@401..402 "]"
-      Comma@402..403 ","
-      Whitespace@403..404 " "
-      LBracket@404..405 "["
-      Paragraph@405..408
-        Whitespace@405..406 " "
-        Ident@406..407 "y"
-        Whitespace@407..408 " "
-      RBracket@408..409 "]"
-      RParen@409..410 ")"
-    Newline@410..411 "\n"
-    Text@411..438 "参数位置内容字 ..."
+  CodeCall@393..410
+    Hash@393..394 "#"
+    Ident@394..398 "demo"
+    LParen@398..399 "("
+    LBracket@399..400 "["
+    Ident@400..401 "x"
+    RBracket@401..402 "]"
+    Comma@402..403 ","
+    Whitespace@403..404 " "
+    LBracket@404..405 "["
+    Whitespace@405..406 " "
+    Ident@406..407 "y"
+    Whitespace@407..408 " "
+    RBracket@408..409 "]"
+    RParen@409..410 ")"
+  Newline@410..411 "\n"
+  Text@411..438 "参数位置内容字 ..."
   Newline@438..439 "\n"
   Newline@439..440 "\n"
   CodeCall@440..467
     Hash@440..441 "#"
     LBracket@441..442 "["
     Newline@442..443 "\n"
-    Paragraph@443..455
-      Text@443..455 "块级匿名"
+    Text@443..455 "块级匿名"
     Newline@455..456 "\n"
     Newline@456..457 "\n"
     List@457..465
@@ -215,15 +198,28 @@ Document@0..468
     Newline@465..466 "\n"
     RBracket@466..467 "]"
   Newline@467..468 "\n"
+  Newline@468..469 "\n"
+  CodeCall@469..476
+    Hash@469..470 "#"
+    Ident@470..473 "raw"
+    LBracket@473..474 "["
+    Text@474..475 "x"
+    RBracket@475..476 "]"
+  Newline@476..477 "\n"
+  Text@477..486 "不接受"
+  Whitespace@486..487 " "
+  Text@487..495 "children"
+  Newline@495..496 "\n"
 
 === core ===
 error @194..194: inline content cannot contain a blank line
-error @468..468: unclosed code call body
+error @496..496: unclosed code call body
 error @115..121: bare names are not literals
 error @399..400: content is mounted with `[..]` after the call, not passed as an argument
 error @404..405: content is mounted with `[..]` after the call, not passed as an argument
 error @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
-(doc @0..468
+error @469..476: `raw` takes no children
+(doc @0..496
   (paragraph @0..39
     (callout @0..39 :kind "warning"
       (text @26..38 :text "注意内容")
@@ -263,53 +259,61 @@ error @305..317: `strong` takes inline content; write the body as `[..]` without
       (text @196..202 :text "粉碎")
     )
   )
-  (paragraph @205..220
+  (paragraph @205..303
     (text @205..219 :text "#foo[未闭合")
-  )
-  (note @220..303 :kind "demo"
-    (paragraph @241..259
-      (text @241..259 :text "块 body 第一段")
-    )
-    (list @261..290 :ordered false
-      (listitem @261..275
-        (text @263..275 :text "列表项甲")
+    (note @220..303 :kind "demo"
+      (paragraph @241..259
+        (text @241..259 :text "块 body 第一段")
       )
-      (listitem @276..290
-        (text @278..290 :text "列表项乙")
+      (list @261..290 :ordered false
+        (listitem @261..275
+          (text @263..275 :text "列表项甲")
+        )
+        (listitem @276..290
+          (text @278..290 :text "列表项乙")
+        )
       )
-    )
-    (paragraph @292..302
-      (text @292..301 :text "第二段")
+      (paragraph @292..301
+        (text @292..301 :text "第二段")
+      )
     )
   )
   (paragraph @305..350
     (strong @305..317
-      (paragraph @313..316
+      (paragraph @314..315
         (text @314..315 :text "x")
       )
     )
     (text @318..350 :text "块 body 喂给 inline 构造器")
   )
-  (list @352..363
-    (paragraph @352..363
-      (text @358..362 :text "body")
+  (paragraph @352..391
+    (list @352..363
+      (paragraph @352..363
+        (text @358..362 :text "body")
+      )
     )
-  )
-  (paragraph @364..391
     (text @364..391 :text "inline body 提升为段落")
   )
   (paragraph @393..438
     (demo @393..410)
     (text @411..438 :text "参数位置内容字面量")
   )
-  (group @440..467
-    (paragraph @443..455
-      (text @443..455 :text "块级匿名")
-    )
-    (list @457..465 :ordered false
-      (listitem @457..465
-        (text @459..465 :text "列表")
+  (paragraph @440..467
+    (group @440..467
+      (paragraph @443..455
+        (text @443..455 :text "块级匿名")
+      )
+      (list @457..465 :ordered false
+        (listitem @457..465
+          (text @459..465 :text "列表")
+        )
       )
     )
+  )
+  (paragraph @469..495
+    (rawinline @469..476
+      (text @474..475 :text "x")
+    )
+    (text @477..495 :text "不接受 children")
   )
 )

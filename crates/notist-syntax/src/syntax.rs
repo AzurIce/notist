@@ -33,7 +33,6 @@ pub enum SyntaxKind {
 
     Document,
     Heading,
-    Paragraph,
     Raw,
     RawInline,
     Math,

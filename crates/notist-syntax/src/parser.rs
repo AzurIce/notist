@@ -66,40 +66,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Whether a code call starting at `#` (cur) parses and is a block-level
-    /// element. The level is the callee's return type: builtins returning
-    /// Content are blocks; `group` (transparent) and `Custom` (undefined)
-    /// fall back to the body's derived flavor.
-    fn at_block_call(&self) -> bool {
-        let named = self.peek(1) == Some(SyntaxKind::Ident);
-        let args_at = self.pos + 1 + named as usize;
-        let has_args = self.lexed.kind(args_at) == Some(SyntaxKind::LParen);
-        let mut after = args_at;
-        if has_args {
-            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen, false) {
-                Balanced::Closed(end) => after = end + 1,
-                _ => return false,
-            }
+    /// Whether an `@` at a block start begins a standalone annotation block:
+    /// false when the payload is immediately followed by an inline element
+    /// (then it is an inline annotation inside a paragraph).
+    fn at_block_annotation(&self) -> bool {
+        let mut i = self.pos + 1;
+        if self.lexed.kind(i) == Some(SyntaxKind::Bang) {
+            i += 1;
         }
-        if self.lexed.kind(after) != Some(SyntaxKind::LBracket) {
-            return false;
+        if self.lexed.kind(i) != Some(SyntaxKind::LParen) {
+            return true; // malformed payload: let the block path diagnose it
         }
-        let Balanced::Closed(close) =
-            self.balanced(after, SyntaxKind::LBracket, SyntaxKind::RBracket, true)
-        else {
-            return false;
-        };
-        if !(named || !has_args) {
-            return false;
-        }
-        let flavor_block = self.is_block_body(after, close);
-        if !named {
-            return flavor_block;
-        }
-        match self.lexed.text(self.pos + 1) {
-            "paragraph" | "heading" | "list" | "item" => true,
-            "strong" | "emph" | "raw" | "math" | "link" | "text" => false,
-            _ => flavor_block,
+        match self.balanced(i, SyntaxKind::LParen, SyntaxKind::RParen, false) {
+            Balanced::Closed(end) => matches!(
+                self.lexed.kind(end + 1),
+                None | Some(SyntaxKind::Whitespace | SyntaxKind::Newline)
+            ),
+            _ => true,
         }
     }
 
@@ -118,12 +101,11 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Minus | SyntaxKind::Plus if self.at_list_marker() => self.list_at(0),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
-                SyntaxKind::At => self.annotation(),
-                SyntaxKind::Hash if self.at_block_call() => self.code_call(),
+                SyntaxKind::At if self.at_block_annotation() => self.annotation(),
                 SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
-                _ => self.paragraph(),
+                _ => self.inline(Self::line_ends_block),
             }
         }
         self.builder.finish_node();
@@ -134,7 +116,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Entry: at `=` followed by whitespace, at a line start. The marker and
-    /// its following whitespace stay outside the `Inline` child.
+    /// its following whitespace are eaten before the inline content.
     fn heading(&mut self) {
         self.builder.start_node(SyntaxKind::Heading.into());
         self.eat();
@@ -214,12 +196,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn paragraph(&mut self) {
-        self.builder.start_node(SyntaxKind::Paragraph.into());
-        self.inline(Self::line_ends_block);
-        self.builder.finish_node();
-    }
-
     fn inline(&mut self, stop: impl Fn(&Self) -> bool) {
         self.inline_delimited(&stop, None);
     }
@@ -252,7 +228,6 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Dollar) => self.math_inline(),
                 Some(SyntaxKind::LBracket) => self.link(stop),
-                Some(SyntaxKind::Hash) if self.at_block_call() => break,
                 Some(SyntaxKind::Hash) => self.code_call(),
                 // `@(..)` inline annotates the immediately following element;
                 // bare `@` stays prose
@@ -624,12 +599,11 @@ impl<'a> Parser<'a> {
                 }
                 Some(SyntaxKind::Whitespace) if self.at_blank_line() => self.eat_blank_line(),
                 Some(SyntaxKind::LineComment) | Some(SyntaxKind::BlockComment) => self.eat(),
-                Some(SyntaxKind::At) => self.annotation(),
-                Some(SyntaxKind::Hash) if self.at_block_call() => self.code_call(),
+                Some(SyntaxKind::At) if self.at_block_annotation() => self.annotation(),
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
-                _ => self.paragraph(),
+                _ => self.inline(Self::line_ends_block),
             }
         }
     }

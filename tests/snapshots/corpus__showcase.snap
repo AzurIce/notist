@@ -39,23 +39,19 @@ Document@0..144
     Text@62..68 "段落"
   Newline@68..69 "\n"
   Newline@69..70 "\n"
-  Paragraph@70..113
-    Text@70..91 "单换行直接拼接"
-    Newline@91..92 "\n"
-    Text@92..113 "同一段落内继续"
+  Text@70..91 "单换行直接拼接"
+  Newline@91..92 "\n"
+  Text@92..113 "同一段落内继续"
   Newline@113..114 "\n"
   Newline@114..115 "\n"
-  Paragraph@115..127
-    Text@115..127 "空行分段"
+  Text@115..127 "空行分段"
   Newline@127..128 "\n"
   Newline@128..129 "\n"
-  Paragraph@129..135
-    Text@129..135 "强制"
+  Text@129..135 "强制"
   ParBreak@135..137
     Backslash@135..136 "\\"
     Newline@136..137 "\n"
-  Paragraph@137..143
-    Text@137..143 "分段"
+  Text@137..143 "分段"
   Newline@143..144 "\n"
 
 === core ===

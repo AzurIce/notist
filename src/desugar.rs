@@ -1,7 +1,7 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
 use notist_syntax::ast::{
-    Annotation, Block, CodeCall, Document, Entry, Link, List, ListItem, WikiLink,
+    Annotation, CodeCall, Document, Entry, Heading, Link, List, ListItem, WikiLink,
 };
 use notist_syntax::parser::Diagnostic;
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
@@ -22,70 +22,172 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 /// top-level expression sequence), not a constructor call; the `Doc` root
 /// is introduced by eval.
 ///
-/// Annotations land here: `@(dict)` payloads become the attrs of the
-/// immediately following block; `@!(dict)` become the module's.
+/// The CST is flat: maximal runs of inline content become `paragraph` exprs
+/// here; blank lines and block nodes are run boundaries. Annotations attach
+/// to the immediately following node; `@!(dict)` become the module's attrs.
 pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
-    desugar_blocks(document.blocks(), diags)
+    let elements: Vec<_> = document.elements().collect();
+    desugar_blocks(&elements, diags)
 }
 
-/// A block sequence → Expr forest, sharing the annotation-pending logic
-/// between the document body and block-level `[...]` bodies. The returned
-/// Dict collects module (`@!`) attrs; `[...]` bodies ignore it.
+/// A flat element sequence → Expr forest, shared by the document body and
+/// block-level `[...]` bodies. The returned Dict collects module (`@!`)
+/// attrs; `[...]` bodies ignore it.
+#[allow(unused_assignments)] // seen_content is loop-carried across match arms
 fn desugar_blocks(
-    blocks: impl Iterator<Item = Block>,
+    elements: &[NodeOrToken<SyntaxNode, SyntaxToken>],
     diags: &mut Vec<Diagnostic>,
 ) -> (Vec<Expr>, Dict) {
     let mut forest = Vec::new();
     let mut pending = Dict::default();
     let mut module_attrs = Dict::default();
     let mut seen_content = false;
-    for block in blocks {
-        match block {
-            Block::Annotation(annotation) => {
-                let dict = annotation_dict(&annotation, diags);
-                if annotation.is_module() {
-                    if seen_content {
-                        diags.push(Diagnostic {
-                            span: annotation.range(),
-                            message: "module annotation must precede all content".to_string(),
-                        });
-                    }
-                    module_attrs.extend(dict);
-                } else {
-                    pending.extend(dict);
+    let mut run: Vec<NodeOrToken<SyntaxNode, SyntaxToken>> = Vec::new();
+
+    macro_rules! flush_run {
+        () => {
+            if !run.is_empty() {
+                let span = run_span(&run);
+                let children = desugar_inline(run.drain(..), diags);
+                if !children.is_empty() {
+                    let mut expr = Expr::call("paragraph", span).with_children(children);
+                    expr.set_attrs(pending.take());
+                    seen_content = true;
+                    forest.push(expr);
                 }
             }
-            _ => {
-                seen_content = true;
-                let mut expr = desugar_block(&block, diags);
-                expr.set_attrs(pending.take());
-                forest.push(expr);
+        };
+    }
+
+    for i in 0..elements.len() {
+        let el = &elements[i];
+        match el {
+            NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::Annotation => {
+                    flush_run!();
+                    let annotation = Annotation::cast(node.clone()).unwrap();
+                    let dict = annotation_dict(&annotation, diags);
+                    if annotation.is_module() {
+                        if seen_content {
+                            diags.push(Diagnostic {
+                                span: annotation.range(),
+                                message: "module annotation must precede all content".to_string(),
+                            });
+                        }
+                        module_attrs.extend(dict);
+                    } else {
+                        pending.extend(dict);
+                    }
+                }
+                SyntaxKind::Heading => {
+                    flush_run!();
+                    seen_content = true;
+                    let heading = Heading::cast(node.clone()).unwrap();
+                    let level = heading.level() as i64;
+                    let children = desugar_inline(heading.content(), diags);
+                    let mut expr = Expr::call("heading", heading.range())
+                        .with_field("level", Value::Int(level))
+                        .with_children(children);
+                    expr.set_attrs(pending.take());
+                    forest.push(expr);
+                }
+                SyntaxKind::List => {
+                    flush_run!();
+                    seen_content = true;
+                    let mut expr = desugar_list(&List::cast(node.clone()).unwrap(), diags);
+                    expr.set_attrs(pending.take());
+                    forest.push(expr);
+                }
+                SyntaxKind::Raw => {
+                    flush_run!();
+                    seen_content = true;
+                    let mut expr = desugar_raw_block(node);
+                    expr.set_attrs(pending.take());
+                    forest.push(expr);
+                }
+                // boundaries with no core counterpart (ParBreak) or already
+                // diagnosed (Error)
+                SyntaxKind::ParBreak | SyntaxKind::Error => flush_run!(),
+                _ => run.push(el.clone()),
+            },
+            NodeOrToken::Token(token) => {
+                if token.kind() == SyntaxKind::Newline && is_blank_boundary(elements, i) {
+                    flush_run!();
+                } else {
+                    run.push(el.clone());
+                }
             }
         }
     }
+    flush_run!();
     (forest, module_attrs)
 }
 
-fn desugar_block(block: &Block, diags: &mut Vec<Diagnostic>) -> Expr {
-    match block {
-        Block::Heading(heading) => {
-            let level = heading.level() as i64;
-            let children = desugar_inline(heading.content(), diags);
-            Expr::call("heading", heading.range())
-                .with_field("level", Value::Int(level))
-                .with_children(children)
-        }
-        Block::Paragraph(paragraph) => {
-            let children = desugar_inline(paragraph.content(), diags);
-            Expr::call("paragraph", paragraph.range()).with_children(children)
-        }
-        Block::List(list) => desugar_list(list, diags),
-        Block::CodeCall(call) => desugar_code_call(call, diags)
-            .into_iter()
-            .next()
-            .expect("a call desugars to exactly one expr"),
-        Block::Annotation(_) => unreachable!("annotations are handled by the document loop"),
+/// Whether the newline at `i` ends a run: what follows (whitespace aside) is
+/// another newline or nothing.
+fn is_blank_boundary(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>], i: usize) -> bool {
+    let mut j = i + 1;
+    while matches!(elements.get(j).map(|e| e.kind()), Some(SyntaxKind::Whitespace)) {
+        j += 1;
     }
+    matches!(elements.get(j).map(|e| e.kind()), None | Some(SyntaxKind::Newline))
+}
+
+/// The span covering a run's content (surrounding trivia excluded).
+fn run_span(run: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> TextRange {
+    let is_trivia = |e: &NodeOrToken<SyntaxNode, SyntaxToken>| {
+        matches!(e.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline)
+    };
+    let start = run
+        .iter()
+        .find(|e| !is_trivia(e))
+        .map(|e| e.text_range().start())
+        .unwrap_or_default();
+    let end = run
+        .iter()
+        .rev()
+        .find(|e| !is_trivia(e))
+        .map(|e| e.text_range().end())
+        .unwrap_or(start);
+    TextRange::new(start, end)
+}
+
+/// A fenced raw block: content between the fences; the tag is the rest of
+/// the opening line. (Unclosed fences arrive wrapped in `Error` and are
+/// dropped there.)
+fn desugar_raw_block(node: &SyntaxNode) -> Expr {
+    let tokens: Vec<_> = node
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .collect();
+    let nl = tokens.iter().position(|t| t.kind() == SyntaxKind::Newline);
+    let close = tokens
+        .iter()
+        .rposition(|t| t.kind() == SyntaxKind::Backtick)
+        .unwrap_or(tokens.len());
+    let (tag, text) = match nl {
+        Some(nl) => {
+            let tag = tokens[1..nl]
+                .iter()
+                .map(|t| t.text())
+                .collect::<String>()
+                .trim()
+                .to_string();
+            let text = tokens[nl + 1..close]
+                .iter()
+                .map(|t| t.text())
+                .collect::<String>();
+            (tag, text.strip_suffix('\n').map(str::to_string).unwrap_or(text))
+        }
+        None => (String::new(), String::new()),
+    };
+    let mut expr = Expr::call("raw", node.text_range())
+        .with_field("block", Value::Bool(true))
+        .with_field("text", Value::Str(text));
+    if !tag.is_empty() {
+        expr = expr.with_field("lang", Value::Str(tag));
+    }
+    expr
 }
 
 /// The dict carried by an `@(dict)` annotation (stray members diagnosed).
@@ -211,21 +313,16 @@ fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> 
     }]
 }
 
-/// Flavor derived from a bracketed content region: block iff it contains a
-/// block-level node.
+/// Flavor of a bracketed content region, from the declared flanks: both
+/// brackets padded on the inside → block.
 fn is_block_content(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> bool {
-    elements.iter().any(|el| {
+    let flank = |el: Option<&NodeOrToken<SyntaxNode, SyntaxToken>>| {
         matches!(
-            el.kind(),
-            SyntaxKind::Paragraph
-                | SyntaxKind::Heading
-                | SyntaxKind::List
-                | SyntaxKind::ListItem
-                | SyntaxKind::Raw
-                | SyntaxKind::ParBreak
-                | SyntaxKind::Error
+            el.map(|e| e.kind()),
+            Some(SyntaxKind::Whitespace | SyntaxKind::Newline)
         )
-    })
+    };
+    flank(elements.first()) && flank(elements.last())
 }
 
 /// Desugar a bracketed content region with its derived flavor.
@@ -234,13 +331,7 @@ fn content_children(
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Expr> {
     if is_block_content(elements) {
-        desugar_blocks(
-            elements
-                .iter()
-                .filter_map(|el| el.as_node().and_then(|n| Block::cast(n.clone()))),
-            diags,
-        )
-        .0
+        desugar_blocks(elements, diags).0
     } else {
         desugar_inline(elements.iter().cloned(), diags)
     }

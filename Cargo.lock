@@ -536,6 +536,7 @@ dependencies = [
  "insta",
  "notist-syntax",
  "rowan",
+ "serde",
  "tokio",
  "tower-lsp",
  "wasm-bindgen",

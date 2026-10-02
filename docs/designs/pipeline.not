@@ -1,0 +1,34 @@
+= 管线
+
+源码到 Content 树的完整管线。诊断在各层就近产生；分析作用于最终的 Content 树。
+
+*Lex*
+
+- 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
+- trivia（空白、换行、注释）是一等 token，全保留
+
+*Parse*
+
+- token 流 → CST（rowan 绿树，无损：文本拼接 == 源文件）
+- parser 永不失败：语法错误就近诊断，结构性破坏由 Error 节点包裹
+
+*AST*
+
+- CST 的类型化视图：薄访问器，不产生新信息
+
+*Desugar*
+
+- CST → Expr 森林：markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph`；字面量归一化
+- 值域语义错误在此诊断（裸名非字面量、数字溢出、非法 entry 等）
+
+*Eval*
+
+- Expr → Item：构造器名解析（内建 / Custom）、签名校验、InlineContent → Content 提升、注解归位
+- 类型检查在此：签名校验依赖只有 Expr 携带的 flavor 声明，故在构造期做
+- Custom 构造器是原子自定义元素：数据而非行为
+
+*Content 树*
+
+- 节点 = ctor + fields + children + attrs + span
+- 分析只作用于 Content 树：引用解析、sectionize、渲染
+- CST 服务 tooling；core 节点携带产生它的 surface span

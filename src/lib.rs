@@ -1,30 +1,23 @@
 use rowan::TextRange;
 
-pub mod builtins;
+pub use notist_core::{builtins, diag, dump, eval, expr, index, item, query, reflow, sectionize};
+
 pub mod cst_json;
 pub mod desugar;
-pub mod dump;
-pub mod eval;
-pub mod expr;
-pub mod item;
+pub mod frontend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp;
+pub mod vault;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 /// The full pipeline: parse → desugar → eval, collecting the diagnostics of
-/// every phase.
-pub fn analyze(src: &str) -> (item::Item, Vec<notist_syntax::parser::Diagnostic>) {
-    let parse = notist_syntax::parser::parse(src);
-    let mut diagnostics = parse.diagnostics.clone();
-    let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
-        return (
-            item::Item::new(item::Ctor::Doc, TextRange::empty(0.into())),
-            diagnostics,
-        );
-    };
-    let expr = desugar::desugar(&document, &mut diagnostics);
-    let item = eval::eval_doc(&expr.0, document.range(), expr.1, &mut diagnostics);
+/// every phase (syntax from the parser, semantic from desugar, type from eval).
+pub fn analyze(src: &str) -> (item::Item, Vec<diag::Diagnostic>) {
+    let (forest, module_attrs, mut diagnostics) = desugar::lower_not(src);
+    let forest = reflow::reflow(forest);
+    let span = TextRange::new(0.into(), (src.len() as u32).into());
+    let item = eval::eval_doc(&forest, span, module_attrs, &mut diagnostics);
     (item, diagnostics)
 }
 
@@ -33,7 +26,8 @@ pub fn dump_str(src: &str) -> String {
     let mut out = String::new();
     for d in &diagnostics {
         out.push_str(&format!(
-            "error @{}..{}: {}\n",
+            "error[{}] @{}..{}: {}\n",
+            d.phase,
             u32::from(d.span.start()),
             u32::from(d.span.end()),
             d.message

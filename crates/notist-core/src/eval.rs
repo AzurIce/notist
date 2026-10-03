@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-use notist_syntax::parser::Diagnostic;
+use crate::diag::{Diagnostic, Phase};
 
 use crate::builtins::Accepts;
 
@@ -95,6 +95,7 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
                     item.fields.insert("args", Value::Array(extra));
                 } else {
                     diagnostics.push(Diagnostic {
+                phase: Phase::Type,
                         span: *span,
                         message: format!("too many positional arguments for `{name}`"),
                     });
@@ -104,12 +105,14 @@ pub fn eval(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Item {
             match (body, sig) {
                 (BodyFlavor::Inline | BodyFlavor::Block, Some(Accepts::Nothing)) => {
                     diagnostics.push(Diagnostic {
+                phase: Phase::Type,
                         span: *span,
                         message: format!("`{name}` takes no children"),
                     });
                 }
                 (BodyFlavor::Block, Some(Accepts::Inline)) => {
                     diagnostics.push(Diagnostic {
+                phase: Phase::Type,
                         span: *span,
                         message: format!(
                             "`{name}` takes inline content; write the body as `[..]` without inner padding"

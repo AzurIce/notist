@@ -212,13 +212,13 @@ Document@0..496
   Newline@495..496 "\n"
 
 === core ===
-error @194..194: inline content cannot contain a blank line
-error @496..496: unclosed code call body
-error @115..121: bare names are not literals
-error @399..400: content is mounted with `[..]` after the call, not passed as an argument
-error @404..405: content is mounted with `[..]` after the call, not passed as an argument
-error @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
-error @469..476: `raw` takes no children
+error[syntax] @194..194: inline content cannot contain a blank line
+error[syntax] @496..496: unclosed code call body
+error[semantic] @115..121: bare names are not literals
+error[semantic] @399..400: content is mounted with `[..]` after the call, not passed as an argument
+error[semantic] @404..405: content is mounted with `[..]` after the call, not passed as an argument
+error[type] @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
+error[type] @469..476: `raw` takes no children
 (doc @0..496
   (paragraph @0..39
     (callout @0..39 :kind "warning"
@@ -259,23 +259,23 @@ error @469..476: `raw` takes no children
       (text @196..202 :text "粉碎")
     )
   )
-  (paragraph @205..303
+  (paragraph @205..219
     (text @205..219 :text "#foo[未闭合")
-    (note @220..303 :kind "demo"
-      (paragraph @241..259
-        (text @241..259 :text "块 body 第一段")
+  )
+  (note @220..303 :kind "demo"
+    (paragraph @241..259
+      (text @241..259 :text "块 body 第一段")
+    )
+    (list @261..290 :ordered false
+      (listitem @261..275
+        (text @263..275 :text "列表项甲")
       )
-      (list @261..290 :ordered false
-        (listitem @261..275
-          (text @263..275 :text "列表项甲")
-        )
-        (listitem @276..290
-          (text @278..290 :text "列表项乙")
-        )
+      (listitem @276..290
+        (text @278..290 :text "列表项乙")
       )
-      (paragraph @292..301
-        (text @292..301 :text "第二段")
-      )
+    )
+    (paragraph @292..301
+      (text @292..301 :text "第二段")
     )
   )
   (paragraph @305..350
@@ -286,27 +286,25 @@ error @469..476: `raw` takes no children
     )
     (text @318..350 :text "块 body 喂给 inline 构造器")
   )
-  (paragraph @352..391
-    (list @352..363
-      (paragraph @352..363
-        (text @358..362 :text "body")
-      )
+  (list @352..363
+    (paragraph @352..363
+      (text @358..362 :text "body")
     )
+  )
+  (paragraph @364..391
     (text @364..391 :text "inline body 提升为段落")
   )
   (paragraph @393..438
     (demo @393..410)
     (text @411..438 :text "参数位置内容字面量")
   )
-  (paragraph @440..467
-    (group @440..467
-      (paragraph @443..455
-        (text @443..455 :text "块级匿名")
-      )
-      (list @457..465 :ordered false
-        (listitem @457..465
-          (text @459..465 :text "列表")
-        )
+  (group @440..467
+    (paragraph @443..455
+      (text @443..455 :text "块级匿名")
+    )
+    (list @457..465 :ordered false
+      (listitem @457..465
+        (text @459..465 :text "列表")
       )
     )
   )

@@ -19,6 +19,9 @@ pub enum Ctor {
     /// Transparent identity node: renders as its children; carries attrs
     /// and structure without adding semantics. Produced by `#[..]`.
     Group,
+    /// A document section: produced by `sectionize`, never written directly.
+    /// Its first child is the heading that started it.
+    Section,
     Custom(String),
 }
 
@@ -26,6 +29,10 @@ impl Ctor {
     /// The element level of a builtin constructor, if statically known.
     /// `Doc` and custom constructors return `None` (derive it structurally).
     pub fn level(&self) -> Option<builtins::Level> {
+        // core-only ctors with no source spelling answer directly
+        if *self == Ctor::Section {
+            return Some(builtins::Level::Block);
+        }
         let name = match self {
             Ctor::Doc => return None,
             Ctor::Paragraph => "paragraph",
@@ -40,6 +47,7 @@ impl Ctor {
             Ctor::ListItem => "item",
             Ctor::Group => "group",
             Ctor::Custom(_) => return None,
+            Ctor::Section => return None,
         };
         builtins::builtin_signature(name).map(|s| s.level)
     }
@@ -58,6 +66,7 @@ impl Ctor {
             Ctor::List => "List",
             Ctor::ListItem => "ListItem",
             Ctor::Group => "Group",
+            Ctor::Section => "Section",
             Ctor::Custom(name) => name,
         }
     }

@@ -38,7 +38,7 @@ Document@0..194
   BlockComment@181..194 "/* 未闭合\n"
 
 === core ===
-error @181..194: unclosed block comment
+error[syntax] @181..194: unclosed block comment
 (doc @0..194
   (paragraph @80..125
     (text @80..86 :text "段落")

@@ -108,9 +108,9 @@ Document@0..196
   Newline@195..196 "\n"
 
 === core ===
-error @91..95: annotation payload must be a dict literal
-error @149..151: annotation payload must be a dict literal
-error @110..124: module annotation must precede all content
+error[syntax] @91..95: annotation payload must be a dict literal
+error[syntax] @149..151: annotation payload must be a dict literal
+error[semantic] @110..124: module annotation must precede all content
 (doc @0..196 @type "design" @late true
   (heading @53..61 :level 1 @id "intro" @tags ("a", "b")
     (text @55..61 :text "标题")

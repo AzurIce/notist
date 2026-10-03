@@ -70,7 +70,7 @@ Document@0..200
       Newline@199..200 "\n"
 
 === core ===
-error @173..200: unclosed raw block
+error[syntax] @173..200: unclosed raw block
 (doc @0..200
   (rawinline @0..24 :block true :text "fn main() {}" :lang "rust")
   (rawinline @26..63 :block true :text "无语言 tag，闭合更长")

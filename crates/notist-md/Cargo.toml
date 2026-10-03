@@ -1,0 +1,9 @@
+[package]
+name = "notist-md"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+notist-core = { path = "../notist-core" }
+rushdown = "0.18"
+rowan = "0.17.0"

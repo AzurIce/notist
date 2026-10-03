@@ -10,7 +10,11 @@ pub fn analyze_json(src: &str) -> String {
     let parse = parser::parse(src);
     let mut out = String::from("{\"tree\":");
     write_element(&mut out, NodeOrToken::Node(parse.syntax()));
-    let mut diagnostics = parse.diagnostics.clone();
+    let mut diagnostics: Vec<crate::diag::Diagnostic> = parse
+        .diagnostics
+        .iter()
+        .map(|d| crate::diag::Diagnostic::new(crate::diag::Phase::Syntax, d.span, d.message.clone()))
+        .collect();
     if let Some(document) = ast::Document::cast(parse.syntax()) {
         out.push_str(",\"ast\":");
         write_ast(&mut out, &document);
@@ -20,14 +24,15 @@ pub fn analyze_json(src: &str) -> String {
         write_item(&mut out, &item);
     }
     out.push_str(",\"diagnostics\":[");
-    for (i, d) in parse.diagnostics.iter().enumerate() {
+    for (i, d) in diagnostics.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"start\":{},\"end\":{},\"message\":{}}}",
+            "{{\"start\":{},\"end\":{},\"phase\":\"{}\",\"message\":{}}}",
             u32::from(d.span.start()),
             u32::from(d.span.end()),
+            d.phase,
             escape(&d.message),
         ));
     }

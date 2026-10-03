@@ -3,11 +3,26 @@ use rowan::{NodeOrToken, TextRange, TextSize};
 use notist_syntax::ast::{
     Annotation, CodeCall, Document, Entry, Heading, Link, List, ListItem, WikiLink,
 };
-use notist_syntax::parser::Diagnostic;
+use crate::diag::{Diagnostic, Phase};
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::expr::{BodyFlavor, Expr};
 use crate::item::{Dict, Value};
+
+/// The `.not` frontend's lowering: parse + desugar, no eval (that is shared).
+pub fn lower_not(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
+    let parse = notist_syntax::parser::parse(src);
+    let mut diagnostics: Vec<Diagnostic> = parse
+        .diagnostics
+        .iter()
+        .map(|d| Diagnostic::new(Phase::Syntax, d.span, d.message.clone()))
+        .collect();
+    let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
+        return (Vec::new(), Dict::default(), diagnostics);
+    };
+    let (forest, module_attrs) = desugar(&document, &mut diagnostics);
+    (forest, module_attrs, diagnostics)
+}
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
     tokens
@@ -64,19 +79,30 @@ fn desugar_blocks(
         match el {
             NodeOrToken::Node(node) => match node.kind() {
                 SyntaxKind::Annotation => {
-                    flush_run!();
                     let annotation = Annotation::cast(node.clone()).unwrap();
-                    let dict = annotation_dict(&annotation, diags);
-                    if annotation.is_module() {
-                        if seen_content {
-                            diags.push(Diagnostic {
-                                span: annotation.range(),
-                                message: "module annotation must precede all content".to_string(),
-                            });
-                        }
-                        module_attrs.extend(dict);
+                    // 紧邻下一个元素的注解属于行内（进 run，由 desugar_inline
+                    // 挂到紧随的构造）；否则是块级注解（挂到下一个块/段落）
+                    let adjacent = elements
+                        .get(i + 1)
+                        .is_some_and(|next| !matches!(next.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline));
+                    if adjacent && !annotation.is_module() {
+                        run.push(el.clone());
                     } else {
-                        pending.extend(dict);
+                        flush_run!();
+                        let dict = annotation_dict(&annotation, diags);
+                        if annotation.is_module() {
+                            if seen_content {
+                                diags.push(Diagnostic {
+                                    phase: Phase::Semantic,
+                                    span: annotation.range(),
+                                    message: "module annotation must precede all content"
+                                        .to_string(),
+                                });
+                            }
+                            module_attrs.extend(dict);
+                        } else {
+                            pending.extend(dict);
+                        }
                     }
                 }
                 SyntaxKind::Heading => {
@@ -198,6 +224,7 @@ fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> Dict
             // the colon of the empty-dict spelling `(:)` is structural
             if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
                 diags.push(Diagnostic {
+                phase: Phase::Semantic,
                     span: el.text_range(),
                     message: "annotation entries must be `key: value`".to_string(),
                 });
@@ -254,6 +281,7 @@ fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> 
                 };
                 if value_el.kind() == SyntaxKind::LBracket {
                     diags.push(Diagnostic {
+                phase: Phase::Semantic,
                         span: value_el.text_range(),
                         message: "content literals as entry values are not supported yet"
                             .to_string(),
@@ -270,6 +298,7 @@ fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> 
                 // content is mounted via the body slot, never passed as an argument
                 let open_span = t.text_range();
                 diags.push(Diagnostic {
+                phase: Phase::Semantic,
                     span: open_span,
                     message: "content is mounted with `[..]` after the call, not passed as an argument"
                         .to_string(),
@@ -371,6 +400,7 @@ fn syntax_value(
                     Some(value) => Some(value),
                     None => {
                         diags.push(Diagnostic {
+                phase: Phase::Semantic,
                             span: token.text_range(),
                             message: "number out of range".to_string(),
                         });
@@ -383,6 +413,7 @@ fn syntax_value(
                 "false" => Some(Value::Bool(false)),
                 _ => {
                     diags.push(Diagnostic {
+                phase: Phase::Semantic,
                         span: token.text_range(),
                         message: "bare names are not literals".to_string(),
                     });
@@ -478,6 +509,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
         || body.len() < quote_len + closer.len()
     {
         diags.push(Diagnostic {
+                phase: Phase::Semantic,
             span: range,
             message: "unclosed string".to_string(),
         });
@@ -510,6 +542,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
             Some('t') => out.push('\t'),
             _ => {
                 diags.push(Diagnostic {
+                phase: Phase::Semantic,
                     span: range,
                     message: "unknown escape".to_string(),
                 });
@@ -551,6 +584,7 @@ fn desugar_inline(
             };
             if !followed {
                 diags.push(Diagnostic {
+                phase: Phase::Semantic,
                     span: element.text_range(),
                     message: "annotation must be immediately followed by an element".to_string(),
                 });
@@ -592,6 +626,7 @@ fn desugar_inline(
                     let annotation = Annotation::cast(node.clone()).unwrap();
                     if annotation.is_module() {
                         diags.push(Diagnostic {
+                phase: Phase::Semantic,
                             span: node.text_range(),
                             message: "module annotation is only valid at the document top"
                                 .to_string(),
@@ -713,6 +748,7 @@ fn desugar_inline(
     }
     if !pending.is_empty() {
         diags.push(Diagnostic {
+                phase: Phase::Semantic,
             span: pending_range.unwrap_or_default(),
             message: "annotation without a following element".to_string(),
         });

@@ -22,11 +22,54 @@ fn main() {
 }
 ```
 
+== 内容树与属性标注
+
+在 Notist 中，所有的内容都是节点，使用属性标注语法可以将一个字典字面量标注在节点上：
+
+- `@dict`：标注在紧接着的节点上。
+- `@!dict`：标注在根节点上，写在文档开头。
+
+比如下面这篇文档：
+
+```not
+@!(draft: true)
+
+@(id: "example")
+= Example
+
+== Hello World
+
+Let's say *Hello* _World_!
+```
+
+对应下面这颗内容树：
+
+```
+- Doc @(draft: true)
+  - Section @(id: "example")
+    - Heading(level: 1)
+      - Text("Example")
+  - Section
+    - Heading(level: 2)
+      - Text("Hello World")
+    - Paragraph
+      - Text("Let's say")
+      - Strong
+        - Text("Hello")
+      - Emph
+        - Text("World")
+      - Text("!")
+```
+
+其中对 Heading 的属性标注比较特殊，在 sectionize 阶段每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
+
+== 类型系统
+
+见 [designs/code/types]("../designs/code/types.not")。
+
 == 内容函数
 
 所有 Markup 下的元素都有对应的 *内容函数*，比如：
 
 - `#raw("code")`：#raw("code")
 - `#strong[加粗]`：#strong[加粗]
-
-这里 `#xxx[..]` 其实是 `#xxx(children: [..])` 的语法糖

@@ -7,7 +7,9 @@
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
 - trivia（空白、换行、注释）是一等 token，全保留
 
-// 与 Markdown 不同，Markdown 的元素是闭集合，且直接在语法层面就可以获取对应的信息（Inline 还是 Block），但是 Notist 的内容函数 `#xxx()` 依赖于语义检查以及类型检查阶段才能得到其 Inline 还是 Block 的信息，这也导致整个文档的树结构不能直接在语法层面就被确定，只能以平铺森林的形式呈现，并延迟到求值之后再组装树结构。
+// 与 Markdown 不同：Markdown 的元素是闭集合，语法层面即可确定 Inline/Block；
+// Notist 的内容函数 `#xxx()` 的级别依赖构造器签名（内建表）或调用点 flavor 声明，
+// 因此文档树结构不能在语法层面确定，只能以平铺森林呈现，延迟到 Shape 阶段组装。
 
 *Parse*
 
@@ -18,19 +20,27 @@
 
 - CST 的类型化视图：薄访问器，不产生新信息
 
-*Desugar*
+*Desugar*（产出 IR₁）
 
-- CST → Expr 森林：markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph`；字面量归一化
+- CST → Expr 森林：markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph` 候选；字面量归一化
 - 值域语义错误在此诊断（裸名非字面量、数字溢出、非法 entry 等）
 
-*Eval*
+*Shape*（IR₁ → IR₂）
 
-- Expr → Item：构造器名解析（内建 / Custom）、签名校验、InlineContent → Content 提升、注解归位
+- 候选结构 → 定稿结构。按块序列（文档体与每个块级 children 挂载）递归：
+  1. reflow：签名感知切分——block 级调用从 `paragraph` 候选中切出，块序列定稿
+  2. sectionize：按 heading level 把平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section 上（身份归位），section 的 span 覆盖整个节的范围
+- 级别判定只依赖构造器签名（内建表）或调用点 flavor 声明（Custom），不求值
+
+*Eval*（物化）
+
+- IR₂ → Item：构造器名解析（内建 / Custom）、签名校验、InlineContent → Content 提升、注解归位
 - 类型检查在此：签名校验依赖只有 Expr 携带的 flavor 声明，故在构造期做
 - Custom 构造器是原子自定义元素：数据而非行为
+- 无环境、无计算：内容函数的实现对外部渲染器透明，管线只需要签名
 
 *Content 树*
 
 - 节点 = ctor + fields + children + attrs + span
-- 分析只作用于 Content 树：引用解析、sectionize、渲染
+- 分析只作用于 Content 树：引用解析、渲染
 - CST 服务 tooling；core 节点携带产生它的 surface span

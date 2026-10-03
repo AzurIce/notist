@@ -43,3 +43,12 @@ inline body 提升为段落
 
 #raw[x]
 不接受 children
+
+#f(("x"))
+grouping 透明求值
+
+#f((1, (2)))
+数组里的 grouping
+
+#f(("x",))
+单元素数组要尾逗号

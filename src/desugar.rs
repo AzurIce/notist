@@ -424,6 +424,20 @@ fn syntax_value(
         },
         NodeOrToken::Node(node) => match node.kind() {
             SyntaxKind::Unit => Some(Value::Unit),
+            SyntaxKind::Group => {
+                let inner: Vec<_> = value_children(node).collect();
+                match inner.as_slice() {
+                    [el] => syntax_value(el, diags),
+                    _ => {
+                        diags.push(Diagnostic {
+                            phase: Phase::Semantic,
+                            span: node.text_range(),
+                            message: "expected a single value in grouping".to_string(),
+                        });
+                        None
+                    }
+                }
+            }
             SyntaxKind::Neg => {
                 let number = node
                     .children_with_tokens()

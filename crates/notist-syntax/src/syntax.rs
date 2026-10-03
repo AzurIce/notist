@@ -49,6 +49,7 @@ pub enum SyntaxKind {
     Array,
     Unit,
     Neg,
+    Group,
     ParBreak,
     Error,
 }

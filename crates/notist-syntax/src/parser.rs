@@ -765,10 +765,9 @@ impl<'a> Parser<'a> {
     }
 
     /// `(..)` — unit / array / dict / grouping, discriminated by content:
-    /// any `Entry` child makes a dict, a lone value without comma is
-    /// grouping (no wrapper), otherwise an array. The node kind is attached
-    /// retroactively via checkpoint. Returns the produced node kind (`None`
-    /// for a bare grouping).
+    /// any `Entry` child makes a dict, a lone value without comma is a
+    /// transparent `Group`, otherwise an array. The node kind is attached
+    /// retroactively via checkpoint. Returns the produced node kind.
     fn code_group(&mut self) -> Option<SyntaxKind> {
         if self.peek(1) == Some(SyntaxKind::RParen) {
             self.builder.start_node(SyntaxKind::Unit.into());
@@ -826,18 +825,16 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        let wrap = if has_named {
-            Some(SyntaxKind::Dict)
+        let kind = if has_named {
+            SyntaxKind::Dict
         } else if values != 1 || had_comma {
-            Some(SyntaxKind::Array)
+            SyntaxKind::Array
         } else {
-            None
+            SyntaxKind::Group
         };
-        if let Some(kind) = wrap {
-            self.builder.start_node_at(checkpoint, kind.into());
-            self.builder.finish_node();
-        }
-        wrap
+        self.builder.start_node_at(checkpoint, kind.into());
+        self.builder.finish_node();
+        Some(kind)
     }
 
     /// Entry: at a `- ` / `+ ` marker, column 0. A list is a run of sibling

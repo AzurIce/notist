@@ -2,7 +2,7 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..496
+Document@0..605
   CodeCall@0..39
     Hash@0..1 "#"
     Ident@1..8 "callout"
@@ -51,9 +51,10 @@ Document@0..496
     LParen@114..115 "("
     Ident@115..121 "嵌套"
     Whitespace@121..122 " "
-    LParen@122..123 "("
-    Ident@123..129 "深度"
-    RParen@129..130 ")"
+    Group@122..130
+      LParen@122..123 "("
+      Ident@123..129 "深度"
+      RParen@129..130 ")"
     RParen@130..131 ")"
   Newline@131..132 "\n"
   Newline@132..133 "\n"
@@ -210,16 +211,67 @@ Document@0..496
   Whitespace@486..487 " "
   Text@487..495 "children"
   Newline@495..496 "\n"
+  Newline@496..497 "\n"
+  CodeCall@497..506
+    Hash@497..498 "#"
+    Ident@498..499 "f"
+    LParen@499..500 "("
+    Group@500..505
+      LParen@500..501 "("
+      Str@501..504 "\"x\""
+      RParen@504..505 ")"
+    RParen@505..506 ")"
+  Newline@506..507 "\n"
+  Text@507..515 "grouping"
+  Whitespace@515..516 " "
+  Text@516..528 "透明求值"
+  Newline@528..529 "\n"
+  Newline@529..530 "\n"
+  CodeCall@530..542
+    Hash@530..531 "#"
+    Ident@531..532 "f"
+    LParen@532..533 "("
+    Array@533..541
+      LParen@533..534 "("
+      Number@534..535 "1"
+      Comma@535..536 ","
+      Whitespace@536..537 " "
+      Group@537..540
+        LParen@537..538 "("
+        Number@538..539 "2"
+        RParen@539..540 ")"
+      RParen@540..541 ")"
+    RParen@541..542 ")"
+  Newline@542..543 "\n"
+  Text@543..555 "数组里的"
+  Whitespace@555..556 " "
+  Text@556..564 "grouping"
+  Newline@564..565 "\n"
+  Newline@565..566 "\n"
+  CodeCall@566..576
+    Hash@566..567 "#"
+    Ident@567..568 "f"
+    LParen@568..569 "("
+    Array@569..575
+      LParen@569..570 "("
+      Str@570..573 "\"x\""
+      Comma@573..574 ","
+      RParen@574..575 ")"
+    RParen@575..576 ")"
+  Newline@576..577 "\n"
+  Text@577..604 "单元素数组要尾 ..."
+  Newline@604..605 "\n"
 
 === core ===
 error[syntax] @194..194: inline content cannot contain a blank line
-error[syntax] @496..496: unclosed code call body
+error[syntax] @605..605: unclosed code call body
 error[semantic] @115..121: bare names are not literals
+error[semantic] @123..129: bare names are not literals
 error[semantic] @399..400: content is mounted with `[..]` after the call, not passed as an argument
 error[semantic] @404..405: content is mounted with `[..]` after the call, not passed as an argument
 error[type] @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
 error[type] @469..476: `raw` takes no children
-(doc @0..496
+(doc @0..605
   (paragraph @0..39
     (callout @0..39 :kind "warning"
       (text @26..38 :text "注意内容")
@@ -313,5 +365,17 @@ error[type] @469..476: `raw` takes no children
       (text @474..475 :text "x")
     )
     (text @477..495 :text "不接受 children")
+  )
+  (paragraph @497..528
+    (f @497..506 :args ("x"))
+    (text @507..528 :text "grouping 透明求值")
+  )
+  (paragraph @530..564
+    (f @530..542 :args ((1, 2)))
+    (text @543..564 :text "数组里的 grouping")
+  )
+  (paragraph @566..604
+    (f @566..576 :args (("x")))
+    (text @577..604 :text "单元素数组要尾逗号")
   )
 )

@@ -62,9 +62,10 @@ Document@0..196
   Newline@89..90 "\n"
   Annotation@90..95
     At@90..91 "@"
-    LParen@91..92 "("
-    Number@92..94 "42"
-    RParen@94..95 ")"
+    Group@91..95
+      LParen@91..92 "("
+      Number@92..94 "42"
+      RParen@94..95 ")"
   Newline@95..96 "\n"
   Text@96..108 "错误负载"
   Newline@108..109 "\n"

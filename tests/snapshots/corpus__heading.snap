@@ -46,15 +46,15 @@ Document@0..69
 
 === core ===
 (doc @0..69
-  (section @0..9
+  (section @0..38
     (heading @0..9 :level 1
       (text @2..9 :text "Level 1")
     )
-    (section @11..21
+    (section @11..38
       (heading @11..21 :level 2
         (text @14..21 :text "Level 2")
       )
-      (section @23..34
+      (section @23..38
         (heading @23..34 :level 3
           (text @27..34 :text "Level 3")
         )
@@ -64,7 +64,7 @@ Document@0..69
       )
     )
   )
-  (section @40..42
+  (section @40..53
     (heading @40..42 :level 1)
     (paragraph @44..53
       (text @44..53 :text "段落被")

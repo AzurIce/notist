@@ -56,7 +56,7 @@ Document@0..144
 
 === core ===
 (doc @0..144
-  (section @0..15
+  (section @0..26
     (heading @0..15 :level 1
       (text @2..15 :text "Notist 巡览")
     )
@@ -66,11 +66,11 @@ Document@0..144
       )
     )
   )
-  (section @28..36
+  (section @28..143
     (heading @28..36 :level 1
       (text @30..36 :text "一级")
     )
-    (section @37..46
+    (section @37..57
       (heading @37..46 :level 2
         (text @40..46 :text "二级")
       )
@@ -80,7 +80,7 @@ Document@0..144
         )
       )
     )
-    (section @59..68
+    (section @59..143
       (heading @59..68 :level 2
         (text @62..68 :text "段落")
       )

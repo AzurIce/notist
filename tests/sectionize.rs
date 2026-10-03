@@ -11,14 +11,14 @@ fn shape_groups_sections_by_heading_level() {
   (paragraph @0..6
     (text @0..6 :text \"序言\")
   )
-  (section @8..13
+  (section @8..43
     (heading @8..13 :level 1
       (text @10..13 :text \"一\")
     )
     (paragraph @15..21
       (text @15..21 :text \"内容\")
     )
-    (section @23..35
+    (section @23..43
       (heading @23..35 :level 2
         (text @26..35 :text \"一点一\")
       )
@@ -64,6 +64,30 @@ fn shape_recurses_into_block_mounts() {
       (heading @25..30 :level 1
         (text @27..30 :text \"节\")
       )
+    )
+  )
+)
+"
+    );
+}
+
+#[test]
+fn shape_transfers_heading_attrs_to_section() {
+    // heading 的注解转移到其开启的 section 上（一个 heading 恰开启一个 section）
+    let src = "@(id: \"intro\", tags: (\"a\",))\n= 一\n\n内容\n";
+    let (item, diags) = notist::analyze(src);
+    assert!(diags.is_empty());
+    let out = notist::dump::dump(&item);
+    assert_eq!(
+        out,
+        "\
+(doc @0..43
+  (section @29..42 @id \"intro\" @tags (\"a\")
+    (heading @29..34 :level 1
+      (text @31..34 :text \"一\")
+    )
+    (paragraph @36..42
+      (text @36..42 :text \"内容\")
     )
   )
 )

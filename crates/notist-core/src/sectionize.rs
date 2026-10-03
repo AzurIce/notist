@@ -1,12 +1,14 @@
 use crate::expr::Expr;
 use crate::item::Value;
+use rowan::TextRange;
 
 /// Group a block sequence into sections by heading level: a `heading` call
 /// starts a section; everything up to the next heading of equal or higher
 /// level belongs to it; deeper headings nest. Content before the first
 /// heading stays at this level. The heading stays the first child of its
-/// section, and the section borrows the heading's span. Sections are
-/// structural calls (`BodyFlavor::None`), like paragraph candidates.
+/// section. A section is the identity carrier of its range: its attrs are
+/// transferred from the heading that opens it (a heading opens exactly one
+/// section), and its span covers the whole section extent.
 pub fn sectionize(forest: Vec<Expr>) -> Vec<Expr> {
     let mut root: Vec<Expr> = Vec::new();
     let mut stack: Vec<(i64, Vec<Expr>)> = Vec::new();
@@ -33,8 +35,22 @@ pub fn sectionize(forest: Vec<Expr>) -> Vec<Expr> {
 
 fn close_section(stack: &mut Vec<(i64, Vec<Expr>)>, root: &mut Vec<Expr>) {
     let (_, children) = stack.pop().unwrap();
-    let span = children.first().unwrap().span();
-    let section = Expr::call("section", span).with_children(children);
+    let start = children.first().unwrap().span().start();
+    let end = children.last().unwrap().span().end();
+    let mut section = Expr::call("section", TextRange::new(start, end)).with_children(children);
+    // identity transfer: the opening heading's attrs belong to the section
+    if let Expr::Call {
+        children, attrs, ..
+    } = &mut section
+    {
+        if let Some(Expr::Call {
+            attrs: heading_attrs,
+            ..
+        }) = children.first_mut()
+        {
+            *attrs = std::mem::take(heading_attrs);
+        }
+    }
     match stack.last_mut() {
         Some((_, parent)) => parent.push(section),
         None => root.push(section),

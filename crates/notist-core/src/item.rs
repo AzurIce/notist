@@ -19,9 +19,11 @@ pub enum Ctor {
     /// Transparent identity node: renders as its children; carries attrs
     /// and structure without adding semantics. Produced by `#[..]`.
     Group,
-    /// A document section: produced by `sectionize`; its first child is the
-    /// heading that started it. The source spelling `#section[..]` resolves
-    /// to the same constructor.
+    /// A document section: produced by `sectionize`, the identity carrier of
+    /// its range — attrs are transferred from the heading that opens it (a
+    /// heading opens exactly one section), and the span covers the whole
+    /// extent. The heading stays the first child. The source spelling
+    /// `#section[..]` resolves to the same constructor.
     Section,
     Custom(String),
 }

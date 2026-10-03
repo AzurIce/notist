@@ -162,7 +162,13 @@ fn is_blank_boundary(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>], i: usize
 /// The span covering a run's content (surrounding trivia excluded).
 fn run_span(run: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> TextRange {
     let is_trivia = |e: &NodeOrToken<SyntaxNode, SyntaxToken>| {
-        matches!(e.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline)
+        matches!(
+            e.kind(),
+            SyntaxKind::Whitespace
+                | SyntaxKind::Newline
+                | SyntaxKind::LineComment
+                | SyntaxKind::BlockComment
+        )
     };
     let start = run
         .iter()

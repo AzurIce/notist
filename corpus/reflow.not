@@ -1,0 +1,16 @@
+// reflow：ir₁ 的段落候选含 block 级元素时，ir₂ 切成 段 | 元素 | 段
+
+// builtin 的 block 调用切段（inline body 随后在 eval 提升为段落）
+前文 #list[body] 后文
+
+// block flavor 的自定义调用切段
+前文 #card[ x ] 后文
+
+// inline flavor 的自定义调用留在段内
+前文 #card[body] 后文
+
+// 透明组继承 body flavor：block 切段
+前 #[ x ] 后
+
+// inline 不切
+前 #[x] 后

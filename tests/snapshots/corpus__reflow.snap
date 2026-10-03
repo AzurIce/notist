@@ -1,0 +1,130 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..434
+  LineComment@0..89 "// reflow：ir₁ 的 ..."
+  Newline@89..90 "\n"
+  Newline@90..91 "\n"
+  LineComment@91..172 "// builtin 的 block  ..."
+  Newline@172..173 "\n"
+  Text@173..179 "前文"
+  Whitespace@179..180 " "
+  CodeCall@180..191
+    Hash@180..181 "#"
+    Ident@181..185 "list"
+    LBracket@185..186 "["
+    Text@186..190 "body"
+    RBracket@190..191 "]"
+  Whitespace@191..192 " "
+  Text@192..198 "后文"
+  Newline@198..199 "\n"
+  Newline@199..200 "\n"
+  LineComment@200..240 "// block flavor 的自 ..."
+  Newline@240..241 "\n"
+  Text@241..247 "前文"
+  Whitespace@247..248 " "
+  CodeCall@248..258
+    Hash@248..249 "#"
+    Ident@249..253 "card"
+    LBracket@253..254 "["
+    Whitespace@254..255 " "
+    Text@255..256 "x"
+    Whitespace@256..257 " "
+    RBracket@257..258 "]"
+  Whitespace@258..259 " "
+  Text@259..265 "后文"
+  Newline@265..266 "\n"
+  Newline@266..267 "\n"
+  LineComment@267..314 "// inline flavor 的自 ..."
+  Newline@314..315 "\n"
+  Text@315..321 "前文"
+  Whitespace@321..322 " "
+  CodeCall@322..333
+    Hash@322..323 "#"
+    Ident@323..327 "card"
+    LBracket@327..328 "["
+    Text@328..332 "body"
+    RBracket@332..333 "]"
+  Whitespace@333..334 " "
+  Text@334..340 "后文"
+  Newline@340..341 "\n"
+  Newline@341..342 "\n"
+  LineComment@342..387 "// 透明组继承 bo ..."
+  Newline@387..388 "\n"
+  Text@388..391 "前"
+  Whitespace@391..392 " "
+  CodeCall@392..398
+    Hash@392..393 "#"
+    LBracket@393..394 "["
+    Whitespace@394..395 " "
+    Text@395..396 "x"
+    Whitespace@396..397 " "
+    RBracket@397..398 "]"
+  Whitespace@398..399 " "
+  Text@399..402 "后"
+  Newline@402..403 "\n"
+  Newline@403..404 "\n"
+  LineComment@404..420 "// inline 不切"
+  Newline@420..421 "\n"
+  Text@421..424 "前"
+  Whitespace@424..425 " "
+  CodeCall@425..429
+    Hash@425..426 "#"
+    LBracket@426..427 "["
+    Text@427..428 "x"
+    RBracket@428..429 "]"
+  Whitespace@429..430 " "
+  Text@430..433 "后"
+  Newline@433..434 "\n"
+
+=== core ===
+(doc @0..434
+  (paragraph @173..179
+    (text @173..179 :text "前文")
+  )
+  (list @180..191
+    (paragraph @180..191
+      (text @186..190 :text "body")
+    )
+  )
+  (paragraph @192..198
+    (text @192..198 :text "后文")
+  )
+  (paragraph @241..247
+    (text @241..247 :text "前文")
+  )
+  (card @248..258
+    (paragraph @255..256
+      (text @255..256 :text "x")
+    )
+  )
+  (paragraph @259..265
+    (text @259..265 :text "后文")
+  )
+  (paragraph @315..340
+    (text @315..321 :text "前文")
+    (card @322..333
+      (text @328..332 :text "body")
+    )
+    (text @334..340 :text "后文")
+  )
+  (paragraph @388..391
+    (text @388..391 :text "前")
+  )
+  (group @392..398
+    (paragraph @395..396
+      (text @395..396 :text "x")
+    )
+  )
+  (paragraph @399..402
+    (text @399..402 :text "后")
+  )
+  (paragraph @421..433
+    (text @421..424 :text "前")
+    (group @425..429
+      (text @427..428 :text "x")
+    )
+    (text @430..433 :text "后")
+  )
+)

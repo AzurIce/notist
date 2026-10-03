@@ -1,5 +1,6 @@
 use rowan::NodeOrToken;
 
+use notist_core::expr::{BodyFlavor, Expr};
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use notist_syntax::{ast, parser};
 
@@ -18,9 +19,15 @@ pub fn analyze_json(src: &str) -> String {
     if let Some(document) = ast::Document::cast(parse.syntax()) {
         out.push_str(",\"ast\":");
         write_ast(&mut out, &document);
+        let (exprs, meta) = desugar::desugar(&document, &mut diagnostics);
+        let range = document.range();
+        out.push_str(",\"ir1\":");
+        write_forest(&mut out, range, &exprs);
+        let exprs = crate::reflow::reflow(exprs);
+        out.push_str(",\"ir2\":");
+        write_forest(&mut out, range, &exprs);
         out.push_str(",\"core\":");
-        let expr = desugar::desugar(&document, &mut diagnostics);
-        let item = eval::eval_doc(&expr.0, document.range(), expr.1, &mut diagnostics);
+        let item = eval::eval_doc(&exprs, range, meta, &mut diagnostics);
         write_item(&mut out, &item);
     }
     out.push_str(",\"diagnostics\":[");
@@ -145,7 +152,11 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                 }
             }
             // ParBreak / Error: boundaries without output
-            NodeOrToken::Node(_) => write_ast_run(out, &mut run, &mut first),
+            NodeOrToken::Node(node)
+                if matches!(node.kind(), SyntaxKind::ParBreak | SyntaxKind::Error) =>
+            {
+                write_ast_run(out, &mut run, &mut first)
+            }
             NodeOrToken::Token(t)
                 if t.kind() == SyntaxKind::Newline && {
                     let mut j = i + 1;
@@ -170,43 +181,64 @@ fn write_ast(out: &mut String, document: &ast::Document) {
     out.push_str("]}");
 }
 
-/// A maximal run of inline content, displayed as a Paragraph group of Lines
-/// (tokens only, like the rest of this view).
+/// A maximal run of inline content, displayed as an Inline group of Lines.
+/// Lines are split at top-level newline tokens; inline nodes stay whole.
+/// (Not a paragraph — paragraphs are formed at desugar, this view is syntax.)
 fn write_ast_run(
     out: &mut String,
     run: &mut Vec<NodeOrToken<SyntaxNode, SyntaxToken>>,
     first: &mut bool,
 ) {
-    if run.is_empty() {
+    fn range_of(el: &NodeOrToken<SyntaxNode, SyntaxToken>) -> (u32, u32) {
+        match el {
+            NodeOrToken::Node(n) => {
+                let r = n.text_range();
+                (u32::from(r.start()), u32::from(r.end()))
+            }
+            NodeOrToken::Token(t) => {
+                let r = t.text_range();
+                (u32::from(r.start()), u32::from(r.end()))
+            }
+        }
+    }
+    let mut lines: Vec<Vec<NodeOrToken<SyntaxNode, SyntaxToken>>> = Vec::new();
+    let mut current: Vec<NodeOrToken<SyntaxNode, SyntaxToken>> = Vec::new();
+    for el in run.drain(..) {
+        if matches!(&el, NodeOrToken::Token(t) if t.kind() == SyntaxKind::Newline) {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(el);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
         return;
     }
     if !*first {
         out.push(',');
     }
     *first = false;
-    let tokens: Vec<SyntaxToken> = run.drain(..).filter_map(|e| e.into_token()).collect();
-    out.push_str("{\"kind\":\"Paragraph\",\"children\":[");
-    let lines = ast::lines(tokens.into_iter().map(NodeOrToken::Token));
+    let start = range_of(lines.first().unwrap().first().unwrap()).0;
+    let end = range_of(lines.last().unwrap().last().unwrap()).1;
+    out.push_str(&format!("{{\"kind\":\"Inline\",\"start\":{start},\"end\":{end},\"children\":["));
     for (j, line) in lines.iter().enumerate() {
         if j > 0 {
             out.push(',');
         }
-        let start = line
-            .tokens
-            .first()
-            .map_or(0, |t| u32::from(t.text_range().start()));
-        let end = line
-            .tokens
-            .last()
-            .map_or(0, |t| u32::from(t.text_range().end()));
+        let start = range_of(line.first().unwrap()).0;
+        let end = range_of(line.last().unwrap()).1;
         out.push_str(&format!(
             "{{\"kind\":\"Line\",\"start\":{start},\"end\":{end},\"children\":["
         ));
-        for (k, token) in line.tokens.iter().enumerate() {
+        for (k, el) in line.iter().enumerate() {
             if k > 0 {
                 out.push(',');
             }
-            write_element(out, NodeOrToken::Token(token.clone()));
+            write_element(out, el.clone());
         }
         out.push_str("]}");
     }
@@ -254,6 +286,88 @@ fn write_ast_list(out: &mut String, list: &ast::List) {
         write_ast_list_item(out, &item);
     }
     out.push_str("]}");
+}
+
+fn write_forest(out: &mut String, range: rowan::TextRange, exprs: &[Expr]) {
+    out.push_str(&format!(
+        "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
+        u32::from(range.start()),
+        u32::from(range.end()),
+    ));
+    for (i, expr) in exprs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_expr(out, expr);
+    }
+    out.push_str("]}");
+}
+
+fn write_expr(out: &mut String, expr: &Expr) {
+    let span = expr.span();
+    let (start, end) = (u32::from(span.start()), u32::from(span.end()));
+    match expr {
+        Expr::Literal(value, _) => {
+            out.push_str(&format!(
+                "{{\"kind\":\"Literal\",\"start\":{start},\"end\":{end},\"label\":{}}}",
+                escape(&value.to_string())
+            ));
+        }
+        Expr::Call {
+            name,
+            args,
+            fields,
+            children,
+            body,
+            attrs,
+            ..
+        } => {
+            let mut label = name.clone();
+            for (key, value) in fields.iter() {
+                label.push_str(&format!(" :{key} {value}"));
+            }
+            for (key, value) in attrs.iter() {
+                label.push_str(&format!(" @{key} {value}"));
+            }
+            match body {
+                BodyFlavor::Inline => label.push_str(" [inline]"),
+                BodyFlavor::Block => label.push_str(" [block]"),
+                BodyFlavor::None => {}
+            }
+            out.push_str(&format!(
+                "{{\"kind\":\"Call\",\"start\":{start},\"end\":{end},\"label\":{}",
+                escape(&label)
+            ));
+            if !args.is_empty() || !children.is_empty() {
+                out.push_str(",\"children\":[");
+                let mut first = true;
+                for arg in args {
+                    if !first {
+                        out.push(',');
+                    }
+                    first = false;
+                    let span = arg.span();
+                    out.push_str(&format!(
+                        "{{\"kind\":\"Arg\",\"start\":{},\"end\":{},\"children\":[",
+                        u32::from(span.start()),
+                        u32::from(span.end()),
+                    ));
+                    write_expr(out, arg);
+                    out.push(']');
+                    out.push('}');
+                }
+                for child in children {
+                    if !first {
+                        out.push(',');
+                    }
+                    first = false;
+                    write_expr(out, child);
+                }
+                out.push(']');
+            }
+            out.push('}');
+        }
+    }
 }
 
 fn write_item(out: &mut String, item: &Item) {

@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -31,6 +33,7 @@ enum Command {
     Lsp,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Check { file } => check(&file),
@@ -81,6 +84,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read(file: &Path) -> Result<String, ExitCode> {
     std::fs::read_to_string(file).map_err(|err| {
         eprintln!("{}: {err}", file.display());
@@ -88,6 +92,7 @@ fn read(file: &Path) -> Result<String, ExitCode> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn print_with(file: &Path, f: impl Fn(&str) -> String) -> ExitCode {
     match read(file) {
         Ok(src) => {
@@ -98,6 +103,7 @@ fn print_with(file: &Path, f: impl Fn(&str) -> String) -> ExitCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn check(file: &Path) -> ExitCode {
     if file.is_dir() {
         return check_dir(file);
@@ -142,6 +148,7 @@ fn check(file: &Path) -> ExitCode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn check_dir(dir: &Path) -> ExitCode {
     let library = match notist::vault::Vault::load(dir) {
         Ok(library) => library,

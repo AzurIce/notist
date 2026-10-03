@@ -4,11 +4,28 @@ const srcEl = document.querySelector("#src");
 const tokensEl = document.querySelector("#tokens");
 const treeEl = document.querySelector("#tree");
 const astEl = document.querySelector("#ast");
+const ir1El = document.querySelector("#ir1");
+const ir2El = document.querySelector("#ir2");
 const coreEl = document.querySelector("#core");
+const diagsEl = document.querySelector("#diags");
 const showwsEl = document.querySelector("#showws");
 const corpusEl = document.querySelector("#corpus");
 
-const SAMPLE = "= Title\n\nfirst line\nsecond\tline\n   \n== Sub\n\n=x\n";
+const SAMPLE = [
+  "= notist 一览",
+  "",
+  "@(tags: (\"demo\", \"ui\"))",
+  "#note(kind: \"info\")[行内 *strong* 与 _emph_，转义 \\* 所见即所得]",
+  "",
+  "- 列表 *甲*",
+  "- 列表乙",
+  "",
+  "#note[",
+  "块 body 第一段",
+  "",
+  "- 块内列表",
+  "]",
+].join("\n");
 
 function visible(text) {
   return text
@@ -70,14 +87,57 @@ function renderTreeNode(node) {
   return det;
 }
 
+const syncPanes = [treeEl, astEl, ir1El, ir2El, coreEl];
+
 function highlight(s, e) {
   for (const el of document.querySelectorAll("[data-s]")) {
     const inside = +el.dataset.s >= s && +el.dataset.e <= e;
     el.classList.toggle("hl", inside);
   }
+  // 无包含命中时（点 span、单字符 token）：退化为各面板的最小包含节点
+  for (const pane of [...syncPanes, tokensEl]) {
+    if (pane.querySelector(".hl")) continue;
+    let best = null;
+    for (const el of pane.querySelectorAll("[data-s]")) {
+      const es = +el.dataset.s;
+      const ee = +el.dataset.e;
+      if (es <= s && e <= ee && (!best || ee - es < best.span)) {
+        best = { el, span: ee - es };
+      }
+    }
+    // 根节点（Document）不算——命中它等于什么也没命中
+    if (best && best.el.parentElement.closest("[data-s]")) {
+      best.el.classList.add("hl");
+    }
+  }
+  revealSync();
 }
 
-for (const pane of [treeEl, astEl, coreEl]) {
+function revealIn(container, el) {
+  const c = container.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  if (r.top < c.top) container.scrollTop -= c.top - r.top;
+  else if (r.bottom > c.bottom) container.scrollTop += r.bottom - c.bottom;
+}
+
+function revealSync() {
+  for (const pane of syncPanes) {
+    const target = pane.querySelector(".hl");
+    if (!target) continue;
+    for (let p = target.parentElement; p && p !== pane; p = p.parentElement) {
+      if (p.tagName === "DETAILS") p.open = true;
+    }
+    revealIn(pane, target);
+  }
+  const tok = tokensEl.querySelector(".hl");
+  if (tok) {
+    revealIn(tokensEl, tok);
+    srcEl.scrollTop = tokensEl.scrollTop;
+    srcEl.scrollLeft = tokensEl.scrollLeft;
+  }
+}
+
+for (const pane of [...syncPanes, diagsEl]) {
   pane.addEventListener("mouseover", (ev) => {
     const el = ev.target.closest("[data-s]");
     if (el) highlight(+el.dataset.s, +el.dataset.e);
@@ -136,7 +196,29 @@ function render() {
   renderTokens(data.tree);
   treeEl.replaceChildren(renderTreeNode(data.tree));
   astEl.replaceChildren(renderTreeNode(data.ast));
+  ir1El.replaceChildren(renderTreeNode(data.ir1));
+  ir2El.replaceChildren(renderTreeNode(data.ir2));
   coreEl.replaceChildren(renderTreeNode(data.core));
+  renderDiags(data.diagnostics);
+}
+
+function renderDiags(diags) {
+  diagsEl.replaceChildren();
+  if (!diags.length) {
+    const ok = document.createElement("div");
+    ok.className = "ok";
+    ok.textContent = "✓ 无诊断";
+    diagsEl.appendChild(ok);
+    return;
+  }
+  for (const d of diags) {
+    const el = document.createElement("div");
+    el.className = `diag ${d.phase}`;
+    el.dataset.s = d.start;
+    el.dataset.e = d.end;
+    el.textContent = `error[${d.phase}] @${d.start}..${d.end}: ${d.message}`;
+    diagsEl.appendChild(el);
+  }
 }
 
 async function main() {

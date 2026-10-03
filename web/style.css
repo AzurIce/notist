@@ -51,21 +51,28 @@ header label { color: var(--muted); font-size: 0.85rem; user-select: none; }
 
 main {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr) minmax(240px, 0.7fr);
+  grid-template-rows: 1fr 1fr;
   gap: 1rem;
   padding: 0 1.2rem 1.2rem;
   min-height: 0;
 }
 
 .pane {
-  flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: var(--pane);
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.diags-pane {
+  grid-column: 4;
+  grid-row: 1 / -1;
 }
 
 .pane h2 {
@@ -152,4 +159,23 @@ main {
 .kind.Math { color: #9333ea; }
 @media (prefers-color-scheme: dark) {
   .kind.Math { color: #c084fc; }
+}
+
+.kind.CodeCall { color: var(--punct); font-weight: 600; }
+.kind.Call { color: var(--punct); font-weight: 600; }
+.kind.Literal { color: #9333ea; }
+.kind.Arg { color: var(--muted); font-style: italic; }
+.kind.Annotation { color: var(--muted); font-style: italic; }
+.kind.Group { color: var(--paragraph); }
+.kind.Section { color: var(--heading); font-weight: 600; }
+
+.diags { font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.diag { color: var(--punct); padding: 0.15rem 0.4rem; white-space: pre-wrap; }
+.diag.syntax { color: var(--punct); }
+.diag.semantic { color: #b45309; }
+.diag.type { color: #7c3aed; }
+.diags .ok { color: var(--paragraph); }
+@media (prefers-color-scheme: dark) {
+  .diag.semantic { color: #fbbf24; }
+  .diag.type { color: #c4b5fd; }
 }

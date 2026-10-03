@@ -40,9 +40,9 @@ Document@0..93
 === core ===
 (doc @0..93
   (paragraph @0..19
-    (text @0..6 :text "面积")
+    (text @0..7 :text "面积 ")
     (math @7..12 :text "a^2")
-    (text @13..19 :text "搞定")
+    (text @12..19 :text " 搞定")
   )
   (paragraph @21..51
     (text @21..51 :text "$ 两侧有空格$ 不是 math")

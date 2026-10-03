@@ -324,6 +324,6 @@ mod tests {
         assert_eq!(found.ctor.name(), "Text");
         // byte 2 (容) → 内容
         let found = smallest_at(&item, 2).unwrap();
-        assert_eq!(found.fields.get("text").unwrap().to_string(), "\"内容\"");
+        assert_eq!(found.fields.get("text").unwrap().to_string(), "\"内容 \"");
     }
 }

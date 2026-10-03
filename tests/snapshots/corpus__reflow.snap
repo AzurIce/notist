@@ -80,51 +80,51 @@ Document@0..434
 
 === core ===
 (doc @0..434
-  (paragraph @173..179
-    (text @173..179 :text "前文")
+  (paragraph @173..180
+    (text @173..180 :text "前文 ")
   )
   (list @180..191
     (paragraph @180..191
       (text @186..190 :text "body")
     )
   )
-  (paragraph @192..198
-    (text @192..198 :text "后文")
+  (paragraph @191..198
+    (text @191..198 :text " 后文")
   )
-  (paragraph @241..247
-    (text @241..247 :text "前文")
+  (paragraph @241..248
+    (text @241..248 :text "前文 ")
   )
   (card @248..258
     (paragraph @255..256
       (text @255..256 :text "x")
     )
   )
-  (paragraph @259..265
-    (text @259..265 :text "后文")
+  (paragraph @258..265
+    (text @258..265 :text " 后文")
   )
   (paragraph @315..340
-    (text @315..321 :text "前文")
+    (text @315..322 :text "前文 ")
     (card @322..333
       (text @328..332 :text "body")
     )
-    (text @334..340 :text "后文")
+    (text @333..340 :text " 后文")
   )
-  (paragraph @388..391
-    (text @388..391 :text "前")
+  (paragraph @388..392
+    (text @388..392 :text "前 ")
   )
   (group @392..398
     (paragraph @395..396
       (text @395..396 :text "x")
     )
   )
-  (paragraph @399..402
-    (text @399..402 :text "后")
+  (paragraph @398..402
+    (text @398..402 :text " 后")
   )
   (paragraph @421..433
-    (text @421..424 :text "前")
+    (text @421..425 :text "前 ")
     (group @425..429
       (text @427..428 :text "x")
     )
-    (text @430..433 :text "后")
+    (text @429..433 :text " 后")
   )
 )

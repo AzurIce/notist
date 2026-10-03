@@ -92,32 +92,32 @@ Document@0..177
     (strong @0..8
       (text @1..7 :text "strong")
     )
-    (text @9..12 :text "和")
+    (text @8..13 :text " 和 ")
     (emph @13..19
       (text @14..18 :text "emph")
     )
   )
   (paragraph @21..45
     (strong @21..45
-      (text @22..28 :text "嵌套")
+      (text @22..29 :text "嵌套 ")
       (emph @29..37
         (text @30..36 :text "内层")
       )
-      (text @38..44 :text "完毕")
+      (text @37..44 :text " 完毕")
     )
   )
   (paragraph @47..67
     (text @47..67 :text "未配对 *只有开")
   )
   (paragraph @69..89
-    (text @69..75 :text "紧邻")
+    (text @69..76 :text "紧邻 ")
     (strong @76..79
       (text @77..78 :text "a")
     )
     (strong @79..82
       (text @80..81 :text "b")
     )
-    (text @83..89 :text "两个")
+    (text @82..89 :text " 两个")
   )
   (paragraph @91..103
     (text @91..103 :text "空 **内容")
@@ -137,11 +137,11 @@ Document@0..177
     (text @135..148 :text "baz 的妥协")
   )
   (paragraph @150..176
-    (text @150..156 :text "跨行")
+    (text @150..157 :text "跨行 ")
     (strong @157..169
       (text @158..162 :text "soft")
       (text @163..168 :text "break")
     )
-    (text @170..176 :text "配对")
+    (text @169..176 :text " 配对")
   )
 )

@@ -80,8 +80,8 @@ error[syntax] @173..200: unclosed raw block
   )
   (rawinline @107..127 :block true :text "围栏截断")
   (paragraph @129..171
-    (text @129..135 :text "行内")
+    (text @129..136 :text "行内 ")
     (rawinline @136..152 :text "双反引号")
-    (text @153..171 :text "与块互不干扰")
+    (text @152..171 :text " 与块互不干扰")
   )
 )

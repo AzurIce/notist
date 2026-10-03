@@ -573,15 +573,88 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
     Some(out)
 }
 
+/// The accumulating state of a text run inside an inline sequence.
+/// Whitespace handling is positional: leading whitespace of a line or
+/// sequence never enters the buffer; whitespace adjacent to an inline
+/// element is content and stays; trailing whitespace at a line or
+/// sequence boundary is dropped.
+struct TextRun {
+    buf: String,
+    start: Option<TextSize>,
+    content_len: usize,
+    content_end: Option<TextSize>,
+    last_end: Option<TextSize>,
+}
+
+impl TextRun {
+    fn new() -> Self {
+        Self {
+            buf: String::new(),
+            start: None,
+            content_len: 0,
+            content_end: None,
+            last_end: None,
+        }
+    }
+
+    fn push_whitespace(&mut self, text: &str, range: TextRange, after_element: bool) {
+        if self.start.is_none() && !after_element {
+            return;
+        }
+        if self.start.is_none() {
+            self.start = Some(range.start());
+        }
+        self.buf.push_str(text);
+        self.last_end = Some(range.end());
+    }
+
+    fn push_content(&mut self, text: &str, range: TextRange) {
+        if self.start.is_none() {
+            self.start = Some(range.start());
+        }
+        self.buf.push_str(text);
+        self.content_len = self.buf.len();
+        self.content_end = Some(range.end());
+        self.last_end = Some(range.end());
+    }
+
+    /// Flush at an inline element: boundary whitespace is content, kept.
+    fn flush_at_element(&mut self, items: &mut Vec<Expr>) {
+        if let (Some(s), Some(e)) = (self.start, self.last_end) {
+            if !self.buf.is_empty() {
+                items.push(Expr::text(std::mem::take(&mut self.buf), TextRange::new(s, e)));
+            }
+        }
+        self.reset();
+    }
+
+    /// Flush at a line or sequence boundary: trailing whitespace dropped.
+    fn flush_at_boundary(&mut self, items: &mut Vec<Expr>) {
+        if let (Some(s), Some(e)) = (self.start, self.content_end) {
+            let text = &self.buf[..self.content_len];
+            if !text.is_empty() {
+                items.push(Expr::text(text.to_string(), TextRange::new(s, e)));
+            }
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        self.buf.clear();
+        self.start = None;
+        self.content_len = 0;
+        self.content_end = None;
+        self.last_end = None;
+    }
+}
+
 fn desugar_inline(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Expr> {
     let mut items = Vec::new();
-    let mut buf = String::new();
-    let mut start: Option<TextSize> = None;
-    let mut content_len = 0usize;
-    let mut content_end: Option<TextSize> = None;
+    let mut run = TextRun::new();
+    let mut after_element = false;
     let mut pending = Dict::default();
     let mut pending_range: Option<TextRange> = None;
 
@@ -614,32 +687,15 @@ fn desugar_inline(
         match element {
             NodeOrToken::Token(token) => match token.kind() {
                 SyntaxKind::Newline => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_boundary(&mut items);
+                    after_element = false;
                 }
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => {}
-                SyntaxKind::Whitespace => buf.push_str(token.text()),
-                SyntaxKind::Escape => {
-                    if start.is_none() {
-                        start = Some(token.text_range().start());
-                    }
-                    buf.push_str(&token.text()[1..]);
-                    content_len = buf.len();
-                    content_end = Some(token.text_range().end());
+                SyntaxKind::Whitespace => {
+                    run.push_whitespace(token.text(), token.text_range(), after_element)
                 }
-                _ => {
-                    if start.is_none() {
-                        start = Some(token.text_range().start());
-                    }
-                    buf.push_str(token.text());
-                    content_len = buf.len();
-                    content_end = Some(token.text_range().end());
-                }
+                SyntaxKind::Escape => run.push_content(&token.text()[1..], token.text_range()),
+                _ => run.push_content(token.text(), token.text_range()),
             },
             NodeOrToken::Node(node) => match node.kind() {
                 SyntaxKind::Annotation => {
@@ -656,13 +712,7 @@ fn desugar_inline(
                     pending_range = Some(node.text_range());
                 }
                 SyntaxKind::RawInline => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_element(&mut items);
                     let tokens: Vec<_> = node
                         .children_with_tokens()
                         .filter_map(|e| e.into_token())
@@ -675,15 +725,10 @@ fn desugar_inline(
                         Expr::call("raw", node.text_range()).with_field("text", Value::Str(text));
                     expr.set_attrs(pending.take());
                     items.push(expr);
+                    after_element = true;
                 }
                 SyntaxKind::Math => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_element(&mut items);
                     let tokens: Vec<_> = node
                         .children_with_tokens()
                         .filter_map(|e| e.into_token())
@@ -696,15 +741,10 @@ fn desugar_inline(
                         Expr::call("math", node.text_range()).with_field("text", Value::Str(text));
                     expr.set_attrs(pending.take());
                     items.push(expr);
+                    after_element = true;
                 }
                 SyntaxKind::Strong | SyntaxKind::Emph => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_element(&mut items);
                     let (name, delim) = if node.kind() == SyntaxKind::Strong {
                         ("strong", SyntaxKind::Star)
                     } else {
@@ -720,15 +760,10 @@ fn desugar_inline(
                     let mut expr = Expr::call(name, node.text_range()).with_children(children);
                     expr.set_attrs(pending.take());
                     items.push(expr);
+                    after_element = true;
                 }
                 SyntaxKind::Link | SyntaxKind::WikiLink => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_element(&mut items);
                     let (target, children) = if node.kind() == SyntaxKind::Link {
                         let link = Link::cast(node.clone()).unwrap();
                         (
@@ -747,20 +782,16 @@ fn desugar_inline(
                         .with_children(children);
                     expr.set_attrs(pending.take());
                     items.push(expr);
+                    after_element = true;
                 }
                 SyntaxKind::CodeCall => {
-                    flush_text(
-                        &mut items,
-                        &mut buf,
-                        &mut start,
-                        &mut content_len,
-                        &mut content_end,
-                    );
+                    run.flush_at_element(&mut items);
                     let mut exprs = desugar_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
                     for expr in &mut exprs {
                         expr.set_attrs(pending.take());
                     }
                     items.extend(exprs);
+                    after_element = true;
                 }
                 _ => {}
             },
@@ -773,31 +804,6 @@ fn desugar_inline(
             message: "annotation without a following element".to_string(),
         });
     }
-    flush_text(
-        &mut items,
-        &mut buf,
-        &mut start,
-        &mut content_len,
-        &mut content_end,
-    );
+    run.flush_at_boundary(&mut items);
     items
-}
-
-fn flush_text(
-    items: &mut Vec<Expr>,
-    buf: &mut String,
-    start: &mut Option<TextSize>,
-    content_len: &mut usize,
-    content_end: &mut Option<TextSize>,
-) {
-    if let (Some(s), Some(e)) = (*start, *content_end) {
-        let text = buf[..*content_len].trim_start().to_string();
-        if !text.is_empty() {
-            items.push(Expr::text(text, TextRange::new(s, e)));
-        }
-    }
-    buf.clear();
-    *start = None;
-    *content_len = 0;
-    *content_end = None;
 }

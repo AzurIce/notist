@@ -71,9 +71,9 @@ Document@0..180
 === core ===
 (doc @0..180
   (paragraph @0..28
-    (text @0..6 :text "这是")
+    (text @0..7 :text "这是 ")
     (rawinline @7..21 :text "行内代码")
-    (text @22..28 :text "示例")
+    (text @21..28 :text " 示例")
   )
   (paragraph @30..55
     (rawinline @30..55 :text "内含 ` 单反引号")
@@ -83,13 +83,13 @@ Document@0..180
   )
   (paragraph @95..109
     (rawinline @95..98 :text "a")
-    (text @99..105 :text "紧跟")
+    (text @98..106 :text " 紧跟 ")
     (rawinline @106..109 :text "b")
   )
   (paragraph @111..156
-    (text @111..120 :text "长围栏")
+    (text @111..121 :text "长围栏 ")
     (rawinline @121..149 :text "内含 `` 双反引号")
-    (text @150..156 :text "收尾")
+    (text @149..156 :text " 收尾")
   )
   (paragraph @158..179
     (rawinline @158..179 :text "内含 `` 更长串")

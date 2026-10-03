@@ -49,16 +49,16 @@ fn shape_recurses_into_block_mounts() {
         "\
 (doc @0..33
   (note @0..32
-    (paragraph @7..10
-      (text @7..10 :text \"前\")
+    (paragraph @7..11
+      (text @7..11 :text \"前 \")
     )
     (list @11..19
       (paragraph @11..19
         (text @17..18 :text \"x\")
       )
     )
-    (paragraph @20..23
-      (text @20..23 :text \"后\")
+    (paragraph @19..23
+      (text @19..23 :text \" 后\")
     )
     (section @25..30
       (heading @25..30 :level 1

@@ -298,11 +298,11 @@ error[type] @469..476: `raw` takes no children
   )
   (paragraph @153..178
     (group @153..178
-      (text @155..161 :text "匿名")
+      (text @155..162 :text "匿名 ")
       (strong @162..170
         (text @163..169 :text "内容")
       )
-      (text @171..177 :text "拼接")
+      (text @170..177 :text " 拼接")
     )
   )
   (paragraph @180..203

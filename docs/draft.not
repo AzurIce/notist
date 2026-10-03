@@ -27,7 +27,7 @@
 - 真 lexer 产出带 span 的 token 流，parser 只工作在 token 上；token = kind tag + 源文本切片，不持有自有数据（可从 (kind, span) 恢复的信息一律不存）
 - CST 用 rowan（lossless，trivia 全保留）
 - 分层：lexer → CST → AST（CST 的类型化视图）→ Content 树
-- 分析只作用于 core 树（check / sectionize / 渲染）；CST 服务 tooling；core 节点携带产生它的 surface span
+- 错误在各层就近诊断（语法 / 语义 / 类型）；分析作用于 core 树（check / sectionize / 渲染）；CST 服务 tooling；core 节点携带产生它的 surface span
 - 错误处理：parser 永不失败——诊断（给人）+ 恢复点（给树）+ Error 节点包裹结构性破坏（给工具）
 - workspace：crates/notist-syntax（CST 及以下）+ 根 crate（core 及以上）；依赖：rowan；dev-dep：insta（snapshot 测试）
 

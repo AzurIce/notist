@@ -7,6 +7,8 @@
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
 - trivia（空白、换行、注释）是一等 token，全保留
 
+// 与 Markdown 不同，Markdown 的元素是闭集合，且直接在语法层面就可以获取对应的信息（Inline 还是 Block），但是 Notist 的内容函数 `#xxx()` 依赖于语义检查以及类型检查阶段才能得到其 Inline 还是 Block 的信息，这也导致整个文档的树结构不能直接在语法层面就被确定，只能以平铺森林的形式呈现，并延迟到求值之后再组装树结构。
+
 *Parse*
 
 - token 流 → CST（rowan 绿树，无损：文本拼接 == 源文件）

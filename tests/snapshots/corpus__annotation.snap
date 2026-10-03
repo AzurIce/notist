@@ -113,22 +113,24 @@ error[syntax] @91..95: annotation payload must be a dict literal
 error[syntax] @149..151: annotation payload must be a dict literal
 error[semantic] @110..124: module annotation must precede all content
 (doc @0..196 @type "design" @late true
-  (heading @53..61 :level 1 @id "intro" @tags ("a", "b")
-    (text @55..61 :text "标题")
-  )
-  (paragraph @76..88 @wip true
-    (text @76..88 :text "段落内容")
-  )
-  (paragraph @96..108
-    (text @96..108 :text "错误负载")
-  )
-  (paragraph @125..146
-    (text @125..146 :text "迟到的模块注解")
-  )
-  (paragraph @152..167
-    (text @152..167 :text "空注解报错")
-  )
-  (paragraph @174..195
-    (text @174..195 :text "空 dict 注解合法")
+  (section @53..61
+    (heading @53..61 :level 1 @id "intro" @tags ("a", "b")
+      (text @55..61 :text "标题")
+    )
+    (paragraph @76..88 @wip true
+      (text @76..88 :text "段落内容")
+    )
+    (paragraph @96..108
+      (text @96..108 :text "错误负载")
+    )
+    (paragraph @125..146
+      (text @125..146 :text "迟到的模块注解")
+    )
+    (paragraph @152..167
+      (text @152..167 :text "空注解报错")
+    )
+    (paragraph @174..195
+      (text @174..195 :text "空 dict 注解合法")
+    )
   )
 )

@@ -8,3 +8,4 @@ pub mod item;
 pub mod query;
 pub mod reflow;
 pub mod sectionize;
+pub mod shape;

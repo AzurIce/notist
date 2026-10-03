@@ -23,6 +23,7 @@ pub fn resolve(name: &str) -> Ctor {
         "list" => Ctor::List,
         "item" => Ctor::ListItem,
         "group" => Ctor::Group,
+        "section" => Ctor::Section,
         _ => Ctor::Custom(name.to_string()),
     }
 }

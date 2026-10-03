@@ -42,6 +42,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
     ("raw", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
     ("math", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
     ("group", CtorSignature { accepts: Accepts::Any, level: Level::Inherit }),
+    ("section", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
 ];
 
 /// The signature of a builtin constructor by source name (`None` for custom).

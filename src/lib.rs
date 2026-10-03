@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-pub use notist_core::{builtins, diag, dump, eval, expr, index, item, query, reflow, sectionize};
+pub use notist_core::{builtins, diag, dump, eval, expr, index, item, query, reflow, sectionize, shape};
 
 pub mod cst_json;
 pub mod desugar;
@@ -11,11 +11,12 @@ pub mod vault;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-/// The full pipeline: parse → desugar → eval, collecting the diagnostics of
-/// every phase (syntax from the parser, semantic from desugar, type from eval).
+/// The full pipeline: parse → desugar → shape → eval, collecting the
+/// diagnostics of every phase (syntax from the parser, semantic from
+/// desugar, type from eval).
 pub fn analyze(src: &str) -> (item::Item, Vec<diag::Diagnostic>) {
     let (forest, module_attrs, mut diagnostics) = desugar::lower_not(src);
-    let forest = reflow::reflow(forest);
+    let forest = shape::shape(forest);
     let span = TextRange::new(0.into(), (src.len() as u32).into());
     let item = eval::eval_doc(&forest, span, module_attrs, &mut diagnostics);
     (item, diagnostics)

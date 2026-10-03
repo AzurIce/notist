@@ -23,7 +23,7 @@ pub fn analyze_json(src: &str) -> String {
         let range = document.range();
         out.push_str(",\"ir1\":");
         write_forest(&mut out, range, &exprs);
-        let exprs = crate::reflow::reflow(exprs);
+        let exprs = crate::shape::shape(exprs);
         out.push_str(",\"ir2\":");
         write_forest(&mut out, range, &exprs);
         out.push_str(",\"core\":");

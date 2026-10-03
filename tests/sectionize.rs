@@ -1,10 +1,9 @@
 #[test]
-fn sectionize_groups_by_heading_level() {
+fn shape_groups_sections_by_heading_level() {
     let src = "序言\n\n= 一\n\n内容\n\n== 一点一\n\n细节\n\n= 二\n";
     let (item, diags) = notist::analyze(src);
     assert!(diags.is_empty());
-    let doc = notist::sectionize::sectionize(&item);
-    let out = notist::dump::dump(&doc);
+    let out = notist::dump::dump(&item);
     assert_eq!(
         out,
         "\
@@ -31,6 +30,40 @@ fn sectionize_groups_by_heading_level() {
   (section @45..50
     (heading @45..50 :level 1
       (text @47..50 :text \"二\")
+    )
+  )
+)
+"
+    );
+}
+
+#[test]
+fn shape_recurses_into_block_mounts() {
+    // block body 内的段落候选同样切分、各自成节
+    let src = "#note[\n前 #list[x] 后\n\n= 节\n]\n";
+    let (item, diags) = notist::analyze(src);
+    assert!(diags.is_empty());
+    let out = notist::dump::dump(&item);
+    assert_eq!(
+        out,
+        "\
+(doc @0..33
+  (note @0..32
+    (paragraph @7..10
+      (text @7..10 :text \"前\")
+    )
+    (list @11..19
+      (paragraph @11..19
+        (text @17..18 :text \"x\")
+      )
+    )
+    (paragraph @20..23
+      (text @20..23 :text \"后\")
+    )
+    (section @25..30
+      (heading @25..30 :level 1
+        (text @27..30 :text \"节\")
+      )
     )
   )
 )

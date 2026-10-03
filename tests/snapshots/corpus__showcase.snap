@@ -56,35 +56,47 @@ Document@0..144
 
 === core ===
 (doc @0..144
-  (heading @0..15 :level 1
-    (text @2..15 :text "Notist 巡览")
+  (section @0..15
+    (heading @0..15 :level 1
+      (text @2..15 :text "Notist 巡览")
+    )
+    (section @17..26
+      (heading @17..26 :level 2
+        (text @20..26 :text "标题")
+      )
+    )
   )
-  (heading @17..26 :level 2
-    (text @20..26 :text "标题")
-  )
-  (heading @28..36 :level 1
-    (text @30..36 :text "一级")
-  )
-  (heading @37..46 :level 2
-    (text @40..46 :text "二级")
-  )
-  (heading @47..57 :level 3
-    (text @51..57 :text "三级")
-  )
-  (heading @59..68 :level 2
-    (text @62..68 :text "段落")
-  )
-  (paragraph @70..113
-    (text @70..91 :text "单换行直接拼接")
-    (text @92..113 :text "同一段落内继续")
-  )
-  (paragraph @115..127
-    (text @115..127 :text "空行分段")
-  )
-  (paragraph @129..135
-    (text @129..135 :text "强制")
-  )
-  (paragraph @137..143
-    (text @137..143 :text "分段")
+  (section @28..36
+    (heading @28..36 :level 1
+      (text @30..36 :text "一级")
+    )
+    (section @37..46
+      (heading @37..46 :level 2
+        (text @40..46 :text "二级")
+      )
+      (section @47..57
+        (heading @47..57 :level 3
+          (text @51..57 :text "三级")
+        )
+      )
+    )
+    (section @59..68
+      (heading @59..68 :level 2
+        (text @62..68 :text "段落")
+      )
+      (paragraph @70..113
+        (text @70..91 :text "单换行直接拼接")
+        (text @92..113 :text "同一段落内继续")
+      )
+      (paragraph @115..127
+        (text @115..127 :text "空行分段")
+      )
+      (paragraph @129..135
+        (text @129..135 :text "强制")
+      )
+      (paragraph @137..143
+        (text @137..143 :text "分段")
+      )
+    )
   )
 )

@@ -22,7 +22,7 @@ pub fn lower(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
 /// Analyze a Markdown document: rushdown AST → shared Expr IR → eval.
 pub fn analyze(src: &str) -> (Item, Vec<Diagnostic>) {
     let (forest, module_attrs, mut diagnostics) = lower(src);
-    let forest = notist_core::reflow::reflow(forest);
+    let forest = notist_core::shape::shape(forest);
     let span = TextRange::new(0.into(), (src.len() as u32).into());
     let item = notist_core::eval::eval_doc(&forest, span, module_attrs, &mut diagnostics);
     (item, diagnostics)

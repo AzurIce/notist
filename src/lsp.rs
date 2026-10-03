@@ -82,8 +82,7 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let lines = LineIndex::new(&src);
-        let doc = crate::sectionize::sectionize(&item);
-        let symbols = doc
+        let symbols = item
             .children
             .iter()
             .filter_map(|item| symbol(item, &lines, &src))

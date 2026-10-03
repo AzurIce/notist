@@ -46,7 +46,7 @@ impl Frontends {
     }
 
     /// Lower `src` with the frontend matching `path`'s extension, then run
-    /// the shared eval.
+    /// the shared shape and eval.
     pub fn analyze(&self, path: &Path, src: &str) -> Option<(Item, Vec<Diagnostic>)> {
         let ext = path.extension()?.to_str()?;
         let frontend = self
@@ -54,7 +54,7 @@ impl Frontends {
             .iter()
             .find(|frontend| frontend.extensions.contains(&ext))?;
         let (forest, module_attrs, mut diagnostics) = (frontend.lower)(src);
-        let forest = crate::reflow::reflow(forest);
+        let forest = crate::shape::shape(forest);
         let span = TextRange::new(0.into(), (src.len() as u32).into());
         let item = crate::eval::eval_doc(&forest, span, module_attrs, &mut diagnostics);
         Some((item, diagnostics))

@@ -5,7 +5,7 @@ use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use notist_syntax::{ast, parser};
 
 use crate::item::Item;
-use crate::{desugar, eval};
+use crate::{desugar, materialize};
 
 pub fn analyze_json(src: &str) -> String {
     let parse = parser::parse(src);
@@ -23,11 +23,12 @@ pub fn analyze_json(src: &str) -> String {
         let range = document.range();
         out.push_str(",\"ir1\":");
         write_forest(&mut out, range, &exprs);
+        let exprs = crate::resolve::resolve(exprs, &mut diagnostics);
         let exprs = crate::shape::shape(exprs);
         out.push_str(",\"ir2\":");
         write_forest(&mut out, range, &exprs);
         out.push_str(",\"core\":");
-        let item = eval::eval_doc(&exprs, range, meta, &mut diagnostics);
+        let item = materialize::materialize_doc(&exprs, range, meta);
         write_item(&mut out, &item);
     }
     out.push_str(",\"diagnostics\":[");
@@ -288,7 +289,7 @@ fn write_ast_list(out: &mut String, list: &ast::List) {
     out.push_str("]}");
 }
 
-fn write_forest(out: &mut String, range: rowan::TextRange, exprs: &[Expr]) {
+fn write_forest<N: std::fmt::Display>(out: &mut String, range: rowan::TextRange, exprs: &[Expr<N>]) {
     out.push_str(&format!(
         "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
         u32::from(range.start()),
@@ -303,7 +304,7 @@ fn write_forest(out: &mut String, range: rowan::TextRange, exprs: &[Expr]) {
     out.push_str("]}");
 }
 
-fn write_expr(out: &mut String, expr: &Expr) {
+fn write_expr<N: std::fmt::Display>(out: &mut String, expr: &Expr<N>) {
     let span = expr.span();
     let (start, end) = (u32::from(span.start()), u32::from(span.end()));
     match expr {
@@ -322,7 +323,7 @@ fn write_expr(out: &mut String, expr: &Expr) {
             attrs,
             ..
         } => {
-            let mut label = name.clone();
+            let mut label = name.to_string();
             for (key, value) in fields.iter() {
                 label.push_str(&format!(" :{key} {value}"));
             }

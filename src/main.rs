@@ -18,7 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Parse and evaluate a document, reporting every diagnostic
+    /// Parse and materialize a document, reporting every diagnostic
     Check { file: PathBuf },
     /// Print the lossless CST
     Cst { file: PathBuf },

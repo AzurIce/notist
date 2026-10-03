@@ -1,6 +1,6 @@
 #[test]
 fn index_ids_and_tags() {
-    let src = "@(id: \"a\", tags: (\"x\", \"y\"))#note[第一]\n\n@(id: \"b\", tags: (\"x\",))#note[第二]\n";
+    let src = "@(id: \"a\", tags: (\"x\", \"y\"))#strong[第一]\n\n@(id: \"b\", tags: (\"x\",))#strong[第二]\n";
     let (item, diags) = notist::analyze(src);
     assert!(diags.is_empty());
     let mut d = Vec::new();
@@ -18,7 +18,7 @@ fn index_ids_and_tags() {
 
 #[test]
 fn index_duplicate_id_is_diagnosed() {
-    let src = "@(id: \"a\")#note[第一]\n\n@(id: \"a\")#note[第二]\n";
+    let src = "@(id: \"a\")#strong[第一]\n\n@(id: \"a\")#strong[第二]\n";
     let (item, _) = notist::analyze(src);
     let mut d = Vec::new();
     let index = notist::index::Index::build(&item, &mut d);

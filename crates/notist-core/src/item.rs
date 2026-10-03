@@ -25,15 +25,18 @@ pub enum Ctor {
     /// extent. The heading stays the first child. The source spelling
     /// `#section[..]` resolves to the same constructor.
     Section,
+    /// Recovery representation of a call to an unknown name — always
+    /// accompanied by an `unknown constructor` diagnostic, never a
+    /// legitimate constructor.
     Custom(String),
 }
 
 impl Ctor {
-    /// The element level of a builtin constructor, if statically known.
-    /// `Doc` and custom constructors return `None` (derive it structurally).
-    pub fn level(&self) -> Option<builtins::Level> {
-        let name = match self {
-            Ctor::Doc => return None,
+    /// The source-level name of a builtin constructor (`Doc` and custom
+    /// constructors have none).
+    fn source_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Ctor::Doc | Ctor::Custom(_) => return None,
             Ctor::Paragraph => "paragraph",
             Ctor::Heading => "heading",
             Ctor::Text => "text",
@@ -46,9 +49,41 @@ impl Ctor {
             Ctor::ListItem => "item",
             Ctor::Group => "group",
             Ctor::Section => "section",
-            Ctor::Custom(_) => return None,
-        };
-        builtins::builtin_signature(name).map(|s| s.level)
+        })
+    }
+
+    /// The builtin constructor for a source-level name.
+    pub fn from_name(name: &str) -> Option<Ctor> {
+        Some(match name {
+            "paragraph" => Ctor::Paragraph,
+            "heading" => Ctor::Heading,
+            "text" => Ctor::Text,
+            "raw" => Ctor::RawInline,
+            "strong" => Ctor::Strong,
+            "emph" => Ctor::Emph,
+            "math" => Ctor::Math,
+            "link" => Ctor::Link,
+            "list" => Ctor::List,
+            "item" => Ctor::ListItem,
+            "group" => Ctor::Group,
+            "section" => Ctor::Section,
+            _ => return None,
+        })
+    }
+
+    /// The element level of a builtin constructor, if statically known.
+    /// `Doc` and custom constructors return `None` (derive it structurally).
+    pub fn level(&self) -> Option<builtins::Level> {
+        self.source_name()
+            .and_then(builtins::builtin_signature)
+            .map(|s| s.level)
+    }
+
+    /// What a builtin constructor's children mount accepts.
+    pub fn accepts(&self) -> Option<builtins::Accepts> {
+        self.source_name()
+            .and_then(builtins::builtin_signature)
+            .map(|s| s.accepts)
     }
 
     pub fn name(&self) -> &str {
@@ -68,6 +103,12 @@ impl Ctor {
             Ctor::Section => "Section",
             Ctor::Custom(name) => name,
         }
+    }
+}
+
+impl std::fmt::Display for Ctor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 

@@ -1,4 +1,40 @@
 #[test]
+fn reflow_splits_paragraphs_around_block_calls() {
+    // 未知构造器诊断 + 恢复：block flavor 把段落切成兄弟
+    let (item, diags) = notist::analyze("文字\n#note[\n块 body\n]\n后续\n");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].message.contains("unknown constructor"));
+    let dump = notist::dump::dump(&item);
+    assert_eq!(
+        dump,
+        "\
+(doc @0..32
+  (paragraph @0..6
+    (text @0..6 :text \"文字\")
+  )
+  (note @7..24
+    (paragraph @14..22
+      (text @14..22 :text \"块 body\")
+    )
+  )
+  (paragraph @25..31
+    (text @25..31 :text \"后续\")
+  )
+)
+"
+    );
+}
+
+#[test]
+fn reflow_keeps_inline_calls_inside_paragraph() {
+    // inline flavor 的调用不切
+    let (item, diags) = notist::analyze("文字 #note[x] 后续\n");
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].message.contains("unknown constructor"));
+    let dump = notist::dump::dump(&item);
+    assert_eq!(dump.matches("(paragraph").count(), 1, "{dump}");
+}
+#[test]
 fn shape_groups_sections_by_heading_level() {
     let src = "序言\n\n= 一\n\n内容\n\n== 一点一\n\n细节\n\n= 二\n";
     let (item, diags) = notist::analyze(src);
@@ -42,7 +78,8 @@ fn shape_recurses_into_block_mounts() {
     // block body 内的段落候选同样切分、各自成节
     let src = "#note[\n前 #list[x] 后\n\n= 节\n]\n";
     let (item, diags) = notist::analyze(src);
-    assert!(diags.is_empty());
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].message.contains("unknown constructor"));
     let out = notist::dump::dump(&item);
     assert_eq!(
         out,

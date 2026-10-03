@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-use crate::item::{Dict, Value};
+use crate::item::{Ctor, Dict, Value};
 
 /// How a call's `[...]` body was written: hugging the brackets (`[x]`,
 /// inline) or padded on both ends (`[ x ]`, block). `None` marks
@@ -12,24 +12,28 @@ pub enum BodyFlavor {
     Block,
 }
 
-/// Unevaluated core expression: the desugar target of markup, and (later)
-/// the parse product of code mode. Unlike `Item`, a call's name is an
-/// unresolved source-level name.
+/// Unmaterialized core expression: the desugar target of markup, and (later)
+/// the parse product of code mode. `Expr<String>` (IR₁) carries unresolved
+/// source-level names; `Expr<Ctor>` (IR₂) is the resolved form produced by
+/// `resolve`, still carrying the declared body flavor for shaping.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub enum Expr<N = String> {
     Literal(Value, TextRange),
     Call {
-        name: String,
-        args: Vec<Expr>,
+        name: N,
+        args: Vec<Expr<N>>,
         fields: Dict,
-        children: Vec<Expr>,
+        children: Vec<Expr<N>>,
         body: BodyFlavor,
         attrs: Dict,
         span: TextRange,
     },
 }
 
-impl Expr {
+/// IR₂: a resolved expression — names are core constructors.
+pub type RExpr = Expr<Ctor>;
+
+impl Expr<String> {
     pub fn call(name: &str, span: TextRange) -> Self {
         Expr::Call {
             name: name.to_string(),
@@ -43,9 +47,25 @@ impl Expr {
     }
 
     pub fn text(text: String, span: TextRange) -> Self {
-        Expr::call("text", span).with_field("text", Value::Str(text))
+        Self::call("text", span).with_field("text", Value::Str(text))
     }
+}
 
+impl RExpr {
+    pub fn resolved(ctor: Ctor, span: TextRange) -> Self {
+        Expr::Call {
+            name: ctor,
+            args: Vec::new(),
+            fields: Dict::default(),
+            children: Vec::new(),
+            body: BodyFlavor::None,
+            attrs: Dict::default(),
+            span,
+        }
+    }
+}
+
+impl<N> Expr<N> {
     pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
         if let Expr::Call { fields, .. } = &mut self {
             fields.insert(key, value);
@@ -53,7 +73,7 @@ impl Expr {
         self
     }
 
-    pub fn with_children(mut self, children: Vec<Expr>) -> Self {
+    pub fn with_children(mut self, children: Vec<Expr<N>>) -> Self {
         if let Expr::Call { children: c, .. } = &mut self {
             *c = children;
         }

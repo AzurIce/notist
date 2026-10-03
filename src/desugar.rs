@@ -9,7 +9,7 @@ use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use crate::expr::{BodyFlavor, Expr};
 use crate::item::{Dict, Value};
 
-/// The `.not` frontend's lowering: parse + desugar, no eval (that is shared).
+/// The `.not` frontend's lowering: parse + desugar, no materialization (that is shared).
 pub fn lower_not(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
     let parse = notist_syntax::parser::parse(src);
     let mut diagnostics: Vec<Diagnostic> = parse
@@ -35,7 +35,7 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 
 /// CST → Expr forest: the desugar step. A document is a module body (a
 /// top-level expression sequence), not a constructor call; the `Doc` root
-/// is introduced by eval.
+/// is introduced by materialize.
 ///
 /// The CST is flat: maximal runs of inline content become `paragraph` exprs
 /// here; blank lines and block nodes are run boundaries. Annotations attach

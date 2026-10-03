@@ -1,17 +1,17 @@
-use crate::expr::Expr;
-use crate::item::Value;
+use crate::expr::{Expr, RExpr};
+use crate::item::{Ctor, Value};
 use rowan::TextRange;
 
-/// Group a block sequence into sections by heading level: a `heading` call
-/// starts a section; everything up to the next heading of equal or higher
-/// level belongs to it; deeper headings nest. Content before the first
-/// heading stays at this level. The heading stays the first child of its
-/// section. A section is the identity carrier of its range: its attrs are
-/// transferred from the heading that opens it (a heading opens exactly one
-/// section), and its span covers the whole section extent.
-pub fn sectionize(forest: Vec<Expr>) -> Vec<Expr> {
-    let mut root: Vec<Expr> = Vec::new();
-    let mut stack: Vec<(i64, Vec<Expr>)> = Vec::new();
+/// Group a block sequence into sections by heading level: a heading starts a
+/// section; everything up to the next heading of equal or higher level
+/// belongs to it; deeper headings nest. Content before the first heading
+/// stays at this level. The heading stays the first child of its section. A
+/// section is the identity carrier of its range: its attrs are transferred
+/// from the heading that opens it (a heading opens exactly one section), and
+/// its span covers the whole section extent.
+pub fn sectionize(forest: Vec<RExpr>) -> Vec<RExpr> {
+    let mut root: Vec<RExpr> = Vec::new();
+    let mut stack: Vec<(i64, Vec<RExpr>)> = Vec::new();
     for expr in forest {
         if let Some(level) = heading_level(&expr) {
             while let Some(&(top, _)) = stack.last() {
@@ -33,11 +33,11 @@ pub fn sectionize(forest: Vec<Expr>) -> Vec<Expr> {
     root
 }
 
-fn close_section(stack: &mut Vec<(i64, Vec<Expr>)>, root: &mut Vec<Expr>) {
+fn close_section(stack: &mut Vec<(i64, Vec<RExpr>)>, root: &mut Vec<RExpr>) {
     let (_, children) = stack.pop().unwrap();
     let start = children.first().unwrap().span().start();
     let end = children.last().unwrap().span().end();
-    let mut section = Expr::call("section", TextRange::new(start, end)).with_children(children);
+    let mut section = RExpr::resolved(Ctor::Section, TextRange::new(start, end)).with_children(children);
     // identity transfer: the opening heading's attrs belong to the section
     if let Expr::Call {
         children, attrs, ..
@@ -57,11 +57,11 @@ fn close_section(stack: &mut Vec<(i64, Vec<Expr>)>, root: &mut Vec<Expr>) {
     }
 }
 
-fn heading_level(expr: &Expr) -> Option<i64> {
+fn heading_level(expr: &RExpr) -> Option<i64> {
     let Expr::Call { name, fields, .. } = expr else {
         return None;
     };
-    if name != "heading" {
+    if *name != Ctor::Heading {
         return None;
     }
     match fields.get("level") {

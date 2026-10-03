@@ -1,12 +1,11 @@
 use notist_core::diag::Diagnostic;
 use notist_core::expr::Expr;
-use notist_core::item::{Dict, Item, Value};
+use notist_core::item::{Dict, Value};
 use rowan::TextRange;
 use rushdown::ast::{Arena, KindData, Node, NodeRef};
 use rushdown::parser::{gfm_strikethrough, gfm_table, Options, Parser, ParserExtension};
 use rushdown::text::BasicReader;
 
-/// Analyze a Markdown document: rushdown AST → shared Expr IR → eval.
 /// The markdown frontend's lowering: rushdown AST → shared Expr IR.
 pub fn lower(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
     let parser = Parser::with_extensions(
@@ -17,15 +16,6 @@ pub fn lower(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
     let lowerer = Lowerer { src, arena: &arena };
     let forest = lowerer.children(root);
     (forest, Dict::default(), Vec::new())
-}
-
-/// Analyze a Markdown document: rushdown AST → shared Expr IR → eval.
-pub fn analyze(src: &str) -> (Item, Vec<Diagnostic>) {
-    let (forest, module_attrs, mut diagnostics) = lower(src);
-    let forest = notist_core::shape::shape(forest);
-    let span = TextRange::new(0.into(), (src.len() as u32).into());
-    let item = notist_core::eval::eval_doc(&forest, span, module_attrs, &mut diagnostics);
-    (item, diagnostics)
 }
 
 struct Lowerer<'a> {

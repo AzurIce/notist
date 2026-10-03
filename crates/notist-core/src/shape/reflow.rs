@@ -1,11 +1,12 @@
-use crate::builtins::{self, Level};
-use crate::expr::{BodyFlavor, Expr};
+use crate::builtins::Level;
+use crate::expr::{BodyFlavor, Expr, RExpr};
+use crate::item::{Ctor, Value};
 use rowan::TextRange;
 
-/// Signature-aware restructuring of an `IR₁` forest: paragraphs that contain
+/// Signature-aware restructuring of an `IR₂` forest: paragraphs that contain
 /// block-level elements are split into `paragraph | element | paragraph`
 /// siblings around them. Everything else passes through unchanged.
-pub fn reflow(forest: Vec<Expr>) -> Vec<Expr> {
+pub fn reflow(forest: Vec<RExpr>) -> Vec<RExpr> {
     let mut out = Vec::new();
     for expr in forest {
         if is_paragraph(&expr) && contains_block_child(&expr) {
@@ -17,11 +18,11 @@ pub fn reflow(forest: Vec<Expr>) -> Vec<Expr> {
     out
 }
 
-fn split_paragraph(paragraph: Expr, out: &mut Vec<Expr>) {
+fn split_paragraph(paragraph: RExpr, out: &mut Vec<RExpr>) {
     let Expr::Call { children, .. } = paragraph else {
         unreachable!();
     };
-    let mut run: Vec<Expr> = Vec::new();
+    let mut run: Vec<RExpr> = Vec::new();
     for child in children {
         if is_block_element(&child) {
             flush_run(out, &mut run);
@@ -35,7 +36,7 @@ fn split_paragraph(paragraph: Expr, out: &mut Vec<Expr>) {
 
 /// A non-empty run of inline children becomes a paragraph item (a run that is
 /// itself a single paragraph passes through as-is).
-fn flush_run(out: &mut Vec<Expr>, run: &mut Vec<Expr>) {
+fn flush_run(out: &mut Vec<RExpr>, run: &mut Vec<RExpr>) {
     match run.len() {
         0 => {}
         1 => {
@@ -44,27 +45,27 @@ fn flush_run(out: &mut Vec<Expr>, run: &mut Vec<Expr>) {
                 out.push(child);
             } else {
                 let span = child.span();
-                out.push(Expr::call("paragraph", span).with_children(vec![child]));
+                out.push(RExpr::resolved(Ctor::Paragraph, span).with_children(vec![child]));
             }
         }
         _ => {
             let span = span_of(run);
-            out.push(Expr::call("paragraph", span).with_children(std::mem::take(run)));
+            out.push(RExpr::resolved(Ctor::Paragraph, span).with_children(std::mem::take(run)));
         }
     }
 }
 
-fn span_of(run: &[Expr]) -> TextRange {
+fn span_of(run: &[RExpr]) -> TextRange {
     let start = run.first().unwrap().span().start();
     let end = run.last().unwrap().span().end();
     TextRange::new(start, end)
 }
 
-fn is_paragraph(expr: &Expr) -> bool {
-    matches!(expr, Expr::Call { name, .. } if name == "paragraph")
+fn is_paragraph(expr: &RExpr) -> bool {
+    matches!(expr, Expr::Call { name, .. } if *name == Ctor::Paragraph)
 }
 
-fn contains_block_child(expr: &Expr) -> bool {
+fn contains_block_child(expr: &RExpr) -> bool {
     let Expr::Call { children, .. } = expr else {
         return false;
     };
@@ -72,8 +73,10 @@ fn contains_block_child(expr: &Expr) -> bool {
 }
 
 /// Whether this element is block-level: builtins by their static signature
-/// table, `group` / custom constructors by the declared body flavor.
-fn is_block_element(expr: &Expr) -> bool {
+/// (`group` inherits the declared flavor), custom recovery nodes by the
+/// declared flavor — a block-written body's block-sequence children must
+/// stay in a block-level position to remain coherent.
+fn is_block_element(expr: &RExpr) -> bool {
     let Expr::Call {
         name,
         body,
@@ -84,15 +87,12 @@ fn is_block_element(expr: &Expr) -> bool {
         return false;
     };
     // fenced raw blocks are block elements regardless of the inline-raw row
-    if name == "raw" && fields.get("block") == Some(&crate::item::Value::Bool(true)) {
+    if *name == Ctor::RawInline && fields.get("block") == Some(&Value::Bool(true)) {
         return true;
     }
-    match builtins::builtin_signature(name) {
-        Some(sig) => match sig.level {
-            Level::Block => true,
-            Level::Inline => false,
-            Level::Inherit => *body == BodyFlavor::Block,
-        },
-        None => *body == BodyFlavor::Block,
+    match name.level() {
+        Some(Level::Block) => true,
+        Some(Level::Inline) => false,
+        Some(Level::Inherit) | None => *body == BodyFlavor::Block,
     }
 }

@@ -79,6 +79,8 @@ Document@0..434
   Newline@433..434 "\n"
 
 === core ===
+error[type] @248..258: unknown constructor `card`
+error[type] @322..333: unknown constructor `card`
 (doc @0..434
   (paragraph @173..180
     (text @173..180 :text "前文 ")

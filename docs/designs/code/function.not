@@ -33,12 +33,12 @@ _Content 函数产生 Content 节点，Content 节点可以被挂载 Children �
 
 `[...]` 是调用的内容槽，挂载为结果节点的 children；写法与 flavor 规则见 [types.not](types.not)。
 
-调用的级别是构造器的元数据（返回类型）：`paragraph` / `heading` / `list` / `item` 是块级，`strong` / `emph` / `raw` / `math` / `link` / `text` 是行内；`group` 透明继承 children flavor；Custom 按 children flavor 判定。级别不影响 CST 结构（都是流里的节点），由渲染/分析侧消费。
+调用的级别是构造器的元数据（返回类型）：`paragraph` / `heading` / `list` / `item` 是块级，`strong` / `emph` / `raw` / `math` / `link` / `text` 是行内；`group` 透明继承 children flavor。级别不影响 CST 结构（都是流里的节点），由渲染/分析侧消费。
 
-*求值*
+*解析*
 
-- 内建名映射到对应构造器；未知名 → Custom（原子自定义元素，数据而非行为）
-- 签名：`strong` / `emph` / `heading` / `paragraph` / `link` 只接受 InlineContent；`list` / `item` 接受任意内容（inline children 提升为单段落）；`text` / `raw` / `math` 不接受 children（内容走首个位置参数的 `text` 字段）；`group` 与 Custom 不受限
-- 多余位置参数：内建诊断；Custom 收进 `args` 字段；`link` / `raw` / `math` 的第一个位置参数分别映射到 `target` / `text` 字段
+- 内建名映射到对应构造器；未知名是 type 诊断（`unknown constructor`），调用保留为 Custom 恢复节点，按声明的 flavor 放置
+- 签名：`strong` / `emph` / `heading` / `paragraph` / `link` 只接受 InlineContent；`list` / `item` 接受任意内容（inline children 提升为单段落）；`text` / `raw` / `math` 不接受 children（内容走首个位置参数的 `text` 字段）；`group` 不受限
+- 多余位置参数：内建诊断；未知名收进 `args` 字段；`link` / `raw` / `math` 的第一个位置参数分别映射到 `target` / `text` 字段
 
 模式切换与词法规则见 [grammar.not](../grammar.not)。

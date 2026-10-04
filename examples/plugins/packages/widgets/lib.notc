@@ -1,0 +1,2 @@
+fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+fn badge(label: String, count: Int = 1) -> InlineContent;

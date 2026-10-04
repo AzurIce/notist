@@ -20,6 +20,7 @@ pub(crate) fn write(output: &mut String, text: &str, attribute: bool) {
             '>' => output.push_str("&gt;"),
             '"' if attribute => output.push_str("&quot;"),
             '\'' if attribute => output.push_str("&#39;"),
+            '\r' if attribute => output.push_str("&#13;"),
             '\0' => output.push('\u{fffd}'),
             _ => output.push(ch),
         }

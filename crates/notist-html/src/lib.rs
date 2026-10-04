@@ -18,8 +18,10 @@ use notist_core::diag::{Diagnostic, Phase};
 use notist_core::item::{Ctor, Item, Value};
 
 mod attributes;
+pub mod components;
 mod escape;
 mod url;
+pub use components::{Component, HtmlRegistry, Target};
 
 pub use escape::{escape_attribute, escape_text};
 pub use url::is_safe_url;
@@ -37,6 +39,7 @@ pub struct RenderResult {
     pub diagnostics: Vec<Diagnostic>,
     /// Empty unless `Renderer::with_source_map` is enabled.
     pub source_map: Vec<SourceMapping>,
+    pub used_components: Vec<Component>,
 }
 
 /// A mapping to an element actually emitted by this render. IDs are local to
@@ -67,9 +70,14 @@ pub struct Renderer<'a> {
     embed: Option<Hook<'a>>,
     math: Option<Hook<'a>>,
     source_map: bool,
+    registry: HtmlRegistry,
 }
 
 impl<'a> Renderer<'a> {
+    pub fn with_registry(mut self, registry: HtmlRegistry) -> Self {
+        self.registry = registry;
+        self
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -113,12 +121,14 @@ impl<'a> Renderer<'a> {
             output: String::new(),
             diagnostics: Vec::new(),
             source_map: Vec::new(),
+            used_components: Vec::new(),
         };
         state.node(item);
         RenderResult {
             html: state.output,
             diagnostics: state.diagnostics,
             source_map: state.source_map,
+            used_components: state.used_components,
         }
     }
 }
@@ -128,11 +138,60 @@ struct State<'r, 'a> {
     output: String,
     diagnostics: Vec<Diagnostic>,
     source_map: Vec<SourceMapping>,
+    used_components: Vec<Component>,
 }
 
 impl State<'_, '_> {
     fn node(&mut self, item: &Item) {
-        match &item.ctor {
+        if let Some(id) = item.ctor.function_id()
+            && let Some(target) = self.renderer.registry.get(&id)
+        {
+            match target {
+                Target::Component(component) => {
+                    self.component(item, component);
+                    return;
+                }
+                Target::Native(ctor) => {
+                    self.native(item, ctor);
+                    return;
+                }
+            }
+        }
+        self.native(item, &item.ctor);
+    }
+
+    fn component(&mut self, item: &Item, component: &Component) {
+        if !self
+            .used_components
+            .iter()
+            .any(|used| used.id == component.id)
+        {
+            self.used_components.push(component.clone());
+        }
+        self.open(&component.tag, item, "");
+        self.attr("notist-protocol", "1");
+        for parameter in &component.definition.parameters {
+            if let Some(value) = item.fields.get(&parameter.name) {
+                if parameter.ty.accepts(value) {
+                    self.attr(
+                        &components::parameter_attribute(&parameter.name),
+                        &components::encode_parameter(value),
+                    );
+                } else {
+                    self.diagnostic(
+                        item,
+                        format!("invalid component parameter `{}` omitted", parameter.name),
+                    );
+                }
+            }
+        }
+        self.output.push('>');
+        self.children(item);
+        self.close(&component.tag);
+    }
+
+    fn native(&mut self, item: &Item, ctor: &Ctor) {
+        match ctor {
             Ctor::Doc => self.transparent(item, "div"),
             Ctor::Group => self.transparent(item, if is_block(item) { "div" } else { "span" }),
             Ctor::Text => {
@@ -147,7 +206,16 @@ impl State<'_, '_> {
                     self.text(string_field(item, "text").unwrap_or(""));
                 }
             }
-            Ctor::Paragraph => self.container("p", item, ""),
+            Ctor::Paragraph => {
+                // An opaque inline extension can accept Content as light DOM.
+                // A p would be implicitly closed by its descendant block tags,
+                // so retain this IR paragraph as a flow container in that case.
+                if item.children.iter().any(has_block_content) {
+                    self.container("div", item, "notist-paragraph");
+                } else {
+                    self.container("p", item, "");
+                }
+            }
             Ctor::Heading => {
                 let level = int_field(item, "level").filter(|n| *n > 0).unwrap_or(1);
                 if level <= 6 {
@@ -295,7 +363,7 @@ impl State<'_, '_> {
         attributes::write(&mut self.output, &item.attrs, class);
         if self.renderer.source_map && !item.span.is_empty() && item.ctor != Ctor::Doc {
             let node_id = self.source_map.len();
-            let kind = if item.ctor == Ctor::Heading {
+            let kind = if matches!(item.ctor, Ctor::Heading | Ctor::Paragraph) {
                 SourceMappingKind::Block
             } else {
                 match tag {
@@ -305,6 +373,7 @@ impl State<'_, '_> {
                     "div" | "section" | "blockquote" | "ul" | "ol" | "table" => {
                         SourceMappingKind::Container
                     }
+                    _ if tag.contains('-') && is_block(item) => SourceMappingKind::Container,
                     _ => SourceMappingKind::Inline,
                 }
             };
@@ -512,4 +581,8 @@ fn bool_field(item: &Item, key: &str) -> bool {
 
 fn is_block(item: &Item) -> bool {
     item.level == notist_core::builtins::Level::Block
+}
+
+fn has_block_content(item: &Item) -> bool {
+    is_block(item) || item.children.iter().any(has_block_content)
 }

@@ -186,7 +186,7 @@ pub enum Value {
     Unit,
     Bool(bool),
     Int(i64),
-    Float(f64),
+    Float(#[cfg_attr(feature = "serde", serde(with = "float_serde"))] f64),
     Str(String),
     Array(Vec<Value>),
     Dict(Dict),
@@ -195,6 +195,48 @@ pub enum Value {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Dict(Vec<(String, Value)>);
+
+// Keep existing finite-float JSON while allowing every f64 to round-trip through
+// serializers (including JSON, whose number grammar excludes NaN/infinity).
+#[cfg(feature = "serde")]
+mod float_serde {
+    use serde::{Deserialize, Serialize};
+    pub fn serialize<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        if !serializer.is_human_readable() || value.is_finite() {
+            return serializer.serialize_f64(*value);
+        }
+        #[derive(Serialize)]
+        struct Bits {
+            bits: String,
+        }
+        Bits {
+            bits: format!("{:016x}", value.to_bits()),
+        }
+        .serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        if !deserializer.is_human_readable() {
+            return f64::deserialize(deserializer);
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Number(f64),
+            Bits { bits: String },
+        }
+        match Stored::deserialize(deserializer)? {
+            Stored::Number(value) => Ok(value),
+            Stored::Bits { bits } => {
+                if bits.len() != 16 {
+                    return Err(serde::de::Error::custom("expected sixteen f64 hex digits"));
+                }
+                u64::from_str_radix(&bits, 16)
+                    .map(f64::from_bits)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
 
 impl Dict {
     pub fn get(&self, key: &str) -> Option<&Value> {
@@ -279,6 +321,10 @@ fn empty_span() -> TextRange {
 }
 
 impl Item {
+    /// Stable identity of a resolved content call; absent on documents and recovery nodes.
+    pub fn function_id(&self) -> Option<FunctionId> {
+        self.ctor.function_id()
+    }
     pub fn new(ctor: Ctor, span: TextRange) -> Self {
         Self {
             level: ctor

@@ -10,7 +10,7 @@
 - trivia（空白、换行、注释）是一等 token，全保留
 
 // 与 Markdown 不同：Markdown 的元素是闭集合，语法层面即可确定 Inline/Block；
-// Notist 的内容函数 `#xxx()` 的级别依赖构造器签名（内建表）或调用点 flavor 声明，
+// Notist 的内容函数 `#xxx()` 的级别依赖构造器已注册的签名或调用点 flavor 声明，
 // 因此文档树结构不能在语法层面确定，只能以平铺森林呈现，延迟到 Shape 阶段组装。
 
 *Parse*
@@ -31,7 +31,7 @@
 
 *Resolve*（IR₁ → IR₂）
 
-- 名称解析：默认 Registry 的函数定义 → 内置 Ctor；prelude 与 notist 限定名引用同一函数。未知名是 type 诊断（`unknown constructor`），调用保留为 Custom 恢复节点
+- 名称解析：配置 Registry 的函数定义 → 内置 Ctor 或带规范身份与契约的 ExtensionCtor；prelude 与 notist 限定名引用同一函数。未知名是 type 诊断（`unknown constructor`），调用保留为 Custom 恢复节点
 - 类型检查：已知字段类型 / 值域、必填字段与默认值由 FunctionDef 的共同绑定器处理；逐调用点校验 flavor，行内内容槽检查实际子节点的级别，恢复树保留原始内容和值
 - 结构槽：按 Builtin 中的契约检查构造器；使用 Syntax 定义的 structural_children 视图，不进行段落提升
 - 归一：位置参数归位 fields、inline 挂载提升为单段块、字面量以 text 插入
@@ -42,16 +42,16 @@
 - 候选结构 → 定稿结构。按块序列（文档体与每个块级 children 挂载）递归：
   1. reflow：签名感知切分——block 级调用从 `paragraph` 候选中切出，块序列定稿
   2. sectionize：按 heading level 把平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section 上（身份归位），section 的 span 覆盖整个节的范围
-- 内置级别判定依赖共同定义的 ReturnRule；恢复节点采用调用点 flavor，不求值
+- 内置级别判定依赖共同定义的 ReturnRule，扩展使用 Resolve 确定的类别；恢复节点采用调用点 flavor，不求值
 - 带 attrs 或 fields 的段落候选拆分时，以透明的块级 group 保留整个范围与元数据，不把同一个身份复制到多段
 - 列表项 / 表格行 / 单元格结构槽只做 reflow 并递归，保持结构轴；普通 `item` / `cell` 内容槽照常 reflow 与 sectionize
 
 *Materialize*（物化）
 
-- IR₂′ → Item：薄结构转换 + `Doc` 包装 + 模块注解归位
+- IR₂′ → Item：薄结构转换 + `Doc` 包装 + 模块注解归位，保存最终 Block / Inline 类别
 
 *Content 树*
 
-- 节点 = ctor + fields + children + attrs + span
+- 节点 = ctor（含规范函数身份）+ level + fields + children + attrs + span
 - 分析只作用于 Content 树：引用解析、渲染
 - CST 服务 tooling；core 节点携带产生它的 surface span

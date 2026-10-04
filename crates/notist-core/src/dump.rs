@@ -12,10 +12,26 @@ fn write_item(out: &mut String, item: &Item, indent: usize) {
     let pad = "  ".repeat(indent);
     let mut line = format!(
         "{pad}({} @{}..{}",
-        item.ctor.name().to_lowercase(),
+        if matches!(item.ctor, crate::item::Ctor::Extension(_)) {
+            item.ctor.name().into_owned()
+        } else {
+            item.ctor.name().to_lowercase()
+        },
         u32::from(item.span.start()),
         u32::from(item.span.end()),
     );
+    if matches!(item.ctor, crate::item::Ctor::Extension(_)) {
+        write!(
+            line,
+            " [{}]",
+            if item.level == crate::builtins::Level::Block {
+                "block"
+            } else {
+                "inline"
+            }
+        )
+        .unwrap();
+    }
     for (key, value) in item.fields.iter() {
         write!(line, " :{key} {value}").unwrap();
     }

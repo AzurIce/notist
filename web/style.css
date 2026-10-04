@@ -53,7 +53,7 @@ main {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(3, 1fr) minmax(240px, 0.7fr);
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: 1fr 1fr minmax(180px, .9fr);
   gap: 1rem;
   padding: 0 1.2rem 1.2rem;
   min-height: 0;
@@ -179,3 +179,8 @@ main {
   .diag.semantic { color: #fbbf24; }
   .diag.type { color: #c4b5fd; }
 }
+
+#preview { width: 100%; height: auto; flex: 1; min-height: 0; border: 0; background: white; color: black; }
+header { flex-wrap: wrap; }
+
+.preview-pane { grid-column: 1 / 4; grid-row: 3; }

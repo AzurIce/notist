@@ -1,6 +1,6 @@
 = HTML Rendering
 
-`notist-html` 将最终 Item 树转换为 HTML 片段，仅依赖 notist-core。它不读取源码或资源；`.not` 与 Markdown 使用同一个 renderer。输入树与源码诊断由 [Pipeline](designs/pipeline.not) 产生，节点契约见 [Builtin](builtin.not)。
+`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 Markdown 使用同一个 renderer。输入树与源码诊断由 [Pipeline](designs/pipeline.not) 产生，节点契约见 [Builtin](builtin.not)。
 
 == 使用
 
@@ -11,7 +11,7 @@ let html = notist_html::render(analysis.root());
 
 仓库中可使用 `cargo run --example html -- document.not` 或 `.md` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
 
-`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html 和 diagnostics，后者携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
+`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，后者携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
 
 renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留段落、行内空白、raw payload 及节点身份。输入以完成 Resolve / Shape 的合法树为准；恢复节点采用可显示的回退形式。
 
@@ -20,7 +20,7 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 | 构造器 | HTML |
 | --- | --- |
 | Doc | children；有可映射属性时使用 div |
-| paragraph | p |
+| paragraph | p；行内组件的 light DOM 含块内容时使用 div.notist-paragraph，避免浏览器自动闭合 p |
 | heading | h1 至 h6；更深层级使用带 role 与 aria-level 的 div |
 | section | section；heading 仍是其第一个 child |
 | text | 转义文本；有可映射属性时使用 span |
@@ -34,6 +34,7 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 | divider | hr |
 | table / row / cell | table / tr / td 或 th；表格上下文决定 cell 的映射 |
 | group | children；有可映射属性时按内容使用 span 或 div |
+| Extension | 按 HtmlRegistry 的规范函数身份生成组件；缺少目标时保留 children 并诊断 |
 | Custom | 保留 children 的恢复容器，并产生渲染诊断 |
 
 连续的开头 header 行进入 thead，余下行进入 tbody；后续 header 行保持原位置并使用 th。表头 cell 带 scope，table.align 逐列生成 text-align 样式。单元格的段落与其他块内容均保留。列表统一保留 item 中的段落，不依赖 Markdown tight 标记。
@@ -78,3 +79,18 @@ let result = renderer.render_with_diagnostics(analysis.root());
 默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写 `.not` / `.md` 扩展名；资源位置与发布路径由应用决定。
 
 结构映射参照 [HTML table content model](https://html.spec.whatwg.org/multipage/tables.html#the-table-element) 与 [HTML grouping content](https://html.spec.whatwg.org/multipage/grouping-content.html)。
+
+== Package 组件与完整页面
+
+HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, module_url) 将同一语义签名绑定到约定标签，Renderer::with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
+
+组件的命名、notist-protocol="1" 参数协议及目标冲突规则见 [Content Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
+
+notist::html_host::html_registry 从 Project 与文件约定绑定目标；build_page 将页面、注册入口和实际使用的组件资源写入目录。可运行：
+
+```sh
+cargo run -- html examples/plugins/document.not --out-dir target/plugins-demo
+python3 -m http.server
+```
+
+访问 /target/plugins-demo/ 查看页面；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。

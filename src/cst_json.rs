@@ -8,6 +8,167 @@ use crate::item::Item;
 use crate::{desugar, materialize};
 
 pub fn analyze_json(src: &str) -> String {
+    analyze_json_with_registry(src, crate::builtins::registry())
+}
+
+/// Module inspection keeps the recovered CST available even on semantic errors.
+pub fn analyze_module_json(package: &str, src: &str) -> String {
+    let parse = notist_syntax::parse_module(src);
+    let mut out = String::from("{\"tree\":");
+    write_element(&mut out, NodeOrToken::Node(parse.syntax()));
+    if let Some(module) = ast::Module::cast(parse.syntax()) {
+        out.push_str(",\"ast\":");
+        out.push_str(&module_ast(&module).to_string());
+    }
+    match crate::analyze_module(package, src) {
+        Ok(module) => {
+            out.push_str(",\"functions\":[");
+            for (i, function) in module.functions.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"function\":{},\"start\":{},\"end\":{},\"signature\":{},\"children\":{},\"level\":{},\"parameters\":[",
+                    escape(&function.id.to_string()),
+                    u32::from(function.span.start()),
+                    u32::from(function.span.end()),
+                    escape(&src[usize::from(function.span.start())..usize::from(function.span.end())]),
+                    escape(&format!("{:?}", function.children)),
+                    escape(if function.returns.base_level() == crate::builtins::Level::Block { "block" } else { "inline" }),
+                ));
+                for (j, parameter) in function.parameters.iter().enumerate() {
+                    if j > 0 {
+                        out.push(',');
+                    }
+                    let mode = match parameter.mode {
+                        crate::ParameterMode::Required => "required",
+                        crate::ParameterMode::Optional => "optional",
+                        crate::ParameterMode::Default(_) => "default",
+                    };
+                    out.push_str(&format!(
+                        "{{\"name\":{},\"type\":{},\"mode\":{}",
+                        escape(&parameter.name),
+                        type_json(&parameter.ty),
+                        escape(mode)
+                    ));
+                    if let crate::ParameterMode::Default(value) = &parameter.mode {
+                        out.push_str(",\"default\":");
+                        crate::query::write_value(&mut out, value);
+                        out.push_str(",\"typed_default\":");
+                        out.push_str(&notist_html::components::value_json(value).to_string());
+                    }
+                    out.push('}');
+                }
+                out.push_str("]}");
+            }
+            out.push_str("],\"diagnostics\":[]}");
+        }
+        Err(diagnostics) => {
+            out.push_str(",\"diagnostics\":");
+            write_diagnostics(&mut out, &diagnostics);
+            out.push('}');
+        }
+    }
+    out
+}
+
+fn module_ast(module: &ast::Module) -> serde_json::Value {
+    let functions = module
+        .functions()
+        .map(|function| {
+            let mut children = function
+                .parameters()
+                .map(|parameter| {
+                    let mut children = Vec::new();
+                    if let Some(ty) = parameter.ty() {
+                        children.push(ast_node("TypeRef", ty.syntax(), Vec::new()));
+                    }
+                    if let Some(default) = parameter.default_value() {
+                        children.push(ast_node("DefaultValue", default.syntax(), Vec::new()));
+                    }
+                    ast_node("Parameter", parameter.syntax(), children)
+                })
+                .collect::<Vec<_>>();
+            if let Some(mount) = function.children_decl() {
+                children.push(ast_node("ChildrenDecl", mount.syntax(), Vec::new()));
+            }
+            if let Some(result) = function.return_type() {
+                children.push(ast_node("ReturnType", result.syntax(), Vec::new()));
+            }
+            ast_node("FunctionDecl", function.syntax(), children)
+        })
+        .collect();
+    let mut tree = ast_node("Module", module.syntax(), functions);
+    tree.as_object_mut().unwrap().remove("label");
+    tree
+}
+
+fn ast_node(
+    kind: &str,
+    syntax: &SyntaxNode,
+    children: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({"kind":kind, "start":u32::from(syntax.text_range().start()), "end":u32::from(syntax.text_range().end()), "label":syntax.text().to_string(), "children":children})
+}
+
+fn type_json(ty: &crate::ValueType) -> serde_json::Value {
+    use crate::ValueType;
+    use serde_json::json;
+    match ty {
+        ValueType::Unit => json!({"kind":"Unit"}),
+        ValueType::Bool => json!({"kind":"Bool"}),
+        ValueType::Int => json!({"kind":"Int"}),
+        ValueType::Float => json!({"kind":"Float"}),
+        ValueType::String => json!({"kind":"String"}),
+        ValueType::Dict => json!({"kind":"Dict"}),
+        ValueType::Array(element) => {
+            json!({"kind":"Array", "element":element.as_ref().map(|element| type_json(element))})
+        }
+    }
+}
+
+pub fn analyze_document_json(
+    path: &std::path::Path,
+    src: &str,
+    registry: &crate::Registry,
+) -> String {
+    if path.extension().is_some_and(|ext| ext == "not") {
+        return analyze_json_with_registry(src, registry);
+    }
+    match crate::Notist::default()
+        .with_registry(registry.clone())
+        .analyze(path, src)
+    {
+        Ok(analysis) => {
+            let mut out = String::from("{\"core\":");
+            write_item(&mut out, analysis.root());
+            out.push_str(",\"diagnostics\":");
+            write_diagnostics(&mut out, analysis.diagnostics());
+            out.push('}');
+            out
+        }
+        Err(error) => format!("{{\"error\":{}}}", escape(&error.to_string())),
+    }
+}
+
+fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
+    out.push('[');
+    for (i, diagnostic) in diagnostics.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"start\":{},\"end\":{},\"phase\":{},\"message\":{}}}",
+            u32::from(diagnostic.span.start()),
+            u32::from(diagnostic.span.end()),
+            escape(&diagnostic.phase.to_string()),
+            escape(&diagnostic.message)
+        ));
+    }
+    out.push(']');
+}
+
+pub fn analyze_json_with_registry(src: &str, registry: &crate::Registry) -> String {
     let parse = parser::parse_document(src);
     let mut out = String::from("{\"tree\":");
     write_element(&mut out, NodeOrToken::Node(parse.syntax()));
@@ -25,7 +186,7 @@ pub fn analyze_json(src: &str) -> String {
         let range = document.range();
         out.push_str(",\"ir1\":");
         write_forest(&mut out, range, &exprs);
-        let exprs = crate::resolve::resolve(exprs, &mut diagnostics);
+        let exprs = crate::resolve::resolve_with_registry(exprs, registry, &mut diagnostics);
         let exprs = crate::shape::shape(exprs);
         out.push_str(",\"ir2\":");
         write_forest(&mut out, range, &exprs);
@@ -383,6 +544,11 @@ fn write_item(out: &mut String, item: &Item) {
         u32::from(item.span.start()),
         u32::from(item.span.end()),
     ));
+    out.push(',');
+    // Keep the debug tree's typed children, while exposing all semantic fields.
+    crate::query::write_metadata(out, item);
+    out.push_str(",\"attrs\":");
+    crate::query::write_value(out, &crate::Value::Dict(item.attrs.clone()));
     let mut label = String::new();
     for (key, value) in item.fields.iter() {
         label.push_str(&format!(" :{key} {value}"));

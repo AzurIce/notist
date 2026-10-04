@@ -1,0 +1,3 @@
+[dependencies]
+widgets = { path = "./packages/widgets" }
+mermaid = { path = "./packages/mermaid" }

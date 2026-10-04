@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
@@ -15,10 +15,16 @@ use crate::item::{Ctor, Item, Value};
 
 /// Run the language server over stdio.
 pub async fn serve() {
+    serve_with_config(None).await;
+}
+
+pub async fn serve_with_config(config: Option<std::path::PathBuf>) {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(|client| Backend {
         client,
+        config: config.clone(),
+        reported: tokio::sync::Mutex::new(HashSet::new()),
         documents: tokio::sync::Mutex::new(HashMap::new()),
     });
     Server::new(stdin, stdout, socket).serve(service).await;
@@ -26,6 +32,8 @@ pub async fn serve() {
 
 struct Backend {
     client: Client,
+    config: Option<std::path::PathBuf>,
+    reported: tokio::sync::Mutex<HashSet<Url>>,
     documents: tokio::sync::Mutex<HashMap<Url, String>>,
 }
 
@@ -71,6 +79,11 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
+        self.refresh().await;
+    }
+
+    async fn did_change_watched_files(&self, _: tower_lsp::lsp_types::DidChangeWatchedFilesParams) {
+        self.refresh().await;
     }
 
     async fn document_symbol(
@@ -78,6 +91,32 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = params.text_document.uri;
+        if uri.path().ends_with(".notc") {
+            let documents = self.documents.lock().await;
+            let Some(src) = documents.get(&uri) else {
+                return Ok(None);
+            };
+            let lines = LineIndex::new(src);
+            let parse = crate::syntax::parse_module(src);
+            let module = crate::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let symbols = module
+                .functions()
+                .filter_map(|function| {
+                    #[allow(deprecated)]
+                    Some(DocumentSymbol {
+                        name: function.name()?.text().into(),
+                        detail: None,
+                        kind: SymbolKind::FUNCTION,
+                        tags: None,
+                        deprecated: None,
+                        range: lines.range(src, function.range()),
+                        selection_range: lines.range(src, function.range()),
+                        children: None,
+                    })
+                })
+                .collect();
+            return Ok(Some(DocumentSymbolResponse::Nested(symbols)));
+        }
         let Some((src, item)) = self.analyzed(&uri).await else {
             return Ok(None);
         };
@@ -93,11 +132,68 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        if uri.path().ends_with(".notc") {
+            let documents = self.documents.lock().await;
+            let Some(src) = documents.get(uri) else {
+                return Ok(None);
+            };
+            let lines = LineIndex::new(src);
+            let offset = lines.offset(src, position);
+            let parse = crate::syntax::parse_module(src);
+            let module = crate::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let target = module
+                .functions()
+                .find(|function| function.range().contains((offset as u32).into()));
+            return Ok(target.map(|function| Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::PlainText,
+                    value: function.syntax().text().to_string(),
+                }),
+                range: Some(lines.range(src, function.range())),
+            }));
+        }
         let Some((src, item)) = self.analyzed(uri).await else {
             return Ok(None);
         };
         let lines = LineIndex::new(&src);
         let offset = lines.offset(&src, position);
+        if let Some(name) = call_path_at(uri, &src, offset)
+            && let Ok(project) = self.project(uri).await
+            && let Ok(definition) = project.registry().resolve(&name)
+        {
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::PlainText,
+                    value: project
+                        .packages()
+                        .get(&definition.id.package)
+                        .and_then(|package| {
+                            package.source.get(
+                                usize::from(definition.span.start())
+                                    ..usize::from(definition.span.end()),
+                            )
+                        })
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            format!(
+                                "{}({}) -> {:?}",
+                                definition.id,
+                                definition
+                                    .parameters
+                                    .iter()
+                                    .map(|parameter| format!(
+                                        "{}: {}",
+                                        parameter.name, parameter.ty
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                definition.returns.base_level()
+                            )
+                        }),
+                }),
+                range: None,
+            }));
+        }
         let Some(target) = smallest_at(&item, offset) else {
             return Ok(None);
         };
@@ -121,6 +217,24 @@ impl LanguageServer for Backend {
         };
         let lines = LineIndex::new(&src);
         let offset = lines.offset(&src, position);
+        if let Some(name) = call_path_at(&uri, &src, offset) {
+            let Some(project) = self.project(&uri).await.ok() else {
+                return Ok(None);
+            };
+            let Ok(definition) = project.registry().resolve(&name) else {
+                return Ok(None);
+            };
+            let Some(package) = project.packages().get(&definition.id.package) else {
+                return Ok(None);
+            };
+            let Ok(uri) = Url::from_file_path(package.root.join("lib.notc")) else {
+                return Ok(None);
+            };
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri,
+                range: LineIndex::new(&package.source).range(&package.source, definition.span),
+            })));
+        }
         let Some(target) = smallest_at(&item, offset) else {
             return Ok(None);
         };
@@ -168,26 +282,114 @@ impl Backend {
             .lock()
             .await
             .insert(uri.clone(), text.clone());
-        let (_item, diagnostics) = crate::analyze(&text);
-        let lines = LineIndex::new(&text);
-        let diagnostics = diagnostics
+        self.refresh().await;
+    }
+
+    async fn project(
+        &self,
+        uri: &Url,
+    ) -> std::result::Result<crate::project::Project, Vec<crate::project::SourceDiagnostic>> {
+        let path = uri.to_file_path().unwrap_or_else(|_| "document.not".into());
+        let overlays = self
+            .documents
+            .lock()
+            .await
             .iter()
-            .map(|d| Diagnostic {
-                range: lines.range(&text, d.span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some(format!("notist:{}", d.phase)),
-                message: d.message.clone(),
-                ..Default::default()
-            })
+            .filter_map(|(uri, source)| Some((uri.to_file_path().ok()?, source.clone())))
             .collect();
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+        let config = self
+            .config
+            .clone()
+            .or_else(|| crate::project::discover_config_with_sources(&path, &overlays));
+        let Some(config) = config else {
+            return Ok(crate::project::Project::default());
+        };
+        crate::project::Project::load_with_sources(config, &overlays)
+    }
+
+    async fn refresh(&self) {
+        let documents = self.documents.lock().await.clone();
+        let mut published: HashMap<Url, Vec<Diagnostic>> = documents
+            .keys()
+            .map(|uri| (uri.clone(), Vec::new()))
+            .collect();
+        for uri in self.reported.lock().await.iter() {
+            published.entry(uri.clone()).or_default();
+        }
+        for (uri, source) in &documents {
+            let diagnostics = if uri.path().ends_with(".notc") {
+                crate::analyze_module("package", source)
+                    .err()
+                    .unwrap_or_default()
+            } else if uri.path().ends_with("Notist.toml") {
+                crate::project::parse_config(source)
+                    .err()
+                    .unwrap_or_default()
+            } else {
+                match self.project(uri).await {
+                    Ok(project) => project
+                        .analyzer()
+                        .analyze(
+                            uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
+                            source,
+                        )
+                        .map(|analysis| analysis.into_parts().1)
+                        .unwrap_or_default(),
+                    Err(errors) => {
+                        for error in errors {
+                            if let Ok(error_uri) = Url::from_file_path(&error.path) {
+                                published
+                                    .entry(error_uri)
+                                    .or_default()
+                                    .push(lsp_diagnostic(&error.source, &error.diagnostic));
+                            }
+                        }
+                        vec![crate::Diagnostic::new(
+                            crate::Phase::Semantic,
+                            Default::default(),
+                            "project configuration or package declarations are invalid",
+                        )]
+                    }
+                }
+            };
+            published.entry(uri.clone()).or_default().extend(
+                diagnostics
+                    .iter()
+                    .map(|diagnostic| lsp_diagnostic(source, diagnostic)),
+            );
+        }
+        for diagnostics in published.values_mut() {
+            let mut unique = Vec::new();
+            for diagnostic in diagnostics.drain(..) {
+                if !unique.contains(&diagnostic) {
+                    unique.push(diagnostic);
+                }
+            }
+            *diagnostics = unique;
+        }
+        *self.reported.lock().await = published
+            .iter()
+            .filter(|(_, diagnostics)| !diagnostics.is_empty())
+            .map(|(uri, _)| uri.clone())
+            .collect();
+        for (uri, diagnostics) in published {
+            self.client
+                .publish_diagnostics(uri, diagnostics, None)
+                .await;
+        }
     }
 
     async fn analyzed(&self, uri: &Url) -> Option<(String, Item)> {
         let src = self.documents.lock().await.get(uri)?.clone();
-        let (item, _) = crate::analyze(&src);
+        let project = self.project(uri).await.ok()?;
+        let (item, _) = project
+            .analyzer()
+            .analyze(
+                uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
+                &src,
+            )
+            .ok()?
+            .into_parts();
         Some((src, item))
     }
 }
@@ -203,7 +405,14 @@ fn smallest_at(item: &Item, offset: usize) -> Option<&Item> {
 }
 
 fn hover_text(item: &Item) -> String {
-    let mut out = format!("`{}`", item.ctor.name().to_lowercase());
+    let mut out = format!(
+        "`{}` ({:?})",
+        item.ctor
+            .function_id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| item.ctor.name().into_owned()),
+        item.level
+    );
     for (k, v) in item.fields.iter() {
         out.push_str(&format!("\n- `{k}` = {v}"));
     }
@@ -306,6 +515,32 @@ impl LineIndex {
             self.position(src, usize::from(span.start())),
             self.position(src, usize::from(span.end())),
         )
+    }
+}
+
+fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
+    if !uri.path().ends_with(".not") {
+        return None;
+    }
+    crate::syntax::parse_document(source)
+        .syntax()
+        .descendants()
+        .filter_map(crate::syntax::ast::CodeCall::cast)
+        .find_map(|call| {
+            let path = call.path()?;
+            path.range()
+                .contains((offset as u32).into())
+                .then(|| path.text())
+        })
+}
+
+fn lsp_diagnostic(source: &str, diagnostic: &crate::Diagnostic) -> Diagnostic {
+    Diagnostic {
+        range: LineIndex::new(source).range(source, diagnostic.span),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(format!("notist:{}", diagnostic.phase)),
+        message: diagnostic.message.clone(),
+        ..Default::default()
     }
 }
 

@@ -1,6 +1,6 @@
 # .notc 声明模块与 Package / Plugin 扩展
 
-2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：进行中（语法、定义 lowering 与共同注册已实现） · 范围：语法、定义模型、core、package、配置、HTML、工具链
+2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：已实现并验收 · 范围：语法、定义模型、core、package、配置、HTML、工具链
 
 ## 动机
 
@@ -49,7 +49,7 @@ flowchart LR
 
 例如，安装 Mermaid package 后，项目可使用 `#mermaid::diagram("graph TD; A-->B")`。分析器按声明检查参数并保留调用；HTML renderer 输出组件元素，host 安装其 module，组件内部 DOM 不进入文档 IR。
 
-声明文法、parse_document / parse_module、调用 Path、analyze_module、共同定义校验与 Registry 已实现，见 [Code Syntax](../grammar/code.not) 与 [Content Function Extensions](../designs/content-functions.not)。文档环境与扩展 IR 接入、包的装配及 HTML 组件接口仍为目标方案。
+声明、共同注册、配置文档分析、扩展 IR、包加载、HTML 组件与资源 host、CLI / LSP / Web 预览均已实现。当前接口见 [Code Syntax](../grammar/code.not)、[Content Function Extensions](../designs/content-functions.not) 与 [HTML Rendering](../html.not)。
 
 ## 定义与内容模型
 
@@ -108,7 +108,7 @@ fn badge(label: String)[children: InlineContent] -> InlineContent;
 
 第一版外部声明提供确定的返回类别。raw、group 的动态类别与内置结构约束继续由共同的定义模型表达；`.notc` 如何声明这些高级契约不属于基本声明子集，不能通过猜测函数名或 children 反推出扩展行为。
 
-实现前需要正式定义 token、产生式、trivia 位置、类型引用和同步恢复规则，使用仓库已有 Grammar Notation。语法错误应保留无损 CST，并尽量在分号或下一条声明处恢复，让后续声明可继续解析。类型名称、默认值和重复声明等错误在相应语义层产生诊断。
+token、产生式、trivia 位置、类型引用和同步恢复规则已使用仓库 Grammar Notation 定义。语法错误应保留无损 CST，并尽量在分号或下一条声明处恢复，让后续声明可继续解析。类型名称、默认值和重复声明等错误在相应语义层产生诊断。
 
 ### Package 与依赖
 
@@ -205,11 +205,11 @@ customElements.define("mermaid-diagram", Diagram);
 
 参数使用 notist-<参数名> 属性，注解继续通过现有 HTML attrs 规则映射。属性名编码、协议保留名称和冲突需要统一检查；HTML 转义与参数类型编码分开处理。
 
-String 使用字符串内容，Bool 明确编码为 true / false，Int 保留 i64 精度，Float 保留 f64 语义，Array / Dict 使用保留类型与顺序的 JSON 协议。没有默认值的省略参数不生成属性。复杂值与属性名的具体编码属于实现前要完成的协议规范，不能简单使用 Value.to_string()。
+String 使用字符串内容，Bool 明确编码为 true / false，Int 保留 i64 精度，Float 保留 f64 语义，Array / Dict 使用保留类型与顺序的 JSON 协议。没有默认值的省略参数不生成属性。协议 v1 使用 notist-protocol="1"。复杂值递归表示为带类型的数组：Int 保存十进制字符串，Float 保存十六位 f64 比特，Dict 保存有序键值对。名称保留小写 ASCII、数字与短横线，其余 scalar 编码为 u<hex>x，非法首位前加 x；标签拼接、编码、保留标签及属性碰撞在 HTML 注册时拒绝。完整规则见当前设计文档。
 
 内置 HTML handler 与 Web Component adapter 都通过同一个 HTML 注册入口绑定到函数身份。默认环境仍提供现有内置映射；组件绑定复用语义签名，不建立第二套类型声明。合法扩展与未知名称恢复节点需要明确区分。
 
-最终 Item 必须保存本次调用解析后的内容类别，使 renderer、序列化与查询消费者不需要重新读取插件才能判断块／行内。统一函数身份会涉及 Ctor、查询、dump 与 serde 的公共接口适配，需要明确公共接口的迁移方式。
+最终 Item 必须保存本次调用解析后的内容类别，使 renderer、序列化与查询消费者不需要重新读取插件才能判断块／行内。内置 Ctor 变体保留，合法外部调用新增 ExtensionCtor；Item 新增 level 与 function_id 访问器。Ctor::name 改为 Cow<str>。query / debug JSON 提供规范身份、类别与完整树字段；serde 保存扩展契约与类别，旧内置树可省略类别。
 
 ### Web Component 分发与页面装配
 
@@ -247,12 +247,12 @@ flowchart TD
     P5 --> P6
 ```
 
-1. **正式语法与 parser**：在 notist-syntax 增加持续 Code 的词法入口与 Module parser，增加声明／参数／类型节点和 AST；Markup 调用增加 :: 路径及 Path 节点。整理调用词法的命名，提取共享扫描、字面量解析与值转换，保留现有无损 CST 行为。
-2. **定义模型与共同注册**：在 core 增加 FunctionDef、DefinitionModule、声明校验与 Registry，将内置名称、参数和类别规则迁入共同路径；`.notc` lowering 放在连接 syntax 与 core 的分析层，core 不依赖 parser。
-3. **文档管线接入**：Resolve 使用环境注册表，Shape 使用解析后的调用类别，最终 IR 表达合法外部身份。适配查询、dump、serde 和各消费端。
-4. **package 装配**：读取项目 Notist.toml 的 dependencies 和各目录的 lib.notc，处理本地来源与包归属，聚合带来源文件的诊断，建立不可变环境。配置或声明失败不进行部分安装。
-5. **HTML 组件**：增加目标注册、属性编码、组件依赖记录与 host 资源装配；用一个本地容器组件验证参数和嵌套 children，再接入 Mermaid 示例。
-6. **工具与文档**：CLI、LSP、Web 预览共用装配结果；分别提供文档分析与模块分析入口。更新语法文档、内置签名说明、依赖与组件约定和调用示例。
+1. [x] **正式语法与 parser**：在 notist-syntax 增加持续 Code 的词法入口与 Module parser，增加声明／参数／类型节点和 AST；Markup 调用增加 :: 路径及 Path 节点。整理调用词法的命名，提取共享扫描、字面量解析与值转换，保留现有无损 CST 行为。
+2. [x] **定义模型与共同注册**：在 core 增加 FunctionDef、DefinitionModule、声明校验与 Registry，将内置名称、参数和类别规则迁入共同路径；`.notc` lowering 放在连接 syntax 与 core 的分析层，core 不依赖 parser。
+3. [x] **文档管线接入**：Resolve 使用环境注册表，Shape 使用解析后的调用类别，最终 IR 表达合法外部身份。适配查询、dump、serde 和各消费端。
+4. [x] **package 装配**：读取项目 Notist.toml 的 dependencies 和各目录的 lib.notc，处理本地来源与包归属，聚合带来源文件的诊断，建立不可变环境。配置或声明失败不进行部分安装。
+5. [x] **HTML 组件**：增加目标注册、属性编码、组件依赖记录与 host 资源装配；用一个本地容器组件验证参数和嵌套 children，再接入 Mermaid 示例。
+6. [x] **工具与文档**：CLI、LSP、Web 预览共用装配结果；分别提供文档分析与模块分析入口。更新语法文档、内置签名说明、依赖与组件约定和调用示例。
 
 第一阶段结束时，必须能从真实 package 的声明入口走到文档中的合法调用和页面显示。
 
@@ -267,13 +267,24 @@ flowchart TD
 - 静态页面与 Web 预览能加载组件；嵌套组件资源被记录并去重，组件重连不会重复创建 shadow root。
 - 默认前端和内置内容函数保留现有行为，已有 corpus 与相关测试通过。第一阶段不引入插件执行引擎。
 
+## 实施与验收结果
+
+- core / 连接层：内置和源码定义共用绑定与 Registry；配置环境参与 Resolve / Shape，合法扩展保留身份和类别，查询、dump、debug JSON 与 serde 已适配。
+- package：Project 提供纯源码装配与本地文件 loader，支持最近配置、显式配置、来源诊断及编辑器覆盖，失败不返回部分环境。
+- HTML：HtmlRegistry 统一绑定内置与组件，协议 v1 保留标量与复杂值，RenderResult 记录实际使用组件；host 复制目录资源并生成去重注册入口。
+- 工具：CLI 提供 html 构建及 .notc 检查 / CST / JSON；LSP 使用相同 loader，支持声明符号、hover、限定调用跳转和未保存声明的诊断刷新；Web 提供显式配置装配、组件 iframe 预览与模块检查。
+- 示例：examples/plugins 的嵌套 panel、简单 badge 和 Mermaid 已走通声明 → 调用 → IR → 静态 HTML / Web 预览。
+- 验证：workspace 全特性测试、WASM 构建、文档检查与 JS 协议测试通过；CLI / LSP 进程测试覆盖装配与恢复。Chromium 验证静态页面、Mermaid SVG、i64 精度、shadow root 复用及 Web 预览，未产生页面异常。
+
+浏览器示例使用固定版本 Mermaid CDN 资源；离线分发由 package 提供本地浏览器依赖。第一阶段仍只有一个 lib.notc，没有 Code 求值、WASM 插件执行、传递依赖或远程包解析。
+
 ## 记录在案的边角
 
-- `.notc` 声明的 token、trivia、类型引用与同步恢复规则需要正式文法；高级值域、结构契约及动态返回类别的源码表达需另外设计。
-- HTML 属性名编码、协议保留名称、大小写冲突及复杂 Value 的往返协议需要统一，不能直接使用 Value.to_string()。
-- 函数身份与调用类别的 IR 调整涉及 Ctor、query、dump 和 serde，需明确公共接口与序列化表示的迁移。
+- `.notc` 声明的 token、trivia、类型引用与同步恢复规则已定义正式文法；高级值域、结构契约及动态返回类别的源码表达需另外设计。
+- HTML 名称与协议按 v1 统一编码和校验，不使用 Value.to_string() 传递复杂值。
+- 函数身份与调用类别的 IR 调整涉及 Ctor、query、dump 和 serde，公共接口及序列化迁移已在当前设计中说明。
 - lib.notc、项目 Notist.toml 与文档调用的诊断分别保留来源文件和范围；配置失败与文档恢复不能混同。
-- 包名与函数名组成标签时需确定性编码并检查拼接、大小写等碰撞；当前环境同一包名只对应一个来源。依赖键改名时，限定调用和 host 生成的标签一起改变，组件文件仍按局部声明名定位。
+- 包名与函数名组成标签时使用确定性编码，并检查拼接与编码碰撞；当前环境同一包名只对应一个来源。依赖键改名时，限定调用和 host 生成的标签一起改变，组件文件仍按局部声明名定位。
 
 复杂 scripting、函数体、表达式及多模块需求出现后，再设计对应的 Code IR、模块与执行模型；第一阶段不预设子模块、入口切换或模块发现。WASM 可以作为后续的验证或执行后端，再接入共同定义与注册路径。远程 package 获取、依赖版本解析、锁文件和发布仓库也可独立增加。
 

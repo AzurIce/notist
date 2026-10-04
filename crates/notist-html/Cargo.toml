@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 notist-core = { path = "../notist-core" }
+serde_json = "1"

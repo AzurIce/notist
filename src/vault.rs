@@ -113,9 +113,22 @@ pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) 
 }
 
 impl Vault {
-    /// Load every `.not` file under `root` (recursively), running the full
+    /// Load every `.not`, `.md` and `.markdown` file under `root` (recursively), running the full
     /// pipeline per document.
     pub fn load(root: &Path) -> std::io::Result<Self> {
+        Self::load_with(root, |path, src| {
+            Ok(crate::Notist::default()
+                .analyze(path, src)
+                .expect("supported document")
+                .into_parts())
+        })
+    }
+
+    /// Load with a host-selected environment for each document.
+    pub fn load_with(
+        root: &Path,
+        analyze: impl Fn(&Path, &str) -> std::io::Result<(Item, Vec<Diagnostic>)>,
+    ) -> std::io::Result<Self> {
         let mut docs = HashMap::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
@@ -123,9 +136,12 @@ impl Vault {
                 let path = entry?.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path.extension().is_some_and(|ext| ext == "not") {
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| matches!(ext.to_str(), Some("not" | "md" | "markdown")))
+                {
                     let src = std::fs::read_to_string(&path)?;
-                    let (item, mut diagnostics) = crate::analyze(&src);
+                    let (item, mut diagnostics) = analyze(&path, &src)?;
                     let index = Index::build(&item, &mut diagnostics);
                     let rel_dir = path
                         .parent()

@@ -14,13 +14,23 @@ pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
                     .any(|t| matches!(t, Value::Str(t) if t == needle)),
                 _ => false,
             }),
+            "ctor" if matches!(item.ctor, crate::Ctor::Extension(_)) => item.ctor.name() == needle,
             "ctor" => item.ctor.name().eq_ignore_ascii_case(needle),
+            "function" => item
+                .ctor
+                .function_id()
+                .is_some_and(|id| id.to_string() == needle),
+            "level" => match item.level {
+                crate::builtins::Level::Block => needle == "block",
+                crate::builtins::Level::Inline => needle == "inline",
+                crate::builtins::Level::Inherit => false,
+            },
             _ => false,
         })
         .collect()
 }
 
-fn json_escape(s: &str) -> String {
+pub(crate) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -38,12 +48,16 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-fn write_value(out: &mut String, value: &Value) {
+pub(crate) fn write_value(out: &mut String, value: &Value) {
     match value {
         Value::Unit => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => out.push_str(&i.to_string()),
-        Value::Float(x) => out.push_str(&x.to_string()),
+        Value::Float(x) => out.push_str(&if x.is_finite() {
+            x.to_string()
+        } else {
+            "null".into()
+        }),
         Value::Str(s) => out.push_str(&json_escape(s)),
         Value::Array(items) => {
             out.push('[');
@@ -81,7 +95,11 @@ pub fn render_json(src: &str, matches: &[&Item]) -> String {
         let end = u32::from(item.span.end());
         out.push_str(&format!(
             "{{\"ctor\":{},\"start\":{start},\"end\":{end},\"attrs\":{{",
-            json_escape(&item.ctor.name().to_lowercase()),
+            json_escape(&if matches!(item.ctor, crate::Ctor::Extension(_)) {
+                item.ctor.name().into_owned()
+            } else {
+                item.ctor.name().to_lowercase()
+            }),
         ));
         for (j, (k, v)) in item.attrs.iter().enumerate() {
             if j > 0 {
@@ -91,9 +109,58 @@ pub fn render_json(src: &str, matches: &[&Item]) -> String {
             out.push(':');
             write_value(&mut out, v);
         }
-        let text = &src[start as usize..end as usize];
-        out.push_str(&format!("}},\"text\":{}}}", json_escape(text)));
+        out.push_str("},");
+        write_public_fields(&mut out, item);
+        let text = src.get(start as usize..end as usize).unwrap_or("");
+        out.push_str(&format!(",\"text\":{}}}", json_escape(text)));
     }
     out.push(']');
     out
+}
+
+/// Public IR data shared by query output and the debug tree.
+pub(crate) fn write_public_fields(out: &mut String, item: &Item) {
+    write_metadata(out, item);
+    out.push_str(",\"children\":[");
+    for (i, child) in item.children.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"ctor\":{},\"start\":{},\"end\":{},\"attrs\":",
+            json_escape(&child.ctor.name()),
+            u32::from(child.span.start()),
+            u32::from(child.span.end())
+        ));
+        write_value(out, &Value::Dict(child.attrs.clone()));
+        out.push(',');
+        write_public_fields(out, child);
+        out.push('}');
+    }
+    out.push(']');
+}
+
+pub(crate) fn write_metadata(out: &mut String, item: &Item) {
+    out.push_str("\"function\":");
+    match item.ctor.function_id() {
+        Some(id) => out.push_str(&json_escape(&id.to_string())),
+        None => out.push_str("null"),
+    }
+    out.push_str(&format!(
+        ",\"level\":\"{}\",\"fields\":",
+        if item.level == crate::builtins::Level::Block {
+            "block"
+        } else {
+            "inline"
+        }
+    ));
+    write_value(out, &Value::Dict(item.fields.clone()));
+    out.push_str(",\"typed_fields\":");
+    out.push_str(
+        &notist_html::components::value_json(&Value::Dict(item.fields.clone())).to_string(),
+    );
+    out.push_str(",\"typed_attrs\":");
+    out.push_str(
+        &notist_html::components::value_json(&Value::Dict(item.attrs.clone())).to_string(),
+    );
 }

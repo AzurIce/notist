@@ -14,6 +14,9 @@ use codespan_reporting::term::{self, Config};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Use this project configuration instead of searching parent directories
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -26,8 +29,14 @@ enum Command {
     Core { file: PathBuf },
     /// Print the JSON analysis (tree + ast + core + diagnostics)
     Json { file: PathBuf },
-    /// Select elements by an `id:` / `tag:` / `ctor:` selector, JSON out
+    /// Select elements by id, tag, ctor, function or level, JSON out
     Query { file: PathBuf, selector: String },
+    /// Build HTML and the used component resources
+    Html {
+        file: PathBuf,
+        #[arg(long, default_value = "target/notist-html")]
+        out_dir: PathBuf,
+    },
     /// Run the language server over stdio
     #[cfg(not(target_arch = "wasm32"))]
     Lsp,
@@ -35,32 +44,63 @@ enum Command {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
-    match Cli::parse().command {
-        Command::Check { file } => check(&file),
+    let cli = Cli::parse();
+    let config = cli.config.as_deref();
+    match cli.command {
+        Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
-            format!("{:#?}", notist_syntax::parser::parse(src).syntax())
+            format!(
+                "{:#?}",
+                if is_module(&file) {
+                    notist_syntax::parse_module(src)
+                } else {
+                    notist_syntax::parse_document(src)
+                }
+                .syntax()
+            )
         }),
-        Command::Core { file } => print_with(&file, |src| {
-            let Ok(document) = notist::Notist::default().analyze(&file, src) else {
-                return format!("unsupported file extension: {}", file.display());
+        Command::Core { file } if is_module(&file) => print_with(&file, |src| {
+            format!("{:#?}\n", notist::analyze_module("package", src))
+        }),
+        Command::Core { file } => {
+            let project = match load_project(&file, config) {
+                Ok(project) => project,
+                Err(code) => return code,
             };
-            let mut out = String::new();
-            for d in document.diagnostics() {
-                out.push_str(&format!(
-                    "error[{}] @{}..{}: {}\n",
-                    d.phase,
-                    u32::from(d.span.start()),
-                    u32::from(d.span.end()),
-                    d.message
-                ));
-            }
-            out.push_str(&notist::dump::dump(document.root()));
-            out
+            print_with(&file, |src| {
+                let Ok(document) = project.analyzer().analyze(&file, src) else {
+                    return format!("unsupported file extension: {}", file.display());
+                };
+                let mut out = String::new();
+                for d in document.diagnostics() {
+                    out.push_str(&format!(
+                        "error[{}] @{}..{}: {}\n",
+                        d.phase,
+                        u32::from(d.span.start()),
+                        u32::from(d.span.end()),
+                        d.message
+                    ));
+                }
+                out.push_str(&notist::dump::dump(document.root()));
+                out
+            })
+        }
+        Command::Json { file } if is_module(&file) => print_with(&file, |src| {
+            notist::cst_json::analyze_module_json("package", src)
         }),
-        Command::Json { file } => print_with(&file, notist::cst_json::analyze_json),
+        Command::Json { file } => match load_project(&file, config) {
+            Ok(project) => print_with(&file, |src| {
+                notist::cst_json::analyze_document_json(&file, src, project.registry())
+            }),
+            Err(code) => code,
+        },
         Command::Query { file, selector } => match read(&file) {
             Ok(src) => {
-                let Ok(document) = notist::Notist::default().analyze(&file, &src) else {
+                let project = match load_project(&file, config) {
+                    Ok(project) => project,
+                    Err(code) => return code,
+                };
+                let Ok(document) = project.analyzer().analyze(&file, &src) else {
                     eprintln!("unsupported file extension: {}", file.display());
                     return ExitCode::FAILURE;
                 };
@@ -70,13 +110,44 @@ fn main() -> ExitCode {
             }
             Err(code) => code,
         },
+        Command::Html { file, out_dir } => {
+            let project = match load_project(&file, config) {
+                Ok(project) => project,
+                Err(code) => return code,
+            };
+            let src = match read(&file) {
+                Ok(src) => src,
+                Err(code) => return code,
+            };
+            let document = match project.analyzer().analyze(&file, &src) {
+                Ok(document) => document,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if !document.diagnostics().is_empty() {
+                emit_source(&file, &src, document.diagnostics());
+                return ExitCode::FAILURE;
+            }
+            match notist::html_host::build_page(document.root(), &project, &out_dir) {
+                Ok(result) => {
+                    println!("{}", result.page.display());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         Command::Lsp => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            runtime.block_on(notist::lsp::serve());
+            runtime.block_on(notist::lsp::serve_with_config(cli.config));
             ExitCode::SUCCESS
         }
     }
@@ -102,15 +173,30 @@ fn print_with(file: &Path, f: impl Fn(&str) -> String) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn check(file: &Path) -> ExitCode {
+fn check(file: &Path, config: Option<&Path>) -> ExitCode {
     if file.is_dir() {
-        return check_dir(file);
+        return check_dir(file, config);
     }
     let src = match read(file) {
         Ok(src) => src,
         Err(code) => return code,
     };
-    let Ok(document) = notist::Notist::default().analyze(file, &src) else {
+    if is_module(file) {
+        let diagnostics = notist::analyze_module("package", &src)
+            .err()
+            .unwrap_or_default();
+        emit_source(file, &src, &diagnostics);
+        return if diagnostics.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+    let project = match load_project(file, config) {
+        Ok(project) => project,
+        Err(code) => return code,
+    };
+    let Ok(document) = project.analyzer().analyze(file, &src) else {
         eprintln!("unsupported file extension: {}", file.display());
         return ExitCode::FAILURE;
     };
@@ -147,8 +233,23 @@ fn check(file: &Path) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn check_dir(dir: &Path) -> ExitCode {
-    let library = match notist::vault::Vault::load(dir) {
+fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
+    let library = match notist::vault::Vault::load_with(dir, |path, src| {
+        let project = notist::project::Project::for_document(path, config).map_err(|errors| {
+            std::io::Error::other(
+                errors
+                    .iter()
+                    .map(|e| format!("{}: {}", e.path.display(), e.diagnostic.message))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })?;
+        Ok(project
+            .analyzer()
+            .analyze(path, src)
+            .expect("supported document")
+            .into_parts())
+    }) {
         Ok(library) => library,
         Err(err) => {
             eprintln!("{}: {err}", dir.display());
@@ -183,5 +284,34 @@ fn check_dir(dir: &Path) -> ExitCode {
             dir.display()
         );
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_module(file: &Path) -> bool {
+    file.extension().is_some_and(|ext| ext == "notc")
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn load_project(file: &Path, config: Option<&Path>) -> Result<notist::project::Project, ExitCode> {
+    notist::project::Project::for_document(file, config).map_err(|errors| {
+        for error in errors {
+            emit_source(&error.path, &error.source, &[error.diagnostic]);
+        }
+        ExitCode::FAILURE
+    })
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
+    let files = SimpleFile::new(path.display().to_string(), source);
+    let writer = StandardStream::stderr(ColorChoice::Auto);
+    for error in diagnostics {
+        let diagnostic = Diagnostic::error()
+            .with_code(error.phase.to_string())
+            .with_message(&error.message)
+            .with_labels(vec![Label::primary(
+                (),
+                usize::from(error.span.start())..usize::from(error.span.end()),
+            )]);
+        let _ = term::emit(&mut writer.lock(), &Config::default(), &files, &diagnostic);
     }
 }

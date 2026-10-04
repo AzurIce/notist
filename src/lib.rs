@@ -35,9 +35,12 @@ pub mod cst_json;
 pub mod definitions;
 pub mod desugar;
 pub mod frontend;
+pub mod html_host;
 mod literals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp;
+pub mod preview;
+pub mod project;
 pub mod query;
 pub mod vault;
 #[cfg(target_arch = "wasm32")]

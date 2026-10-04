@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, channel};
 #[test]
 fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let document = root.join("examples/plugins/document.not");
+    let document = root.join("docs/packages/README.not");
     let query = Command::new(env!("CARGO_BIN_EXE_notist"))
         .args(["query"])
         .arg(&document)
@@ -19,7 +19,7 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
     assert_eq!(result.as_array().unwrap().len(), 2);
     let module = Command::new(env!("CARGO_BIN_EXE_notist"))
         .arg("json")
-        .arg(root.join("examples/plugins/packages/mermaid/lib.notc"))
+        .arg(root.join("docs/packages/mermaid/lib.notc"))
         .output()
         .unwrap();
     assert!(module.status.success());

@@ -1,6 +1,6 @@
 = Code Syntax
 
-`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包加载与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
+`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包结构与用法见 [Packages](../packages/README.not)，注册与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
 
 == 词法
 
@@ -18,15 +18,15 @@ Code 与 Markup 调用参数共用 Ident、String、Number、空白、换行与�
 
 fn 是 Code 保留字，不可作为声明名、参数名或类型路径段。fnfoo 仍为 IDENT；Markup 中的 `#fn()` 不受影响。Ident 的字符规则与 Markup 共用；Code 中紧邻的 -> 优先于 Ident 中的连字符，因此 Content->Content 在箭头处结束第一个名称。
 
-```grammar
-lex ColonColon ::= "::"
-lex Question ::= "?"
-lex Arrow ::= "->"
-lex Semicolon ::= ";"
-lex Less ::= "<"
-lex Greater ::= ">"
-lex Equals ::= "="
-```
+#grammar::diagram(r#"""
+lex ColonColon -> `::`;
+lex Question -> `?`;
+lex Arrow -> `->`;
+lex Semicolon -> `;`;
+lex Less -> `<`;
+lex Greater -> `>`;
+lex Equals -> `=`;
+"""#)
 
 ```scanner
 lex scanner CodeIdent {
@@ -41,38 +41,38 @@ lex scanner CodeIdent {
 
 == 声明
 
-```grammar
-import syntax Trivia from README.not
-import syntax Path from README.not
-import syntax Value from ../types.not
+#grammar::diagram(r#"""
+import syntax Trivia from `README.not`;
+import syntax Path from `README.not`;
+import syntax Value from `../types.not`;
 
-syntax Module ::= Trivia* (FunctionDecl Trivia*)* !ANY
+syntax Module -> Trivia* (FunctionDecl Trivia*)* !ANY;
 
-syntax FunctionDecl ::=
+syntax FunctionDecl ->
   FN ^ Trivia* name:IDENT Trivia* parameters:ParameterList Trivia*
-  mount:ChildrenDecl? Trivia* ARROW Trivia* result:TypeRef Trivia* SEMICOLON
+  mount:ChildrenDecl? Trivia* ARROW Trivia* result:TypeRef Trivia* SEMICOLON;
 
-syntax ParameterList ::=
+syntax ParameterList ->
   LPAREN Trivia*
   (parameter:Parameter (Trivia* COMMA Trivia* parameter:Parameter)*
    Trivia* COMMA?)?
-  Trivia* RPAREN
+  Trivia* RPAREN;
 
-syntax Parameter ::=
+syntax Parameter ->
   name:IDENT Trivia*
   (QUESTION Trivia* COLON Trivia* ty:TypeRef
-   / COLON Trivia* ty:TypeRef (Trivia* default:DefaultValue)?)
+   | COLON Trivia* ty:TypeRef (Trivia* default:DefaultValue)?);
 
-syntax DefaultValue ::= EQ Trivia* value:Value
+syntax DefaultValue -> EQ Trivia* value:Value;
 
-syntax ChildrenDecl ::=
-  LBRACKET Trivia* "children" Trivia* COLON Trivia* ty:TypeRef Trivia* RBRACKET
+syntax ChildrenDecl ->
+  LBRACKET Trivia* `children` Trivia* COLON Trivia* ty:TypeRef Trivia* RBRACKET;
 
-syntax TypeRef ::=
+syntax TypeRef ->
   name:Path
   (Trivia* LESS Trivia* argument:TypeRef
-   (Trivia* COMMA Trivia* argument:TypeRef)* Trivia* COMMA? Trivia* GREATER)?
-```
+   (Trivia* COMMA Trivia* argument:TypeRef)* Trivia* COMMA? Trivia* GREATER)?;
+"""#)
 
 除 Path 名称段、负号与数字等共享规则明确要求紧邻的位置外，声明按上述 Trivia* 允许空白、换行与注释。参数列表和类型实参允许尾逗号；空类型实参列表不合法。可选标记和默认值不能同时使用；恢复树可以同时保留两者，并产生 syntax 诊断。
 

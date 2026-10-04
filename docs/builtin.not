@@ -1,6 +1,6 @@
 == Builtin Content Functions & Sugar Grammar
 
-记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/README.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、语法糖、降糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
+记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/README.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
 
 签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。其他具名字段保留，多余位置参数产生诊断。实现对应关系见 Syntax。
 
@@ -10,21 +10,18 @@
 text(text: String) -> InlineContent
 ```
 
-```grammar
-lex Escapable ::= ["=" "*" "_" "~" "\\" "[" "]"
-                   "(" ")" "|" "#" "$" "`" "!"]
-lex Escape ::= "\\" Escapable
-syntax PlainText ::= value:TEXT / value:ESCAPE
-```
+#grammar::diagram(r#"""
+lex Escapable -> [`=` `*` `_` `~` `\` `[` `]`
+                   `(` `)` `|` `#` `$` U+0060 `!`];
+lex Escape -> `\` Escapable;
+syntax PlainText -> value:TEXT | value:ESCAPE
+  => { if value.kind == Escape then text(text: source(value)[1..]) else text(text: source(value)) };
+"""#)
 
-```desugar
-PlainText(value) when value.kind == Text
-  ⇒ text(text: source(value))
-PlainText(value) when value.kind == Escape
-  ⇒ text(text: source(value)[1..])
-LiteralToken(value) ⇒ text(text: source(value))
-MD.Text(s) ⇒ text(text: decode_once(s))
-```
+#grammar::diagram(r#"""
+ast LiteralText -> LiteralToken(value) => text(text: source(value));
+ast MD_Text -> MD.Text(s) => text(text: decode_once(s));
+"""#)
 
 `LiteralToken` 是其他语法的 recover 返回的原始标记；相邻文字按正文空白规则合并。text 参数使用具名写法。
 
@@ -34,20 +31,19 @@ MD.Text(s) ⇒ text(text: decode_once(s))
 paragraph()[children: InlineContent] -> Content
 ```
 
-```grammar
-syntax ParagraphRun(ctx) ::= body:InlineRun(ctx, block_end, None)
-syntax ExplicitBreak ::= BACKSLASH NL
-```
+#grammar::diagram(r#"""
+syntax ParagraphRun(ctx) -> body:InlineRun(ctx, block_end, None)
+  => { if lower(body) != [] then paragraph()[lower(body)] else [] };
+syntax ExplicitBreak -> BACKSLASH NL
+  => ε;
+"""#)
 
-```desugar
-ParagraphRun(body) when lower(body) != []
-  ⇒ paragraph()[lower(body)]
-NL ⇒ []
-ExplicitBreak ⇒ []
-MD.Paragraph(body) ⇒ paragraph()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast SkipNewline -> NL => ε;
+ast MD_Paragraph -> MD.Paragraph(body) => paragraph()[lower(body)];
+"""#)
 
-paragraph 是平坦 CST 元素序列的降糖结果，没有独立 Paragraph CST 节点。空行、显式分段和块节点结束候选段落；单 NL 不插入空格，行末与续行开头空白丢弃。Markdown 双空格换行归一为单 NL，反斜杠换行分段。
+paragraph 是平坦 CST 元素序列的结果构造，没有独立 Paragraph CST 节点。空行、显式分段和块节点结束候选段落；单 NL 不插入空格，行末与续行开头空白丢弃。Markdown 双空格换行归一为单 NL，反斜杠换行分段。
 
 === heading
 
@@ -56,15 +52,15 @@ heading(level: Int = 1)[children: InlineContent] -> Content
 require level > 0
 ```
 
-```grammar
-syntax Heading(ctx) ::=
+#grammar::diagram(r#"""
+syntax Heading(ctx) ->
   marker:EQ WS body:InlineRun(ctx, always_true, None)
-```
+  => heading(level: size(marker))[lower(body)];
+"""#)
 
-```desugar
-Heading(marker, body) ⇒ heading(level: size(marker))[lower(body)]
-MD.Heading(level, body) ⇒ heading(level: level)[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Heading -> MD.Heading(level, body) => heading(level: level)[lower(body)];
+"""#)
 
 `always_true` 使当前行的 NL 结束正文，NL 留给外层。原生块分派在块起点识别 Heading；EQ 是整个连续 `=` run。Markdown 对应 ATX 与 Setext 标题。
 
@@ -110,20 +106,21 @@ close_section() {
 strong()[children: InlineContent] -> InlineContent
 ```
 
-```grammar
-syntax MatchedInline(k, ctx) ::=
-  @can_open(cursor, ctx)
+#grammar::diagram(r#"""
+syntax MatchedInline(k, ctx) ->
+  @{ can_open(cursor, ctx) }
   mate:probe FlankedClose(k; ctx)
-  @mate.close > cursor + 1
+  @{ mate.close > cursor + 1 }
   open:TokenKind(k)
   body:InlineRun(ctx, block_end, Flanked(k))
-  close:TokenKind(k)?
+  close:TokenKind(k)?;
 
-syntax Strong(ctx) ::= matched:MatchedInline(Star, ctx)
-```
+syntax Strong(ctx) -> matched:MatchedInline(Star, ctx)
+  => strong()[lower(matched.body)];
+"""#)
 
 ```scanner
-scanner FlankedClose(k; ctx) -> { end, close } / Miss {
+scanner FlankedClose(k; ctx) -> { end, close } | Miss {
   let depth = 0
   for p from cursor + 1 to ctx.limit {
     if kind(p) == Newline and block_end(p, ctx) { return Miss }
@@ -141,10 +138,9 @@ scanner FlankedClose(k; ctx) -> { end, close } / Miss {
 }
 ```
 
-```desugar
-Strong(matched) ⇒ strong()[lower(matched.body)]
-MD.Strong(body) ⇒ strong()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Strong -> MD.Strong(body) => strong()[lower(body)];
+"""#)
 
 ```recover
 recover MatchedInline on Miss when kind(rule_start) == k {
@@ -162,14 +158,14 @@ recover MatchedInline on Miss when kind(rule_start) == k {
 emph()[children: InlineContent] -> InlineContent
 ```
 
-```grammar
-syntax Emph(ctx) ::= matched:MatchedInline(Underscore, ctx)
-```
+#grammar::diagram(r#"""
+syntax Emph(ctx) -> matched:MatchedInline(Underscore, ctx)
+  => emph()[lower(matched.body)];
+"""#)
 
-```desugar
-Emph(matched) ⇒ emph()[lower(matched.body)]
-MD.Emphasis(body) ⇒ emph()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Emphasis -> MD.Emphasis(body) => emph()[lower(body)];
+"""#)
 
 匹配和恢复使用 strong 节定义的 MatchedInline。Markdown 对应 `*...*` / `_..._`。
 
@@ -179,14 +175,14 @@ MD.Emphasis(body) ⇒ emph()[lower(body)]
 strike()[children: InlineContent] -> InlineContent
 ```
 
-```grammar
-syntax Strike(ctx) ::= matched:MatchedInline(Tilde, ctx)
-```
+#grammar::diagram(r#"""
+syntax Strike(ctx) -> matched:MatchedInline(Tilde, ctx)
+  => strike()[lower(matched.body)];
+"""#)
 
-```desugar
-Strike(matched) ⇒ strike()[lower(matched.body)]
-MD.Strikethrough(body) ⇒ strike()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
+"""#)
 
 匹配和恢复使用 MatchedInline。Markdown 对应 `~...~` / `~~...~~`。
 
@@ -199,21 +195,23 @@ result = Content if block == true else InlineContent
 
 text 可使用第一个位置参数。
 
-```grammar
-syntax RawInline(ctx) ::=
+#grammar::diagram(r#"""
+syntax RawInline(ctx) ->
   open:BACKTICK tail:scan RawTail(size(open); ctx)
+  => raw(text: source(tail.payload));
 
-syntax RawBlock(ctx) ::=
-  open:BACKTICK @size(open) >= 3 ^
+syntax RawBlock(ctx) ->
+  open:BACKTICK @{ size(open) >= 3 } ^
   tag:scan LineTail(ctx)
   NL?
   tail:scan FenceTail(size(open); ctx)
+  => raw(text: strip_container_indent(source(tail.payload)), block: true, lang: nonempty(trim(source(tag))));
 
-syntax BlockBacktick(ctx) ::= RawBlock(ctx) / RawInline(ctx)
-```
+syntax BlockBacktick(ctx) -> RawBlock(ctx) | RawInline(ctx);
+"""#)
 
 ```scanner
-scanner RawTail(n; ctx) -> { end, payload, close } / Miss {
+scanner RawTail(n; ctx) -> { end, payload, close } | Miss {
   let begin = cursor
   for p from begin to ctx.limit {
     if kind(p) == Newline { return Miss }
@@ -230,7 +228,7 @@ scanner LineTail(ctx) -> { end } {
   return { end: p }
 }
 
-scanner FenceTail(n; ctx) -> { end, payload, close } / Miss {
+scanner FenceTail(n; ctx) -> { end, payload, close } | Miss {
   let begin = cursor
   let p = begin
   while p < ctx.limit {
@@ -251,13 +249,10 @@ scanner FenceTail(n; ctx) -> { end, payload, close } / Miss {
 
 `next_newline_or_limit` 返回第一个 NL 的下标或 limit；`after_next_newline_or_limit` 在存在 NL 时返回其后一个下标，否则返回 limit。`display_width` 的 tab 到下一个四列边界。原生块分派优先识别 RawBlock；闭围栏行尾 NL 不消耗。
 
-```desugar
-RawInline(_, tail) ⇒ raw(text: source(tail.payload))
-RawBlock(_, tag, tail) ⇒ raw(text: strip_container_indent(source(tail.payload)),
-                            block: true, lang: nonempty(trim(source(tag))))
-MD.CodeSpan(s) ⇒ raw(text: s)
-MD.CodeBlock(s, info) ⇒ raw(text: s, block: true, lang: nonempty(trim(info)))
-```
+#grammar::diagram(r#"""
+ast MD_CodeSpan -> MD.CodeSpan(s) => raw(text: s);
+ast MD_CodeBlock -> MD.CodeBlock(s, info) => raw(text: s, block: true, lang: nonempty(trim(info)));
+"""#)
 
 ```recover
 recover RawInline on Miss when kind(rule_start) == Backtick {
@@ -284,14 +279,15 @@ math(text: String) -> InlineContent
 
 text 可使用第一个位置参数。
 
-```grammar
-syntax Math(ctx) ::=
-  @can_open(cursor, ctx)
+#grammar::diagram(r#"""
+syntax Math(ctx) ->
+  @{ can_open(cursor, ctx) }
   open:DOLLAR tail:scan MathTail(ctx)
-```
+  => math(text: strip_continuation_indent(source(tail.payload)));
+"""#)
 
 ```scanner
-scanner MathTail(ctx) -> { end, payload } / Miss {
+scanner MathTail(ctx) -> { end, payload } | Miss {
   let begin = cursor
   for p from begin to ctx.limit {
     if kind(p) == Newline and block_end(p, ctx) { return Miss }
@@ -304,10 +300,9 @@ scanner MathTail(ctx) -> { end, payload } / Miss {
 }
 ```
 
-```desugar
-Math(_, tail) ⇒ math(text: strip_continuation_indent(source(tail.payload)))
-MD.Math(s) ⇒ math(text: s)
-```
+#grammar::diagram(r#"""
+ast MD_Math -> MD.Math(s) => math(text: s);
+"""#)
 
 ```recover
 recover Math on Miss when kind(rule_start) == Dollar {
@@ -327,13 +322,15 @@ link(target: String, title?: String)[children: InlineContent] -> InlineContent
 
 target 可使用第一个位置参数。
 
-```grammar
-syntax Link(ctx) ::= &LBRACKET parsed:LinkBody(ctx, false)
-syntax WikiLink(ctx) ::= &("[" "[") parsed:WikiBody(ctx)
-```
+#grammar::diagram(r#"""
+syntax Link(ctx) -> &LBRACKET parsed:LinkBody(ctx, false)
+  => link(target: destination(parsed))[lower(parsed.label)];
+syntax WikiLink(ctx) -> &(`[` `[`) parsed:WikiBody(ctx)
+  => link(target: wiki_target(parsed))[lower(parsed.label)];
+"""#)
 
 ```scanner
-scanner LinkFrame(embed; ctx) -> { end, label_close, destination_close } / Miss {
+scanner LinkFrame(embed; ctx) -> { end, label_close, destination_close } | Miss {
   open = cursor + (1 if embed else 0)
   要求 kind(open) == LBracket
   p = open + 1；depth = 1
@@ -358,7 +355,7 @@ scanner LinkFrame(embed; ctx) -> { end, label_close, destination_close } / Miss 
     前进一个 token
 }
 
-scanner OpaqueClose(p, ctx) -> { close } / Miss {
+scanner OpaqueClose(p, ctx) -> { close } | Miss {
   要求 kind(p) 为 Backtick 或 Dollar
   Dollar 还要求 can_open(p, ctx)
   从 p + 1 逐 token 扫描至 ctx.limit：
@@ -376,7 +373,7 @@ syntax algorithm LinkBody(ctx, embed) {
   返回 { label, destination: 目的地原始源码 }
 }
 
-scanner WikiFrame(ctx) -> { end, target_end, pipe } / Miss {
+scanner WikiFrame(ctx) -> { end, target_end, pipe } | Miss {
   要求前缀为 LBRACKET LBRACKET
   从 cursor + 2 逐 token 扫描至 ctx.limit：
     NL：返回 Miss
@@ -396,16 +393,14 @@ syntax algorithm WikiBody(ctx) {
 
 LinkBody 与 WikiBody 的 stop 继承调用它们的 InlineRun。预探测的位置不作为 label 的新 limit；实际 label 消费仍使用正文分派与 active 停止条件。Escape token 不作为括号界定符。
 
-```desugar
-Link(parsed) ⇒ link(target: destination(parsed))[lower(parsed.label)]
-WikiLink(parsed) ⇒ link(target: wiki_target(parsed))[lower(parsed.label)]
-MD.Link(target, body, _) ⇒ link(target: decode_once(target))[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Link -> MD.Link(target, body, _) => link(target: decode_once(target))[lower(body)];
+"""#)
 
 `destination(parsed)` 为 destination_parts 的 target；普通链接丢弃语法中的 title，显式调用传入的 title 字段保留。`wiki_target` 从两个开括号之后依序取得原始 token，遇首个 PIPE 或 RBRACKET 停止，拼接后去掉首尾空白，不对标点转义再解码。无正文的 WikiLink 降为无 children 的 link。
 
-```desugar
-destination_parts(parsed) {
+```scanner
+transform algorithm destination_parts(parsed) {
   s = trim(parsed.destination)
   从左到右扫描字符，反斜杠屏蔽下一个字符
   找到首个前面是空白的单 / 双引号 q，位置为 i
@@ -436,18 +431,16 @@ embed(target: String, description?: String, title?: String) -> InlineContent
 
 target 可使用第一个位置参数。
 
-```grammar
-syntax Embed(ctx) ::= &("!" "[") parsed:LinkBody(ctx, true)
-```
+#grammar::diagram(r#"""
+syntax Embed(ctx) -> &(`!` `[`) parsed:LinkBody(ctx, true)
+  => embed(target: destination(parsed), description: description(parsed.label), title: embed_title(parsed));
+"""#)
 
-```desugar
-Embed(parsed) ⇒ embed(target: destination(parsed),
-                      description: description(parsed.label),
-                      title: embed_title(parsed))
-MD.Image(target, body, title) ⇒ embed(target: decode_once(target),
+#grammar::diagram(r#"""
+ast MD_Image -> MD.Image(target, body, title) => embed(target: decode_once(target),
                                      description: plain_text(lower(body)),
-                                     title: decode_optional(title))
-```
+                                     title: decode_optional(title));
+"""#)
 
 `embed_title` 取 link 小节的 destination_parts.title。`description` 对 label 先 lower，再按文档顺序递归：Literal 追加其字符串值；Call 优先追加字符串 text 字段，缺少时追加字符串 description 字段，再遍历 children。Markdown 的 plain_text 对 lower 后的 Call 使用同样的字段优先顺序与 children 递归，忽略 Literal；空描述为 `""`，可选标题保留。
 
@@ -470,17 +463,18 @@ list(ordered: Bool = false, start: Int = 1)[children: Content] -> Content
 require structural_children(children) 的构造器全为 item
 ```
 
-```grammar
-syntax List(ctx) ::=
-  let m = kind(cursor)
-  let i = column(cursor)
-  @m in {Minus, Plus}
+#grammar::diagram(r#"""
+syntax List(ctx) ->
+  let m = { kind(cursor) }
+  let i = { column(cursor) }
+  @{ m in {Minus, Plus} }
   first:Item(m, i, ctx)
   (gap:scan ListGap(m, i; ctx) rest:Item(m, i, ctx))*
-```
+  => list(ordered: m == Plus, start: 1)[lower(first) map(lower, rest)];
+"""#)
 
 ```scanner
-scanner ListGap(m, i; ctx) -> { end } / Miss {
+scanner ListGap(m, i; ctx) -> { end } | Miss {
   if kind(cursor) != Newline { return Miss }
   let p = cursor + 1
   loop {
@@ -495,13 +489,10 @@ scanner ListGap(m, i; ctx) -> { end } / Miss {
 }
 ```
 
-```desugar
-List(m, first, rest*) ⇒ list(ordered: m == Plus, start: 1)[
-                         lower(first) map(lower, rest)
-                       ]
-MD.List(ordered, start, body) ⇒ list(ordered: ordered,
-                                    start: if ordered then start else 1)[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_List -> MD.List(ordered, start, body) => list(ordered: ordered,
+                                    start: if ordered then start else 1)[lower(body)];
+"""#)
 
 gap 的空白属于 List CST；同缩进切换标记结束该 list。不保存 Markdown tight / loose 标记。structural_children 见 Syntax。Markdown 的 lazy continuation 由其前端识别；`.not` 的内容归属由 item 小节的缩进规则决定。
 
@@ -511,15 +502,16 @@ gap 的空白属于 List CST；同缩进切换标记结束该 list。不保存 M
 item()[children: Content] -> Content
 ```
 
-```grammar
-syntax Item(m, i, ctx) ::=
-  @column(cursor) == i
+#grammar::diagram(r#"""
+syntax Item(m, i, ctx) ->
+  @{ column(cursor) == i }
   marker:TokenKind(m) WS
-  let c = column(cursor)
+  let c = { column(cursor) }
   extent:probe ItemExtent(c; ctx)
   body:within(extent.end,
     ItemBody(ctx with block_indent=c, body_start=cursor))
-```
+  => item()[blocks(body)];
+"""#)
 
 ```scanner
 scanner ItemExtent(c; ctx) -> { end } {
@@ -540,10 +532,9 @@ scanner ItemExtent(c; ctx) -> { end } {
 }
 ```
 
-```desugar
-Item(_, _, body) ⇒ item()[blocks(body)]
-MD.ListItem(body) ⇒ item()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_ListItem -> MD.ListItem(body) => item()[lower(body)];
+"""#)
 
 marker 与 WS 的消费前缀固定正文起始列；BlankLine 不单独结束 item。ItemBody 使用 Syntax 的 BlockRun(ctx, Item)；缩进与范围使用上述 ItemExtent。空项没有 children。
 
@@ -555,9 +546,9 @@ callout(kind?: String)[children: Content] -> Content
 
 `.not` 无语法糖。
 
-```desugar
-MD.Blockquote(body) ⇒ callout(kind: "quote")[lower(body)]
-```
+#grammar::diagram(r#"""
+ast MD_Blockquote -> MD.Blockquote(body) => callout(kind: "quote")[lower(body)];
+"""#)
 
 MD.Blockquote 由 Markdown 的 `>` 引用块语法产生。
 
@@ -567,18 +558,18 @@ MD.Blockquote 由 Markdown 的 `>` 引用块语法产生。
 divider() -> Content
 ```
 
-```grammar
-syntax Divider(ctx) ::=
-  @block_start(cursor, ctx)
+#grammar::diagram(r#"""
+syntax Divider(ctx) ->
+  @{ block_start(cursor, ctx) }
   MINUS MINUS MINUS &EndAfterWhitespace(ctx)
+  => divider();
 
-syntax EndAfterWhitespace(ctx) ::= WS? End(ctx)
-```
+syntax EndAfterWhitespace(ctx) -> WS? End(ctx);
+"""#)
 
-```desugar
-Divider ⇒ divider()
-MD.ThematicBreak ⇒ divider()
-```
+#grammar::diagram(r#"""
+ast MD_ThematicBreak -> MD.ThematicBreak => divider();
+"""#)
 
 原生 Divider CST 只包含三个 MINUS，尾部空白和 NL 留给外层。MD.ThematicBreak 对应 Markdown 的 `---` / `***` / `___` 等。
 
@@ -590,13 +581,17 @@ require structural_children(children) 的构造器全为 row
         每个 align 值属于 {"none", "left", "center", "right"}
 ```
 
-```grammar
-syntax Table(ctx) ::=
-  @table_start(cursor, ctx)
+#grammar::diagram(r#"""
+syntax Table(ctx) ->
+  @{ table_start(cursor, ctx) }
   header:scan TableLine(ctx)
   NL delimiter:scan TableLine(ctx)
-  (!@block_end(cursor, ctx) NL rows:scan TableLine(ctx))*
-```
+  (!@{ block_end(cursor, ctx) } NL rows:scan TableLine(ctx))*
+  => table(align: alignments(delimiter))[
+    table_row(header, true, width(delimiter))
+    map(r => table_row(r, false, width(delimiter)), rows)
+  ];
+"""#)
 
 ```scanner
 predicate table_start(p, ctx) {
@@ -612,17 +607,15 @@ predicate table_start(p, ctx) {
 
 表头和 delimiter 等宽，至少一行 has_pipe；AlignCell 在字符层匹配整个单元格。
 
-```grammar
-lex AlignCell ::= [" " "\t"]* ":"? "-"+ ":"? [" " "\t"]*
-```
+#grammar::diagram(r#"""
+lex AlignCell -> [` ` U+0009]* `:`? `-`+ `:`? [` ` U+0009]*;
+"""#)
 
-```desugar
-Table(header, delimiter, rows*) ⇒ table(align: alignments(delimiter))[
-                                   table_row(header, true, width(delimiter))
-                                   map(r => table_row(r, false, width(delimiter)), rows)
-                                 ]
-MD.Table(align, rows) ⇒ table(align: align)[lower(rows)]
-```
+#grammar::diagram(r#"""
+ast MD_Table -> MD.Table(align, rows) => table(align: align)[lower(rows)];
+"""#)
+
+`width(frame)` 返回 cells 的数量。`pad_to(n, values, empty)` 在 values 少于 n 项时补入 empty；`take` 保留前 n 项，`map(f, values)` 对各项调用变换 f。辅助 ast 规则通过参数取得输入，ε 表示不额外匹配节点。
 
 `alignments` 逐 delimiter cell 去掉首尾空白；首 / 尾 / 两端冒号分别映射为 left / right / center，其余为 none。
 
@@ -633,12 +626,12 @@ row(header?: Bool)[children: Content] -> Content
 require structural_children(children) 的构造器全为 cell
 ```
 
-```grammar
-syntax TableRow(ctx) ::= frame:scan TableLine(ctx)
-```
+#grammar::diagram(r#"""
+syntax TableRow(ctx) -> frame:scan TableLine(ctx);
+"""#)
 
 ```scanner
-scanner TableLine(ctx) -> { end, cells, has_pipe } / Miss {
+scanner TableLine(ctx) -> { end, cells, has_pipe } | Miss {
   从 cursor 扫描至 NL 或 ctx.limit，记录每个 Pipe token 的下标
   任一 token 的 text 包含 NL 或 CR ⇒ Miss
   若 ctx.in_body 且首 token 为 RBracket ⇒ Miss
@@ -650,12 +643,12 @@ scanner TableLine(ctx) -> { end, cells, has_pipe } / Miss {
 }
 ```
 
-```desugar
-table_row(frame, header, width) ⇒ row(header: header)[
-  take(width, map(table_cell, frame.cells)) 后补空 cell 至 width
-]
-MD.TableRow(body, header) ⇒ row(header: header)[lower(body)]
-```
+#grammar::diagram(r#"""
+ast table_row(frame, header, width) -> ε => row(header: header)[
+  { pad_to(width, take(width, map(table_cell, frame.cells)), cell()) }
+];
+ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)];
+"""#)
 
 语法糖只在 table 内使用，每个物理行是一行；字面 `|` 使用 `\|`，raw / math 内也适用。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
@@ -665,20 +658,20 @@ MD.TableRow(body, header) ⇒ row(header: header)[lower(body)]
 cell()[children: Content] -> Content
 ```
 
-```grammar
-syntax TableCell(range, ctx) ::=
+#grammar::diagram(r#"""
+syntax TableCell(range, ctx) ->
   body:within(range.end,
-    InlineRun(ctx with in_body=false, always_true, None))
-```
+    InlineRun(ctx with in_body=false, always_true, None));
+"""#)
 
 TableCell 从 TableLine 提供的 range.start 开始匹配；界定符扫描和消费都受 range.end 限制。
 
-```desugar
-table_cell(range) ⇒ cell()[
-  paragraph()[table_inline(range)] if table_inline(range) != [] else []
-]
-MD.TableCell(body) ⇒ cell()[lower(body)]
-```
+#grammar::diagram(r#"""
+ast table_cell(range) -> ε => cell()[
+  { if table_inline(range) != [] then paragraph()[table_inline(range)] else [] }
+];
+ast MD_TableCell -> MD.TableCell(body) => cell()[lower(body)];
+"""#)
 
 table_inline 在 range.start 解析 TableCell 并 lower；随后递归遍历单元格内容，只对 raw / math payload 中的 `\|` 去掉反斜杠。空区间产生空 cell。
 
@@ -689,12 +682,9 @@ group()[children: InlineContent] -> InlineContent
 group()[children: Content] -> Content
 ```
 
-```grammar
-syntax AnonymousGroup(ctx) ::= &("#" "[") parsed:CallBody(ctx)
-```
-
-```desugar
-AnonymousGroup(parsed) ⇒ group()[lower(parsed.body)]
-```
+#grammar::diagram(r#"""
+syntax AnonymousGroup(ctx) -> &(`#` `[`) parsed:CallBody(ctx)
+  => group()[lower(parsed.body)];
+"""#)
 
 CallBody 按 [Types](types.not) 确定内容槽 flavor；没有名称的调用归为 group。Markdown 无专用语法糖。

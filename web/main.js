@@ -283,9 +283,11 @@ async function loadProject() {
     // Commit only the complete environment; failed loads retain the previous project.
     projectConfig = config;
     projectPackages = packages;
-    const sample = new URL("document.not", configURL);
-    const response = await fetch(sample);
-    if (response.ok) { srcEl.value = await response.text(); pathEl.value = "document.not"; }
+    const sourcePath = pathEl.value.trim();
+    if (sourcePath) {
+      const response = await fetch(new URL(sourcePath, configURL));
+      if (response.ok) { srcEl.value = await response.text(); pathEl.value = sourcePath; }
+    }
     render();
   } catch (error) {
     renderDiags([{ phase: "project", start: 0, end: 0, message: error.message }]);

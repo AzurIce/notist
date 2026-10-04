@@ -1,0 +1,6 @@
+[working-directory: "."]
+build:
+    cargo build --release --target wasm32-unknown-unknown -p notist-grammar --target-dir target
+    "${NOTIST_WASM_BINDGEN:-wasm-bindgen}" --target web \
+        --out-dir components/diagram/wasm \
+        --out-name grammar target/wasm32-unknown-unknown/release/notist_grammar.wasm

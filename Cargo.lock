@@ -579,6 +579,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-grammar"
+version = "0.1.0"
+dependencies = [
+ "railroad",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "notist-html"
 version = "0.1.0"
 dependencies = [
@@ -729,6 +737,15 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "railroad"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7286d8b4d9fc00078819e06ff24cefa276f39461ff53b74d63d24736be27192f"
+dependencies = [
+ "unicode-width",
+]
 
 [[package]]
 name = "redox_syscall"

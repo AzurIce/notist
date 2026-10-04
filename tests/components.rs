@@ -129,10 +129,13 @@ fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
 }
 #[test]
 fn host_copies_used_directory_resources_and_checks_convention_conflicts() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
     let project = Project::load(root.join("Notist.toml")).unwrap();
-    let source = std::fs::read_to_string(root.join("document.not")).unwrap();
-    let analysis = project.analyzer().analyze("document.not", &source).unwrap();
+    let source = std::fs::read_to_string(root.join("packages/README.not")).unwrap();
+    let analysis = project
+        .analyzer()
+        .analyze("packages/README.not", &source)
+        .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let built = notist::html_host::build_page(analysis.root(), &project, temp.path()).unwrap();
     assert_eq!(built.used_components.len(), 3);

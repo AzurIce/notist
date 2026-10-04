@@ -89,8 +89,8 @@ HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, 
 notist::html_host::html_registry 从 Project 与文件约定绑定目标；build_page 将页面、注册入口和实际使用的组件资源写入目录。可运行：
 
 ```sh
-cargo run -- html examples/plugins/document.not --out-dir target/plugins-demo
+cargo run -- html docs/packages/README.not --out-dir target/packages-demo
 python3 -m http.server
 ```
 
-访问 /target/plugins-demo/ 查看页面；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。
+访问 /target/packages-demo/ 查看页面；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。

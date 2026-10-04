@@ -1,0 +1,113 @@
+= Packages
+
+docs/packages 同时保存文档使用的扩展 package，以及 package 的设计与编写说明。当前文档通过 docs/Notist.toml 加载 [grammar](grammar/README.not)、widgets 和 mermaid；下方 Example 直接使用这里的组件。
+
+== Package 结构
+
+一个 package 是包含唯一入口 lib.notc 的目录。lib.notc 声明内容函数的类型签名；components/ 提供 HTML 呈现所需的 Web Component。当前不包含其他 Code 模块、脚本入口或 package 清单，package 之间的依赖与模块系统留待设计。
+
+```text
+docs/
+├── Notist.toml
+└── packages/
+    ├── README.not
+    ├── grammar/
+    │   ├── lib.notc
+    │   ├── README.not
+    │   └── components/diagram/index.js
+    ├── widgets/
+    │   ├── lib.notc
+    │   └── components/
+    │       ├── badge.js
+    │       └── panel/
+    │           ├── index.js
+    │           └── style.js
+    └── mermaid/
+        ├── lib.notc
+        └── components/diagram/index.js
+```
+
+内容函数的声明与组件分别承担分析和呈现：analyze 根据签名绑定参数、检查类型与 children，HTML renderer 保留调用并生成组件元素。组件内部的 DOM 不进入文档 IR。注册模型与 host API 见 [Content Function Extensions](../designs/content-functions.not)，声明文法见 [Code Syntax](../grammar/code.not)。
+
+== 声明与调用
+
+widgets/lib.notc 定义一个块级 panel 和一个行内 badge：
+
+```notc
+fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+fn badge(label: String, count: Int = 1) -> InlineContent;
+```
+
+参数承载 Value；正文从唯一的 children 槽传入。声明没有函数体，返回 Content 或 InlineContent 决定其在文档中的内容类别。内置与外部声明进入同一个定义模型和校验入口。
+
+外部函数使用包限定名，例如 `#widgets::panel("Title")[body]`。项目 dependencies 的键是该环境中的包名；内置 notist 包通过 prelude 提供 `#callout` 等简写。
+
+== HTML 组件
+
+组件入口按函数名约定：简单组件放在 components/badge.js，需要辅助模块或资源时使用 components/panel/index.js。两种入口都默认导出继承 HTMLElement 的组件类，同名两种入口同时存在时报告冲突。
+
+组件作者读取 notist-<参数名> 属性，并使用 slot 展示已渲染的 children。包名参与标签命名：widgets::panel 对应 widgets-panel，mermaid::diagram 对应 mermaid-diagram。作者无需手写 customElements.define；HTML host 生成去重的注册入口，并复制实际使用的组件资源。
+
+panel 的 index.js 相对导入 style.js，展示目录组件的资源组织；badge.js 使用 BigInt 读取 count，保留 i64 精度。完整属性编码与生命周期契约见 [Content Function Extensions](../designs/content-functions.not)，HTML 输出接口见 [HTML Rendering](../html.not)。
+
+组件可携带自己的浏览器依赖。Mermaid 示例使用固定版本的 CDN 模块；需要离线分发时，package 作者提供本地依赖产物。[grammar](grammar/README.not) 使用 package 内的 Rust / WASM 产物，不依赖 CDN。
+
+== 项目配置
+
+依赖配置位于 docs/Notist.toml，路径相对于配置文件所在目录：
+
+```toml
+[dependencies]
+grammar = { path = "./packages/grammar" }
+widgets = { path = "./packages/widgets" }
+mermaid = { path = "./packages/mermaid" }
+```
+
+loader 读取每个依赖目录中的 lib.notc，分析并注册完整定义；失败时不进行部分装配。CLI 使用显式 --config 或最近父目录中的 Notist.toml。纯 lib API 接收已装配的环境，不自动读取文件或网络。
+
+== Example
+
+A simple #widgets::badge("badge", 9223372036854775807) inside a paragraph.
+
+#widgets::panel("Pipeline")[
+  This content remains part of the document tree.
+
+  #widgets::panel("Nested", expanded: false)[
+    Nested children retain their order and identity.
+  ]
+
+  #mermaid::diagram("graph LR; A[Markup] --> B[IR]; B --> C[HTML]")
+]
+
+示例中的两个 panel 展示嵌套 children 与 expanded 参数；badge 展示大整数属性；Mermaid 将同一份 source 参数呈现为图。它们都是当前目录中的真实 package。
+
+== 构建与预览
+
+在仓库根目录执行：
+
+```sh
+cargo run -- check docs/packages/README.not
+cargo run -- html docs/packages/README.not --out-dir target/packages-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/packages-demo/。页面、组件注册入口及实际使用的组件资源一起输出；目录组件保留相对 import 的目录关系。该 Example 的 Mermaid 呈现需要访问其 CDN。
+
+Web 预览先构建浏览器分析器，wasm-bindgen-cli 版本须与 Rust 依赖一致：
+
+```sh
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+./web/build.sh
+python3 -m http.server
+```
+
+打开 /web/，配置 URL 为 ../docs/Notist.toml，源码路径为 packages/README.not，点击“载入项目”。预览按路径输入框加载配置目录中的文档，也可选择 grammar/diagrams.not。配置与声明源码传给纯 WASM API，组件在预览 iframe 中加载；.notc 源码使用声明模块的分析入口。
+
+== 验证
+
+```sh
+cargo test --workspace --all-features
+node --test web/tests/protocol.test.mjs
+```
+
+web/tests/browser.cjs 验证此 Example 的静态页面、重新挂载、项目预览和模块诊断。运行前导出 target/packages-demo、构建 web/pkg，并通过 HTTP 服务仓库；Playwright 须在 NODE_PATH 上可用。NOTIST_TEST_URL 指定 HTTP 地址，NOTIST_CHROMIUM 指定浏览器路径。

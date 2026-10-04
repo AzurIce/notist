@@ -1,0 +1,80 @@
+= Grammar Package
+
+lib.notc 定义内容函数，components/diagram/index.js 默认导出 Web Component。
+src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](../../grammar/notation.not)，使用 railroad 生成 SVG；同一实现供原生 Rust 与 WASM 使用。
+
+== Build and view
+
+需要 just、wasm32-unknown-unknown Rust target，以及与 Cargo.toml 相同版本的 wasm-bindgen-cli（0.2.129）。
+
+```sh
+just --justfile docs/packages/grammar/justfile build
+cargo run -- html docs/grammar/diagrams.not --out-dir target/grammar-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/grammar-demo/。HTML host 按现有 package 约定复制组件目录，包含 WASM 与生成的 JS；宿主负责注册 grammar-diagram，组件只负责加载和展示。构建后的展示无需网络依赖。
+
+也可在 package 目录执行 `just build`；recipe 的 working-directory 属性将执行目录设为 package 目录。WASM 构建使用本地 target/，组件输出到 components/diagram/wasm，路径不依赖 package 在仓库中的嵌套层级。该 crate 仍属于 Cargo workspace，共用锁文件和 workspace 测试。
+
+NOTIST_WASM_BINDGEN 可指定 wasm-bindgen 可执行文件。wasm/ 是构建产物，不提交源码库；分发已构建 package 时须包含它。
+
+现有 Web viewer 同样可展示组件：先构建 web/build.sh，载入 ../docs/Notist.toml，再把 diagrams.not 的内容放进编辑器。
+
+== Content function
+
+```signature
+grammar::diagram(source: String, rule?: String, theme: String = "light") -> Content
+```
+
+source 为统一的匹配与结果构造规则文本。组件始终先展示源码，再展示对应的图；源码仅需维护一份。缺省渲染其中所有产生式，rule 指定只绘制一个。支持 light、dark、rust、coal、navy、ayu 主题。
+
+参数更新会重新绘图，移除并重新挂载也可继续使用。同一浏览器模块实例共享 WASM 初始化；错误包含一基行号、Unicode 字符列号并保留源码。
+
+组件直接使用示例：
+
+#grammar::diagram(r#"""
+syntax Heading(ctx) ->
+  marker:EQ WS body:InlineRun(ctx, always_true, None)
+  => heading(level: size(marker))[lower(body)];
+"""#)
+
+== Native API
+
+```rust
+use notist_grammar::{parse, render_source, RenderOptions};
+
+let source = "syntax Path -> IDENT (COLON_COLON IDENT)*;";
+let grammar = parse(source)?;
+let svg = render_source(source, &RenderOptions::default())?;
+```
+
+parse 返回带 UTF-8 源码范围的 Grammar / Rule / Expr；Rule.expression 与可选 Rule.result 分别保存输入结构和结果结构。render 可直接消费该 AST。render_source 返回一条或多条独立 SVG，各自包含样式，可嵌入 HTML；选定 rule 时返回单条 SVG。
+
+== Representation
+
+基础记法采用 Rust Reference 的产生式、反引号原始终结符、Unicode、字符集合、补集、有序选择、贪婪重复、右开／闭合计数区间、命名重复次数、负前瞻、提交点、prose、说明与脚注。支持 @root；未写层级的产生式默认为 syntax，省略分号时下一行的声明或文件末尾结束当前规则。
+
+Notist 扩展为 lex / syntax / ast、=> 结果构造、name(args)[children] 节点结构、{…} 纯计算、参数化引用、捕获、正前瞻、@{ condition }、let x = { value }、within、scan / probe、ε 和文法 import。完整定义见 Grammar Notation；文档中的具体规则显式写出层级和分号。
+
+有序选择按编号标明 first match；计数循环注明总次数约束；前瞻、谓词、binding 与 probe 标记 zero-width；提交后的失败标记为 Broken。匹配轨道与结果结构在同一 SVG 中分区展示；构造节点以框标明名称和参数，结果不标为输入消费。轨道用于展示识别结构，解析决策仍以 Grammar Notation 的匹配契约为准。
+
+规则实参、结果计算、边界表达式、谓词和绑定值保留源码而不求值。谓词与绑定值由花括号界定，不依赖行末或比较运算符猜测边界；内层括号配平，字符串与注释屏蔽界定符。调用参数由紧邻名称的圆括号界定；Rule (E) 则表示序列加分组。import 保存文档定位信息，不读文件；仅同一次绘制中的规则提供跳转。
+
+scanner、syntax algorithm、transform algorithm、shape、recover 的算法块不作为产生式解析，也不绘制成轨道。名称解析、输入匹配、代码求值和 parser 生成不属于此包职责。
+
+输入限制为 1 MiB、嵌套 64 层、表达式 4096 个；这些限制同时用于原生和 WASM。宽序列按节点折行；单个过宽节点可以横向滚动。
+
+== Verification
+
+```sh
+cargo test -p notist-grammar
+```
+
+测试解析并绘制当前 Notation、Markup、Code、Types 和 Builtin 文档中的全部 grammar::diagram 调用，检查语义标注、范围与错误、嵌套限制及 SVG 转义。
+
+tests/browser.cjs 验证静态页、WASM 资源复制、规则跳转、参数更新、重新挂载、错误恢复和 SVG 导出；运行前需完成上述构建并通过 HTTP 服务仓库，Playwright 须在 NODE_PATH 上可用。
+
+NOTIST_TEST_URL 可指定 HTTP 地址，NOTIST_CHROMIUM 可指定 Chromium 路径。构建 Web viewer 后，设置 NOTIST_TEST_WEB=1 会一并验证现有预览 iframe 的 package 加载与绘图。
+
+设置 NOTIST_TEST_DOCS=1 会验证所有规范页的源码与图。运行前将 builtin.not、grammar/README.not、grammar/code.not、grammar/notation.not、types.not、packages/grammar/README.not 分别导出到 target/grammar-docs 下的 builtin、markup、code、notation、types、package 目录。

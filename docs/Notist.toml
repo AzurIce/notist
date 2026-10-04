@@ -1,3 +1,4 @@
 [dependencies]
+grammar = { path = "./packages/grammar" }
 widgets = { path = "./packages/widgets" }
 mermaid = { path = "./packages/mermaid" }

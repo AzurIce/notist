@@ -9,13 +9,13 @@
 - Int — i64 十进制
 - Float — f64 十进制（`0.5`；`.5`、`1.` 不合法）
 
-```grammar
-lex Digit ::= ["0".."9"]
-lex Number ::= Digit+ ("." Digit+)?
-syntax Unit ::= LPAREN RPAREN
-syntax Bool ::= "true" / "false"
-syntax NumericValue ::= MINUS? NUMBER
-```
+#grammar::diagram(r#"""
+lex Digit -> [`0`-`9`];
+lex Number -> Digit+ (`.` Digit+)?;
+syntax Unit -> LPAREN RPAREN;
+syntax Bool -> `true` | `false`;
+syntax NumericValue -> MINUS? NUMBER;
+"""#)
 
 数字无科学计数法；负号与 NUMBER 必须紧邻，形成 Neg 节点，不属于 Number token。当前只支持这一个字面量前缀，没有通用一元运算。整数溢出在 Desugar 产生 semantic 诊断。
 
@@ -30,7 +30,7 @@ UTF-8，四种形态，产出同一类型：
 
 转义集恰好五个：`\"` `\\` `\n` `\r` `\t`；raw 形态不处理转义。行内形态不跨行。多行形态：开引号后须立即换行（该换行不计入值），收尾去掉一个换行，不做 dedent。
 
-String 由 Code 与 Markup 参数共享的字面量扫描器识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断由对应的字面量 lowering 执行；文档中由 Desugar 完成。
+String 由 Code 与 Markup 参数共享的字面量扫描器识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断由对应的字面量 lowering 执行；文档中由结果构造描述。
 
 == 内容
 
@@ -59,16 +59,16 @@ flavor(open, close) =
 
 集合字面量判别完全局部：出现 `k: v` 项 → Dict；否则出现逗号 → Array；否则为 grouping（`(x)` 永远不是集合，`()` 是 Unit）。
 
-```grammar
-syntax ArgKey ::= IDENT / STR
-syntax Value ::= STR / NumericValue / Bool / Collection
-syntax Collection ::=
-  Unit / "(" ":" ")" / "(" "," ")"
-  / LPAREN Trivia* Member (Trivia* COMMA Trivia* Member)* Trivia* COMMA?
-    Trivia* RPAREN
-syntax Member ::= ArgKey COLON Trivia* Value / Value
-syntax Dict ::= value:Collection @classification(value) == Dict
-```
+#grammar::diagram(r#"""
+syntax ArgKey -> IDENT | STR;
+syntax Value -> STR | NumericValue | Bool | Collection;
+syntax Collection ->
+  Unit | `(` `:` `)` | `(` `,` `)`
+  | LPAREN Trivia* Member (Trivia* COMMA Trivia* Member)* Trivia* COMMA?
+    Trivia* RPAREN;
+syntax Member -> ArgKey COLON Trivia* Value | Value;
+syntax Dict -> value:Collection @{ classification(value) == Dict };
+"""#)
 
 classification 按上面的局部判别执行。Grouping 必须恰有一个值；Dict 中的游离值产生 semantic 诊断。Trivia 与 Args 使用 Syntax 中的规则；当前 parser 对缺失 / 重复逗号的容错也适用于集合。
 

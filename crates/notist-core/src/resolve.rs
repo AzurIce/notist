@@ -92,8 +92,19 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
                     });
                 }
                 (BodyFlavor::Inline, Some(Accepts::Content)) => {
-                    children =
-                        vec![RExpr::resolved(Ctor::Paragraph, span).with_children(children)];
+                    if ctor != Ctor::TableCell || !children.is_empty() {
+                        children =
+                            vec![RExpr::resolved(Ctor::Paragraph, span).with_children(children)];
+                    }
+                }
+                _ => {}
+            }
+            match sig.map(|s| s.accepts) {
+                Some(Accepts::Rows) => {
+                    check_structural_children(&children, &Ctor::TableRow, &name, diags)
+                }
+                Some(Accepts::Cells) => {
+                    check_structural_children(&children, &Ctor::TableCell, &name, diags)
                 }
                 _ => {}
             }
@@ -110,10 +121,46 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
     }
 }
 
+/// Block-written call bodies contain paragraph candidates until shaping.
+/// Inspect those wrappers too, so stray text is diagnosed without rejecting
+/// the row/cell calls that reflow will expose as direct structural children.
+fn check_structural_children(
+    children: &[RExpr],
+    expected: &Ctor,
+    parent: &str,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for child in children {
+        match child {
+            Expr::Call {
+                name: Ctor::Paragraph,
+                children,
+                body: BodyFlavor::None,
+                ..
+            } => {
+                check_structural_children(children, expected, parent, diags);
+            }
+            Expr::Call { name, .. } if name == expected => {}
+            _ => diags.push(Diagnostic::new(
+                Phase::Type,
+                child.span(),
+                format!(
+                    "`{parent}` takes only {} children",
+                    if *expected == Ctor::TableRow {
+                        "row"
+                    } else {
+                        "cell"
+                    }
+                ),
+            )),
+        }
+    }
+}
+
 /// Which field a builtin's n-th positional argument maps to.
 fn positional_field(name: &str, index: usize) -> Option<&'static str> {
     match (name, index) {
-        ("link", 0) => Some("target"),
+        ("link", 0) | ("embed", 0) => Some("target"),
         ("raw", 0) | ("math", 0) => Some("text"),
         _ => None,
     }

@@ -6,12 +6,22 @@
 
 Notist 的基础 Markup 语法与 Typst 几乎一致，不过一些细节的行为上略有差异。
 
-`=` 标题，*加粗*，_强调（斜体）_
+`=` 标题，*加粗*，_强调（斜体）_，~删除线~
+
+独占一行的分隔线：
+
+---
 
 - 无序列表
 - 无序列表
     - 无序列表
         + 有序列表
+
+管道表格：
+
+| 名称 | 数量 |
+| :--- | ---: |
+| *苹果* | 3 |
         + 有序列表
 
 行内代码块 `code`，以及多行代码块：
@@ -73,3 +83,13 @@ Let's say *Hello* _World_!
 
 - `#raw("code")`：#raw("code")
 - `#strong[加粗]`：#strong[加粗]
+- `#strike[删除线]`：#strike[删除线]
+- `#divider()`：与独占一行的 `---` 相同
+- `#embed("assets/example.png", description: "示例", title: "说明")`：嵌入资源；与 Markdown 的 `![示例](assets/example.png "说明")` 对应，具体呈现由渲染器决定
+- `#table(align: ("left", "right"))[#row[#cell[苹果] #cell[3]]]`：表格；使用 `row(header: true)` 表示表头，`cell` 可以挂载段落等内容
+
+Callout 没有专用 Markup 语法，直接调用：
+
+#callout(kind: "note")[
+这里可以放段落、列表等块级内容。
+]

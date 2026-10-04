@@ -41,12 +41,11 @@ fn main() -> ExitCode {
             format!("{:#?}", notist_syntax::parser::parse(src).syntax())
         }),
         Command::Core { file } => print_with(&file, |src| {
-            let Some((item, diags)) = notist::frontend::Frontends::default().analyze(&file, src)
-            else {
+            let Ok(document) = notist::Notist::default().analyze(&file, src) else {
                 return format!("unsupported file extension: {}", file.display());
             };
             let mut out = String::new();
-            for d in &diags {
+            for d in document.diagnostics() {
                 out.push_str(&format!(
                     "error[{}] @{}..{}: {}\n",
                     d.phase,
@@ -55,18 +54,17 @@ fn main() -> ExitCode {
                     d.message
                 ));
             }
-            out.push_str(&notist::dump::dump(&item));
+            out.push_str(&notist::dump::dump(document.root()));
             out
         }),
         Command::Json { file } => print_with(&file, notist::cst_json::analyze_json),
         Command::Query { file, selector } => match read(&file) {
             Ok(src) => {
-                let Some((item, _)) = notist::frontend::Frontends::default().analyze(&file, &src)
-                else {
+                let Ok(document) = notist::Notist::default().analyze(&file, &src) else {
                     eprintln!("unsupported file extension: {}", file.display());
                     return ExitCode::FAILURE;
                 };
-                let matches = notist::query::select(&item, &selector);
+                let matches = notist::query::select(document.root(), &selector);
                 println!("{}", notist::query::render_json(&src, &matches));
                 ExitCode::SUCCESS
             }
@@ -112,11 +110,11 @@ fn check(file: &Path) -> ExitCode {
         Ok(src) => src,
         Err(code) => return code,
     };
-    let Some((item, mut diagnostics)) = notist::frontend::Frontends::default().analyze(file, &src)
-    else {
+    let Ok(document) = notist::Notist::default().analyze(file, &src) else {
         eprintln!("unsupported file extension: {}", file.display());
         return ExitCode::FAILURE;
     };
+    let (item, mut diagnostics) = document.into_parts();
     // id/tag 约定是 .not 的注解语义，只在该前端下检查
     if file.extension().is_some_and(|ext| ext == "not") {
         let index = notist::index::Index::build(&item, &mut diagnostics);

@@ -1,7 +1,7 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
 use notist_syntax::ast::{
-    Annotation, CodeCall, Document, Entry, Heading, Link, List, ListItem, WikiLink,
+    Annotation, CodeCall, Document, Embed, Entry, Heading, Link, List, ListItem, Table, WikiLink,
 };
 use crate::diag::{Diagnostic, Phase};
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
@@ -124,10 +124,24 @@ fn desugar_blocks(
                     expr.set_attrs(pending.take());
                     forest.push(expr);
                 }
+                SyntaxKind::Table => {
+                    flush_run!();
+                    seen_content = true;
+                    let mut expr = desugar_table(&Table::cast(node.clone()).unwrap(), diags);
+                    expr.set_attrs(pending.take());
+                    forest.push(expr);
+                }
                 SyntaxKind::Raw => {
                     flush_run!();
                     seen_content = true;
                     let mut expr = desugar_raw_block(node);
+                    expr.set_attrs(pending.take());
+                    forest.push(expr);
+                }
+                SyntaxKind::Divider => {
+                    flush_run!();
+                    seen_content = true;
+                    let mut expr = Expr::call("divider", node.text_range());
                     expr.set_attrs(pending.take());
                     forest.push(expr);
                 }
@@ -252,6 +266,57 @@ fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
                 .map(|item| desugar_list_item(&item, diags))
                 .collect(),
         )
+}
+
+fn desugar_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
+    let align = table.alignments();
+    let width = align.len();
+    let rows = table.rows().map(|row| {
+        let mut cells: Vec<_> = row.cells().take(width).map(|cell| {
+            let payloads: Vec<_> = cell.content()
+                .filter_map(|el| el.into_node())
+                .flat_map(|node| node.descendants())
+                .filter(|node| matches!(node.kind(), SyntaxKind::RawInline | SyntaxKind::Math))
+                .map(|node| node.text_range())
+                .collect();
+            let mut inline = desugar_inline(cell.content(), diags);
+            // Pipe escaping belongs to table syntax, including opaque raw/math
+            // payloads, where ordinary markup escapes otherwise stay literal.
+            unescape_table_pipes(&mut inline, &payloads);
+            let children = if inline.is_empty() {
+                Vec::new()
+            } else {
+                vec![Expr::call("paragraph", cell.range()).with_children(inline)]
+            };
+            Expr::call("cell", cell.range()).with_children(children)
+        }).collect();
+        while cells.len() < width {
+            cells.push(Expr::call("cell", TextRange::empty(row.range().end())));
+        }
+        Expr::call("row", row.range())
+            .with_field("header", Value::Bool(row.is_header()))
+            .with_children(cells)
+    }).collect();
+    Expr::call("table", table.range())
+        .with_field("align", Value::Array(
+            align.into_iter().map(|a| Value::Str(a.as_str().into())).collect()
+        ))
+        .with_children(rows)
+}
+
+fn unescape_table_pipes(exprs: &mut [Expr], payloads: &[TextRange]) {
+    for expr in exprs {
+        if let Expr::Call {
+            name, fields, children, span, ..
+        } = expr {
+            if matches!(name.as_str(), "raw" | "math") && payloads.contains(span) {
+                if let Some(Value::Str(text)) = fields.get("text") {
+                    fields.insert("text", Value::Str(text.replace("\\|", "|")));
+                }
+            }
+            unescape_table_pipes(children, payloads);
+        }
+    }
 }
 
 fn desugar_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
@@ -648,6 +713,18 @@ impl TextRun {
     }
 }
 
+fn append_description(expr: &Expr, out: &mut String) {
+    match expr {
+        Expr::Literal(value, _) => out.push_str(&value.to_string()),
+        Expr::Call { fields, children, .. } => {
+            if let Some(Value::Str(text)) = fields.get("text").or_else(|| fields.get("description")) {
+                out.push_str(text);
+            }
+            for child in children { append_description(child, out); }
+        }
+    }
+}
+
 fn desugar_inline(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
     diags: &mut Vec<Diagnostic>,
@@ -666,9 +743,11 @@ fn desugar_inline(
                     n.kind(),
                     SyntaxKind::Strong
                         | SyntaxKind::Emph
+                        | SyntaxKind::Strike
                         | SyntaxKind::RawInline
                         | SyntaxKind::Math
                         | SyntaxKind::Link
+                        | SyntaxKind::Embed
                         | SyntaxKind::WikiLink
                         | SyntaxKind::CodeCall
                         | SyntaxKind::Annotation
@@ -743,12 +822,13 @@ fn desugar_inline(
                     items.push(expr);
                     after_element = true;
                 }
-                SyntaxKind::Strong | SyntaxKind::Emph => {
+                SyntaxKind::Strong | SyntaxKind::Emph | SyntaxKind::Strike => {
                     run.flush_at_element(&mut items);
-                    let (name, delim) = if node.kind() == SyntaxKind::Strong {
-                        ("strong", SyntaxKind::Star)
-                    } else {
-                        ("emph", SyntaxKind::Underscore)
+                    let (name, delim) = match node.kind() {
+                        SyntaxKind::Strong => ("strong", SyntaxKind::Star),
+                        SyntaxKind::Emph => ("emph", SyntaxKind::Underscore),
+                        SyntaxKind::Strike => ("strike", SyntaxKind::Tilde),
+                        _ => unreachable!(),
                     };
                     let elements: Vec<_> = node.children_with_tokens().collect();
                     let end = if elements.last().is_some_and(|el| el.kind() == delim) {
@@ -758,6 +838,21 @@ fn desugar_inline(
                     };
                     let children = desugar_inline(elements[1..end].iter().cloned(), diags);
                     let mut expr = Expr::call(name, node.text_range()).with_children(children);
+                    expr.set_attrs(pending.take());
+                    items.push(expr);
+                    after_element = true;
+                }
+                SyntaxKind::Embed => {
+                    run.flush_at_element(&mut items);
+                    let embed = Embed::cast(node.clone()).unwrap();
+                    let (target, title) = embed.destination();
+                    let content = desugar_inline(embed.content(), diags);
+                    let mut description = String::new();
+                    for expr in &content { append_description(expr, &mut description); }
+                    let mut expr = Expr::call("embed", embed.range())
+                        .with_field("target", Value::Str(target))
+                        .with_field("description", Value::Str(description));
+                    if let Some(title) = title { expr = expr.with_field("title", Value::Str(title)); }
                     expr.set_attrs(pending.take());
                     items.push(expr);
                     after_element = true;

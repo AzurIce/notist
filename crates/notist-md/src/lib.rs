@@ -2,20 +2,49 @@ use notist_core::diag::Diagnostic;
 use notist_core::expr::Expr;
 use notist_core::item::{Dict, Value};
 use rowan::TextRange;
-use rushdown::ast::{Arena, KindData, Node, NodeRef};
-use rushdown::parser::{gfm_strikethrough, gfm_table, Options, Parser, ParserExtension};
+use rushdown::ast::{Arena, KindData, Node, NodeRef, TextQualifier};
+use rushdown::parser::{
+    gfm_strikethrough, gfm_table, parser_extension, AnyParagraphTransformer, InlineParser,
+    NoParserOptions, Options, Parser, ParserExtension,
+};
 use rushdown::text::BasicReader;
+
+mod breaks;
+mod math;
+mod strings;
 
 /// The markdown frontend's lowering: rushdown AST → shared Expr IR.
 pub fn lower(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
-    let parser = Parser::with_extensions(
-        Options::default(),
-        gfm_table().and(gfm_strikethrough()),
-    );
-    let (arena, root) = parser.parse(&mut BasicReader::new(src));
+    let (mut arena, mut root) = parser(None).parse(&mut BasicReader::new(src));
+    let positions = breaks::positions(&arena, root, src);
+    if !positions.is_empty() {
+        (arena, root) = parser(Some(breaks::Breaks(positions))).parse(&mut BasicReader::new(src));
+    }
     let lowerer = Lowerer { src, arena: &arena };
     let forest = lowerer.children(root);
     (forest, Dict::default(), Vec::new())
+}
+
+fn parser(breaks: Option<breaks::Breaks>) -> Parser {
+    Parser::with_extensions(
+        Options::default(),
+        gfm_table()
+            .and(gfm_strikethrough())
+            .and(parser_extension(move |p| {
+                p.add_inline_parser(
+                    || Box::new(math::MathParser) as Box<dyn InlineParser>,
+                    NoParserOptions,
+                    200,
+                );
+                if let Some(breaks) = breaks.clone() {
+                    p.add_paragraph_transformer(
+                        move || AnyParagraphTransformer::Extension(Box::new(breaks.clone())),
+                        NoParserOptions,
+                        300,
+                    );
+                }
+            })),
+    )
 }
 
 struct Lowerer<'a> {
@@ -23,30 +52,87 @@ struct Lowerer<'a> {
     arena: &'a Arena,
 }
 
+fn normalize_table_inline(exprs: &mut [Expr]) {
+    for expr in exprs {
+        if let Expr::Call {
+            name,
+            fields,
+            children,
+            ..
+        } = expr
+        {
+            if let Some(Value::Str(text)) = fields.get("text") {
+                let text = match name.as_str() {
+                    "text" => Some(strings::decode(text)),
+                    "math" => Some(text.replace("\\|", "|")),
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    fields.insert("text", Value::Str(text));
+                }
+            }
+            normalize_table_inline(children);
+        }
+    }
+}
+
 impl<'a> Lowerer<'a> {
     fn node(&self, node: NodeRef) -> &'a Node {
         self.arena.get(node).unwrap()
     }
 
-    fn text_of(&self, node: NodeRef) -> String {
-        let mut cur = Some(node);
-        let mut out = String::new();
-        while let Some(c) = cur {
-            if let KindData::Text(text) = self.node(c).kind_data() {
-                out.push_str(text.str(self.src));
+    /// Flatten the complete inline description, including sibling text,
+    /// nested formatting and code/math payloads, into the embedding field.
+    fn description_of(&self, node: NodeRef) -> String {
+        fn append(expr: &Expr, out: &mut String) {
+            if let Expr::Call {
+                name,
+                fields,
+                children,
+                ..
+            } = expr
+            {
+                if let Some(Value::Str(text)) =
+                    fields.get("text").or_else(|| fields.get("description"))
+                {
+                    if name == "text" {
+                        out.push_str(&strings::decode(text));
+                    } else {
+                        out.push_str(text);
+                    }
+                }
+                for child in children {
+                    append(child, out);
+                }
             }
-            cur = self.node(c).first_child();
+        }
+        let mut out = String::new();
+        for child in self.children(node) {
+            append(&child, &mut out);
         }
         out
     }
 
     /// A node's span: its `pos` to the next sibling's `pos` (walking up
-    /// through parents when there is none), or EOF.
+    /// through parents when there is none), or EOF. ATX headings and their
+    /// descendants are bounded by the heading's physical line.
     fn span_of(&self, node: NodeRef) -> TextRange {
+        if matches!(self.node(node).kind_data(), KindData::TableCell(_))
+            && self.node(node).pos().is_none()
+        {
+            if let Some(parent) = self.node(node).parent() {
+                // rushdown pads short rows with cells that have no source pos.
+                return TextRange::empty(self.span_of(parent).end());
+            }
+        }
         let start = self.node(node).pos().unwrap_or(0) as u32;
         let mut end = self.src.len() as u32;
         let mut cur = Some(node);
         'walk: while let Some(c) = cur {
+            if let Some(heading_end) = self.atx_heading_end(c) {
+                end = heading_end;
+                break;
+            }
             if let Some(next) = self.node(c).next_sibling() {
                 if let Some(pos) = self.node(next).pos() {
                     end = pos as u32;
@@ -58,17 +144,40 @@ impl<'a> Lowerer<'a> {
         TextRange::new(start.into(), end.into())
     }
 
+    fn atx_heading_end(&self, node: NodeRef) -> Option<u32> {
+        let KindData::Heading(heading) = self.node(node).kind_data() else {
+            return None;
+        };
+        let start = self.node(node).pos()?;
+        let line = &self.src[start..];
+        let marker = line.bytes().take_while(|b| *b == b'#').count();
+        if marker != heading.level() as usize
+            || !matches!(
+                line.as_bytes().get(marker),
+                None | Some(b' ' | b'\t' | b'\r' | b'\n')
+            )
+        {
+            return None;
+        }
+        Some((start + line.find(['\r', '\n']).unwrap_or(line.len())) as u32)
+    }
+
     fn children(&self, node: NodeRef) -> Vec<Expr> {
         let mut out = Vec::new();
         let mut text_start = None;
         let mut text_end = 0usize;
         let mut text_buf = String::new();
+        let mut at_line_start = true;
         let flush = |out: &mut Vec<Expr>,
-                         text_start: &mut Option<usize>,
-                         text_buf: &mut String,
-                         text_end: usize| {
+                     text_start: &mut Option<usize>,
+                     text_buf: &mut String,
+                     text_end: usize,
+                     boundary: bool| {
             if let Some(start) = text_start.take() {
-                if !text_buf.trim().is_empty() {
+                if boundary {
+                    text_buf.truncate(text_buf.trim_end().len());
+                }
+                if !text_buf.is_empty() {
                     out.push(Expr::text(
                         std::mem::take(text_buf),
                         TextRange::new((start as u32).into(), (text_end as u32).into()),
@@ -86,15 +195,33 @@ impl<'a> Lowerer<'a> {
                 if text_start.is_none() {
                     text_start = n.pos();
                 }
-                text_buf.push_str(text.str(self.src));
+                let value = text.str(self.src);
+                text_buf.push_str(if at_line_start {
+                    value.trim_start()
+                } else {
+                    &value
+                });
                 text_end = n.pos().unwrap_or(0) + text.str(self.src).len();
-            } else {
-                flush(&mut out, &mut text_start, &mut text_buf, text_end);
+                at_line_start = false;
+                if text.has_qualifiers(TextQualifier::SOFT_LINE_BREAK)
+                    || text.has_qualifiers(TextQualifier::HARD_LINE_BREAK)
+                {
+                    // Explicit backslash breaks have already split paragraphs.
+                    // Remaining physical breaks join directly, including
+                    // Markdown's two-space hard breaks.
+                    flush(&mut out, &mut text_start, &mut text_buf, text_end, true);
+                    at_line_start = true;
+                }
+            } else if !matches!(n.kind_data(), KindData::HtmlBlock(_) | KindData::RawHtml(_)) {
+                // Ignore inline HTML tags without breaking the surrounding
+                // text run; raw HTML blocks and their payload are skipped.
+                flush(&mut out, &mut text_start, &mut text_buf, text_end, false);
                 out.push(self.item(c));
+                at_line_start = false;
             }
             child = n.next_sibling();
         }
-        flush(&mut out, &mut text_start, &mut text_buf, text_end);
+        flush(&mut out, &mut text_start, &mut text_buf, text_end, true);
         out
     }
 
@@ -105,7 +232,7 @@ impl<'a> Lowerer<'a> {
             KindData::Heading(h) => Expr::call("heading", span)
                 .with_field("level", Value::Int(h.level() as i64))
                 .with_children(self.children(node)),
-            KindData::ThematicBreak(_) => Expr::call("thematicbreak", span),
+            KindData::ThematicBreak(_) => Expr::call("divider", span),
             KindData::CodeBlock(b) => {
                 let mut expr = Expr::call("raw", span)
                     .with_field("block", Value::Bool(true))
@@ -118,27 +245,74 @@ impl<'a> Lowerer<'a> {
                 }
                 expr
             }
-            KindData::Blockquote(_) => Expr::call("blockquote", span).with_children(self.children(node)),
+            KindData::Blockquote(_) => Expr::call("callout", span)
+                .with_field("kind", Value::Str("quote".into()))
+                .with_children(self.children(node)),
             KindData::List(l) => Expr::call("list", span)
                 .with_field("ordered", Value::Bool(l.is_ordered()))
                 .with_children(self.children(node)),
             KindData::ListItem(_) => Expr::call("item", span).with_children(self.children(node)),
-            KindData::HtmlBlock(b) => Expr::call("html", span).with_field("text", Value::Str(b.value().iter(self.src).collect::<String>())),
             KindData::CodeSpan(c) => Expr::call("raw", span).with_field("text", Value::Str(c.str(self.src).into_owned())),
             KindData::Emphasis(_) => Expr::call("emph", span).with_children(self.children(node)),
             KindData::Strong(_) => Expr::call("strong", span).with_children(self.children(node)),
             KindData::Link(l) => Expr::call("link", span)
                 .with_field("target", Value::Str(l.destination().str(self.src).to_string()))
                 .with_children(self.children(node)),
-            KindData::Image(i) => Expr::call("image", span)
-                .with_field("src", Value::Str(i.destination().str(self.src).to_string()))
-                .with_field("alt", Value::Str(self.text_of(node)))
-                .with_children(self.children(node)),
-            KindData::RawHtml(b) => Expr::call("html", span).with_field("text", Value::Str(b.value().str(self.src).into_owned())),
-            KindData::Table(_) => Expr::call("table", span).with_children(self.children(node)),
+            KindData::Image(i) => {
+                let mut expr = Expr::call("embed", span)
+                    .with_field(
+                        "target",
+                        Value::Str(strings::decode(i.destination().str(self.src))),
+                    )
+                    .with_field("description", Value::Str(self.description_of(node)));
+                if let Some(title) = i.title_str(self.src) {
+                    expr = expr.with_field("title", Value::Str(strings::decode(&title)));
+                }
+                expr
+            }
+            KindData::Table(_) => {
+                let mut rows = Vec::new();
+                let mut align = Vec::new();
+                let mut container = self.node(node).first_child();
+                while let Some(c) = container {
+                    let header = matches!(self.node(c).kind_data(), KindData::TableHeader(_));
+                    let mut row = self.node(c).first_child();
+                    while let Some(r) = row {
+                        if header {
+                            let mut cell = self.node(r).first_child();
+                            while let Some(cell_ref) = cell {
+                                if let KindData::TableCell(data) = self.node(cell_ref).kind_data() {
+                                    align.push(Value::Str(data.alignment().as_str().into()));
+                                }
+                                cell = self.node(cell_ref).next_sibling();
+                            }
+                        }
+                        rows.push(self.item(r).with_field("header", Value::Bool(header)));
+                        row = self.node(r).next_sibling();
+                    }
+                    container = self.node(c).next_sibling();
+                }
+                Expr::call("table", span)
+                    .with_field("align", Value::Array(align))
+                    .with_children(rows)
+            }
             KindData::TableRow(_) => Expr::call("row", span).with_children(self.children(node)),
-            KindData::TableCell(_) => Expr::call("cell", span).with_children(self.children(node)),
+            KindData::TableCell(_) => {
+                let mut inline = self.children(node);
+                normalize_table_inline(&mut inline);
+                let children = if inline.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![Expr::call("paragraph", span).with_children(inline)]
+                };
+                Expr::call("cell", span).with_children(children)
+            }
             KindData::Strikethrough(_) => Expr::call("strike", span).with_children(self.children(node)),
+            KindData::Extension(data) if data.as_any().is::<math::Math>() => {
+                let math = data.as_any().downcast_ref::<math::Math>().unwrap();
+                let span = TextRange::new(span.start(), (math.end as u32).into());
+                Expr::call("math", span).with_field("text", Value::Str(math.text.clone()))
+            }
             _ => {
                 // TableHeader / TableBody / LinkReferenceDefinition / 其他：子节点透传
                 let mut out = Vec::new();

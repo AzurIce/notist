@@ -98,6 +98,8 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                     SyntaxKind::Heading
                         | SyntaxKind::List
                         | SyntaxKind::Raw
+                        | SyntaxKind::Divider
+                        | SyntaxKind::Table
                         | SyntaxKind::Annotation
                 ) =>
             {
@@ -141,10 +143,12 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                     SyntaxKind::List => {
                         write_ast_list(out, &ast::List::cast(node.clone()).unwrap())
                     }
-                    SyntaxKind::Raw => {
+                    SyntaxKind::Table => write_element(out, NodeOrToken::Node(node.clone())),
+                    SyntaxKind::Raw | SyntaxKind::Divider => {
                         let range = node.text_range();
                         out.push_str(&format!(
-                            "{{\"kind\":\"Raw\",\"start\":{},\"end\":{}}}",
+                            "{{\"kind\":\"{:?}\",\"start\":{},\"end\":{}}}",
+                            node.kind(),
                             u32::from(range.start()),
                             u32::from(range.end()),
                         ));

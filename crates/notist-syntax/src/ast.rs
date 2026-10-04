@@ -4,6 +4,102 @@ use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub struct Document(pub(crate) SyntaxNode);
 pub struct Heading(pub(crate) SyntaxNode);
+pub struct Table(pub(crate) SyntaxNode);
+pub struct TableRow(pub(crate) SyntaxNode);
+pub struct TableCell(pub(crate) SyntaxNode);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableAlignment {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
+impl TableAlignment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Left => "left",
+            Self::Center => "center",
+            Self::Right => "right",
+        }
+    }
+}
+
+impl Table {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Table).then_some(Self(node))
+    }
+
+    pub fn rows(&self) -> impl Iterator<Item = TableRow> + '_ {
+        self.0.children().filter_map(TableRow::cast)
+    }
+
+    pub fn alignments(&self) -> Vec<TableAlignment> {
+        let Some(delimiter) = self
+            .0
+            .children()
+            .find(|n| n.kind() == SyntaxKind::TableDelimiter)
+        else {
+            return Vec::new();
+        };
+        delimiter
+            .children()
+            .filter_map(TableCell::cast)
+            .map(|cell| {
+                let text = cell.0.text().to_string();
+                let text = text.trim();
+                match (text.starts_with(':'), text.ends_with(':')) {
+                    (true, true) => TableAlignment::Center,
+                    (true, false) => TableAlignment::Left,
+                    (false, true) => TableAlignment::Right,
+                    (false, false) => TableAlignment::None,
+                }
+            })
+            .collect()
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
+
+impl TableRow {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::TableRow).then_some(Self(node))
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = TableCell> + '_ {
+        self.0.children().filter_map(TableCell::cast)
+    }
+
+    pub fn is_header(&self) -> bool {
+        self.0
+            .parent()
+            .filter(|parent| parent.kind() == SyntaxKind::Table)
+            .and_then(|parent| parent.children().next())
+            .is_some_and(|first| first == self.0)
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
+
+impl TableCell {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::TableCell).then_some(Self(node))
+    }
+
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0.children_with_tokens()
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
 
 impl Document {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
@@ -81,6 +177,7 @@ impl Heading {
 }
 
 pub struct Link(pub(crate) SyntaxNode);
+pub struct Embed(pub(crate) SyntaxNode);
 pub struct WikiLink(pub(crate) SyntaxNode);
 pub struct List(pub(crate) SyntaxNode);
 pub struct ListItem(pub(crate) SyntaxNode);
@@ -90,7 +187,10 @@ fn paren_interior(node: &SyntaxNode) -> (String, u32) {
     let mut depth = 0usize;
     let mut text = String::new();
     let mut base = None;
-    for token in node.descendants_with_tokens().filter_map(|e| e.into_token()) {
+    for token in node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+    {
         match token.kind() {
             SyntaxKind::LParen => {
                 depth += 1;
@@ -375,6 +475,88 @@ impl Link {
         }
         out
     }
+}
+
+impl Embed {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Embed).then_some(Self(node))
+    }
+
+    pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
+        self.0
+            .children_with_tokens()
+            .skip_while(|el| el.kind() != SyntaxKind::LBracket)
+            .skip(1)
+            .take_while(|el| el.kind() != SyntaxKind::RBracket)
+    }
+
+    /// Resource destination and optional quoted title, with punctuation escapes removed.
+    pub fn destination(&self) -> (String, Option<String>) {
+        let tokens: Vec<_> = self
+            .0
+            .children_with_tokens()
+            .skip_while(|el| el.kind() != SyntaxKind::RBracket)
+            .skip(1)
+            .skip_while(|el| el.kind() != SyntaxKind::LParen)
+            .skip(1)
+            .collect();
+        let text: String = tokens[..tokens.len().saturating_sub(1)]
+            .iter()
+            .map(|el| el.to_string())
+            .collect();
+        let text = text.trim();
+        let mut title_start = None;
+        let mut escaped = false;
+        let mut previous_space = false;
+        for (i, ch) in text.char_indices() {
+            if escaped {
+                escaped = false;
+                previous_space = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                previous_space = false;
+                continue;
+            }
+            if previous_space && matches!(ch, '"' | '\'') {
+                title_start = Some((i, ch));
+                break;
+            }
+            previous_space = ch.is_whitespace();
+        }
+        let (target, title) = match title_start {
+            Some((i, quote)) if text.ends_with(quote) && text.len() > i + 1 => {
+                (text[..i].trim_end(), Some(&text[i + 1..text.len() - 1]))
+            }
+            _ => (text, None),
+        };
+        let target = target
+            .strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .unwrap_or(target);
+        (
+            unescape_punctuation(target),
+            title.map(unescape_punctuation),
+        )
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+}
+
+fn unescape_punctuation(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && chars.peek().is_some_and(|next| next.is_ascii_punctuation()) {
+            out.push(chars.next().unwrap());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 impl WikiLink {

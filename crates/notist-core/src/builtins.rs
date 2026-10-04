@@ -7,6 +7,10 @@ pub enum Accepts {
     Content,
     /// Unconstrained.
     Any,
+    /// A structural sequence of table rows, without paragraph promotion.
+    Rows,
+    /// A structural sequence of table cells, without paragraph promotion.
+    Cells,
     /// No children at all (the payload lives in fields).
     Nothing,
 }
@@ -35,9 +39,16 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
     ("heading", CtorSignature { accepts: Accepts::Inline, level: Level::Block }),
     ("list", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
     ("item", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
+    ("callout", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
+    ("divider", CtorSignature { accepts: Accepts::Nothing, level: Level::Block }),
+    ("table", CtorSignature { accepts: Accepts::Rows, level: Level::Block }),
+    ("row", CtorSignature { accepts: Accepts::Cells, level: Level::Block }),
+    ("cell", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
     ("strong", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
     ("emph", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
+    ("strike", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
     ("link", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
+    ("embed", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
     ("text", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
     ("raw", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
     ("math", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),

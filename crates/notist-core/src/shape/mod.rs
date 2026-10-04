@@ -26,7 +26,14 @@ fn shape_children(mut expr: RExpr) -> RExpr {
     else {
         return expr;
     };
-    if is_block_mount(name, body) {
+    if matches!(name.accepts(), Some(Accepts::Rows | Accepts::Cells)) {
+        // Structural slots expose row/cell calls from paragraph candidates,
+        // then recurse into cells without sectionizing the row/column axes.
+        *children = reflow::reflow(std::mem::take(children))
+            .into_iter()
+            .map(shape_children)
+            .collect();
+    } else if is_block_mount(name, body) {
         *children = shape(std::mem::take(children));
     }
     expr
@@ -40,6 +47,7 @@ fn is_block_mount(ctor: &Ctor, body: &BodyFlavor) -> bool {
         Some(Accepts::Content) => true,
         Some(Accepts::Inline | Accepts::Nothing) => false,
         Some(Accepts::Any) => *body != BodyFlavor::Inline,
+        Some(Accepts::Rows | Accepts::Cells) => false,
         None => *body == BodyFlavor::Block,
     }
 }

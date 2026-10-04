@@ -144,6 +144,7 @@ impl Lexer<'_> {
             }
             '*' => (SyntaxKind::Star, 1),
             '_' => (SyntaxKind::Underscore, 1),
+            '~' => (SyntaxKind::Tilde, 1),
             '\\' => {
                 // `\`+escapable is assembled into a single Escape token here,
                 // so parser lookahead scans never see an escaped delimiter.
@@ -173,8 +174,8 @@ impl Lexer<'_> {
             _ => {
                 let len = rest
                     .find([
-                        '=', '`', '/', '*', '_', '\\', '[', ']', '(', ')', '|', '#', '$', '-', '+',
-                        '@', '!', ' ', '\t', '\n', '\r',
+                        '=', '`', '/', '*', '_', '~', '\\', '[', ']', '(', ')', '|', '#', '$', '-',
+                        '+', '@', '!', ' ', '\t', '\n', '\r',
                     ])
                     .unwrap_or(rest.len());
                 (SyntaxKind::Text, len)
@@ -362,7 +363,7 @@ impl Lexer<'_> {
 fn is_escapable(c: char) -> bool {
     matches!(
         c,
-        '=' | '*' | '_' | '\\' | '[' | ']' | '(' | ')' | '|' | '#' | '$' | '`'
+        '=' | '*' | '_' | '~' | '\\' | '[' | ']' | '(' | ')' | '|' | '#' | '$' | '`' | '!'
     )
 }
 

@@ -14,8 +14,26 @@ pub struct Frontend {
     pub lower: fn(&str) -> (Vec<Expr>, Dict, Vec<Diagnostic>),
 }
 
-/// A frontend registry. `Frontend::with_defaults()` ships the `.not` and
-/// `.md` frontends; register more with `with_frontend`.
+impl Frontend {
+    /// The `.not` frontend.
+    pub fn notist() -> Self {
+        Self {
+            extensions: &["not"],
+            lower: crate::desugar::lower_not,
+        }
+    }
+
+    /// The `.md` and `.markdown` frontend.
+    pub fn markdown() -> Self {
+        Self {
+            extensions: &["md", "markdown"],
+            lower: notist_md::lower,
+        }
+    }
+}
+
+/// A frontend registry. [`Self::with_defaults`] installs `.not` and Markdown;
+/// register more with [`Self::with`]. Most callers can use [`crate::Notist`].
 pub struct Frontends {
     frontends: Vec<Frontend>,
 }
@@ -30,16 +48,11 @@ impl Frontends {
     /// `.not` (notist-syntax + desugar) and `.md`/`.markdown` (rushdown).
     pub fn with_defaults() -> Self {
         Self::new()
-            .with(Frontend {
-                extensions: &["not"],
-                lower: crate::desugar::lower_not,
-            })
-            .with(Frontend {
-                extensions: &["md", "markdown"],
-                lower: notist_md::lower,
-            })
+            .with(Frontend::notist())
+            .with(Frontend::markdown())
     }
 
+    /// Register a frontend; the last registration wins for overlapping extensions.
     pub fn with(mut self, frontend: Frontend) -> Self {
         self.frontends.push(frontend);
         self
@@ -52,6 +65,7 @@ impl Frontends {
         let frontend = self
             .frontends
             .iter()
+            .rev()
             .find(|frontend| frontend.extensions.contains(&ext))?;
         let (forest, module_attrs, mut diagnostics) = (frontend.lower)(src);
         let span = TextRange::new(0.into(), (src.len() as u32).into());

@@ -25,7 +25,31 @@ fn markdown_table_and_quote() {
     let (item, diags) = analyze(src);
     assert!(diags.is_empty(), "{diags:?}");
     let dump = notist_core::dump::dump(&item);
-    assert!(dump.contains("blockquote"), "{dump}");
+    assert!(dump.contains("callout"), "{dump}");
     assert!(dump.contains("table"), "{dump}");
     assert!(dump.contains("cell"), "{dump}");
+}
+
+#[test]
+fn atx_heading_spans_include_closing_markers_but_exclude_line_breaks() {
+    for (src, expected) in [
+        ("## title *em* ##\r\n\r\ntext", "## title *em* ##"),
+        ("> # [title](target)\n>\n> text", "# [title](target)"),
+        ("#", "#"),
+    ] {
+        let (root, diags) = analyze(src);
+        assert!(diags.is_empty());
+        let heading = root
+            .find(|n| n.ctor == notist_core::item::Ctor::Heading)
+            .unwrap();
+        assert_eq!(
+            &src[usize::from(heading.span.start())..usize::from(heading.span.end())],
+            expected
+        );
+        assert!(
+            heading
+                .descendants()
+                .all(|n| heading.span.contains_range(n.span))
+        );
+    }
 }

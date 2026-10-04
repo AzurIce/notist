@@ -269,7 +269,6 @@ error[semantic] @115..121: bare names are not literals
 error[semantic] @123..129: bare names are not literals
 error[semantic] @399..400: content is mounted with `[..]` after the call, not passed as an argument
 error[semantic] @404..405: content is mounted with `[..]` after the call, not passed as an argument
-error[type] @0..39: unknown constructor `callout`
 error[type] @111..131: unknown constructor `fn`
 error[type] @220..303: unknown constructor `note`
 error[type] @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
@@ -279,8 +278,8 @@ error[type] @497..506: unknown constructor `f`
 error[type] @530..542: unknown constructor `f`
 error[type] @566..576: unknown constructor `f`
 (doc @0..605
-  (paragraph @0..39
-    (callout @0..39 :kind "warning"
+  (callout @0..39 :kind "warning"
+    (paragraph @0..39
       (text @26..38 :text "注意内容")
     )
   )

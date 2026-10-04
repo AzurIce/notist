@@ -4,8 +4,8 @@ use notist_core::item::{Dict, Value};
 use rowan::TextRange;
 use rushdown::ast::{Arena, KindData, Node, NodeRef, TextQualifier};
 use rushdown::parser::{
-    gfm_strikethrough, gfm_table, parser_extension, AnyParagraphTransformer, InlineParser,
-    NoParserOptions, Options, Parser, ParserExtension,
+    AnyParagraphTransformer, InlineParser, NoParserOptions, Options, Parser, ParserExtension,
+    gfm_strikethrough, gfm_table, parser_extension,
 };
 use rushdown::text::BasicReader;
 
@@ -85,9 +85,7 @@ impl<'a> Lowerer<'a> {
     fn description_of(&self, node: NodeRef) -> String {
         fn append(expr: &Expr, out: &mut String) {
             if let Expr::Call {
-                fields,
-                children,
-                ..
+                fields, children, ..
             } = expr
             {
                 if let Some(Value::Str(text)) =
@@ -222,7 +220,9 @@ impl<'a> Lowerer<'a> {
     fn item(&self, node: NodeRef) -> Expr {
         let span = self.span_of(node);
         match self.node(node).kind_data() {
-            KindData::Paragraph(_) => Expr::call("paragraph", span).with_children(self.children(node)),
+            KindData::Paragraph(_) => {
+                Expr::call("paragraph", span).with_children(self.children(node))
+            }
             KindData::Heading(h) => Expr::call("heading", span)
                 .with_field("level", Value::Int(h.level() as i64))
                 .with_children(self.children(node)),
@@ -230,7 +230,10 @@ impl<'a> Lowerer<'a> {
             KindData::CodeBlock(b) => {
                 let mut expr = Expr::call("raw", span)
                     .with_field("block", Value::Bool(true))
-                    .with_field("text", Value::Str(b.value().iter(self.src).collect::<String>()));
+                    .with_field(
+                        "text",
+                        Value::Str(b.value().iter(self.src).collect::<String>()),
+                    );
                 if let Some(info) = b.info() {
                     let lang = info.str(self.src).trim().to_string();
                     if !lang.is_empty() {
@@ -244,14 +247,22 @@ impl<'a> Lowerer<'a> {
                 .with_children(self.children(node)),
             KindData::List(l) => Expr::call("list", span)
                 .with_field("ordered", Value::Bool(l.is_ordered()))
-                .with_field("start", Value::Int(if l.is_ordered() { l.start() as i64 } else { 1 }))
+                .with_field(
+                    "start",
+                    Value::Int(if l.is_ordered() { l.start() as i64 } else { 1 }),
+                )
                 .with_children(self.children(node)),
             KindData::ListItem(_) => Expr::call("item", span).with_children(self.children(node)),
-            KindData::CodeSpan(c) => Expr::call("raw", span).with_field("text", Value::Str(c.str(self.src).into_owned())),
+            KindData::CodeSpan(c) => {
+                Expr::call("raw", span).with_field("text", Value::Str(c.str(self.src).into_owned()))
+            }
             KindData::Emphasis(_) => Expr::call("emph", span).with_children(self.children(node)),
             KindData::Strong(_) => Expr::call("strong", span).with_children(self.children(node)),
             KindData::Link(l) => Expr::call("link", span)
-                .with_field("target", Value::Str(strings::decode(l.destination().str(self.src))))
+                .with_field(
+                    "target",
+                    Value::Str(strings::decode(l.destination().str(self.src))),
+                )
                 .with_children(self.children(node)),
             KindData::Image(i) => {
                 let mut expr = Expr::call("embed", span)
@@ -302,7 +313,9 @@ impl<'a> Lowerer<'a> {
                 };
                 Expr::call("cell", span).with_children(children)
             }
-            KindData::Strikethrough(_) => Expr::call("strike", span).with_children(self.children(node)),
+            KindData::Strikethrough(_) => {
+                Expr::call("strike", span).with_children(self.children(node))
+            }
             KindData::Extension(data) if data.as_any().is::<math::Math>() => {
                 let math = data.as_any().downcast_ref::<math::Math>().unwrap();
                 let span = TextRange::new(span.start(), (math.end as u32).into());

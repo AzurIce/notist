@@ -37,25 +37,139 @@ pub struct CtorSignature {
 
 /// The builtin constructor table, keyed by source name.
 pub const BUILTINS: &[(&str, CtorSignature)] = &[
-    ("paragraph", CtorSignature { accepts: Accepts::Inline, level: Level::Block }),
-    ("heading", CtorSignature { accepts: Accepts::Inline, level: Level::Block }),
-    ("list", CtorSignature { accepts: Accepts::Items, level: Level::Block }),
-    ("item", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
-    ("callout", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
-    ("divider", CtorSignature { accepts: Accepts::Nothing, level: Level::Block }),
-    ("table", CtorSignature { accepts: Accepts::Rows, level: Level::Block }),
-    ("row", CtorSignature { accepts: Accepts::Cells, level: Level::Block }),
-    ("cell", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
-    ("strong", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
-    ("emph", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
-    ("strike", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
-    ("link", CtorSignature { accepts: Accepts::Inline, level: Level::Inline }),
-    ("embed", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
-    ("text", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
-    ("raw", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
-    ("math", CtorSignature { accepts: Accepts::Nothing, level: Level::Inline }),
-    ("group", CtorSignature { accepts: Accepts::Any, level: Level::Inherit }),
-    ("section", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
+    (
+        "paragraph",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Block,
+        },
+    ),
+    (
+        "heading",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Block,
+        },
+    ),
+    (
+        "list",
+        CtorSignature {
+            accepts: Accepts::Items,
+            level: Level::Block,
+        },
+    ),
+    (
+        "item",
+        CtorSignature {
+            accepts: Accepts::Content,
+            level: Level::Block,
+        },
+    ),
+    (
+        "callout",
+        CtorSignature {
+            accepts: Accepts::Content,
+            level: Level::Block,
+        },
+    ),
+    (
+        "divider",
+        CtorSignature {
+            accepts: Accepts::Nothing,
+            level: Level::Block,
+        },
+    ),
+    (
+        "table",
+        CtorSignature {
+            accepts: Accepts::Rows,
+            level: Level::Block,
+        },
+    ),
+    (
+        "row",
+        CtorSignature {
+            accepts: Accepts::Cells,
+            level: Level::Block,
+        },
+    ),
+    (
+        "cell",
+        CtorSignature {
+            accepts: Accepts::Content,
+            level: Level::Block,
+        },
+    ),
+    (
+        "strong",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "emph",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "strike",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "link",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "embed",
+        CtorSignature {
+            accepts: Accepts::Nothing,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "text",
+        CtorSignature {
+            accepts: Accepts::Nothing,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "raw",
+        CtorSignature {
+            accepts: Accepts::Nothing,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "math",
+        CtorSignature {
+            accepts: Accepts::Nothing,
+            level: Level::Inline,
+        },
+    ),
+    (
+        "group",
+        CtorSignature {
+            accepts: Accepts::Any,
+            level: Level::Inherit,
+        },
+    ),
+    (
+        "section",
+        CtorSignature {
+            accepts: Accepts::Content,
+            level: Level::Block,
+        },
+    ),
 ];
 
 /// The signature of a builtin constructor by source name (`None` for custom).

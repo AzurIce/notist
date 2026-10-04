@@ -14,7 +14,9 @@ pub fn analyze_json(src: &str) -> String {
     let mut diagnostics: Vec<crate::diag::Diagnostic> = parse
         .diagnostics
         .iter()
-        .map(|d| crate::diag::Diagnostic::new(crate::diag::Phase::Syntax, d.span, d.message.clone()))
+        .map(|d| {
+            crate::diag::Diagnostic::new(crate::diag::Phase::Syntax, d.span, d.message.clone())
+        })
         .collect();
     if let Some(document) = ast::Document::cast(parse.syntax()) {
         out.push_str(",\"ast\":");
@@ -229,7 +231,9 @@ fn write_ast_run(
     *first = false;
     let start = range_of(lines.first().unwrap().first().unwrap()).0;
     let end = range_of(lines.last().unwrap().last().unwrap()).1;
-    out.push_str(&format!("{{\"kind\":\"Inline\",\"start\":{start},\"end\":{end},\"children\":["));
+    out.push_str(&format!(
+        "{{\"kind\":\"Inline\",\"start\":{start},\"end\":{end},\"children\":["
+    ));
     for (j, line) in lines.iter().enumerate() {
         if j > 0 {
             out.push(',');
@@ -286,7 +290,11 @@ fn write_ast_list(out: &mut String, list: &ast::List) {
     out.push_str("]}");
 }
 
-fn write_forest<N: std::fmt::Display>(out: &mut String, range: rowan::TextRange, exprs: &[Expr<N>]) {
+fn write_forest<N: std::fmt::Display>(
+    out: &mut String,
+    range: rowan::TextRange,
+    exprs: &[Expr<N>],
+) {
     out.push_str(&format!(
         "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
         u32::from(range.start()),

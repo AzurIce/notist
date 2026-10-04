@@ -9,7 +9,9 @@ pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
         .filter(|item| match kind {
             "id" => matches!(item.attrs.get("id"), Some(Value::Str(id)) if id == needle),
             "tag" => item.attrs.get("tags").is_some_and(|tags| match tags {
-                Value::Array(tags) => tags.iter().any(|t| matches!(t, Value::Str(t) if t == needle)),
+                Value::Array(tags) => tags
+                    .iter()
+                    .any(|t| matches!(t, Value::Str(t) if t == needle)),
                 _ => false,
             }),
             "ctor" => item.ctor.name().eq_ignore_ascii_case(needle),

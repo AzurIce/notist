@@ -1,9 +1,9 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
+use crate::diag::{Diagnostic, Phase};
 use notist_syntax::ast::{
     Annotation, CodeCall, Document, Embed, Entry, Heading, Link, List, ListItem, Table, WikiLink,
 };
-use crate::diag::{Diagnostic, Phase};
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::expr::{BodyFlavor, Expr};
@@ -82,9 +82,9 @@ fn desugar_blocks(
                     let annotation = Annotation::cast(node.clone()).unwrap();
                     // 紧邻下一个元素的注解属于行内（进 run，由 desugar_inline
                     // 挂到紧随的构造）；否则是块级注解（挂到下一个块/段落）
-                    let adjacent = elements
-                        .get(i + 1)
-                        .is_some_and(|next| !matches!(next.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline));
+                    let adjacent = elements.get(i + 1).is_some_and(|next| {
+                        !matches!(next.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline)
+                    });
                     if adjacent && !annotation.is_module() {
                         run.push(el.clone());
                     } else {
@@ -167,10 +167,16 @@ fn desugar_blocks(
 /// another newline or nothing.
 fn is_blank_boundary(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>], i: usize) -> bool {
     let mut j = i + 1;
-    while matches!(elements.get(j).map(|e| e.kind()), Some(SyntaxKind::Whitespace)) {
+    while matches!(
+        elements.get(j).map(|e| e.kind()),
+        Some(SyntaxKind::Whitespace)
+    ) {
         j += 1;
     }
-    matches!(elements.get(j).map(|e| e.kind()), None | Some(SyntaxKind::Newline))
+    matches!(
+        elements.get(j).map(|e| e.kind()),
+        None | Some(SyntaxKind::Newline)
+    )
 }
 
 /// The span covering a run's content (surrounding trivia excluded).
@@ -225,10 +231,14 @@ fn desugar_raw_block(node: &SyntaxNode) -> Expr {
                 .collect::<String>();
             // Closing-fence indentation is framing; retain all payload line endings.
             let payload_end = text.rfind(['\n', '\r']).map_or(0, |i| i + 1);
-            let indent = node.ancestors().find_map(ListItem::cast)
+            let indent = node
+                .ancestors()
+                .find_map(ListItem::cast)
                 .map_or(0, |item| item.content_indent());
-            let text = text[..payload_end].split_inclusive('\n')
-                .map(|line| strip_indent(line, indent)).collect::<String>();
+            let text = text[..payload_end]
+                .split_inclusive('\n')
+                .map(|line| strip_indent(line, indent))
+                .collect::<String>();
             (tag, text)
         }
         None => (String::new(), String::new()),
@@ -250,7 +260,7 @@ fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> Dict
             // the colon of the empty-dict spelling `(:)` is structural
             if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
                 diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                    phase: Phase::Semantic,
                     span: el.text_range(),
                     message: "annotation entries must be `key: value`".to_string(),
                 });
@@ -278,44 +288,65 @@ fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
 fn desugar_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
     let align = table.alignments();
     let width = align.len();
-    let rows = table.rows().map(|row| {
-        let mut cells: Vec<_> = row.cells().take(width).map(|cell| {
-            let payloads: Vec<_> = cell.content()
-                .filter_map(|el| el.into_node())
-                .flat_map(|node| node.descendants())
-                .filter(|node| matches!(node.kind(), SyntaxKind::RawInline | SyntaxKind::Math))
-                .map(|node| node.text_range())
+    let rows = table
+        .rows()
+        .map(|row| {
+            let mut cells: Vec<_> = row
+                .cells()
+                .take(width)
+                .map(|cell| {
+                    let payloads: Vec<_> = cell
+                        .content()
+                        .filter_map(|el| el.into_node())
+                        .flat_map(|node| node.descendants())
+                        .filter(|node| {
+                            matches!(node.kind(), SyntaxKind::RawInline | SyntaxKind::Math)
+                        })
+                        .map(|node| node.text_range())
+                        .collect();
+                    let mut inline = desugar_inline(cell.content(), diags);
+                    // Pipe escaping belongs to table syntax, including opaque raw/math
+                    // payloads, where ordinary markup escapes otherwise stay literal.
+                    unescape_table_pipes(&mut inline, &payloads);
+                    let children = if inline.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Expr::call("paragraph", cell.range()).with_children(inline)]
+                    };
+                    Expr::call("cell", cell.range()).with_children(children)
+                })
                 .collect();
-            let mut inline = desugar_inline(cell.content(), diags);
-            // Pipe escaping belongs to table syntax, including opaque raw/math
-            // payloads, where ordinary markup escapes otherwise stay literal.
-            unescape_table_pipes(&mut inline, &payloads);
-            let children = if inline.is_empty() {
-                Vec::new()
-            } else {
-                vec![Expr::call("paragraph", cell.range()).with_children(inline)]
-            };
-            Expr::call("cell", cell.range()).with_children(children)
-        }).collect();
-        while cells.len() < width {
-            cells.push(Expr::call("cell", TextRange::empty(row.range().end())));
-        }
-        Expr::call("row", row.range())
-            .with_field("header", Value::Bool(row.is_header()))
-            .with_children(cells)
-    }).collect();
+            while cells.len() < width {
+                cells.push(Expr::call("cell", TextRange::empty(row.range().end())));
+            }
+            Expr::call("row", row.range())
+                .with_field("header", Value::Bool(row.is_header()))
+                .with_children(cells)
+        })
+        .collect();
     Expr::call("table", table.range())
-        .with_field("align", Value::Array(
-            align.into_iter().map(|a| Value::Str(a.as_str().into())).collect()
-        ))
+        .with_field(
+            "align",
+            Value::Array(
+                align
+                    .into_iter()
+                    .map(|a| Value::Str(a.as_str().into()))
+                    .collect(),
+            ),
+        )
         .with_children(rows)
 }
 
 fn unescape_table_pipes(exprs: &mut [Expr], payloads: &[TextRange]) {
     for expr in exprs {
         if let Expr::Call {
-            name, fields, children, span, ..
-        } = expr {
+            name,
+            fields,
+            children,
+            span,
+            ..
+        } = expr
+        {
             if matches!(name.as_str(), "raw" | "math") && payloads.contains(span) {
                 if let Some(Value::Str(text)) = fields.get("text") {
                     fields.insert("text", Value::Str(text.replace("\\|", "|")));
@@ -356,7 +387,7 @@ fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> 
                 };
                 if value_el.kind() == SyntaxKind::LBracket {
                     diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                        phase: Phase::Semantic,
                         span: value_el.text_range(),
                         message: "content literals as entry values are not supported yet"
                             .to_string(),
@@ -373,10 +404,11 @@ fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> 
                 // content is mounted via the body slot, never passed as an argument
                 let open_span = t.text_range();
                 diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                    phase: Phase::Semantic,
                     span: open_span,
-                    message: "content is mounted with `[..]` after the call, not passed as an argument"
-                        .to_string(),
+                    message:
+                        "content is mounted with `[..]` after the call, not passed as an argument"
+                            .to_string(),
                 });
                 let mut depth = 0usize;
                 i += 1;
@@ -475,7 +507,7 @@ fn syntax_value(
                     Some(value) => Some(value),
                     None => {
                         diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                            phase: Phase::Semantic,
                             span: token.text_range(),
                             message: "number out of range".to_string(),
                         });
@@ -488,7 +520,7 @@ fn syntax_value(
                 "false" => Some(Value::Bool(false)),
                 _ => {
                     diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                        phase: Phase::Semantic,
                         span: token.text_range(),
                         message: "bare names are not literals".to_string(),
                     });
@@ -598,7 +630,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
         || body.len() < quote_len + closer.len()
     {
         diags.push(Diagnostic {
-                phase: Phase::Semantic,
+            phase: Phase::Semantic,
             span: range,
             message: "unclosed string".to_string(),
         });
@@ -631,7 +663,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
             Some('t') => out.push('\t'),
             _ => {
                 diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                    phase: Phase::Semantic,
                     span: range,
                     message: "unknown escape".to_string(),
                 });
@@ -691,7 +723,10 @@ impl TextRun {
     fn flush_at_element(&mut self, items: &mut Vec<Expr>) {
         if let (Some(s), Some(e)) = (self.start, self.last_end) {
             if !self.buf.is_empty() {
-                items.push(Expr::text(std::mem::take(&mut self.buf), TextRange::new(s, e)));
+                items.push(Expr::text(
+                    std::mem::take(&mut self.buf),
+                    TextRange::new(s, e),
+                ));
             }
         }
         self.reset();
@@ -720,11 +755,16 @@ impl TextRun {
 fn append_description(expr: &Expr, out: &mut String) {
     match expr {
         Expr::Literal(value, _) => out.push_str(&value.to_string()),
-        Expr::Call { fields, children, .. } => {
-            if let Some(Value::Str(text)) = fields.get("text").or_else(|| fields.get("description")) {
+        Expr::Call {
+            fields, children, ..
+        } => {
+            if let Some(Value::Str(text)) = fields.get("text").or_else(|| fields.get("description"))
+            {
                 out.push_str(text);
             }
-            for child in children { append_description(child, out); }
+            for child in children {
+                append_description(child, out);
+            }
         }
     }
 }
@@ -733,11 +773,21 @@ fn strip_indent(line: &str, indent: usize) -> String {
     let mut column = 0;
     let mut end = 0;
     for (offset, ch) in line.char_indices() {
-        if column >= indent || !matches!(ch, ' ' | '\t') { break; }
-        column = if ch == '\t' { (column / 4 + 1) * 4 } else { column + 1 };
+        if column >= indent || !matches!(ch, ' ' | '\t') {
+            break;
+        }
+        column = if ch == '\t' {
+            (column / 4 + 1) * 4
+        } else {
+            column + 1
+        };
         end = offset + ch.len_utf8();
     }
-    format!("{}{}", " ".repeat(column.saturating_sub(indent)), &line[end..])
+    format!(
+        "{}{}",
+        " ".repeat(column.saturating_sub(indent)),
+        &line[end..]
+    )
 }
 
 fn desugar_inline(
@@ -771,7 +821,7 @@ fn desugar_inline(
             };
             if !followed {
                 diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                    phase: Phase::Semantic,
                     span: element.text_range(),
                     message: "annotation must be immediately followed by an element".to_string(),
                 });
@@ -796,7 +846,7 @@ fn desugar_inline(
                     let annotation = Annotation::cast(node.clone()).unwrap();
                     if annotation.is_module() {
                         diags.push(Diagnostic {
-                phase: Phase::Semantic,
+                            phase: Phase::Semantic,
                             span: node.text_range(),
                             message: "module annotation is only valid at the document top"
                                 .to_string(),
@@ -831,10 +881,21 @@ fn desugar_inline(
                         .iter()
                         .map(|t| t.text())
                         .collect();
-                    let indent = node.ancestors().find_map(ListItem::cast)
+                    let indent = node
+                        .ancestors()
+                        .find_map(ListItem::cast)
                         .map_or(0, |item| item.content_indent());
-                    let text = text.split_inclusive('\n').enumerate().map(|(i, line)|
-                        if i == 0 { line.to_string() } else { strip_indent(line, indent) }).collect::<String>();
+                    let text = text
+                        .split_inclusive('\n')
+                        .enumerate()
+                        .map(|(i, line)| {
+                            if i == 0 {
+                                line.to_string()
+                            } else {
+                                strip_indent(line, indent)
+                            }
+                        })
+                        .collect::<String>();
                     let mut expr =
                         Expr::call("math", node.text_range()).with_field("text", Value::Str(text));
                     expr.set_attrs(pending.take());
@@ -867,11 +928,15 @@ fn desugar_inline(
                     let (target, title) = embed.destination();
                     let content = desugar_inline(embed.content(), diags);
                     let mut description = String::new();
-                    for expr in &content { append_description(expr, &mut description); }
+                    for expr in &content {
+                        append_description(expr, &mut description);
+                    }
                     let mut expr = Expr::call("embed", embed.range())
                         .with_field("target", Value::Str(target))
                         .with_field("description", Value::Str(description));
-                    if let Some(title) = title { expr = expr.with_field("title", Value::Str(title)); }
+                    if let Some(title) = title {
+                        expr = expr.with_field("title", Value::Str(title));
+                    }
                     expr.set_attrs(pending.take());
                     items.push(expr);
                     after_element = true;
@@ -880,10 +945,7 @@ fn desugar_inline(
                     run.flush_at_element(&mut items);
                     let (target, children) = if node.kind() == SyntaxKind::Link {
                         let link = Link::cast(node.clone()).unwrap();
-                        (
-                            link.target(),
-                            desugar_inline(link.content(), diags),
-                        )
+                        (link.target(), desugar_inline(link.content(), diags))
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
@@ -900,7 +962,8 @@ fn desugar_inline(
                 }
                 SyntaxKind::CodeCall => {
                     run.flush_at_element(&mut items);
-                    let mut exprs = desugar_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
+                    let mut exprs =
+                        desugar_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
                     for expr in &mut exprs {
                         expr.set_attrs(pending.take());
                     }
@@ -913,7 +976,7 @@ fn desugar_inline(
     }
     if !pending.is_empty() {
         diags.push(Diagnostic {
-                phase: Phase::Semantic,
+            phase: Phase::Semantic,
             span: pending_range.unwrap_or_default(),
             message: "annotation without a following element".to_string(),
         });

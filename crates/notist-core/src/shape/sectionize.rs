@@ -37,7 +37,8 @@ fn close_section(stack: &mut Vec<(i64, Vec<RExpr>)>, root: &mut Vec<RExpr>) {
     let (_, children) = stack.pop().unwrap();
     let start = children.first().unwrap().span().start();
     let end = children.last().unwrap().span().end();
-    let mut section = RExpr::resolved(Ctor::Section, TextRange::new(start, end)).with_children(children);
+    let mut section =
+        RExpr::resolved(Ctor::Section, TextRange::new(start, end)).with_children(children);
     // identity transfer: the opening heading's attrs belong to the section
     if let Expr::Call {
         children, attrs, ..

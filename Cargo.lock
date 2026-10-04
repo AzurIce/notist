@@ -535,6 +535,7 @@ dependencies = [
  "codespan-reporting",
  "insta",
  "notist-core",
+ "notist-html",
  "notist-md",
  "notist-syntax",
  "rowan",
@@ -549,6 +550,13 @@ version = "0.1.0"
 dependencies = [
  "rowan",
  "serde",
+]
+
+[[package]]
+name = "notist-html"
+version = "0.1.0"
+dependencies = [
+ "notist-core",
 ]
 
 [[package]]

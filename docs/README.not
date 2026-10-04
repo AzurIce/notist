@@ -6,6 +6,7 @@
 - [Builtin Content Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
 - [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
 - [Pipeline](designs/pipeline.not)：语法规则与内容树在各实现阶段的处理职责。
+- [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
 - [Draft](draft.not)：尚未确定的设计。
 
 语法规则使用 Grammar Notation 表达；类型与字面量归 Types，具体函数及其语法糖归 Builtin，其他共用规则归 Syntax。函数小节引用共用规则，不重复定义。

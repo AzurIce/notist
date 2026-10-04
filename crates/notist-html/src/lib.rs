@@ -35,6 +35,24 @@ type Hook<'a> = Box<dyn Fn(&Item) -> Option<String> + 'a>;
 pub struct RenderResult {
     pub html: String,
     pub diagnostics: Vec<Diagnostic>,
+    /// Empty unless `Renderer::with_source_map` is enabled.
+    pub source_map: Vec<SourceMapping>,
+}
+
+/// A mapping to an element actually emitted by this render. IDs are local to
+/// this result; ranges are UTF-8 byte offsets in the analyzed source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceMapping {
+    pub node_id: usize,
+    pub range: std::ops::Range<usize>,
+    pub kind: SourceMappingKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceMappingKind {
+    Block,
+    Inline,
+    Container,
 }
 
 /// Render using the defaults. Use [`Renderer::render_with_diagnostics`] to
@@ -48,11 +66,20 @@ pub fn render(item: &Item) -> String {
 pub struct Renderer<'a> {
     embed: Option<Hook<'a>>,
     math: Option<Hook<'a>>,
+    source_map: bool,
 }
 
 impl<'a> Renderer<'a> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Emit reserved `data-notist-node` identifiers and source ranges. Default
+    /// output is unchanged. Transparent and structural groups stay flattened;
+    /// empty-range generated nodes have no identifier and fall back to parents.
+    pub fn with_source_map(mut self) -> Self {
+        self.source_map = true;
+        self
     }
 
     /// Supply the inner HTML of an embed's `span.notist-embed`.
@@ -85,11 +112,13 @@ impl<'a> Renderer<'a> {
             renderer: self,
             output: String::new(),
             diagnostics: Vec::new(),
+            source_map: Vec::new(),
         };
         state.node(item);
         RenderResult {
             html: state.output,
             diagnostics: state.diagnostics,
+            source_map: state.source_map,
         }
     }
 }
@@ -98,6 +127,7 @@ struct State<'r, 'a> {
     renderer: &'r Renderer<'a>,
     output: String,
     diagnostics: Vec<Diagnostic>,
+    source_map: Vec<SourceMapping>,
 }
 
 impl State<'_, '_> {
@@ -106,7 +136,9 @@ impl State<'_, '_> {
             Ctor::Doc => self.transparent(item, "div"),
             Ctor::Group => self.transparent(item, if is_block(item) { "div" } else { "span" }),
             Ctor::Text => {
-                if attributes::has_html_attrs(&item.attrs) {
+                if attributes::has_html_attrs(&item.attrs)
+                    || (self.renderer.source_map && !item.span.is_empty())
+                {
                     self.open("span", item, "");
                     self.output.push('>');
                     self.text(string_field(item, "text").unwrap_or(""));
@@ -250,6 +282,28 @@ impl State<'_, '_> {
         self.output.push('<');
         self.output.push_str(tag);
         attributes::write(&mut self.output, &item.attrs, class);
+        if self.renderer.source_map && !item.span.is_empty() && item.ctor != Ctor::Doc {
+            let node_id = self.source_map.len();
+            let kind = if item.ctor == Ctor::Heading {
+                SourceMappingKind::Block
+            } else {
+                match tag {
+                    "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "pre" | "li" | "tr" | "hr" => {
+                        SourceMappingKind::Block
+                    }
+                    "div" | "section" | "blockquote" | "ul" | "ol" | "table" => {
+                        SourceMappingKind::Container
+                    }
+                    _ => SourceMappingKind::Inline,
+                }
+            };
+            self.source_map.push(SourceMapping {
+                node_id,
+                range: usize::from(item.span.start())..usize::from(item.span.end()),
+                kind,
+            });
+            self.attr("data-notist-node", &node_id.to_string());
+        }
     }
 
     fn close(&mut self, tag: &str) {

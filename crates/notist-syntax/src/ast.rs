@@ -2,6 +2,11 @@ use rowan::{NodeOrToken, TextRange};
 
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
+mod module;
+pub use module::{
+    ChildrenDecl, DefaultValue, FunctionDecl, Module, Parameter, ParameterList, TypeRef,
+};
+
 pub struct Document(pub(crate) SyntaxNode);
 pub struct Heading(pub(crate) SyntaxNode);
 pub struct Table(pub(crate) SyntaxNode);
@@ -248,18 +253,46 @@ impl Annotation {
 
 pub struct CodeCall(pub(crate) SyntaxNode);
 
+#[derive(Debug, Clone)]
+pub struct Path(pub(crate) SyntaxNode);
+
+impl Path {
+    pub fn cast(node: SyntaxNode) -> Option<Self> {
+        (node.kind() == SyntaxKind::Path).then_some(Self(node))
+    }
+
+    pub fn segments(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
+        self.0
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|token| token.kind() == SyntaxKind::Ident)
+    }
+
+    pub fn text(&self) -> String {
+        self.0.text().to_string()
+    }
+
+    pub fn range(&self) -> TextRange {
+        self.0.text_range()
+    }
+
+    pub fn syntax(&self) -> &SyntaxNode {
+        &self.0
+    }
+}
+
 impl CodeCall {
     pub fn cast(node: SyntaxNode) -> Option<Self> {
         (node.kind() == SyntaxKind::CodeCall).then_some(Self(node))
     }
 
-    /// The constructor name: the `Ident` token after `#`.
+    /// The complete call target, including any package/module segments.
     pub fn name(&self) -> Option<String> {
-        self.0
-            .children_with_tokens()
-            .filter_map(|e| e.into_token())
-            .find(|t| t.kind() == SyntaxKind::Ident)
-            .map(|t| t.text().to_string())
+        self.path().map(|path| path.text())
+    }
+
+    pub fn path(&self) -> Option<Path> {
+        self.0.children().find_map(Path::cast)
     }
 
     /// The argument members: `Entry` nodes and bare literal elements between

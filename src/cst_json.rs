@@ -8,7 +8,7 @@ use crate::item::Item;
 use crate::{desugar, materialize};
 
 pub fn analyze_json(src: &str) -> String {
-    let parse = parser::parse(src);
+    let parse = parser::parse_document(src);
     let mut out = String::from("{\"tree\":");
     write_element(&mut out, NodeOrToken::Node(parse.syntax()));
     let mut diagnostics: Vec<crate::diag::Diagnostic> = parse

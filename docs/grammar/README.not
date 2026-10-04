@@ -1,10 +1,12 @@
 = Notist Syntax
 
-本节定义 `.not` 的共用语法。记法见 [Grammar Notation](notation.not)，字面量见 [Types & Literals](../types.not)，具体构造及其语法糖见 [Builtin Content Functions & Sugar Grammar](../builtin.not)。实现阶段见 [Pipeline](../designs/pipeline.not)。
+本节定义 `.not` 的 Markup 共用语法。`.notc` 的声明文法见 [Code Syntax](code.not)。记法见 [Grammar Notation](notation.not)，字面量见 [Types & Literals](../types.not)，具体构造及其语法糖见 [Builtin Content Functions & Sugar Grammar](../builtin.not)。实现阶段见 [Pipeline](../designs/pipeline.not)。
 
 == 模式与输入层级
 
-Markup 为默认模式。`#name(args)[body]` 的名称与参数使用 Code 词法，body 返回 Markup；`@(dict)` 和 `@!(dict)` 的 payload 使用 Code 词法。Code 当前支持内容函数调用与字面量，没有变量、绑定、通用运算或求值环境。
+`.not` 整体使用 Markup 文法，包括 `#name(args)[body]` 和注解。lexer 内部使用调用路径、参数与正文等状态；调用参数及 `@(dict)`、`@!(dict)` 的 payload 与 Code 共享字面量 token 规则，这些状态不构成语言切换。
+
+`parse_document(source)` 产生 Document CST，兼容入口 `parser::parse` 行为相同。`parse_module(source)` 解析单文件 `.notc` 源码并产生 Module CST；两个入口位于同一个 notist-syntax crate，不读取文件或加载依赖。
 
 `$...$` 是 Markup 中的不透明数学 payload，不启用内部 Math 文法。raw payload 同样不解析内部语言；识别规则分别在 math 与 raw 函数小节。
 
@@ -28,7 +30,7 @@ syntax End(ctx) ::= &NL / @limit(cursor, ctx)
 syntax BlankLine ::= WS? NL
 ```
 
-`UnicodeChar` 匹配一个 Unicode scalar；alphabetic / alphanumeric 分别采用 Unicode 字母与字母数字判断。Ident 仅在 Code 中识别。String 与 Number 的词法归 Types；Markup 的 Escape 词法归 builtin 的 text 小节。
+`UnicodeChar` 匹配一个 Unicode scalar；alphabetic / alphanumeric 分别采用 Unicode 字母与字母数字判断。Ident 在调用路径、字面量状态和 Code 中识别。String 与 Number 的词法归 Types；Markup 的 Escape 词法归 builtin 的 text 小节。
 
 `ANY` 匹配一个 token。`WS` / `NL` / `LINE_COMMENT` / `BLOCK_COMMENT` / `EQ` / `BACKTICK` / `IDENT` / `STR` / `NUMBER` / `TEXT` / `ESCAPE` 分别对应同名词法类别。其余大写名是单字符标点 token；scanner 使用的 CamelCase 名与其为同一 kind，例如 LBRACKET = LBracket。连续 `=` 和反引号各组成一个 token，`-`、`+`、`*` 等逐字符组成 token。
 
@@ -151,9 +153,11 @@ active_closes(Pair(k), p, ctx) = kind(p) == k and kind(p + 1) == k
 
 ```grammar
 syntax CodeCall(ctx) ::=
-  "#" name:IDENT args:Args(ctx) body:CallBody(ctx)?
-  / "#" name:IDENT body:CallBody(ctx)
+  "#" name:Path args:Args(ctx) body:CallBody(ctx)?
+  / "#" name:Path body:CallBody(ctx)
   / "#" body:CallBody(ctx)
+
+syntax Path ::= segment:IDENT (COLON_COLON segment:IDENT)*
 
 syntax Args(ctx) ::=
   LPAREN Trivia* (Argument (Trivia* COMMA Trivia* Argument)* Trivia* COMMA?)?
@@ -164,6 +168,8 @@ syntax ItemBody(ctx) ::= BlockRun(ctx, Item)
 ```
 
 ArgKey 后的冒号必须紧邻。位置参数按签名归位；具名参数成为 fields；允许尾逗号，重复 key 后者覆盖。节点只有一个 children 槽，内容不能通过参数传入；参数中写内容字面量产生诊断并保留恢复结构。
+
+Path 的段及 `::` 必须紧邻，`::` 为一个 COLON_COLON token。命名调用的 CST 将目标包为 Path 节点；AST 提供路径段和完整名称。解析器保留任意段数，例如 #package::function 与 #package::module::function，包注册与模块路径支持由名称解析阶段决定。尾部缺少名称段的路径不截短，整个调用前缀退回文字。CodeCall 是现有 CST / AST 名称，其语法仍属于 Markup。
 
 ```scanner
 scanner Balanced(open, close, cross_blocks; ctx) -> { end, close } / Miss {

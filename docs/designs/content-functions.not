@@ -1,6 +1,6 @@
 = Content Function Extensions
 
-本文提出内容函数扩展的目标设计。一个扩展由两部分组成：通过 lib.notc 声明并注册到分析环境中的类型签名，以及实现其 HTML 呈现的 Web Component。接口示例用于说明契约，尚未实现。整体装配与第一阶段任务见 [Package / Plugin 设计记录](../_logs/2026-10-04-notc-packages-plugins.md)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
+本文提出内容函数扩展的目标设计。一个扩展由两部分组成：通过 lib.notc 声明并注册到分析环境中的类型签名，以及实现其 HTML 呈现的 Web Component。语法层已提供声明解析和调用路径，见 [Code Syntax](../grammar/code.not)；定义注册、package 加载和组件装配仍为目标接口。整体装配与第一阶段任务见 [Package / Plugin 设计记录](../_logs/2026-10-04-notc-packages-plugins.md)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
 
 == 两部分的职责
 

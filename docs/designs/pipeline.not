@@ -17,6 +17,7 @@
 
 - token 流 → CST（rowan 绿树，无损：文本拼接 == 源文件）
 - parser 永不失败：语法错误就近诊断，结构性破坏由 Error 节点包裹
+- parse_document 处理 Markup，parse_module 处理单文件 Code 声明；分别产生 Document 与 Module CST，复用字面量解析。Module 不进入下面的文档 Desugar / Shape 管线；声明文法见 [Code Syntax](../grammar/code.not)
 
 *AST*
 

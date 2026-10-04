@@ -1,0 +1,142 @@
+= Code Syntax
+
+`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包加载与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
+
+== 词法
+
+Code 与 Markup 调用参数共用 Ident、String、Number、空白、换行与嵌套注释扫描。Code 额外识别以下 token：
+
+| token | 源码 |
+| --- | --- |
+| FN | fn，完整标识符匹配 |
+| COLON_COLON | :: |
+| QUESTION | ? |
+| ARROW | -> |
+| SEMICOLON | ; |
+| LESS / GREATER | < / > |
+| EQ | =，逐字符 token |
+
+fn 是 Code 保留字，不可作为声明名、参数名或类型路径段。fnfoo 仍为 IDENT；Markup 中的 `#fn()` 不受影响。Ident 的字符规则与 Markup 共用；Code 中紧邻的 -> 优先于 Ident 中的连字符，因此 Content->Content 在箭头处结束第一个名称。
+
+```grammar
+lex ColonColon ::= "::"
+lex Question ::= "?"
+lex Arrow ::= "->"
+lex Semicolon ::= ";"
+lex Less ::= "<"
+lex Greater ::= ">"
+lex Equals ::= "="
+```
+
+```scanner
+lex scanner CodeIdent {
+  要求首字符为 Unicode alphabetic 或 "_"
+  消耗首字符，继续消费 Unicode alphanumeric、"_" 或 "-"
+    每次消费前若剩余源码以 "->" 开始，停止
+  原始文本恰为 "fn" 时产出 FN，否则产出 IDENT
+}
+```
+
+括号不会结束 Code 词法，方括号也不启用 Markup。字符串和注释作为完整 token 屏蔽其内部标点与 fn。未闭合行内字符串在 CR、LF 或文件末尾结束 token 并给出 syntax 诊断；多行字符串与块注释未闭合时可延伸至文件末尾。
+
+== 声明
+
+```grammar
+import syntax Trivia from README.not
+import syntax Path from README.not
+import syntax Value from ../types.not
+
+syntax Module ::= Trivia* (FunctionDecl Trivia*)* !ANY
+
+syntax FunctionDecl ::=
+  FN ^ Trivia* name:IDENT Trivia* parameters:ParameterList Trivia*
+  mount:ChildrenDecl? Trivia* ARROW Trivia* result:TypeRef Trivia* SEMICOLON
+
+syntax ParameterList ::=
+  LPAREN Trivia*
+  (parameter:Parameter (Trivia* COMMA Trivia* parameter:Parameter)*
+   Trivia* COMMA?)?
+  Trivia* RPAREN
+
+syntax Parameter ::=
+  name:IDENT Trivia*
+  (QUESTION Trivia* COLON Trivia* ty:TypeRef
+   / COLON Trivia* ty:TypeRef (Trivia* default:DefaultValue)?)
+
+syntax DefaultValue ::= EQ Trivia* value:Value
+
+syntax ChildrenDecl ::=
+  LBRACKET Trivia* "children" Trivia* COLON Trivia* ty:TypeRef Trivia* RBRACKET
+
+syntax TypeRef ::=
+  name:Path
+  (Trivia* LESS Trivia* argument:TypeRef
+   (Trivia* COMMA Trivia* argument:TypeRef)* Trivia* COMMA? Trivia* GREATER)?
+```
+
+除 Path 名称段、负号与数字等共享规则明确要求紧邻的位置外，声明按上述 Trivia* 允许空白、换行与注释。参数列表和类型实参允许尾逗号；空类型实参列表不合法。可选标记和默认值不能同时使用；恢复树可以同时保留两者，并产生 syntax 诊断。
+
+```notc
+fn diagram(source: String, theme: String = "default") -> Content;
+fn panel(title?: String)[children: Content] -> Content;
+fn badges(labels: Array<String>)[children: InlineContent] -> InlineContent;
+```
+
+没有函数体、import、模块声明或表达式默认值。children 是唯一内容挂载的固定名称，不是普通参数。声明名是包内局部名，不包含包前缀。
+
+TypeRef 保留路径与递归类型实参，支持 Array<String> 等形式。解析不判断类型是否存在、类型实参数量、Content 是否可用于普通参数或返回类型是否属于内容类型；这些检查由声明 lowering 与共同注册层完成。
+
+默认值采用与 Markup 参数相同的字面量 CST：标量 token、Neg、Unit、Array、Dict、Group 和 Entry。集合的缺失／重复逗号恢复行为也共用。裸名称可在恢复后的默认值中保留，是否为 Bool 字面量、非法转义、整数溢出与默认值类型均由共享值转换及定义校验处理；语法解析成功不等于定义可以安装。
+
+== CST 与 AST
+
+Module 直接包含 FunctionDecl 和顶层 trivia。声明从 fn 开始至分号结束，不包含前置或尾随 trivia；缺失分号时范围截至实际消费位置。ParameterList 包含括号、Parameter 和分隔 trivia；ChildrenDecl 独立于参数列表。
+
+TypeRef 包含 Path 及类型实参的 TypeRef 子节点，不包含类型后的分隔 trivia。DefaultValue 包含等号、其后的 trivia 和字面量。所有节点保留源码 token，不合成缺失标点。
+
+```rust
+use notist_syntax::{ast::Module, parse_module};
+
+let parsed = parse_module(source);
+let module = Module::cast(parsed.syntax()).unwrap();
+for function in module.functions() {
+    let name = function.name();
+    let parameters = function.parameters();
+    let mount = function.children_decl();
+    let result = function.return_type();
+}
+```
+
+AST 访问器返回语法视图和范围；缺失部分返回 None。Module.functions 包含恢复声明，调用者需检查 diagnostics 后再进入定义安装。parse_module 只接收源字符串，不识别项目目录，不处理依赖。
+
+== 同步与恢复
+
+```recover
+recover FunctionDecl on Failure(reason) {
+  consume = 从当前位置消耗至第一个 SEMICOLON（含），
+            或下一个 FN（不含），或 EOF；不越过 FN
+  cst = 已形成的 FunctionDecl，消费的恢复尾部包为 Error
+  diagnostic = syntax，失败处 token 范围；EOF 为零宽范围
+}
+```
+
+```scanner
+syntax algorithm ModuleRecovery {
+  顶层 trivia：直接保留在 Module
+  FN：解析 FunctionDecl，发生失败时使用其 recover
+  其他 token：在当前 token 产生 expected a function declaration
+    按 FunctionDecl 的同步范围消耗，包为 Module 下的 Error
+}
+
+syntax algorithm ParameterRecovery {
+  缺少逗号但当前为 IDENT：产生诊断，继续解析下一 Parameter
+  其他参数错误：将原始 token 包为 Error，消耗至
+    COMMA、RPAREN、SEMICOLON、FN 或 EOF（均不含）
+  COMMA：继续参数列表；RPAREN：关闭列表
+  SEMICOLON、FN 或 EOF：报告未闭合列表并返回声明恢复
+}
+```
+
+默认值的集合解析额外在 SEMICOLON 或 FN 前停止并报告未闭合 group。Entry 缺失值时不消费这些同步 token，也不消费 RPAREN。不可用的内容字面量不进入 Markup 解析，原始 token 按参数恢复保留。后续函数的 FN 不会被损坏的声明或集合消费；字符串和注释内部的 fn 不是同步点。
+
+类型实参递归深度最多 128 层，超过时产生 syntax 诊断并进行参数或声明恢复。未闭合多行字符串／块注释仍按词法消费至 EOF，后面的源码属于该 token，不能作为独立声明恢复。

@@ -1,6 +1,6 @@
 # .notc 声明模块与 Package / Plugin 扩展
 
-2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：待实现 · 范围：语法、定义模型、core、package、配置、HTML、工具链
+2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：进行中（声明解析与调用路径已实现） · 范围：语法、定义模型、core、package、配置、HTML、工具链
 
 ## 动机
 
@@ -49,7 +49,7 @@ flowchart LR
 
 例如，安装 Mermaid package 后，项目可使用 `#mermaid::diagram("graph TD; A-->B")`。分析器按声明检查参数并保留调用；HTML renderer 输出组件元素，host 安装其 module，组件内部 DOM 不进入文档 IR。
 
-下述语法、API 与 TOML 字段为目标方案，尚未实现。
+声明文法、parse_document / parse_module 与调用 Path 已实现，见 [Code Syntax](../grammar/code.not)。其余语义注册、包的装配及 HTML 组件接口仍为目标方案。
 
 ## 定义与内容模型
 
@@ -73,7 +73,7 @@ struct DefinitionModule {
 
 `.not` 中的 `#foo(args)[children]` 属于 Markup 调用语法。它有固定的调用形状，参数是值字面量，children 仍是 Markup，不进入通用代码执行环境。匿名 `#[children]` 同样属于 Markup。
 
-lexer 可以有正文、调用参数、字符串等词法状态，但这些状态不等同于切换语言。现有实现中的 CodePhase / CodeCall 命名及文档中的“body 返回 Markup”表述，需要按调用语法重新整理。
+lexer 可以有正文、调用参数、字符串等词法状态，但这些状态不等同于切换语言。调用词法状态已改名为 CallPhase；CodeCall 保留为现有 CST / AST 名称，其语法归 Markup，不表示 Code 语言入口。
 
 `.notc` 从文件起点持续使用 Code 词法，以模块为顶层结构。它需要自己的声明文法、token 支持、CST 节点、AST 访问器、错误恢复与诊断，不能直接把 `.not` parser 的入口换一个默认状态就完成。
 

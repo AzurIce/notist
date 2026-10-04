@@ -5,7 +5,8 @@ expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 Document@0..605
   CodeCall@0..39
     Hash@0..1 "#"
-    Ident@1..8 "callout"
+    Path@1..8
+      Ident@1..8 "callout"
     LParen@8..9 "("
     Entry@9..24
       Ident@9..13 "kind"
@@ -20,7 +21,8 @@ Document@0..605
   Newline@40..41 "\n"
   CodeCall@41..80
     Hash@41..42 "#"
-    Ident@42..46 "link"
+    Path@42..46
+      Ident@42..46 "link"
     LParen@46..47 "("
     Str@47..68 "\"https://example.com\""
     RParen@68..69 ")"
@@ -31,7 +33,8 @@ Document@0..605
   Newline@81..82 "\n"
   CodeCall@82..102
     Hash@82..83 "#"
-    Ident@83..89 "strong"
+    Path@83..89
+      Ident@83..89 "strong"
     LBracket@89..90 "["
     Text@90..96 "直接"
     Whitespace@96..97 " "
@@ -47,7 +50,8 @@ Document@0..605
   Newline@110..111 "\n"
   CodeCall@111..131
     Hash@111..112 "#"
-    Ident@112..114 "fn"
+    Path@112..114
+      Ident@112..114 "fn"
     LParen@114..115 "("
     Ident@115..121 "嵌套"
     Whitespace@121..122 " "
@@ -81,7 +85,8 @@ Document@0..605
   Newline@179..180 "\n"
   CodeCall@180..203
     Hash@180..181 "#"
-    Ident@181..187 "strong"
+    Path@181..187
+      Ident@181..187 "strong"
     LBracket@187..188 "["
     Text@188..194 "空行"
     Newline@194..195 "\n"
@@ -97,7 +102,8 @@ Document@0..605
   Newline@219..220 "\n"
   CodeCall@220..303
     Hash@220..221 "#"
-    Ident@221..225 "note"
+    Path@221..225
+      Ident@221..225 "note"
     LParen@225..226 "("
     Entry@226..238
       Ident@226..230 "kind"
@@ -133,7 +139,8 @@ Document@0..605
   Newline@304..305 "\n"
   CodeCall@305..317
     Hash@305..306 "#"
-    Ident@306..312 "strong"
+    Path@306..312
+      Ident@306..312 "strong"
     LBracket@312..313 "["
     Whitespace@313..314 " "
     Text@314..315 "x"
@@ -153,7 +160,8 @@ Document@0..605
   Newline@351..352 "\n"
   CodeCall@352..363
     Hash@352..353 "#"
-    Ident@353..357 "list"
+    Path@353..357
+      Ident@353..357 "list"
     LBracket@357..358 "["
     Text@358..362 "body"
     RBracket@362..363 "]"
@@ -167,7 +175,8 @@ Document@0..605
   Newline@392..393 "\n"
   CodeCall@393..410
     Hash@393..394 "#"
-    Ident@394..398 "demo"
+    Path@394..398
+      Ident@394..398 "demo"
     LParen@398..399 "("
     LBracket@399..400 "["
     Ident@400..401 "x"
@@ -202,7 +211,8 @@ Document@0..605
   Newline@468..469 "\n"
   CodeCall@469..476
     Hash@469..470 "#"
-    Ident@470..473 "raw"
+    Path@470..473
+      Ident@470..473 "raw"
     LBracket@473..474 "["
     Text@474..475 "x"
     RBracket@475..476 "]"
@@ -214,7 +224,8 @@ Document@0..605
   Newline@496..497 "\n"
   CodeCall@497..506
     Hash@497..498 "#"
-    Ident@498..499 "f"
+    Path@498..499
+      Ident@498..499 "f"
     LParen@499..500 "("
     Group@500..505
       LParen@500..501 "("
@@ -229,7 +240,8 @@ Document@0..605
   Newline@529..530 "\n"
   CodeCall@530..542
     Hash@530..531 "#"
-    Ident@531..532 "f"
+    Path@531..532
+      Ident@531..532 "f"
     LParen@532..533 "("
     Array@533..541
       LParen@533..534 "("
@@ -250,7 +262,8 @@ Document@0..605
   Newline@565..566 "\n"
   CodeCall@566..576
     Hash@566..567 "#"
-    Ident@567..568 "f"
+    Path@567..568
+      Ident@567..568 "f"
     LParen@568..569 "("
     Array@569..575
       LParen@569..570 "("

@@ -1,7 +1,8 @@
 = Notist Documentation
 
 - [Cook Book](cookbook/README.not)：从示例开始编写文档。
-- [Syntax](grammar/README.not)：模式、词法、调用、注解与通用解析规则。
+- [Markup Syntax](grammar/README.not)：.not 的词法、调用、注解与通用解析规则。
+- [Code Syntax](grammar/code.not)：.notc 的签名声明、类型引用、CST / AST 与错误恢复。
 - [Types & Literals](types.not)：类型、字面量与内容 flavor。
 - [Builtin Content Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
 - [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。

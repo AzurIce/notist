@@ -12,7 +12,8 @@ Document@0..434
   Whitespace@179..180 " "
   CodeCall@180..191
     Hash@180..181 "#"
-    Ident@181..185 "list"
+    Path@181..185
+      Ident@181..185 "list"
     LBracket@185..186 "["
     Text@186..190 "body"
     RBracket@190..191 "]"
@@ -26,7 +27,8 @@ Document@0..434
   Whitespace@247..248 " "
   CodeCall@248..258
     Hash@248..249 "#"
-    Ident@249..253 "card"
+    Path@249..253
+      Ident@249..253 "card"
     LBracket@253..254 "["
     Whitespace@254..255 " "
     Text@255..256 "x"
@@ -42,7 +44,8 @@ Document@0..434
   Whitespace@321..322 " "
   CodeCall@322..333
     Hash@322..323 "#"
-    Ident@323..327 "card"
+    Path@323..327
+      Ident@323..327 "card"
     LBracket@327..328 "["
     Text@328..332 "body"
     RBracket@332..333 "]"

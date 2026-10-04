@@ -35,30 +35,40 @@ impl<'a> Lexed<'a> {
     }
 }
 
-/// The call-form state of an open code region: `#ident? (..)? [..]?`, each
-/// slot optional but adjacent-only. `Args` tracks paren depth; the body slot
-/// returns to markup (the body's extent is the parser's business).
+/// Lexical states within Markup calls and annotations. These are not a
+/// language switch; a call body uses the surrounding Markup token rules.
 #[derive(Clone, Copy)]
-enum CodePhase {
+enum CallPhase {
     /// Just after `#`: expecting an identifier, `(`.
     Start,
-    /// After the identifier: expecting `(` or `[`.
+    /// After a path segment: expecting `::`, `(` or `[`.
     AfterIdent,
+    /// After `::`: expecting another adjacent identifier.
+    PathSegment,
     /// Inside the argument group.
     Args { depth: usize },
     /// After the argument group: expecting `[` or exit.
     AfterArgs,
 }
 
-/// The mode-stack lexer: markup by default; `@(` and `#ident`/`#(` push a
-/// code region whose extent is lexically decidable (balanced parens; strings
-/// are lexed as tokens inside, so their parens never count).
+/// Lex a Markup document, including its call and annotation literals.
 pub fn lex(src: &str) -> Lexed<'_> {
+    lex_with_mode(src, false)
+}
+
+/// Lex a Code module. The whole source uses Code token rules; brackets never
+/// enter Markup and parentheses do not end the Code region.
+pub fn lex_module(src: &str) -> Lexed<'_> {
+    lex_with_mode(src, true)
+}
+
+fn lex_with_mode(src: &str, module: bool) -> Lexed<'_> {
     let mut lx = Lexer {
         src,
         kinds: Vec::new(),
         starts: Vec::new(),
         stack: Vec::new(),
+        module,
     };
     lx.run();
     Lexed {
@@ -72,7 +82,8 @@ struct Lexer<'a> {
     src: &'a str,
     kinds: Vec<SyntaxKind>,
     starts: Vec<TextSize>,
-    stack: Vec<CodePhase>,
+    stack: Vec<CallPhase>,
+    module: bool,
 }
 
 impl Lexer<'_> {
@@ -80,9 +91,12 @@ impl Lexer<'_> {
         let mut i = 0;
         while i < self.src.len() {
             self.starts.push(TextSize::new(i as u32));
-            let (kind, len) = match self.stack.last() {
-                Some(_) => self.lex_code(i),
-                None => self.lex_markup(i),
+            let (kind, len) = if self.module {
+                self.lex_literal_token(i)
+            } else if self.stack.is_empty() {
+                self.lex_markup(i)
+            } else {
+                self.lex_call(i)
             };
             self.kinds.push(kind);
             i += len;
@@ -101,21 +115,21 @@ impl Lexer<'_> {
         let rest = &src[i..];
         match rest.chars().next().unwrap() {
             '@' => {
-                // code mode only on `@(` / `@!(`; otherwise `@` is plain text
+                // Annotation literal state only on `@(` / `@!(`.
                 let mut j = i + 1;
                 if self.src[j..].starts_with('!') {
                     j += 1;
                 }
                 if self.src[j..].starts_with('(') {
-                    self.stack.push(CodePhase::Args { depth: 0 });
+                    self.stack.push(CallPhase::Args { depth: 0 });
                 }
                 (SyntaxKind::At, 1)
             }
             '#' => {
                 let next = self.src[i + 1..].chars().next();
                 match next {
-                    Some(c) if c.is_alphabetic() || c == '_' => self.stack.push(CodePhase::Start),
-                    Some('(') => self.stack.push(CodePhase::Start),
+                    Some(c) if c.is_alphabetic() || c == '_' => self.stack.push(CallPhase::Start),
+                    Some('(') => self.stack.push(CallPhase::Start),
                     _ => {}
                 }
                 (SyntaxKind::Hash, 1)
@@ -137,7 +151,7 @@ impl Lexer<'_> {
                     }
                     (SyntaxKind::LineComment, len)
                 } else if rest[1..].starts_with('*') {
-                    (SyntaxKind::BlockComment, block_comment_len(rest))
+                    (SyntaxKind::BlockComment, block_comment_len(rest).0)
                 } else {
                     (SyntaxKind::Text, 1)
                 }
@@ -183,9 +197,9 @@ impl Lexer<'_> {
         }
     }
 
-    // ── code mode ───────────────────────────────────────────────
+    // ── Markup call states ──────────────────────────────────────
 
-    fn lex_code(&mut self, i: usize) -> (SyntaxKind, usize) {
+    fn lex_call(&mut self, i: usize) -> (SyntaxKind, usize) {
         let src = self.src;
         let rest = &src[i..];
         let phase = *self.stack.last().unwrap();
@@ -194,7 +208,7 @@ impl Lexer<'_> {
         // Phase boundaries: call-form slots only trigger when adjacent;
         // anything else pops back to markup.
         match phase {
-            CodePhase::Start => match ch {
+            CallPhase::Start => match ch {
                 '(' => {}
                 c if c.is_alphabetic() || c == '_' => {}
                 _ => {
@@ -202,10 +216,21 @@ impl Lexer<'_> {
                     return self.lex_markup(i);
                 }
             },
-            CodePhase::AfterIdent | CodePhase::AfterArgs => match ch {
+            CallPhase::PathSegment => {
+                if !ch.is_alphabetic() && ch != '_' {
+                    self.stack.pop();
+                    return self.lex_markup(i);
+                }
+            }
+            CallPhase::AfterIdent if rest.starts_with("::") => {
+                self.stack.pop();
+                self.stack.push(CallPhase::PathSegment);
+                return (SyntaxKind::ColonColon, 2);
+            }
+            CallPhase::AfterIdent | CallPhase::AfterArgs => match ch {
                 '(' => {
                     self.stack.pop();
-                    self.stack.push(CodePhase::Args { depth: 0 });
+                    self.stack.push(CallPhase::Args { depth: 0 });
                 }
                 '[' => {
                     self.stack.pop();
@@ -218,6 +243,39 @@ impl Lexer<'_> {
             },
             _ => {}
         }
+
+        let token = self.lex_literal_token(i);
+        match token.0 {
+            SyntaxKind::LParen => match self.stack.last_mut() {
+                Some(CallPhase::Start) => {
+                    self.stack.pop();
+                    self.stack.push(CallPhase::Args { depth: 1 });
+                }
+                Some(CallPhase::Args { depth }) => *depth += 1,
+                _ => {}
+            },
+            SyntaxKind::RParen => {
+                if let Some(CallPhase::Args { depth }) = self.stack.last_mut() {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        self.stack.pop();
+                        self.stack.push(CallPhase::AfterArgs);
+                    }
+                }
+            }
+            SyntaxKind::Ident if matches!(phase, CallPhase::Start | CallPhase::PathSegment) => {
+                self.stack.pop();
+                self.stack.push(CallPhase::AfterIdent);
+            }
+            _ => {}
+        }
+        token
+    }
+
+    // Shared Code / Markup-literal token scanner, with no call-state effects.
+    fn lex_literal_token(&self, i: usize) -> (SyntaxKind, usize) {
+        let rest = self.rest(i);
+        let ch = rest.chars().next().unwrap();
 
         match ch {
             '\n' => (SyntaxKind::Newline, 1),
@@ -237,7 +295,7 @@ impl Lexer<'_> {
                     }
                     (SyntaxKind::LineComment, len)
                 } else if rest[1..].starts_with('*') {
-                    (SyntaxKind::BlockComment, block_comment_len(rest))
+                    (SyntaxKind::BlockComment, block_comment_len(rest).0)
                 } else {
                     (SyntaxKind::Text, 1)
                 }
@@ -264,49 +322,43 @@ impl Lexer<'_> {
                 }
                 (SyntaxKind::Number, len)
             }
+            '-' if self.module && rest.starts_with("->") => (SyntaxKind::Arrow, 2),
             '-' => (SyntaxKind::Minus, 1),
+            ':' if rest.starts_with("::") => (SyntaxKind::ColonColon, 2),
+            '=' if self.module => (SyntaxKind::Eq, 1),
+            '?' if self.module => (SyntaxKind::Question, 1),
+            ';' if self.module => (SyntaxKind::Semicolon, 1),
+            '<' if self.module => (SyntaxKind::Less, 1),
+            '>' if self.module => (SyntaxKind::Greater, 1),
             ':' => (SyntaxKind::Colon, 1),
             ',' => (SyntaxKind::Comma, 1),
             '!' => (SyntaxKind::Bang, 1),
-            '(' => {
-                match self.stack.last_mut() {
-                    Some(CodePhase::Start) => {
-                        self.stack.pop();
-                        self.stack.push(CodePhase::Args { depth: 1 });
-                    }
-                    Some(CodePhase::Args { depth }) => *depth += 1,
-                    _ => {}
-                }
-                (SyntaxKind::LParen, 1)
-            }
-            ')' => {
-                if let Some(CodePhase::Args { depth }) = self.stack.last_mut() {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        self.stack.pop();
-                        self.stack.push(CodePhase::AfterArgs);
-                    }
-                }
-                (SyntaxKind::RParen, 1)
-            }
+            '(' => (SyntaxKind::LParen, 1),
+            ')' => (SyntaxKind::RParen, 1),
             '[' => (SyntaxKind::LBracket, 1),
             ']' => (SyntaxKind::RBracket, 1),
             c if c.is_alphabetic() || c == '_' => {
-                let len = rest.len()
-                    - rest
-                        .trim_start_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '-')
-                        .len();
-                if let Some(CodePhase::Start) = self.stack.last() {
-                    self.stack.pop();
-                    self.stack.push(CodePhase::AfterIdent);
-                }
-                (SyntaxKind::Ident, len)
+                let len = rest
+                    .char_indices()
+                    .take_while(|(offset, c)| {
+                        (c.is_alphanumeric() || *c == '_' || *c == '-')
+                            && !(self.module && rest[*offset..].starts_with("->"))
+                    })
+                    .map(|(offset, c)| offset + c.len_utf8())
+                    .last()
+                    .unwrap();
+                let kind = if self.module && &rest[..len] == "fn" {
+                    SyntaxKind::FnKeyword
+                } else {
+                    SyntaxKind::Ident
+                };
+                (kind, len)
             }
             _ => {
                 let len = rest
                     .find([
                         '"', ' ', '\t', '\n', '\r', '(', ')', '[', ']', ':', ',', '/', '-', '@',
-                        '#', '$', '!',
+                        '#', '$', '!', '=', '?', ';', '<', '>',
                     ])
                     .unwrap_or(rest.len());
                 if len == 0 {
@@ -320,7 +372,7 @@ impl Lexer<'_> {
 
     /// String literals: `".."` / `""".."""` / `r#".."#` / `r#""".."""#`.
     /// Unterminated runs to end of line (desugar diagnoses it).
-    fn lex_code_string(&mut self, i: usize, hashes: usize) -> (SyntaxKind, usize) {
+    fn lex_code_string(&self, i: usize, hashes: usize) -> (SyntaxKind, usize) {
         let rest = self.rest(i);
         let mut j = hashes + 1; // opening quote after r#*
         if hashes > 0 {
@@ -332,17 +384,18 @@ impl Lexer<'_> {
         }
         let mut n = j;
         let closer_len = 1 + hashes + if multiline { 2 } else { 0 };
-        loop {
-            let Some(ch) = rest[n..].chars().next() else {
-                break;
-            };
-            if ch == '\n' && !multiline {
+        while let Some(ch) = rest[n..].chars().next() {
+            if matches!(ch, '\n' | '\r') && !multiline {
                 break;
             }
             if hashes == 0 && ch == '\\' && !multiline {
                 n += 1;
                 if n < rest.len() {
-                    n += rest[n..].chars().next().map_or(0, |c| c.len_utf8());
+                    let escaped = rest[n..].chars().next().unwrap();
+                    if matches!(escaped, '\n' | '\r') {
+                        break;
+                    }
+                    n += escaped.len_utf8();
                 }
                 continue;
             }
@@ -367,7 +420,7 @@ fn is_escapable(c: char) -> bool {
     )
 }
 
-fn block_comment_len(rest: &str) -> usize {
+fn block_comment_len(rest: &str) -> (usize, bool) {
     let bytes = rest.as_bytes();
     let mut depth = 0;
     let mut i = 0;
@@ -385,7 +438,38 @@ fn block_comment_len(rest: &str) -> usize {
             i += 1;
         }
     }
-    i
+    (i, depth == 0)
+}
+
+pub(crate) fn block_comment_closed(text: &str) -> bool {
+    block_comment_len(text).1
+}
+
+pub(crate) fn string_closed(text: &str) -> bool {
+    let hashes = if text.starts_with('r') {
+        raw_string_hashes(text).unwrap_or(0)
+    } else {
+        0
+    };
+    let prefix = if hashes > 0 { hashes + 1 } else { 0 };
+    let quotes = if text[prefix..].starts_with("\"\"\"") {
+        3
+    } else {
+        1
+    };
+    let closer = format!("{}{}", "\"".repeat(quotes), "#".repeat(hashes));
+    if text.len() < prefix + quotes + closer.len() || !text.ends_with(&closer) {
+        return false;
+    }
+    if hashes == 0 && quotes == 1 {
+        let backslashes = text[..text.len() - 1]
+            .chars()
+            .rev()
+            .take_while(|c| *c == '\\')
+            .count();
+        return backslashes % 2 == 0;
+    }
+    true
 }
 
 /// Start of a raw string `r#"..`; returns the hash count. Raw strings need at

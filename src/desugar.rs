@@ -11,7 +11,7 @@ use crate::item::{Dict, Value};
 
 /// The `.not` frontend's lowering: parse + desugar, no materialization (that is shared).
 pub fn lower_not(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
-    let parse = notist_syntax::parser::parse(src);
+    let parse = notist_syntax::parse_document(src);
     let mut diagnostics: Vec<Diagnostic> = parse
         .diagnostics
         .iter()

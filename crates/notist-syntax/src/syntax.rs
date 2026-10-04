@@ -60,6 +60,23 @@ pub enum SyntaxKind {
     Group,
     ParBreak,
     Error,
+
+    // Code declarations and paths. Keep existing discriminants stable.
+    ColonColon,
+    FnKeyword,
+    Question,
+    Arrow,
+    Semicolon,
+    Less,
+    Greater,
+    Module,
+    FunctionDecl,
+    ParameterList,
+    Parameter,
+    ChildrenDecl,
+    TypeRef,
+    DefaultValue,
+    Path,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,8 +1,9 @@
 use rowan::{GreenNode, GreenNodeBuilder, TextRange};
 
-use crate::lexer::{Lexed, lex};
+use crate::lexer::{Lexed, lex, lex_module};
 use crate::syntax::{SyntaxKind, SyntaxNode};
 
+mod module;
 mod table;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +42,17 @@ enum Balanced {
 }
 
 pub fn parse(src: &str) -> Parse {
+    parse_document(src)
+}
+
+/// Parse a Markup document. `parse` remains a compatibility alias.
+pub fn parse_document(src: &str) -> Parse {
     Parser::new(src).run()
+}
+
+/// Parse one Code module's source. This entry performs no file or dependency IO.
+pub fn parse_module(src: &str) -> Parse {
+    Parser::with_lexed(src, lex_module(src), true).run_module()
 }
 
 /// Recursive-descent over the lexed token stream, emitting a lossless green
@@ -61,12 +72,19 @@ struct Parser<'a> {
     /// Table cells and list items bound lookahead and consumption, so paired
     /// inline constructs cannot consume another cell, row, or item.
     limit: Option<usize>,
+    /// Code defaults reuse the literal parser, with declaration boundaries
+    /// as additional recovery stops and no Markup content literals.
+    in_module: bool,
 }
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
+        Self::with_lexed(src, lex(src), false)
+    }
+
+    fn with_lexed(src: &'a str, lexed: Lexed<'a>, in_module: bool) -> Self {
         Self {
-            lexed: lex(src),
+            lexed,
             source: src,
             block_indent: 0,
             block_start: None,
@@ -75,6 +93,7 @@ impl<'a> Parser<'a> {
             diagnostics: Vec::new(),
             in_body: false,
             limit: None,
+            in_module,
         }
     }
 
@@ -606,7 +625,15 @@ impl<'a> Parser<'a> {
     /// after `#` (bare `#name`, `#(..)`) is literal text.
     fn code_call(&mut self) {
         let named = self.peek(1) == Some(SyntaxKind::Ident);
-        let args_at = self.pos + 1 + named as usize;
+        let args_at = if named {
+            let Some(end) = self.path_end(self.pos + 1) else {
+                self.eat();
+                return;
+            };
+            end
+        } else {
+            self.pos + 1
+        };
         let has_args = self.kind_at(args_at) == Some(SyntaxKind::LParen);
         let mut after = args_at;
         if has_args {
@@ -646,11 +673,11 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::CodeCall.into());
         self.eat();
         if named {
-            self.eat();
+            self.path();
         }
         if has_args {
             self.eat();
-            self.code_args();
+            self.call_args();
             self.eat();
         }
         if has_body {
@@ -660,6 +687,31 @@ impl<'a> Parser<'a> {
                 self.diagnose_inline_parbreak(after, close);
             }
             self.bracket_body(block);
+        }
+        self.builder.finish_node();
+    }
+
+    /// Paths are adjacent identifier segments. A trailing separator invalidates
+    /// the whole path rather than silently truncating the target name.
+    fn path_end(&self, from: usize) -> Option<usize> {
+        if self.kind_at(from) != Some(SyntaxKind::Ident) {
+            return None;
+        }
+        let mut end = from + 1;
+        while self.kind_at(end) == Some(SyntaxKind::ColonColon) {
+            if self.kind_at(end + 1) != Some(SyntaxKind::Ident) {
+                return None;
+            }
+            end += 2;
+        }
+        Some(end)
+    }
+
+    fn path(&mut self) {
+        let end = self.path_end(self.pos).unwrap();
+        self.builder.start_node(SyntaxKind::Path.into());
+        while self.pos < end {
+            self.eat();
         }
         self.builder.finish_node();
     }
@@ -799,7 +851,7 @@ impl<'a> Parser<'a> {
         }
         if self.cur() == Some(SyntaxKind::LParen) {
             let start = self.lexed.offset(self.pos);
-            if self.code_group() != Some(SyntaxKind::Dict) {
+            if self.literal_group() != Some(SyntaxKind::Dict) {
                 let span = TextRange::new(start, self.lexed.offset(self.pos));
                 self.diagnostics.push(Diagnostic {
                     span,
@@ -818,14 +870,14 @@ impl<'a> Parser<'a> {
 
     /// A comma-separated run of literal entries (`key: value` or bare
     /// values), shared by annotation payloads and call arguments.
-    fn code_args(&mut self) {
+    fn call_args(&mut self) {
         loop {
             self.eat_trivia();
             match self.cur() {
                 None | Some(SyntaxKind::RParen) => break,
                 Some(SyntaxKind::Comma) => self.eat(),
                 _ => {
-                    self.code_entry_or_value();
+                    self.literal_entry_or_value();
                 }
             }
         }
@@ -833,7 +885,7 @@ impl<'a> Parser<'a> {
 
     /// `key: value` gets an `Entry` node; a bare literal stands alone.
     /// Returns whether an entry was produced.
-    fn code_entry_or_value(&mut self) -> bool {
+    fn literal_entry_or_value(&mut self) -> bool {
         let is_key = matches!(self.cur(), Some(SyntaxKind::Ident) | Some(SyntaxKind::Str))
             && self.peek(1) == Some(SyntaxKind::Colon);
         if is_key {
@@ -841,11 +893,11 @@ impl<'a> Parser<'a> {
             self.eat();
             self.eat();
             self.eat_trivia();
-            self.code_value();
+            self.literal_value();
             self.builder.finish_node();
             true
         } else {
-            self.code_value();
+            self.literal_value();
             false
         }
     }
@@ -862,7 +914,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn code_value(&mut self) {
+    fn literal_value(&mut self) {
         match self.cur() {
             Some(SyntaxKind::Str) | Some(SyntaxKind::Number) | Some(SyntaxKind::Ident) => {
                 self.eat()
@@ -874,16 +926,24 @@ impl<'a> Parser<'a> {
                 self.builder.finish_node();
             }
             Some(SyntaxKind::LParen) => {
-                self.code_group();
+                self.literal_group();
             }
-            Some(SyntaxKind::LBracket) => self.content_literal(),
+            Some(SyntaxKind::LBracket) if !self.in_module => self.content_literal(),
             _ => {
                 let point = self.lexed.offset(self.pos);
                 self.diagnostics.push(Diagnostic {
                     span: TextRange::new(point, point),
                     message: "expected a literal".to_string(),
                 });
-                if self.cur().is_some() {
+                if self.cur().is_some()
+                    && !(self.in_module
+                        && matches!(
+                            self.cur(),
+                            Some(
+                                SyntaxKind::FnKeyword | SyntaxKind::Semicolon | SyntaxKind::RParen
+                            )
+                        ))
+                {
                     self.eat();
                 }
             }
@@ -894,7 +954,7 @@ impl<'a> Parser<'a> {
     /// any `Entry` child makes a dict, a lone value without comma is a
     /// transparent `Group`, otherwise an array. The node kind is attached
     /// retroactively via checkpoint. Returns the produced node kind.
-    fn code_group(&mut self) -> Option<SyntaxKind> {
+    fn literal_group(&mut self) -> Option<SyntaxKind> {
         if self.peek(1) == Some(SyntaxKind::RParen) {
             self.builder.start_node(SyntaxKind::Unit.into());
             self.eat();
@@ -926,7 +986,9 @@ impl<'a> Parser<'a> {
         loop {
             self.eat_trivia();
             match self.cur() {
-                None => {
+                None | Some(SyntaxKind::Semicolon | SyntaxKind::FnKeyword)
+                    if self.in_module || self.cur().is_none() =>
+                {
                     let point = self.lexed.offset(self.pos);
                     self.diagnostics.push(Diagnostic {
                         span: TextRange::new(point, point),
@@ -943,7 +1005,7 @@ impl<'a> Parser<'a> {
                     had_comma = true;
                 }
                 _ => {
-                    if self.code_entry_or_value() {
+                    if self.literal_entry_or_value() {
                         has_named = true;
                     } else {
                         values += 1;
@@ -1211,10 +1273,19 @@ impl<'a> Parser<'a> {
     fn eat(&mut self) {
         let kind = self.kind_at(self.pos).unwrap();
         let text = self.lexed.text(self.pos);
-        if kind == SyntaxKind::BlockComment && !text.ends_with("*/") {
+        let unclosed = if kind == SyntaxKind::BlockComment
+            && !crate::lexer::block_comment_closed(text)
+        {
+            Some("unclosed block comment")
+        } else if self.in_module && kind == SyntaxKind::Str && !crate::lexer::string_closed(text) {
+            Some("unclosed string")
+        } else {
+            None
+        };
+        if let Some(message) = unclosed {
             self.diagnostics.push(Diagnostic {
                 span: TextRange::new(self.lexed.offset(self.pos), self.lexed.offset(self.pos + 1)),
-                message: "unclosed block comment".to_string(),
+                message: message.to_string(),
             });
         }
         self.builder.token(kind.into(), text);

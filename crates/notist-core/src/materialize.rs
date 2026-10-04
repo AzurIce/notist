@@ -22,6 +22,11 @@ pub fn materialize(expr: &RExpr) -> Item {
             item.fields = fields.clone();
             item.children = children.iter().map(materialize).collect();
             item.attrs = attrs.clone();
+            item.level = if crate::shape::reflow::is_block_element(expr) {
+                crate::builtins::Level::Block
+            } else {
+                crate::builtins::Level::Inline
+            };
             item
         }
     }

@@ -61,6 +61,15 @@ impl Frontends {
     /// Lower `src` with the frontend matching `path`'s extension, then run
     /// the shared backend (resolve → shape → materialize).
     pub fn analyze(&self, path: &Path, src: &str) -> Option<(Item, Vec<Diagnostic>)> {
+        self.analyze_with_registry(path, src, notist_core::builtins::registry())
+    }
+
+    pub fn analyze_with_registry(
+        &self,
+        path: &Path,
+        src: &str,
+        registry: &notist_core::registry::Registry,
+    ) -> Option<(Item, Vec<Diagnostic>)> {
         let ext = path.extension()?.to_str()?;
         let frontend = self
             .frontends
@@ -69,7 +78,13 @@ impl Frontends {
             .find(|frontend| frontend.extensions.contains(&ext))?;
         let (forest, module_attrs, mut diagnostics) = (frontend.lower)(src);
         let span = TextRange::new(0.into(), (src.len() as u32).into());
-        let item = notist_core::analyze(forest, span, module_attrs, &mut diagnostics);
+        let item = notist_core::analyze_with_registry(
+            forest,
+            span,
+            module_attrs,
+            registry,
+            &mut diagnostics,
+        );
         Some((item, diagnostics))
     }
 }

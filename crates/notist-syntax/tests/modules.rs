@@ -228,6 +228,17 @@ fn unterminated_inline_strings_stop_at_all_line_endings() {
 }
 
 #[test]
+fn an_escaped_triple_quote_does_not_close_a_multiline_string() {
+    let parsed = parse_module("fn bad(x: String = \"\"\"\nescaped \\\"\"\"");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "unclosed string")
+    );
+}
+
+#[test]
 fn excessive_type_nesting_is_diagnosed_and_recovers() {
     let src = format!(
         "fn bad(x: {}Bool{}) -> Content; fn good()->Content;",

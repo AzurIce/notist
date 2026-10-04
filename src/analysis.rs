@@ -14,9 +14,9 @@ use crate::{Diagnostic, Frontend, Frontends, Item};
 /// assert!(notist.analyze("example.md", "Text").is_ok());
 /// assert!(notist.analyze("example.not", "Text").is_err());
 /// ```
-#[derive(Default)]
 pub struct Notist {
     frontends: Frontends,
+    registry: crate::Registry,
 }
 
 impl Notist {
@@ -24,6 +24,7 @@ impl Notist {
     pub fn new() -> Self {
         Self {
             frontends: Frontends::new(),
+            registry: crate::builtins::registry().clone(),
         }
     }
 
@@ -31,6 +32,16 @@ impl Notist {
     pub fn with_frontend(mut self, frontend: Frontend) -> Self {
         self.frontends = self.frontends.with(frontend);
         self
+    }
+
+    /// Use an explicitly assembled signature environment. Performs no IO.
+    pub fn with_registry(mut self, registry: crate::Registry) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    pub fn registry(&self) -> &crate::Registry {
+        &self.registry
     }
 
     /// Analyze in-memory source, selecting a frontend by `path`'s extension.
@@ -46,13 +57,21 @@ impl Notist {
         src: &str,
     ) -> Result<Analysis, UnsupportedFormat> {
         let path = path.as_ref();
-        let (root, diagnostics) =
-            self.frontends
-                .analyze(path, src)
-                .ok_or_else(|| UnsupportedFormat {
-                    path: path.to_path_buf(),
-                })?;
+        let (root, diagnostics) = self
+            .frontends
+            .analyze_with_registry(path, src, &self.registry)
+            .ok_or_else(|| UnsupportedFormat {
+                path: path.to_path_buf(),
+            })?;
         Ok(Analysis { root, diagnostics })
+    }
+}
+
+impl Default for Notist {
+    fn default() -> Self {
+        Self::new()
+            .with_frontend(Frontend::notist())
+            .with_frontend(Frontend::markdown())
     }
 }
 

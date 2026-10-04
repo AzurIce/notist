@@ -1,6 +1,6 @@
 = Content Function Extensions
 
-本文提出内容函数扩展的目标设计。一个扩展由两部分组成：通过 lib.notc 声明并注册到分析环境中的类型签名，以及实现其 HTML 呈现的 Web Component。语法层已提供声明解析和调用路径，见 [Code Syntax](../grammar/code.not)；定义注册、package 加载和组件装配仍为目标接口。整体装配与第一阶段任务见 [Package / Plugin 设计记录](../_logs/2026-10-04-notc-packages-plugins.md)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
+本文提出内容函数扩展的目标设计。一个扩展由两部分组成：通过 lib.notc 声明并注册到分析环境中的类型签名，以及实现其 HTML 呈现的 Web Component。已提供声明解析、定义 lowering、共同校验与 Registry；文档环境接入、最终 IR 的扩展身份、package 加载和组件装配仍为目标接口。声明语法见 [Code Syntax](../grammar/code.not)，整体任务见 [Package / Plugin 设计记录](../_logs/2026-10-04-notc-packages-plugins.md)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
 
 == 两部分的职责
 
@@ -54,6 +54,29 @@ Resolve 从同一个 Registry 执行名称解析、参数归位、默认值补�
 返回内容类别参与现有 reflow，块级扩展可以从候选段落中切出。heading 开启 section 等文档结构算法继续由 core 管线负责，扩展的基本注册不要求提供额外结构算法或求值回调。
 
 Registry 校验声明中的重复参数、默认值类型、函数名冲突及结构引用。包注册全部通过后提交，失败不留下部分结果。注册完成后分析使用不可变的环境。
+
+=== 定义与注册 API
+
+core 的 definitions 模块提供 FunctionId、FunctionDef、DefinitionModule、ParameterDef、ValueType 与 ReturnRule。普通参数的 Required、Optional、Default(Value) 使用互斥的 ParameterMode；Array 支持递归元素类型，Content 不属于 ValueType。
+
+FunctionDef 保存 children 接受规则和返回类别。原生高级定义用 ValueConstraint 表达正整数与允许的数组字符串，ReturnRule 表达固定类别、group 的 flavor 继承与 raw 的 block 参数选择；这些规则没有执行回调，源码声明子集只产生固定类别。
+
+```rust
+use notist::{analyze_module, builtins, Registry};
+
+let module = analyze_module("mermaid", source)?;
+let mut registry = builtins::registry().clone();
+registry.register(module)?;
+let function = registry.resolve("mermaid::diagram")?;
+```
+
+analyze_module(package, source) 将单文件 Code 源码转换为经过共同校验的 DefinitionModule，任一 syntax、literal 或 type 错误均返回 diagnostics，不返回可部分安装的模块；恢复 CST / AST 仍由 parse_module 提供。声明范围属于传入源码，来源文件由调用者持有。
+
+Registry::new 与 Default 创建空注册表；builtins::registry 返回不可变标准签名环境，clone 后可追加包。register 重新校验原生或 lowering 后的模块，并检查保留包名、已安装包与结构引用，然后一次提交整个包。已注册函数只能通过只读引用取得；外部不能注册 notist 包。
+
+FunctionDef.bind_fields 共用位置参数归位、必填检查、已知字段类型与值域检查和默认值补齐。可选字段不补值，非法显式值不被默认值覆盖，额外具名字段继续保留。原生定义的位置参数标记保留已有内置行为；.notc 参数均按声明顺序接受位置绑定。
+
+默认文档 Resolve 已使用标准 Registry 的定义与共同绑定器，内置限定名与 prelude 名产生相同构造器。配置 Registry 参与文档分析及合法扩展的 IR 表示仍需后续管线接入；仅注册签名还不会改变当前 Notist.analyze 的环境。
 
 === 函数身份
 

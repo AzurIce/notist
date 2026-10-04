@@ -1,6 +1,6 @@
 # .notc 声明模块与 Package / Plugin 扩展
 
-2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：进行中（声明解析与调用路径已实现） · 范围：语法、定义模型、core、package、配置、HTML、工具链
+2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：进行中（语法、定义 lowering 与共同注册已实现） · 范围：语法、定义模型、core、package、配置、HTML、工具链
 
 ## 动机
 
@@ -49,7 +49,7 @@ flowchart LR
 
 例如，安装 Mermaid package 后，项目可使用 `#mermaid::diagram("graph TD; A-->B")`。分析器按声明检查参数并保留调用；HTML renderer 输出组件元素，host 安装其 module，组件内部 DOM 不进入文档 IR。
 
-声明文法、parse_document / parse_module 与调用 Path 已实现，见 [Code Syntax](../grammar/code.not)。其余语义注册、包的装配及 HTML 组件接口仍为目标方案。
+声明文法、parse_document / parse_module、调用 Path、analyze_module、共同定义校验与 Registry 已实现，见 [Code Syntax](../grammar/code.not) 与 [Content Function Extensions](../designs/content-functions.not)。文档环境与扩展 IR 接入、包的装配及 HTML 组件接口仍为目标方案。
 
 ## 定义与内容模型
 

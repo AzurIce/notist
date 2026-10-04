@@ -1,5 +1,6 @@
-/// What a builtin constructor's children mount accepts.
+/// What a content function's children mount accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Accepts {
     /// Only inline content (hugging `[..]`).
     Inline,
@@ -17,8 +18,9 @@ pub enum Accepts {
     Nothing,
 }
 
-/// The level of the element a builtin constructor produces.
+/// The level of the element a content function produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Level {
     /// A block-level element; interrupts inline runs.
     Block,
@@ -174,10 +176,100 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
 
 /// The signature of a builtin constructor by source name (`None` for custom).
 pub fn builtin_signature(name: &str) -> Option<CtorSignature> {
-    BUILTINS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+    let definition = registry().resolve(name).ok()?;
+    Some(CtorSignature {
+        accepts: definition.children,
+        level: definition.returns.base_level(),
+    })
 }
 
 /// All builtin constructor names.
 pub fn builtin_ctors() -> impl Iterator<Item = &'static str> {
     BUILTINS.iter().map(|(n, _)| *n)
+}
+
+/// Native definitions use the same model and validation as source declarations.
+pub fn definitions() -> crate::definitions::DefinitionModule {
+    use crate::definitions::{
+        DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode as Mode, ReturnRule,
+        ValueConstraint, ValueType as Ty,
+    };
+    use crate::item::Value;
+
+    let mut module = DefinitionModule::new("notist");
+    for &(name, signature) in BUILTINS {
+        let returns = match name {
+            "raw" => ReturnRule::BlockIfTrue("block".into()),
+            "group" => ReturnRule::Inherit,
+            _ => ReturnRule::Fixed(signature.level),
+        };
+        let mut function =
+            FunctionDef::new(FunctionId::new("notist", name), signature.accepts, returns);
+        let mut parameter = |name: &str, ty, mode, positional| {
+            let mut parameter = ParameterDef::new(name, ty, mode);
+            parameter.positional = positional;
+            function.parameters.push(parameter);
+        };
+        match name {
+            "text" => parameter("text", Ty::String, Mode::Required, false),
+            "math" => parameter("text", Ty::String, Mode::Required, true),
+            "raw" => {
+                parameter("text", Ty::String, Mode::Required, true);
+                parameter("block", Ty::Bool, Mode::Optional, false);
+                parameter("lang", Ty::String, Mode::Optional, false);
+            }
+            "link" | "embed" => {
+                parameter("target", Ty::String, Mode::Required, true);
+                if name == "embed" {
+                    parameter("description", Ty::String, Mode::Optional, false);
+                }
+                parameter("title", Ty::String, Mode::Optional, false);
+            }
+            "heading" => {
+                parameter("level", Ty::Int, Mode::Default(Value::Int(1)), false);
+                function.parameters[0].constraint = ValueConstraint::PositiveInt;
+                function.parameters[0].expectation = Some("positive integer".into());
+            }
+            "list" => {
+                parameter(
+                    "ordered",
+                    Ty::Bool,
+                    Mode::Default(Value::Bool(false)),
+                    false,
+                );
+                parameter("start", Ty::Int, Mode::Default(Value::Int(1)), false);
+            }
+            "callout" => parameter("kind", Ty::String, Mode::Optional, false),
+            "table" => {
+                parameter(
+                    "align",
+                    Ty::Array(Some(Box::new(Ty::String))),
+                    Mode::Optional,
+                    false,
+                );
+                function.parameters[0].constraint = ValueConstraint::ArrayStrings(
+                    ["none", "left", "center", "right"]
+                        .map(str::to_string)
+                        .into(),
+                );
+                function.parameters[0].expectation = Some("alignment array".into());
+            }
+            "row" => parameter("header", Ty::Bool, Mode::Optional, false),
+            _ => {}
+        }
+        module.functions.push(function);
+    }
+    module
+}
+
+/// Immutable standard signatures, installed through the shared atomic registry.
+pub fn registry() -> &'static crate::registry::Registry {
+    static REGISTRY: std::sync::OnceLock<crate::registry::Registry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = crate::registry::Registry::new();
+        registry
+            .install(definitions(), true)
+            .expect("native content definitions must be valid");
+        registry
+    })
 }

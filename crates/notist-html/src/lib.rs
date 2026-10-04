@@ -262,6 +262,17 @@ impl State<'_, '_> {
             Ctor::Table => self.table(item),
             Ctor::TableRow => self.row(item, &[]),
             Ctor::TableCell => self.cell(item, false, None),
+            Ctor::Extension(function) => {
+                self.diagnostic(
+                    item,
+                    format!("no HTML implementation for `{}`", function.id),
+                );
+                self.container(
+                    if is_block(item) { "div" } else { "span" },
+                    item,
+                    "notist-extension",
+                );
+            }
             Ctor::Custom(name) => {
                 self.diagnostic(
                     item,
@@ -500,10 +511,5 @@ fn bool_field(item: &Item, key: &str) -> bool {
 }
 
 fn is_block(item: &Item) -> bool {
-    use notist_core::builtins::Level;
-    match item.ctor.level() {
-        Some(Level::Block) => true,
-        Some(Level::Inline) => item.ctor == Ctor::RawInline && bool_field(item, "block"),
-        Some(Level::Inherit) | None => item.children.iter().any(is_block),
-    }
+    item.level == notist_core::builtins::Level::Block
 }

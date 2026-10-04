@@ -13,8 +13,8 @@ pub enum BodyFlavor {
     Block,
 }
 
-/// Unmaterialized core expression: the desugar target of markup, and (later)
-/// the parse product of code mode. `Expr<String>` (IR₁) carries unresolved
+/// Unmaterialized document expression: the desugar target of markup.
+/// Code declarations use DefinitionModule instead. `Expr<String>` (IR₁) carries unresolved
 /// source-level names; `Expr<Ctor>` (IR₂) is the resolved form produced by
 /// `resolve`, still carrying the declared body flavor for shaping.
 #[derive(Debug, Clone, PartialEq)]

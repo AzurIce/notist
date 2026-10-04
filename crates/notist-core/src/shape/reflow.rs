@@ -1,6 +1,6 @@
 use crate::builtins::Level;
 use crate::expr::{BodyFlavor, Expr, RExpr};
-use crate::item::{Ctor, Value};
+use crate::item::Ctor;
 use rowan::TextRange;
 
 /// Signature-aware restructuring of an `IR₂` forest: paragraphs that contain
@@ -105,9 +105,11 @@ pub(crate) fn is_block_element(expr: &RExpr) -> bool {
     else {
         return false;
     };
-    // fenced raw blocks are block elements regardless of the inline-raw row
-    if *name == Ctor::RawInline && fields.get("block") == Some(&Value::Bool(true)) {
-        return true;
+    if let Some(definition) = name
+        .source_name()
+        .and_then(|name| crate::builtins::registry().resolve(name).ok())
+    {
+        return definition.returns.level(fields, *body) == Level::Block;
     }
     match name.level() {
         Some(Level::Block) => true,

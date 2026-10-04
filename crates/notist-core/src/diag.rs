@@ -7,7 +7,7 @@ pub enum Phase {
     Syntax,
     /// Desugar: value-domain errors (bare names, number ranges, entries).
     Semantic,
-    /// Eval: signature/flavor mismatches.
+    /// Definition validation and Resolve: signature/flavor mismatches.
     Type,
 }
 

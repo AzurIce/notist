@@ -3,8 +3,6 @@ use crate::diag::{Diagnostic, Phase};
 use crate::expr::{BodyFlavor, Expr, RExpr};
 use crate::item::{Ctor, Value};
 
-mod fields;
-
 /// IR₁ → IR₂: resolve source-level names to constructors and validate each
 /// call against its signature. An unknown name is a type error; the call is
 /// kept as an atomic `Ctor::Custom` recovery node and placed by its declared
@@ -14,13 +12,25 @@ mod fields;
 /// constructor is promoted to a one-paragraph block, and literals insert as
 /// text (the markup insertion rule).
 pub fn resolve(forest: Vec<Expr>, diagnostics: &mut Vec<Diagnostic>) -> Vec<RExpr> {
+    resolve_with_registry(forest, builtins::registry(), diagnostics)
+}
+
+pub fn resolve_with_registry(
+    forest: Vec<Expr>,
+    registry: &crate::registry::Registry,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<RExpr> {
     forest
         .into_iter()
-        .map(|expr| resolve_expr(expr, diagnostics))
+        .map(|expr| resolve_expr(expr, registry, diagnostics))
         .collect()
 }
 
-fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
+fn resolve_expr(
+    expr: Expr,
+    registry: &crate::registry::Registry,
+    diags: &mut Vec<Diagnostic>,
+) -> RExpr {
     match expr {
         Expr::Literal(value, span) => {
             let text = match value {
@@ -40,42 +50,51 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
         } => {
             let children: Vec<RExpr> = children
                 .into_iter()
-                .map(|child| resolve_expr(child, diags))
+                .map(|child| resolve_expr(child, registry, diags))
                 .collect();
-            let sig = builtins::builtin_signature(&name);
-            let ctor = match Ctor::from_name(&name) {
-                Some(ctor) => ctor,
-                None => {
-                    diags.push(Diagnostic {
-                        phase: Phase::Type,
-                        span,
-                        message: format!("unknown constructor `{name}`"),
-                    });
+            let definition = registry.resolve(&name);
+            let sig = definition
+                .as_ref()
+                .ok()
+                .map(|definition| builtins::CtorSignature {
+                    accepts: definition.children,
+                    level: definition.returns.base_level(),
+                });
+            let mut ctor = match &definition {
+                Ok(definition) if definition.id.package == "notist" => {
+                    Ctor::from_name(&definition.id.name)
+                        .expect("the standard registry contains native constructors")
+                }
+                Ok(definition) => Ctor::Extension(crate::item::ExtensionCtor {
+                    id: definition.id.clone(),
+                    accepts: definition.children,
+                    level: definition.returns.level(&fields, body),
+                }),
+                Err(error) => {
+                    let message = match error {
+                        crate::registry::LookupError::Unknown => {
+                            format!("unknown constructor `{name}`")
+                        }
+                        crate::registry::LookupError::UnsupportedPath => {
+                            format!("module paths are not supported yet: `{name}`")
+                        }
+                    };
+                    diags.push(Diagnostic::new(Phase::Type, span, message));
                     Ctor::Custom(name.clone())
                 }
             };
-            let mut extra = Vec::new();
-            for (i, arg) in args.iter().enumerate() {
-                let Some(value) = arg.literal_value() else {
-                    continue;
-                };
-                match positional_field(&name, i) {
-                    Some(field) => fields.insert(field, value),
-                    None => extra.push(value),
+            let positional = args.iter().filter_map(Expr::literal_value);
+            if let Ok(definition) = definition {
+                fields = definition.bind_fields(positional, fields, &name, span, diags);
+                if let Ctor::Extension(function) = &mut ctor {
+                    function.level = definition.returns.level(&fields, body);
                 }
-            }
-            if !extra.is_empty() {
-                if sig.is_none() {
+            } else {
+                let extra: Vec<_> = positional.collect();
+                if !extra.is_empty() {
                     fields.insert("args", Value::Array(extra));
-                } else {
-                    diags.push(Diagnostic {
-                        phase: Phase::Type,
-                        span,
-                        message: format!("too many positional arguments for `{name}`"),
-                    });
                 }
             }
-            fields::validate(&ctor, &mut fields, span, diags);
             if sig.is_some_and(|sig| sig.accepts == Accepts::Inline)
                 && body != BodyFlavor::Block
                 && !(ctor == Ctor::Paragraph && body == BodyFlavor::None)
@@ -226,13 +245,4 @@ fn structural_children(children: Vec<RExpr>) -> Vec<RExpr> {
         }
         Some(child)
     }).collect()
-}
-
-/// Which field a builtin's n-th positional argument maps to.
-fn positional_field(name: &str, index: usize) -> Option<&'static str> {
-    match (name, index) {
-        ("link", 0) | ("embed", 0) => Some("target"),
-        ("raw", 0) | ("math", 0) => Some("text"),
-        _ => None,
-    }
 }

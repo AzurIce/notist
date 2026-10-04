@@ -1,6 +1,16 @@
 use rowan::TextRange;
 
 use crate::builtins;
+use crate::definitions::FunctionId;
+
+/// A registered call's public contract snapshot, independent of its package files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ExtensionCtor {
+    pub id: FunctionId,
+    pub accepts: builtins::Accepts,
+    pub level: builtins::Level,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -40,6 +50,8 @@ pub enum Ctor {
     /// extent. The heading stays the first child. The source spelling
     /// `#section[..]` resolves to the same constructor.
     Section,
+    /// A legitimate registered function, distinct from unknown-name recovery.
+    Extension(ExtensionCtor),
     /// Recovery representation of a call to an unknown name — always
     /// accompanied by an `unknown constructor` diagnostic, never a
     /// legitimate constructor.
@@ -51,7 +63,7 @@ impl Ctor {
     /// constructors have none).
     pub(crate) fn source_name(&self) -> Option<&'static str> {
         Some(match self {
-            Ctor::Doc | Ctor::Custom(_) => return None,
+            Ctor::Doc | Ctor::Custom(_) | Ctor::Extension(_) => return None,
             Ctor::Paragraph => "paragraph",
             Ctor::Heading => "heading",
             Ctor::Text => "text",
@@ -103,6 +115,9 @@ impl Ctor {
     /// The element level of a builtin constructor, if statically known.
     /// `Doc` and custom constructors return `None` (derive it structurally).
     pub fn level(&self) -> Option<builtins::Level> {
+        if let Self::Extension(function) = self {
+            return Some(function.level);
+        }
         self.source_name()
             .and_then(builtins::builtin_signature)
             .map(|s| s.level)
@@ -110,13 +125,19 @@ impl Ctor {
 
     /// What a builtin constructor's children mount accepts.
     pub fn accepts(&self) -> Option<builtins::Accepts> {
+        if let Self::Extension(function) = self {
+            return Some(function.accepts);
+        }
         self.source_name()
             .and_then(builtins::builtin_signature)
             .map(|s| s.accepts)
     }
 
-    pub fn name(&self) -> &str {
-        match self {
+    pub fn name(&self) -> std::borrow::Cow<'_, str> {
+        if let Self::Extension(function) = self {
+            return function.id.to_string().into();
+        }
+        std::borrow::Cow::Borrowed(match self {
             Ctor::Doc => "Doc",
             Ctor::Paragraph => "Paragraph",
             Ctor::Heading => "Heading",
@@ -138,13 +159,24 @@ impl Ctor {
             Ctor::Group => "Group",
             Ctor::Section => "Section",
             Ctor::Custom(name) => name,
+            Ctor::Extension(_) => unreachable!(),
+        })
+    }
+
+    /// Canonical identity for both builtin and registered external calls.
+    pub fn function_id(&self) -> Option<FunctionId> {
+        match self {
+            Self::Extension(function) => Some(function.id.clone()),
+            _ => self
+                .source_name()
+                .map(|name| FunctionId::new("notist", name)),
         }
     }
 }
 
 impl std::fmt::Display for Ctor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.name())
+        f.write_str(&self.name())
     }
 }
 
@@ -229,9 +261,11 @@ impl std::fmt::Display for Value {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Item {
     pub ctor: Ctor,
+    /// Resolved content category. Document analysis always stores Block or Inline.
+    pub level: builtins::Level,
     pub fields: Dict,
     pub children: Vec<Item>,
     pub attrs: Dict,
@@ -247,6 +281,14 @@ fn empty_span() -> TextRange {
 impl Item {
     pub fn new(ctor: Ctor, span: TextRange) -> Self {
         Self {
+            level: ctor
+                .level()
+                .filter(|level| *level != builtins::Level::Inherit)
+                .unwrap_or(if ctor == Ctor::Doc {
+                    builtins::Level::Block
+                } else {
+                    builtins::Level::Inline
+                }),
             ctor,
             fields: Dict::default(),
             children: Vec::new(),
@@ -261,12 +303,43 @@ impl Item {
 
     pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
         self.fields.insert(key, value);
+        self.infer_level();
         self
     }
 
     pub fn with_children(mut self, children: Vec<Item>) -> Self {
         self.children = children;
+        self.infer_level();
         self
+    }
+
+    fn infer_level(&mut self) {
+        use builtins::Level;
+        self.level = match &self.ctor {
+            Ctor::Extension(function) => function.level,
+            Ctor::Doc => Level::Block,
+            Ctor::Group | Ctor::Custom(_) => {
+                if self
+                    .children
+                    .iter()
+                    .any(|child| child.level == Level::Block)
+                {
+                    Level::Block
+                } else {
+                    Level::Inline
+                }
+            }
+            _ => self
+                .ctor
+                .source_name()
+                .and_then(|name| builtins::registry().resolve(name).ok())
+                .map(|definition| {
+                    definition
+                        .returns
+                        .level(&self.fields, crate::expr::BodyFlavor::None)
+                })
+                .unwrap_or(Level::Inline),
+        };
     }
 
     /// Depth-first iteration over this item and all its descendants.
@@ -282,5 +355,32 @@ impl Item {
     /// The first descendant (self included) matching `pred`.
     pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
         self.descendants().find(|item| pred(item))
+    }
+}
+
+/// Legacy trees lacking a level remain readable. New serialization stores it
+/// explicitly, so deserialized extensions do not need a signature environment.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Item {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct StoredItem {
+            ctor: Ctor,
+            #[serde(default)]
+            level: Option<builtins::Level>,
+            fields: Dict,
+            children: Vec<Item>,
+            attrs: Dict,
+        }
+        let stored = StoredItem::deserialize(deserializer)?;
+        let mut item = Item::new(stored.ctor, empty_span());
+        item.fields = stored.fields;
+        item.children = stored.children;
+        item.attrs = stored.attrs;
+        item.infer_level();
+        if let Some(level) = stored.level {
+            item.level = level;
+        }
+        Ok(item)
     }
 }

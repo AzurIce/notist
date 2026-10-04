@@ -388,11 +388,11 @@ impl Lexer<'_> {
             if matches!(ch, '\n' | '\r') && !multiline {
                 break;
             }
-            if hashes == 0 && ch == '\\' && !multiline {
+            if hashes == 0 && ch == '\\' {
                 n += 1;
                 if n < rest.len() {
                     let escaped = rest[n..].chars().next().unwrap();
-                    if matches!(escaped, '\n' | '\r') {
+                    if !multiline && matches!(escaped, '\n' | '\r') {
                         break;
                     }
                     n += escaped.len_utf8();
@@ -461,8 +461,8 @@ pub(crate) fn string_closed(text: &str) -> bool {
     if text.len() < prefix + quotes + closer.len() || !text.ends_with(&closer) {
         return false;
     }
-    if hashes == 0 && quotes == 1 {
-        let backslashes = text[..text.len() - 1]
+    if hashes == 0 {
+        let backslashes = text[..text.len() - quotes]
             .chars()
             .rev()
             .take_while(|c| *c == '\\')

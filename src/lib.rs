@@ -16,16 +16,26 @@
 pub use rowan::{TextRange, TextSize};
 
 pub use analysis::{Analysis, Notist, UnsupportedFormat};
+pub use definitions::analyze_module;
 pub use frontend::{Frontend, Frontends};
+pub use notist_core::definitions::{
+    DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule,
+    ValueConstraint, ValueType,
+};
 pub use notist_core::diag::{Diagnostic, Phase};
 pub use notist_core::item::{Ctor, Dict, Item, Value};
-pub use notist_core::{builtins, diag, dump, expr, index, item, materialize, resolve, shape};
+pub use notist_core::registry::Registry;
+pub use notist_core::{
+    builtins, diag, dump, expr, index, item, materialize, registry, resolve, shape,
+};
 pub use notist_syntax as syntax;
 
 pub mod analysis;
 pub mod cst_json;
+pub mod definitions;
 pub mod desugar;
 pub mod frontend;
+mod literals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp;
 pub mod query;

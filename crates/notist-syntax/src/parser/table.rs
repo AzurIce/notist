@@ -12,9 +12,9 @@ struct Row {
 impl Parser<'_> {
     /// A header and delimiter must have the same number of cells. Requiring
     /// an actual pipe in the pair avoids interpreting a plain `---` divider
-    /// as a one-column table. Like other `.not` blocks, headers start at col 0.
+    /// as a one-column table. Headers start at a container's block boundary.
     pub(super) fn at_table_at(&self, start: usize) -> bool {
-        if start > 0 && self.kind_at(start - 1) != Some(SyntaxKind::Newline) {
+        if !self.at_block_start(start) {
             return false;
         }
         if matches!(

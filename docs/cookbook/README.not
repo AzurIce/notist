@@ -1,10 +1,8 @@
-@!(date: "2026-09-30")
-
 = Cook Book
 
 == 基础 Markup 语法
 
-Notist 的基础 Markup 语法与 Typst 几乎一致，不过一些细节的行为上略有差异。
+下列示例使用 `.not`；完整规则见 [Syntax](../grammar/README.not) 与 [Builtin](../builtin.not)。
 
 `=` 标题，*加粗*，_强调（斜体）_，~删除线~
 
@@ -16,13 +14,13 @@ Notist 的基础 Markup 语法与 Typst 几乎一致，不过一些细节的行�
 - 无序列表
     - 无序列表
         + 有序列表
+        + 有序列表
 
 管道表格：
 
 | 名称 | 数量 |
 | :--- | ---: |
 | *苹果* | 3 |
-        + 有序列表
 
 行内代码块 `code`，以及多行代码块：
 
@@ -36,8 +34,8 @@ fn main() {
 
 在 Notist 中，所有的内容都是节点，使用属性标注语法可以将一个字典字面量标注在节点上：
 
-- `@dict`：标注在紧接着的节点上。
-- `@!dict`：标注在根节点上，写在文档开头。
+- `@(dict)`：标注在紧接着的节点上。
+- `@!(dict)`：标注在根节点上，写在文档开头。
 
 比如下面这篇文档：
 
@@ -59,23 +57,24 @@ Let's say *Hello* _World_!
   - Section @(id: "example")
     - Heading(level: 1)
       - Text("Example")
-  - Section
-    - Heading(level: 2)
-      - Text("Hello World")
-    - Paragraph
-      - Text("Let's say")
-      - Strong
-        - Text("Hello")
-      - Emph
-        - Text("World")
-      - Text("!")
+    - Section
+      - Heading(level: 2)
+        - Text("Hello World")
+      - Paragraph
+        - Text("Let's say ")
+        - Strong
+          - Text("Hello")
+        - Text(" ")
+        - Emph
+          - Text("World")
+        - Text("!")
 ```
 
-其中对 Heading 的属性标注比较特殊，在 sectionize 阶段每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
+其中对 Heading 的属性标注比较特殊，按 [section 规则](../builtin.not)，每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
 
 == 类型系统
 
-见 [designs/code/types]("../designs/code/types.not")。
+见 [Types & Literals](../types.not)。
 
 == 内容函数
 
@@ -87,6 +86,7 @@ Let's say *Hello* _World_!
 - `#divider()`：与独占一行的 `---` 相同
 - `#embed("assets/example.png", description: "示例", title: "说明")`：嵌入资源；与 Markdown 的 `![示例](assets/example.png "说明")` 对应，具体呈现由渲染器决定
 - `#table(align: ("left", "right"))[#row[#cell[苹果] #cell[3]]]`：表格；使用 `row(header: true)` 表示表头，`cell` 可以挂载段落等内容
+- `#list(ordered: true, start: 3)[#item[准备] #item[执行]]`：从 3 开始编号；item 可包含多个段落与子列表
 
 Callout 没有专用 Markup 语法，直接调用：
 

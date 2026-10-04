@@ -72,13 +72,13 @@ Document@0..200
 === core ===
 error[syntax] @173..200: unclosed raw block
 (doc @0..200
-  (rawinline @0..24 :block true :text "fn main() {}" :lang "rust")
-  (rawinline @26..63 :block true :text "无语言 tag，闭合更长")
-  (rawinline @65..95 :block true :text "内含 ``` 较短串")
+  (rawinline @0..24 :block true :text "fn main() {}\n" :lang "rust")
+  (rawinline @26..63 :block true :text "无语言 tag，闭合更长\n")
+  (rawinline @65..95 :block true :text "内含 ``` 较短串\n")
   (paragraph @97..106
     (text @97..106 :text "段落被")
   )
-  (rawinline @107..127 :block true :text "围栏截断")
+  (rawinline @107..127 :block true :text "围栏截断\n")
   (paragraph @129..171
     (text @129..136 :text "行内 ")
     (rawinline @136..152 :text "双反引号")

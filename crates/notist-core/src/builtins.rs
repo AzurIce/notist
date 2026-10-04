@@ -11,6 +11,8 @@ pub enum Accepts {
     Rows,
     /// A structural sequence of table cells, without paragraph promotion.
     Cells,
+    /// A structural sequence of list items, without paragraph promotion.
+    Items,
     /// No children at all (the payload lives in fields).
     Nothing,
 }
@@ -37,7 +39,7 @@ pub struct CtorSignature {
 pub const BUILTINS: &[(&str, CtorSignature)] = &[
     ("paragraph", CtorSignature { accepts: Accepts::Inline, level: Level::Block }),
     ("heading", CtorSignature { accepts: Accepts::Inline, level: Level::Block }),
-    ("list", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
+    ("list", CtorSignature { accepts: Accepts::Items, level: Level::Block }),
     ("item", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
     ("callout", CtorSignature { accepts: Accepts::Content, level: Level::Block }),
     ("divider", CtorSignature { accepts: Accepts::Nothing, level: Level::Block }),

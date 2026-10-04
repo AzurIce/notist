@@ -3,6 +3,8 @@ use crate::diag::{Diagnostic, Phase};
 use crate::expr::{BodyFlavor, Expr, RExpr};
 use crate::item::{Ctor, Value};
 
+mod fields;
+
 /// IR₁ → IR₂: resolve source-level names to constructors and validate each
 /// call against its signature. An unknown name is a type error; the call is
 /// kept as an atomic `Ctor::Custom` recovery node and placed by its declared
@@ -73,6 +75,33 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
                     });
                 }
             }
+            fields::validate(&ctor, &mut fields, span, diags);
+            if sig.is_some_and(|sig| sig.accepts == Accepts::Inline)
+                && body != BodyFlavor::Block
+                && !(ctor == Ctor::Paragraph && body == BodyFlavor::None)
+            {
+                for child in &children {
+                    if contains_block(child) {
+                        diags.push(Diagnostic::new(
+                            Phase::Type,
+                            child.span(),
+                            format!(
+                                "`{name}` takes inline content; block children are not allowed"
+                            ),
+                        ));
+                    }
+                }
+            }
+            if sig.is_some_and(|sig| sig.accepts == Accepts::Nothing)
+                && body == BodyFlavor::None
+                && !children.is_empty()
+            {
+                diags.push(Diagnostic::new(
+                    Phase::Type,
+                    span,
+                    format!("`{name}` takes no children"),
+                ));
+            }
             let mut children = children;
             match (body, sig.map(|s| s.accepts)) {
                 (BodyFlavor::Inline | BodyFlavor::Block, Some(Accepts::Nothing)) => {
@@ -92,12 +121,18 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
                     });
                 }
                 (BodyFlavor::Inline, Some(Accepts::Content)) => {
-                    if ctor != Ctor::TableCell || !children.is_empty() {
+                    if !matches!(ctor, Ctor::TableCell | Ctor::ListItem) || !children.is_empty() {
                         children =
                             vec![RExpr::resolved(Ctor::Paragraph, span).with_children(children)];
                     }
                 }
                 _ => {}
+            }
+            if matches!(
+                sig.map(|sig| sig.accepts),
+                Some(Accepts::Items | Accepts::Rows | Accepts::Cells)
+            ) {
+                children = structural_children(children);
             }
             match sig.map(|s| s.accepts) {
                 Some(Accepts::Rows) => {
@@ -105,6 +140,9 @@ fn resolve_expr(expr: Expr, diags: &mut Vec<Diagnostic>) -> RExpr {
                 }
                 Some(Accepts::Cells) => {
                     check_structural_children(&children, &Ctor::TableCell, &name, diags)
+                }
+                Some(Accepts::Items) => {
+                    check_structural_children(&children, &Ctor::ListItem, &name, diags)
                 }
                 _ => {}
             }
@@ -133,6 +171,13 @@ fn check_structural_children(
     for child in children {
         match child {
             Expr::Call {
+                name: Ctor::Group,
+                children,
+                ..
+            } => {
+                check_structural_children(children, expected, parent, diags);
+            }
+            Expr::Call {
                 name: Ctor::Paragraph,
                 children,
                 body: BodyFlavor::None,
@@ -148,13 +193,39 @@ fn check_structural_children(
                     "`{parent}` takes only {} children",
                     if *expected == Ctor::TableRow {
                         "row"
-                    } else {
+                    } else if *expected == Ctor::TableCell {
                         "cell"
+                    } else {
+                        "item"
                     }
                 ),
             )),
         }
     }
+}
+
+fn contains_block(expr: &RExpr) -> bool {
+    if crate::shape::reflow::is_block_element(expr) {
+        return true;
+    }
+    matches!(expr, Expr::Call { name: Ctor::Group, children, .. } if children.iter().any(contains_block))
+}
+
+/// Whitespace between structural calls is a separator, not an element.
+fn structural_children(children: Vec<RExpr>) -> Vec<RExpr> {
+    children.into_iter().filter_map(|mut child| {
+        if let Expr::Call { name, fields, attrs, children, body, .. } = &mut child {
+            if *name == Ctor::Text && attrs.is_empty()
+                && matches!(fields.get("text"), Some(Value::Str(text)) if text.trim().is_empty()) {
+                return None;
+            }
+            if *name == Ctor::Group || *name == Ctor::Paragraph && *body == BodyFlavor::None {
+                *children = structural_children(std::mem::take(children));
+                if children.is_empty() && attrs.is_empty() && fields.is_empty() { return None; }
+            }
+        }
+        Some(child)
+    }).collect()
 }
 
 /// Which field a builtin's n-th positional argument maps to.

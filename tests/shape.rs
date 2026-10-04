@@ -76,7 +76,7 @@ fn shape_groups_sections_by_heading_level() {
 #[test]
 fn shape_recurses_into_block_mounts() {
     // block body 内的段落候选同样切分、各自成节
-    let src = "#note[\n前 #list[x] 后\n\n= 节\n]\n";
+    let src = "#note[\n前 #item[x] 后\n\n= 节\n]\n";
     let (item, diags) = notist::analyze(src);
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].message.contains("unknown constructor"));
@@ -89,7 +89,7 @@ fn shape_recurses_into_block_mounts() {
     (paragraph @7..11
       (text @7..11 :text \"前 \")
     )
-    (list @11..19
+    (listitem @11..19
       (paragraph @11..19
         (text @17..18 :text \"x\")
       )

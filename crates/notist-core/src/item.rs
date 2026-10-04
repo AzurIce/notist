@@ -49,7 +49,7 @@ pub enum Ctor {
 impl Ctor {
     /// The source-level name of a builtin constructor (`Doc` and custom
     /// constructors have none).
-    fn source_name(&self) -> Option<&'static str> {
+    pub(crate) fn source_name(&self) -> Option<&'static str> {
         Some(match self {
             Ctor::Doc | Ctor::Custom(_) => return None,
             Ctor::Paragraph => "paragraph",

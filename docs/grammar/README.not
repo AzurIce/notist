@@ -1,0 +1,253 @@
+= Notist Syntax
+
+本节定义 `.not` 的共用语法。记法见 [Grammar Notation](notation.not)，字面量见 [Types & Literals](../types.not)，具体构造及其语法糖见 [Builtin Content Functions & Sugar Grammar](../builtin.not)。实现阶段见 [Pipeline](../designs/pipeline.not)。
+
+== 模式与输入层级
+
+Markup 为默认模式。`#name(args)[body]` 的名称与参数使用 Code 词法，body 返回 Markup；`@(dict)` 和 `@!(dict)` 的 payload 使用 Code 词法。Code 当前支持内容函数调用与字面量，没有变量、绑定、通用运算或求值环境。
+
+`$...$` 是 Markup 中的不透明数学 payload，不启用内部 Math 文法。raw payload 同样不解析内部语言；识别规则分别在 math 与 raw 函数小节。
+
+调用的各部分必须紧邻；名称、参数组和内容槽之间不自动跳过 trivia。裸 `#name`、`#(..)` 为文字。内容槽的类型由 Types 中的 flank 规则确定。
+
+== 词法与 trivia
+
+lex 处理 Unicode 字符；syntax 处理 token。每个 token 保存 kind 与源码范围；原始文本由范围取得。空格、tab、换行与注释均保留，不自动跳过。
+
+```grammar
+lex Whitespace ::= [" " "\t"]+
+lex Newline ::= "\r\n" / "\n" / "\r"
+lex Eq ::= "="+
+lex Backtick ::= "`"+
+lex Ident ::= first:UnicodeChar @alphabetic(first) or first == "_"
+              (c:UnicodeChar @alphanumeric(c) or c in {"_", "-"})*
+
+syntax Trivia ::= WS / NL / LINE_COMMENT / BLOCK_COMMENT
+syntax TokenKind(k) ::= t:ANY @t.kind == k
+syntax End(ctx) ::= &NL / @limit(cursor, ctx)
+syntax BlankLine ::= WS? NL
+```
+
+`UnicodeChar` 匹配一个 Unicode scalar；alphabetic / alphanumeric 分别采用 Unicode 字母与字母数字判断。Ident 仅在 Code 中识别。String 与 Number 的词法归 Types；Markup 的 Escape 词法归 builtin 的 text 小节。
+
+`ANY` 匹配一个 token。`WS` / `NL` / `LINE_COMMENT` / `BLOCK_COMMENT` / `EQ` / `BACKTICK` / `IDENT` / `STR` / `NUMBER` / `TEXT` / `ESCAPE` 分别对应同名词法类别。其余大写名是单字符标点 token；scanner 使用的 CamelCase 名与其为同一 kind，例如 LBRACKET = LBracket。连续 `=` 和反引号各组成一个 token，`-`、`+`、`*` 等逐字符组成 token。
+
+```scanner
+lex scanner LineComment(mode) {
+  前缀必须为 "//"
+  若 mode == Markup 且前一个源码字符为 ":"，返回 Miss
+  消耗至下一个 LF 或源码末尾；不含 LF，LF 前紧邻的 CR 也不计入
+}
+
+lex scanner BlockComment {
+  前缀必须为 "/*"；depth = 1
+  从前缀之后逐字符扫描："/*" 令 depth += 1，"*/" 令 depth -= 1
+  depth == 0 时消耗至该 "*/" 之后；否则消耗至源码末尾
+}
+```
+
+注释可在文字中出现，块注释可嵌套。Markup 的 URL 豁免仅用于紧随 `:` 的 `//`；Code 注释不使用此豁免。普通 Markup 文字取到下一标点、trivia 或注释起点的最长区间；单独的 `/` 为文字。
+
+== 共用解析上下文
+
+```notation
+ctx = {
+  limit: 当前 token 区间的右开边界,
+  in_body: 是否处于内容槽内,
+  block_indent: 当前列表正文的最小列,
+  body_start: 列表项第一行正文起点或 none
+}
+
+limit(p, ctx) = p >= ctx.limit
+body_close(p, ctx) = ctx.in_body and kind(p) == RBracket
+line_start(p) = source 从上一个 NL 至 p 仅含空格或 tab
+column(p) = 该行前缀的列数；普通字符计一列，tab 到下一个四列边界
+block_start(p, ctx) =
+  p == ctx.body_start
+  or line_start(p) and (
+    column(p) == 0
+    or ctx.block_indent > 0 and column(p) >= ctx.block_indent
+  )
+can_open(p, ctx) = p + 1 < ctx.limit and kind(p + 1) not in {Whitespace, Newline}
+can_close(p, ctx) = p > 0 and kind(p - 1) not in {Whitespace, Newline, EOF}
+always_true = 恒真谓词
+```
+
+最外层 limit 为文件末尾，block_indent 为 0，in_body 为 false，body_start 为 none。列表项和表格单元格可建立更窄的区间。内容槽闭括号是正文分派的停止条件，不自动收窄所有 scanner 的 limit；各 scanner 单独声明停止条件。
+
+```scanner
+predicate block_end(p, ctx) {
+  要求 kind(p) == Newline
+  q = p + 1；跳过 q 处的 Whitespace；i = 跳过的缩进列数
+  若 kind(q) in {EOF, Newline} 或 i < ctx.block_indent，返回 true
+  若 table_start(q, ctx)，返回 true
+  若非 block_start(q, ctx)，返回 false
+  按 kind(q) 判断：
+    Eq：下一 token 为 Whitespace
+    Backtick：run 长度至少 3
+    Minus / Plus：下一 token 为 Whitespace，或 Divider 前缀成立
+    At：true
+    其他：false
+}
+```
+
+table_start 及 Divider 前缀分别定义在 builtin 的 table 与 divider 小节。上述探测是纯操作，不应用 recover。单 NL 是软换行；空行和反斜杠加换行分段。正文换行的降糖归 paragraph 小节。
+
+== 块与行内分派
+
+分派使用下面的有序算法，具体 Heading、RawBlock、List、Table 等规则均由对应函数小节定义。
+
+```scanner
+syntax algorithm BlockRun(ctx, container) {
+  循环至 limit，或 container != Document 且 body_close(cursor, ctx)：
+    container == Item 且当前为 WS / NL / LINE_COMMENT / BLOCK_COMMENT：消耗一个 token
+    NL：消耗一个 token
+    EQ 且下一 token 为 WS：Heading
+    BACKTICK 且 run 长度至少 3：RawBlock
+    Divider 前缀成立：Divider
+    MINUS / PLUS 且下一 token 为 WS：List
+    table_start(cursor, ctx)：Table
+    WS 且所在行余下仅为 WS 或 NL 或 EOF：消耗 WS
+    WS 且 block_indent > 0 且 container == Body：消耗 WS
+    LINE_COMMENT / BLOCK_COMMENT：消耗一个 token
+    AT 且 block_annotation(cursor, ctx)：Annotation
+    BACKSLASH NL：ExplicitBreak
+    其他：InlineRun(ctx, block_end, None)
+}
+
+syntax algorithm InlineRun(ctx, stop, active) {
+  循环：
+    limit 或 body_close(cursor, ctx)：停止
+    当前为 NL 且 stop(cursor, ctx)：停止
+    当前为 NL：消耗一个 token
+    active_closes(active, cursor, ctx)：停止
+    BACKSLASH NL：停止
+    BACKTICK：RawInline
+    STAR / UNDERSCORE / TILDE：Strong / Emph / Strike
+    DOLLAR：Math
+    BANG LBRACKET：Embed
+    LBRACKET LBRACKET：WikiLink
+    LBRACKET：Link
+    HASH：CodeCall
+    AT LPAREN 或 AT BANG LPAREN：Annotation
+    其他：消耗一个原始 token
+}
+```
+
+BlockRun 的 container 为 Document、Body 或 Item。Item 在每次分派前消费缩进；Document 不消费非空行的前导空白。因此顶层的块标记通常位于列 0，列表正文按容器缩进识别块。block_start 谓词用于 Divider、Table 与换行边界的探测；实际分派顺序以上述算法为准。
+
+```notation
+active_closes(None, p, ctx) = false
+active_closes(Flanked(k), p, ctx) = kind(p) == k and can_close(p, ctx)
+active_closes(Single(k), p, ctx) = kind(p) == k
+active_closes(Pair(k), p, ctx) = kind(p) == k and kind(p + 1) == k
+```
+
+函数返回级别不参与 syntax 分派；名称解析与签名感知的块重组由 Pipeline 定义。所有未形成构造的原始 token 交给 text 降糖。
+
+== 函数调用
+
+返回 InlineContent 或 Content 的函数称为内容函数。调用识别采用以下合法形式；Args 中的 Value、ArgKey 由 Types 定义。
+
+```grammar
+syntax CodeCall(ctx) ::=
+  "#" name:IDENT args:Args(ctx) body:CallBody(ctx)?
+  / "#" name:IDENT body:CallBody(ctx)
+  / "#" body:CallBody(ctx)
+
+syntax Args(ctx) ::=
+  LPAREN Trivia* (Argument (Trivia* COMMA Trivia* Argument)* Trivia* COMMA?)?
+  Trivia* RPAREN
+
+syntax Argument ::= key:ArgKey COLON Trivia* value:Value / value:Value
+syntax ItemBody(ctx) ::= BlockRun(ctx, Item)
+```
+
+ArgKey 后的冒号必须紧邻。位置参数按签名归位；具名参数成为 fields；允许尾逗号，重复 key 后者覆盖。节点只有一个 children 槽，内容不能通过参数传入；参数中写内容字面量产生诊断并保留恢复结构。
+
+```scanner
+scanner Balanced(open, close, cross_blocks; ctx) -> { end, close } / Miss {
+  depth = 0
+  从 cursor 逐 token 扫描至 ctx.limit：
+    若非 cross_blocks 且当前为 NL 且 block_end 成立，返回 Miss
+    kind == open 时 depth += 1
+    kind == close 时 depth -= 1；depth == 0 则返回 { end: p + 1, close: p }
+  返回 Miss
+}
+
+syntax algorithm CallBody(ctx) {
+  在 LBRACKET 处 probe Balanced(LBracket, RBracket, true; ctx)
+  根据 Types 的 flank 规则确定 flavor
+  消耗 LBRACKET，在 ctx with in_body=true 中解析正文：
+    Content：BlockRun(ctx, Body)
+    InlineContent：InlineRun(ctx, always_false, Single(RBracket))
+  消耗正文分派后当前位置的一个 RBRACKET
+}
+```
+
+always_false 为恒假谓词。Balanced 按 token kind 计数，字符串和转义 token 中的括号不计入深度；它只用于预探测，不改变正文 scanner 的边界。实际正文消费不以探测到的 close 建立新 limit。
+
+调用入口先探测 Args 的平衡（cross_blocks=false），再探测内容槽的平衡（true）。Args 未平衡时只将 HASH 返回文字；内容槽未闭合时在容器末尾给出 syntax 诊断：已闭合的具名 Args 仍形成无 body 的调用，其他前缀退回文字。
+
+当前 parser 的参数循环消费 trivia、逗号、具名项或单值直到 RPAREN，也会接收缺少或重复逗号的序列；这是超出合法 Args 产生式的容错行为，不承诺这些写法为合法参数语法。其他无法识别为字面量的 token 逐个消费并产生 syntax 诊断。空行终止 Args 的入口探测，整个调用退回文字。
+
+== 注解
+
+```grammar
+syntax Annotation(ctx) ::= AT module:BANG? payload:Dict
+```
+
+`@(dict)` 挂到紧随其后的节点，`@!(dict)` 挂到模块，空注解为 `@(:)`。payload 必须是完整 Dict；其他集合或缺少 payload 产生 syntax 诊断。Types 定义 Dict 的成员及值。
+
+```scanner
+predicate block_annotation(p, ctx) {
+  q = p + 1；若 kind(q) == Bang 则 q += 1
+  若 kind(q) != LParen，返回 true，让块路径诊断
+  在 q 探测 Balanced(LParen, RParen, false; ctx)
+  探测失败返回 true
+  否则返回 kind(result.end) in {EOF, Whitespace, Newline}
+}
+```
+
+块级注解挂下一个块；行内注解须紧邻一个行内构造，否则产生 semantic 诊断。模块注解必须位于内容之前。heading 注解向 section 的转移由 builtin 的 section shape 规则定义。
+
+== 共用变换
+
+`lower` 将匹配到的行内结构按 builtin 的 desugar 规则映射为 Expr 序列；`blocks` 对完整块序列执行同样的映射并组织 paragraph 候选。trivia 的归属、诊断阶段与最终树重组见 Pipeline。
+
+结构槽使用以下视图进行签名检查：
+
+```shape
+structural_children(children) {
+  按原顺序递归展开 paragraph 候选与透明 group 的 children
+  忽略结构调用之间的纯空白 text
+  保留其他节点，供 builtin 的 require 检查构造器
+}
+```
+
+== Markdown 前端
+
+Markdown 由独立前端解析；builtin 中的 `MD.*` 表示其 AST 模式，定义它们到共享内容函数的映射，不定义 Markdown 的源码文法。
+
+- 普通文字、链接地址和 embed 字段的标点转义与字符引用只解码一次；raw / math 不解码。
+- `decode_once` 从左到右识别原输入中的标点转义与字符引用，输出不再次参与解码；`decode_optional` 对 none 保留 none，否则调用 decode_once。
+- 单换行、空行、显式分段的共享行为见 paragraph；列表的编号与 lazy continuation 见 list / item。
+- 原始 HTML：行内标签忽略并保留普通文本，HTML 块整体跳过。
+
+== 当前语法边界
+
+URL autolink、term list、smart quote、symbol shorthand、Typst 的 label / ref 写法均未提供；链接与属性使用 link 和注解系统。未来的脚本、函数定义与引用扩展见 [Draft](../draft.not)。
+
+== 实现对应
+
+规则定义以本文、Types 和 Builtin 为准。下表给出仓库内的实现位置，用于核对消费、降糖与恢复行为。
+
+| 规则 | 实现位置 |
+| --- | --- |
+| 模式、token、注释 | `crates/notist-syntax/src/lexer.rs` |
+| 正文分派、调用、注解、行内扫描 | `crates/notist-syntax/src/parser.rs` |
+| 表格探测及单元格范围 | `crates/notist-syntax/src/parser/table.rs` |
+| 目标与标题字段提取 | `crates/notist-syntax/src/ast.rs` |
+| 原生前端降糖 | `src/desugar.rs` |
+| Markdown 映射 | `crates/notist-md/src/lib.rs` |
+| Markdown 字段解码 | `crates/notist-md/src/strings.rs` |

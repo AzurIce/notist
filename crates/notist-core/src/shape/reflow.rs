@@ -19,19 +19,41 @@ pub fn reflow(forest: Vec<RExpr>) -> Vec<RExpr> {
 }
 
 fn split_paragraph(paragraph: RExpr, out: &mut Vec<RExpr>) {
-    let Expr::Call { children, .. } = paragraph else {
+    let Expr::Call {
+        children,
+        attrs,
+        fields,
+        span,
+        ..
+    } = paragraph
+    else {
         unreachable!();
     };
+    let mut fragments = Vec::new();
     let mut run: Vec<RExpr> = Vec::new();
     for child in children {
         if is_block_element(&child) {
-            flush_run(out, &mut run);
-            out.push(child);
+            flush_run(&mut fragments, &mut run);
+            fragments.push(child);
         } else {
             run.push(child);
         }
     }
-    flush_run(out, &mut run);
+    flush_run(&mut fragments, &mut run);
+    if attrs.is_empty() && fields.is_empty() {
+        out.extend(fragments);
+    } else {
+        // One annotated range remains one identity even after it splits.
+        out.push(Expr::Call {
+            name: Ctor::Group,
+            args: Vec::new(),
+            fields,
+            children: fragments,
+            body: BodyFlavor::Block,
+            attrs,
+            span,
+        });
+    }
 }
 
 /// A non-empty run of inline children becomes a paragraph item (a run that is
@@ -76,12 +98,9 @@ fn contains_block_child(expr: &RExpr) -> bool {
 /// (`group` inherits the declared flavor), custom recovery nodes by the
 /// declared flavor — a block-written body's block-sequence children must
 /// stay in a block-level position to remain coherent.
-fn is_block_element(expr: &RExpr) -> bool {
+pub(crate) fn is_block_element(expr: &RExpr) -> bool {
     let Expr::Call {
-        name,
-        body,
-        fields,
-        ..
+        name, body, fields, ..
     } = expr
     else {
         return false;

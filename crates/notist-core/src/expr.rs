@@ -4,7 +4,8 @@ use crate::item::{Ctor, Dict, Value};
 
 /// How a call's `[...]` body was written: hugging the brackets (`[x]`,
 /// inline) or padded on both ends (`[ x ]`, block). `None` marks
-/// structurally constructed calls, which skip the signature check.
+/// structurally constructed calls without a source body flavor; their
+/// fields and content contracts are still checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyFlavor {
     None,

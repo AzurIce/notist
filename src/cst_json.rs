@@ -265,13 +265,6 @@ fn write_ast_list_item(out: &mut String, item: &ast::ListItem) {
         first = false;
         write_element(out, element);
     }
-    for nested in item.lists() {
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        write_ast_list(out, &nested);
-    }
     out.push_str("]}");
 }
 

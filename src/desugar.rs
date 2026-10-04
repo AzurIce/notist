@@ -219,11 +219,17 @@ fn desugar_raw_block(node: &SyntaxNode) -> Expr {
                 .collect::<String>()
                 .trim()
                 .to_string();
-            let text = tokens[nl + 1..close]
+            let text: String = tokens[nl + 1..close]
                 .iter()
                 .map(|t| t.text())
                 .collect::<String>();
-            (tag, text.strip_suffix('\n').map(str::to_string).unwrap_or(text))
+            // Closing-fence indentation is framing; retain all payload line endings.
+            let payload_end = text.rfind(['\n', '\r']).map_or(0, |i| i + 1);
+            let indent = node.ancestors().find_map(ListItem::cast)
+                .map_or(0, |item| item.content_indent());
+            let text = text[..payload_end].split_inclusive('\n')
+                .map(|line| strip_indent(line, indent)).collect::<String>();
+            (tag, text)
         }
         None => (String::new(), String::new()),
     };
@@ -261,6 +267,7 @@ fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
     let ordered = list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
     Expr::call("list", list.range())
         .with_field("ordered", Value::Bool(ordered))
+        .with_field("start", Value::Int(1))
         .with_children(
             list.items()
                 .map(|item| desugar_list_item(&item, diags))
@@ -320,11 +327,8 @@ fn unescape_table_pipes(exprs: &mut [Expr], payloads: &[TextRange]) {
 }
 
 fn desugar_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
-    let mut children = Vec::new();
-    children.extend(desugar_inline(item.content(), diags));
-    for nested in item.lists() {
-        children.push(desugar_list(&nested, diags));
-    }
+    let elements: Vec<_> = item.content().collect();
+    let (children, _) = desugar_blocks(&elements, diags);
     Expr::call("item", item.range()).with_children(children)
 }
 
@@ -725,6 +729,17 @@ fn append_description(expr: &Expr, out: &mut String) {
     }
 }
 
+fn strip_indent(line: &str, indent: usize) -> String {
+    let mut column = 0;
+    let mut end = 0;
+    for (offset, ch) in line.char_indices() {
+        if column >= indent || !matches!(ch, ' ' | '\t') { break; }
+        column = if ch == '\t' { (column / 4 + 1) * 4 } else { column + 1 };
+        end = offset + ch.len_utf8();
+    }
+    format!("{}{}", " ".repeat(column.saturating_sub(indent)), &line[end..])
+}
+
 fn desugar_inline(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
     diags: &mut Vec<Diagnostic>,
@@ -816,6 +831,10 @@ fn desugar_inline(
                         .iter()
                         .map(|t| t.text())
                         .collect();
+                    let indent = node.ancestors().find_map(ListItem::cast)
+                        .map_or(0, |item| item.content_indent());
+                    let text = text.split_inclusive('\n').enumerate().map(|(i, line)|
+                        if i == 0 { line.to_string() } else { strip_indent(line, indent) }).collect::<String>();
                     let mut expr =
                         Expr::call("math", node.text_range()).with_field("text", Value::Str(text));
                     expr.set_attrs(pending.take());
@@ -862,7 +881,7 @@ fn desugar_inline(
                     let (target, children) = if node.kind() == SyntaxKind::Link {
                         let link = Link::cast(node.clone()).unwrap();
                         (
-                            tokens_text(&link.target_tokens()),
+                            link.target(),
                             desugar_inline(link.content(), diags),
                         )
                     } else {

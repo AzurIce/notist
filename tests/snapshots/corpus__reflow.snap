@@ -79,16 +79,15 @@ Document@0..434
   Newline@433..434 "\n"
 
 === core ===
+error[type] @186..190: `list` takes only item children
 error[type] @248..258: unknown constructor `card`
 error[type] @322..333: unknown constructor `card`
 (doc @0..434
   (paragraph @173..180
     (text @173..180 :text "前文 ")
   )
-  (list @180..191
-    (paragraph @180..191
-      (text @186..190 :text "body")
-    )
+  (list @180..191 :ordered false :start 1
+    (text @186..190 :text "body")
   )
   (paragraph @191..198
     (text @191..198 :text " 后文")

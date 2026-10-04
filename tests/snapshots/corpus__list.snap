@@ -27,15 +27,15 @@ Document@0..150
       Text@24..30 "第二"
   Newline@30..31 "\n"
   Newline@31..32 "\n"
-  List@32..66
+  List@32..106
     ListItem@32..51
       Minus@32..33 "-"
       Whitespace@33..34 " "
       Text@34..40 "嵌套"
       Newline@40..41 "\n"
-      List@41..51
-        ListItem@41..51
-          Whitespace@41..43 "  "
+      Whitespace@41..43 "  "
+      List@43..51
+        ListItem@43..51
           Minus@43..44 "-"
           Whitespace@44..45 " "
           Text@45..51 "子项"
@@ -44,9 +44,8 @@ Document@0..150
       Minus@52..53 "-"
       Whitespace@53..54 " "
       Text@54..66 "回到顶层"
-  Newline@66..67 "\n"
-  Newline@67..68 "\n"
-  List@68..106
+    Newline@66..67 "\n"
+    Newline@67..68 "\n"
     ListItem@68..94
       Minus@68..69 "-"
       Whitespace@69..70 " "
@@ -78,50 +77,68 @@ Document@0..150
 
 === core ===
 (doc @0..150
-  (list @0..11 :ordered false
+  (list @0..11 :ordered false :start 1
     (listitem @0..5
-      (text @2..5 :text "甲")
+      (paragraph @2..5
+        (text @2..5 :text "甲")
+      )
     )
     (listitem @6..11
-      (text @8..11 :text "乙")
+      (paragraph @8..11
+        (text @8..11 :text "乙")
+      )
     )
   )
-  (list @13..30 :ordered true
+  (list @13..30 :ordered true :start 1
     (listitem @13..21
-      (text @15..21 :text "第一")
+      (paragraph @15..21
+        (text @15..21 :text "第一")
+      )
     )
     (listitem @22..30
-      (text @24..30 :text "第二")
+      (paragraph @24..30
+        (text @24..30 :text "第二")
+      )
     )
   )
-  (list @32..66 :ordered false
+  (list @32..106 :ordered false :start 1
     (listitem @32..51
-      (text @34..40 :text "嵌套")
-      (list @41..51 :ordered false
-        (listitem @41..51
-          (text @45..51 :text "子项")
+      (paragraph @34..40
+        (text @34..40 :text "嵌套")
+      )
+      (list @43..51 :ordered false :start 1
+        (listitem @43..51
+          (paragraph @45..51
+            (text @45..51 :text "子项")
+          )
         )
       )
     )
     (listitem @52..66
-      (text @54..66 :text "回到顶层")
+      (paragraph @54..66
+        (text @54..66 :text "回到顶层")
+      )
     )
-  )
-  (list @68..106 :ordered false
     (listitem @68..94
-      (text @70..76 :text "续行")
-      (text @79..94 :text "属于同一项")
+      (paragraph @70..94
+        (text @70..76 :text "续行")
+        (text @79..94 :text "属于同一项")
+      )
     )
     (listitem @95..106
-      (text @97..106 :text "下一项")
+      (paragraph @97..106
+        (text @97..106 :text "下一项")
+      )
     )
   )
   (paragraph @108..117
     (text @108..117 :text "段落被")
   )
-  (list @118..132 :ordered false
+  (list @118..132 :ordered false :start 1
     (listitem @118..132
-      (text @120..132 :text "列表截断")
+      (paragraph @120..132
+        (text @120..132 :text "列表截断")
+      )
     )
   )
   (paragraph @134..149

@@ -2,6 +2,8 @@
 
 源码到 Content 树的完整管线。诊断在各层就近产生；分析作用于最终的 Content 树。
 
+源码规则见 [Syntax](../grammar/README.not)，值域与字面量见 [Types](../types.not)，具体构造器契约和降糖见 [Builtin](../builtin.not)。本文定义各阶段的实现职责。
+
 *Lex*
 
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
@@ -29,10 +31,10 @@
 *Resolve*（IR₁ → IR₂）
 
 - 名称解析：构造器名 → Ctor（内建表）；未知名是 type 诊断（`unknown constructor`），调用保留为 Custom 恢复节点
-- 类型检查：`Accepts × flavor` 逐调用点校验（依赖只有 Expr 携带的 flavor 声明，故在构造期做）
-- 结构槽：`table` 只接受 `row`，`row` 只接受 `cell`；检查时穿透待 Shape 展开的段落候选，不进行段落提升
+- 类型检查：逐调用点校验 flavor、已知字段的类型 / 值域与必填字段；行内内容槽检查实际子节点的级别，恢复树保留原始内容和值
+- 结构槽：按 Builtin 中的契约检查构造器；使用 Syntax 定义的 structural_children 视图，不进行段落提升
 - 归一：位置参数归位 fields、inline 挂载提升为单段块、字面量以 text 插入
-- 无环境、无计算：内容函数的实现对外部渲染器透明，管线只需要签名
+- 管线消费签名与输入；内容函数的具体呈现由渲染器实现
 
 *Shape*（IR₂ → IR₂′）
 
@@ -40,7 +42,8 @@
   1. reflow：签名感知切分——block 级调用从 `paragraph` 候选中切出，块序列定稿
   2. sectionize：按 heading level 把平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section 上（身份归位），section 的 span 覆盖整个节的范围
 - 级别判定只依赖构造器签名（内建表）或调用点 flavor 声明（恢复节点），不求值
-- 表格的行 / 单元格结构槽只做 reflow 并递归，保持结构轴；普通 `cell` 内容槽照常 reflow 与 sectionize
+- 带 attrs 或 fields 的段落候选拆分时，以透明的块级 group 保留整个范围与元数据，不把同一个身份复制到多段
+- 列表项 / 表格行 / 单元格结构槽只做 reflow 并递归，保持结构轴；普通 `item` / `cell` 内容槽照常 reflow 与 sectionize
 
 *Materialize*（物化）
 

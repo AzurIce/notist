@@ -2,7 +2,7 @@ use crate::builtins::Accepts;
 use crate::expr::{BodyFlavor, Expr, RExpr};
 use crate::item::Ctor;
 
-mod reflow;
+pub(crate) mod reflow;
 mod sectionize;
 
 /// Shaping an `IR₂` forest into its final structure. Per block sequence (the
@@ -26,9 +26,12 @@ fn shape_children(mut expr: RExpr) -> RExpr {
     else {
         return expr;
     };
-    if matches!(name.accepts(), Some(Accepts::Rows | Accepts::Cells)) {
-        // Structural slots expose row/cell calls from paragraph candidates,
-        // then recurse into cells without sectionizing the row/column axes.
+    if matches!(
+        name.accepts(),
+        Some(Accepts::Rows | Accepts::Cells | Accepts::Items)
+    ) {
+        // Expose item/row/cell calls from paragraph candidates, then recurse
+        // into their content without sectionizing the structural sequence.
         *children = reflow::reflow(std::mem::take(children))
             .into_iter()
             .map(shape_children)
@@ -47,7 +50,7 @@ fn is_block_mount(ctor: &Ctor, body: &BodyFlavor) -> bool {
         Some(Accepts::Content) => true,
         Some(Accepts::Inline | Accepts::Nothing) => false,
         Some(Accepts::Any) => *body != BodyFlavor::Inline,
-        Some(Accepts::Rows | Accepts::Cells) => false,
+        Some(Accepts::Rows | Accepts::Cells | Accepts::Items) => false,
         None => *body == BodyFlavor::Block,
     }
 }

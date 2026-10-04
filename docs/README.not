@@ -1,0 +1,13 @@
+= Notist Documentation
+
+- [Cook Book](cookbook/README.not)：从示例开始编写文档。
+- [Syntax](grammar/README.not)：模式、词法、调用、注解与通用解析规则。
+- [Types & Literals](types.not)：类型、字面量与内容 flavor。
+- [Builtin Content Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
+- [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
+- [Pipeline](designs/pipeline.not)：语法规则与内容树在各实现阶段的处理职责。
+- [Draft](draft.not)：尚未确定的设计。
+
+语法规则使用 Grammar Notation 表达；类型与字面量归 Types，具体函数及其语法糖归 Builtin，其他共用规则归 Syntax。函数小节引用共用规则，不重复定义。
+
+`_logs/` 保存历史记录；当前行为以规范和实现为准。

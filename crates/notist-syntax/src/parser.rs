@@ -49,14 +49,17 @@ pub fn parse(src: &str) -> Parse {
 /// peeking, never by reparsing.
 struct Parser<'a> {
     lexed: Lexed<'a>,
+    source: &'a str,
+    block_indent: usize,
+    block_start: Option<usize>,
     pos: usize,
     builder: GreenNodeBuilder<'static>,
     diagnostics: Vec<Diagnostic>,
     /// Inside a `[...]` body: `]` terminates any inline run (see
     /// `inline_delimited`). Set by `bracket_body`, restored on exit.
     in_body: bool,
-    /// A table cell bounds every lookahead as well as consumption, so paired
-    /// inline constructs cannot consume another cell or row.
+    /// Table cells and list items bound lookahead and consumption, so paired
+    /// inline constructs cannot consume another cell, row, or item.
     limit: Option<usize>,
 }
 
@@ -64,6 +67,9 @@ impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
         Self {
             lexed: lex(src),
+            source: src,
+            block_indent: 0,
+            block_start: None,
             pos: 0,
             builder: GreenNodeBuilder::new(),
             diagnostics: Vec::new(),
@@ -142,7 +148,7 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    /// Exactly `---` at column zero, with only optional trailing whitespace.
+    /// Exactly `---` at a block start, with only optional trailing whitespace.
     /// The marker's span excludes trailing whitespace and the newline.
     fn divider(&mut self) {
         self.builder.start_node(SyntaxKind::Divider.into());
@@ -153,10 +159,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Entry: at a fence (`>= 3` backticks) at a line start. Consumes through
-    /// the closing fence (equal or longer run) or EOF; the closing fence's
-    /// trailing newline belongs to `Document`.
+    /// the closing fence (equal or longer run) or container end; the closing
+    /// fence's trailing newline belongs to the enclosing block sequence.
     ///
-    /// An unclosed block swallows to EOF and is reported; the `Error` wrapper
+    /// An unclosed block swallows to container end and is reported; the `Error` wrapper
     /// is attached retroactively via the checkpoint taken at entry, so a
     /// broken block is structurally marked, not just diagnosed.
     fn raw_block(&mut self) {
@@ -176,6 +182,13 @@ impl<'a> Parser<'a> {
         }
         let mut closed = false;
         loop {
+            if self.cur() == Some(SyntaxKind::Whitespace)
+                && self.line_content_at(self.pos).1 == self.block_indent
+                && self.peek(1) == Some(SyntaxKind::Backtick)
+                && self.lexed.len(self.pos + 1) >= fence_len
+            {
+                self.eat();
+            }
             match self.cur() {
                 None => break,
                 Some(SyntaxKind::Backtick) if self.lexed.len(self.pos) >= fence_len => {
@@ -529,7 +542,6 @@ impl<'a> Parser<'a> {
             match self.kind_at(j) {
                 None => break None,
                 Some(SyntaxKind::Newline) => break None,
-                Some(SyntaxKind::RParen) if !embed => break Some(j),
                 Some(_) => {
                     for ch in self.lexed.text(j).chars() {
                         if escaped {
@@ -546,7 +558,7 @@ impl<'a> Parser<'a> {
                             if ch == q {
                                 quote = None;
                             }
-                        } else if embed {
+                        } else {
                             match ch {
                                 '"' | '\'' if previous_space => quote = Some(ch),
                                 '(' => parens += 1,
@@ -556,7 +568,7 @@ impl<'a> Parser<'a> {
                         }
                         previous_space = ch.is_whitespace();
                     }
-                    if embed && parens == 0 {
+                    if parens == 0 {
                         break Some(j);
                     }
                     j += 1;
@@ -707,10 +719,11 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::Backtick) if self.at_fence(0) => self.raw_block(),
                 Some(SyntaxKind::Minus) if self.at_divider_at(self.pos) => self.divider(),
                 Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) if self.at_list_marker() => {
-                    self.list_at(0)
+                    self.list_at(self.column_at(self.pos))
                 }
                 _ if self.at_table_at(self.pos) => self.table(),
                 Some(SyntaxKind::Whitespace) if self.at_blank_line() => self.eat_blank_line(),
+                Some(SyntaxKind::Whitespace) if self.block_indent > 0 => self.eat(),
                 Some(SyntaxKind::LineComment) | Some(SyntaxKind::BlockComment) => self.eat(),
                 Some(SyntaxKind::At) if self.at_block_annotation() => self.annotation(),
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => {
@@ -950,87 +963,151 @@ impl<'a> Parser<'a> {
         Some(kind)
     }
 
-    /// Entry: at a `- ` / `+ ` marker, column 0. A list is a run of sibling
-    /// items at one indent level; items deeper than `indent` nest, a blank
-    /// line or dedent ends the list.
+    /// A structural sequence of same-type items. Blank lines between items
+    /// belong to the list; an item's indented block sequence owns its body.
     fn list_at(&mut self, indent: usize) {
+        let marker = self.cur();
         self.builder.start_node(SyntaxKind::List.into());
         loop {
             self.list_item(indent);
             if self.cur() != Some(SyntaxKind::Newline) {
                 break;
             }
-            match self.next_line_marker_indent() {
-                Some(next) if next == indent => self.eat(),
-                _ => break,
-            }
-        }
-        self.builder.finish_node();
-    }
-
-    /// Entry: at the (possibly indented) marker of one item. Consumes the
-    /// marker line's inline content, then any nested list.
-    fn list_item(&mut self, indent: usize) {
-        self.builder.start_node(SyntaxKind::ListItem.into());
-        while self.cur() == Some(SyntaxKind::Whitespace) {
-            self.eat();
-        }
-        self.eat();
-        self.eat();
-        self.inline(|p: &Self| p.line_ends_list_item(p.pos, indent));
-        if self.cur() == Some(SyntaxKind::Newline) {
-            if let Some(next) = self.next_line_marker_indent() {
-                if next > indent {
-                    self.eat();
-                    self.list_at(next);
+            let mut next = self.pos + 1;
+            loop {
+                let (content, _) = self.line_content_at(next);
+                if self.kind_at(content) == Some(SyntaxKind::Newline) {
+                    next = content + 1;
+                } else {
+                    next = content;
+                    break;
                 }
             }
+            if self.column_at(next) != indent
+                || self.kind_at(next) != marker
+                || self.kind_at(next + 1) != Some(SyntaxKind::Whitespace)
+            {
+                break;
+            }
+            while self.pos < next {
+                self.eat();
+            }
         }
         self.builder.finish_node();
     }
 
-    /// Indent width of the next line's marker, if the next line is a list
-    /// item. Entry: current token is a newline.
-    fn next_line_marker_indent(&self) -> Option<usize> {
-        if self.cur() != Some(SyntaxKind::Newline) {
-            return None;
-        }
-        let mut i = self.pos + 1;
-        let mut indent = 0;
-        while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
-            indent += self.lexed.len(i);
-            i += 1;
-        }
-        match self.kind_at(i) {
-            Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
-                if self.kind_at(i + 1) == Some(SyntaxKind::Whitespace) =>
-            {
-                Some(indent)
+    fn list_item(&mut self, indent: usize) {
+        self.builder.start_node(SyntaxKind::ListItem.into());
+        self.eat(); // marker
+        let body_indent = self
+            .lexed
+            .text(self.pos)
+            .chars()
+            .fold(indent + 1, |column, ch| {
+                if ch == '\t' {
+                    (column / 4 + 1) * 4
+                } else {
+                    column + 1
+                }
+            });
+        self.eat(); // marker whitespace
+        let start = self.pos;
+        let mut end = start;
+        while let Some(kind) = self.kind_at(end) {
+            if kind == SyntaxKind::Newline {
+                let boundary = end;
+                let mut next = end + 1;
+                loop {
+                    let (content, width) = self.line_content_at(next);
+                    if self.kind_at(content) == Some(SyntaxKind::Newline) {
+                        next = content + 1;
+                        continue;
+                    }
+                    if self.kind_at(content).is_none() || width < body_indent {
+                        end = boundary;
+                    } else {
+                        end = next;
+                    }
+                    break;
+                }
+                if end == boundary {
+                    break;
+                }
+            } else {
+                end += 1;
             }
-            _ => None,
         }
+        let old_limit = self.limit.replace(end);
+        let old_indent = std::mem::replace(&mut self.block_indent, body_indent);
+        let old_start = self.block_start.replace(start);
+        while let Some(kind) = self.cur() {
+            match kind {
+                SyntaxKind::RBracket if self.in_body => break,
+                SyntaxKind::Newline
+                | SyntaxKind::Whitespace
+                | SyntaxKind::LineComment
+                | SyntaxKind::BlockComment => self.eat(),
+                SyntaxKind::Eq if self.at_heading_marker(0) => self.heading(),
+                SyntaxKind::Backtick if self.at_fence(0) => self.raw_block(),
+                SyntaxKind::Minus if self.at_divider_at(self.pos) => self.divider(),
+                SyntaxKind::Minus | SyntaxKind::Plus if self.at_list_marker() => {
+                    self.list_at(self.column_at(self.pos))
+                }
+                _ if self.at_table_at(self.pos) => self.table(),
+                SyntaxKind::At if self.at_block_annotation() => self.annotation(),
+                SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
+                    self.parbreak()
+                }
+                _ => self.inline(Self::line_ends_block),
+            }
+        }
+        self.block_start = old_start;
+        self.block_indent = old_indent;
+        self.limit = old_limit;
+        self.builder.finish_node();
     }
 
-    /// Stop condition for an item's inline content: the item ends at a blank
-    /// line, at any further marker (sibling or nested — the item/list layer
-    /// sorts out which), or at a continuation line indented no deeper than
-    /// the marker.
-    fn line_ends_list_item(&self, pos: usize, indent: usize) -> bool {
-        let mut i = pos + 1;
-        let mut next_indent = 0;
-        while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
-            next_indent += self.lexed.len(i);
-            i += 1;
+    fn line_content_at(&self, mut pos: usize) -> (usize, usize) {
+        let mut width = 0;
+        while self.kind_at(pos) == Some(SyntaxKind::Whitespace) {
+            width = self.lexed.text(pos).chars().fold(width, |column, ch| {
+                if ch == '\t' {
+                    (column / 4 + 1) * 4
+                } else {
+                    column + 1
+                }
+            });
+            pos += 1;
         }
-        match self.kind_at(i) {
-            None | Some(SyntaxKind::Newline) => true,
-            Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus)
-                if self.kind_at(i + 1) == Some(SyntaxKind::Whitespace) =>
-            {
-                true
+        (pos, width)
+    }
+
+    fn column_at(&self, pos: usize) -> usize {
+        let offset = usize::from(self.lexed.offset(pos));
+        let start = self.source[..offset]
+            .rfind(['\n', '\r'])
+            .map_or(0, |i| i + 1);
+        self.source[start..offset].chars().fold(0, |column, ch| {
+            if ch == '\t' {
+                (column / 4 + 1) * 4
+            } else {
+                column + 1
             }
-            _ => next_indent <= indent,
+        })
+    }
+
+    fn at_block_start(&self, pos: usize) -> bool {
+        if self.block_start == Some(pos) {
+            return true;
         }
+        let offset = usize::from(self.lexed.offset(pos));
+        let column = self.column_at(pos);
+        let start = self.source[..offset]
+            .rfind(['\n', '\r'])
+            .map_or(0, |i| i + 1);
+        let prefix = &self.source[start..offset];
+        prefix.bytes().all(|ch| ch == b' ' || ch == b'\t')
+            && (column == 0 || self.block_indent > 0 && column >= self.block_indent)
     }
 
     fn at_list_marker(&self) -> bool {
@@ -1039,7 +1116,7 @@ impl<'a> Parser<'a> {
     }
 
     fn at_divider_at(&self, pos: usize) -> bool {
-        if pos > 0 && self.kind_at(pos - 1) != Some(SyntaxKind::Newline) {
+        if !self.at_block_start(pos) {
             return false;
         }
         if !(0..3).all(|i| self.kind_at(pos + i) == Some(SyntaxKind::Minus)) {
@@ -1062,25 +1139,29 @@ impl<'a> Parser<'a> {
 
     /// Whether a block ends after the newline at `pos`: a blank line follows
     /// (whitespace-only counts), or the next line starts a new block
-    /// (heading marker, fence, list marker, divider). Block markers are column-0
-    /// only; a marker preceded by whitespace is paragraph text.
+    /// (heading marker, fence, list marker, divider, annotation). Document
+    /// markers start at column zero; list item blocks use their body indentation.
     fn line_ends_block_at(&self, pos: usize) -> bool {
-        if self.at_table_at(pos + 1) {
+        let (next, indent) = self.line_content_at(pos + 1);
+        if matches!(self.kind_at(next), None | Some(SyntaxKind::Newline)) {
             return true;
         }
-        let mut i = pos + 1;
-        while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
-            i += 1;
-        }
-        if matches!(self.kind_at(i), None | Some(SyntaxKind::Newline)) {
+        if indent < self.block_indent {
             return true;
         }
-        match self.kind_at(pos + 1) {
-            Some(SyntaxKind::Eq) => self.kind_at(pos + 2) == Some(SyntaxKind::Whitespace),
-            Some(SyntaxKind::Backtick) => self.lexed.len(pos + 1) >= 3,
+        if self.at_table_at(next) {
+            return true;
+        }
+        if !self.at_block_start(next) {
+            return false;
+        }
+        match self.kind_at(next) {
+            Some(SyntaxKind::Eq) => self.kind_at(next + 1) == Some(SyntaxKind::Whitespace),
+            Some(SyntaxKind::Backtick) => self.lexed.len(next) >= 3,
             Some(SyntaxKind::Minus) | Some(SyntaxKind::Plus) => {
-                self.kind_at(pos + 2) == Some(SyntaxKind::Whitespace) || self.at_divider_at(pos + 1)
+                self.kind_at(next + 1) == Some(SyntaxKind::Whitespace) || self.at_divider_at(next)
             }
+            Some(SyntaxKind::At) => true,
             _ => false,
         }
     }

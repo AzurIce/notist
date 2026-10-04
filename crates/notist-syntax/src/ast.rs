@@ -417,8 +417,7 @@ impl ListItem {
             .find(|k| matches!(k, SyntaxKind::Minus | SyntaxKind::Plus))
     }
 
-    /// The inline content: elements between the marker's following
-    /// whitespace and any nested list.
+    /// The complete block content after the marker and its whitespace.
     pub fn content(&self) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> + '_ {
         let mut state = 0u8; // 0: pre-marker, 1: marker skipped, 2: post-ws skipped
         self.0
@@ -436,11 +435,43 @@ impl ListItem {
                 }
                 _ => false,
             })
-            .take_while(|el| el.kind() != SyntaxKind::List)
     }
 
     pub fn lists(&self) -> impl Iterator<Item = List> {
         self.0.children().filter_map(List::cast)
+    }
+
+    /// Absolute indentation of this item's content, including its marker.
+    pub fn content_indent(&self) -> usize {
+        let marker = self
+            .0
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|token| matches!(token.kind(), SyntaxKind::Minus | SyntaxKind::Plus))
+            .unwrap();
+        let mut prefix = Vec::new();
+        let mut previous = marker.prev_token();
+        while let Some(token) = previous {
+            if let Some(newline) = token.text().rfind(['\n', '\r']) {
+                prefix.push(token.text()[newline + 1..].to_string());
+                break;
+            }
+            prefix.push(token.text().to_string());
+            previous = token.prev_token();
+        }
+        prefix.reverse();
+        let mut prefix = prefix.concat();
+        prefix.push_str(marker.text());
+        if let Some(token) = marker.next_token() {
+            prefix.push_str(token.text());
+        }
+        prefix.chars().fold(0, |column, ch| {
+            if ch == '\t' {
+                (column / 4 + 1) * 4
+            } else {
+                column + 1
+            }
+        })
     }
 
     pub fn range(&self) -> TextRange {
@@ -463,17 +494,11 @@ impl Link {
     }
 
     pub fn target_tokens(&self) -> Vec<SyntaxToken> {
-        let mut inside = false;
-        let mut out = Vec::new();
-        for token in self.0.children_with_tokens().filter_map(|e| e.into_token()) {
-            match token.kind() {
-                SyntaxKind::LParen => inside = true,
-                SyntaxKind::RParen if inside => break,
-                _ if inside => out.push(token),
-                _ => {}
-            }
-        }
-        out
+        destination_tokens(&self.0)
+    }
+
+    pub fn target(&self) -> String {
+        destination(&self.0).0
     }
 }
 
@@ -492,58 +517,65 @@ impl Embed {
 
     /// Resource destination and optional quoted title, with punctuation escapes removed.
     pub fn destination(&self) -> (String, Option<String>) {
-        let tokens: Vec<_> = self
-            .0
-            .children_with_tokens()
-            .skip_while(|el| el.kind() != SyntaxKind::RBracket)
-            .skip(1)
-            .skip_while(|el| el.kind() != SyntaxKind::LParen)
-            .skip(1)
-            .collect();
-        let text: String = tokens[..tokens.len().saturating_sub(1)]
-            .iter()
-            .map(|el| el.to_string())
-            .collect();
-        let text = text.trim();
-        let mut title_start = None;
-        let mut escaped = false;
-        let mut previous_space = false;
-        for (i, ch) in text.char_indices() {
-            if escaped {
-                escaped = false;
-                previous_space = false;
-                continue;
-            }
-            if ch == '\\' {
-                escaped = true;
-                previous_space = false;
-                continue;
-            }
-            if previous_space && matches!(ch, '"' | '\'') {
-                title_start = Some((i, ch));
-                break;
-            }
-            previous_space = ch.is_whitespace();
-        }
-        let (target, title) = match title_start {
-            Some((i, quote)) if text.ends_with(quote) && text.len() > i + 1 => {
-                (text[..i].trim_end(), Some(&text[i + 1..text.len() - 1]))
-            }
-            _ => (text, None),
-        };
-        let target = target
-            .strip_prefix('<')
-            .and_then(|s| s.strip_suffix('>'))
-            .unwrap_or(target);
-        (
-            unescape_punctuation(target),
-            title.map(unescape_punctuation),
-        )
+        destination(&self.0)
     }
 
     pub fn range(&self) -> TextRange {
         self.0.text_range()
     }
+}
+
+fn destination_tokens(node: &SyntaxNode) -> Vec<SyntaxToken> {
+    let mut tokens: Vec<_> = node
+        .children_with_tokens()
+        .skip_while(|el| el.kind() != SyntaxKind::RBracket)
+        .skip(1)
+        .skip_while(|el| el.kind() != SyntaxKind::LParen)
+        .skip(1)
+        .filter_map(|el| el.into_token())
+        .collect();
+    tokens.pop(); // the outer closing parenthesis
+    tokens
+}
+
+fn destination(node: &SyntaxNode) -> (String, Option<String>) {
+    let tokens = destination_tokens(node);
+    let text: String = tokens.iter().map(|el| el.to_string()).collect();
+    let text = text.trim();
+    let mut title_start = None;
+    let mut escaped = false;
+    let mut previous_space = false;
+    for (i, ch) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            previous_space = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            previous_space = false;
+            continue;
+        }
+        if previous_space && matches!(ch, '"' | '\'') {
+            title_start = Some((i, ch));
+            break;
+        }
+        previous_space = ch.is_whitespace();
+    }
+    let (target, title) = match title_start {
+        Some((i, quote)) if text.ends_with(quote) && text.len() > i + 1 => {
+            (text[..i].trim_end(), Some(&text[i + 1..text.len() - 1]))
+        }
+        _ => (text, None),
+    };
+    let target = target
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(target);
+    (
+        unescape_punctuation(target),
+        title.map(unescape_punctuation),
+    )
 }
 
 fn unescape_punctuation(text: &str) -> String {

@@ -1,82 +1,30 @@
+= Draft
 
-== Roadmap
+本节收录未定设计，不作为当前语法规范。现行规则见 [Syntax](grammar/README.not)、[Types](types.not)、[Builtin](builtin.not) 与 [Pipeline](designs/pipeline.not)。
 
-=== 2026-09-28
+== Script 与函数定义
 
-*里程碑*
+探索在 `.notc` 中提供 Code 默认模式、变量、绑定、求值环境与函数定义；`.not` 继续使用内容函数的公开调用结构。
 
-*M1*
+待设计的问题：
 
-无完整 script 能力。类型系统与 function call 形态保留；call 参数只支持字面量与内容体——无变量、无绑定、无求值环境。所见即所得：树的结构即写出的结构，展开只是可选投影
+- 返回 InlineContent / Content 的函数与其他函数之间的调用限制。
+- 函数内部如何访问调用点的 fields、children 和 attrs。
+- Function 值与闭包的类型及字面量写法。
+- 是否需要内容参数或 slots，以及它们在公开内容树中的表示。
 
-*M2（Drafting）*
+== 字典 key 的源码表达
 
-或许 M2 引入 script 能力？但是保持 `.not` 与 M1 相同的限制，要求必须在 `.notc` 中做定义（默认 Code 模式），这样相当于对于文档来说，是不透明的元素，这样也解决了树上的表示的问题。
+当前 core 与 parser 都只支持字符串 key。若扩展为带类型标签的 Unit / Bool / Int / String key，需要统一设计存储模型、源码语法、与具名参数的区分及合法性检查。
 
-可以通过某种类 async 的函数染色机制做 not 与 notc 边界：
-- 定义返回值为 InlineContent/Content 类型的函数为 Content 函数。
-- Content 函数只能在 Content 函数中使用。
-- 只有 Content 函数能够进入 not 世界。
+== 链接与跨文件引用
 
-在这个模型下，尾 Content 字面值语法 `foo(..)[..]` 就可以被建模为挂载在对应 Content 上的 Children。不需要形参声明。
+探索以来源文件所在目录解析相对路径，带 scheme 的目标作为外部链接；`path#item` 与 `#item` 表示跨文件及文件内节点引用。
 
-// TODO: 形参语法怎么设计？或许隐式 it 支持 it.attrs 和 it.children？或许还应该支持某种 slots 定义机制？
+待设计的问题：
 
-*地基*
+- item 的定位规则，及是否扩展为链式约束。
+- check / LSP 的工作范围、路径解析与链接图的统一契约。
+- 未来 computed target 与 Code import 的分析边界。
 
-- 真 lexer 产出带 span 的 token 流，parser 只工作在 token 上；token = kind tag + 源文本切片，不持有自有数据（可从 (kind, span) 恢复的信息一律不存）
-- CST 用 rowan（lossless，trivia 全保留）
-- 分层：lexer → CST → AST（CST 的类型化视图）→ Content 树
-- 错误在各层就近诊断（语法 / 语义 / 类型）；分析作用于 core 树（check / sectionize / 渲染）；CST 服务 tooling；core 节点携带产生它的 surface span
-- 错误处理：parser 永不失败——诊断（给人）+ 恢复点（给树）+ Error 节点包裹结构性破坏（给工具）
-- workspace：crates/notist-syntax（CST 及以下）+ 根 crate（core 及以上）；依赖：rowan；dev-dep：insta（snapshot 测试）
-
-*切片*
-
-- S0 — 骨架竖切：仅段落 + heading 走通全管线，定下 token / CST / lowering / span / dump / 测试的全部约定
-- S1 — markup 全语法 CST（语法节全部内容；`#` 占位、math 不透明；注解语法待 draft 落定后并入）；实施步骤见 [S1.md](../notes/S1.md)
-- S2 — core 树（Item）+ lowering（desugar）+ 段落成型
-- S3 — sectionize
-- P2 — check：路径解析、item 引用
-
-*旁支设施*
-
-- web viewer（wasm）— CST/token 可视化，`web/`；重建：`cargo build --release --target wasm32-unknown-unknown` + `wasm-bindgen target/wasm32-unknown-unknown/release/notist.wasm --out-dir web/pkg --target web`
-
-== 语法
-
-见 [grammar.not](designs/grammar.not) 与 [markup.not](designs/markup.not)。
-
-== 类型
-
-见 [types.not](designs/code/types.not)。
-
-== Desugar
-
-=== 2026-09-29
-
-markup 构造到构造器调用的映射。Expr 与 Item 同构（ctor + fields + children），M1 的 eval 平凡（无求值，仅解析与归一化）。
-
-- `Expr::Call` 的 name 是未解析的 String；eval 时经注册表解析：内建 → Ctor，未知 → Custom（原子自定义元素，数据而非行为）
-- 文本 `text("..")`；段落 `paragraph([..])`；heading `heading(level: n, [..])`
-- `*x*` → `strong([x])`；`_x_` → `emph([x])`；`` `x` `` → `raw("x")`；`$x$` → `math("x")`（payload 不透明）
-- 链接 → `link(target, [文本])` / `link(target)`
-- 列表 → `list(ordered: bool, [item([..]), ..])`
-- 围栏块 → `raw("..", block: true, lang: "..")`
-- `#name(字面量)[内容]` → 原子调用节点；无变量、无运算、无绑定（M1 无 script 能力）
-- 换行无构造对应物：单换行忽略；`\`+换行与空行同为段落分隔
-
-== 组织
-
-=== 2026-09-28
-
-- 语言无根概念；check / LSP 以命令给定的目录为工作范围
-- 链接 target 是字符串路径；两种写法，desugar 到同一 link 节点：`[文本](target)` 与 `[[target]]` / `[[target|文本]]`
-- 路径一律相对当前文件目录（`./`、`../`、裸路径），`/` 分隔段，含 `.not` 扩展名
-- target 带 scheme（`https:` 等）视为外部链接，不参与路径解析
-- `#` 引入 item：`[[path#item]]`；`[[#item]]` 指当前文件内；item 解析规则后定（预留扩展为链式约束）
-- check 静态解析字面量 target；computed target 与 code 模式 import 的检查后置 P3
-
-== TODO
-
-- 空 InlineContent 提升为 Content 时的形态：包一个空 paragraph 还是空森林（随使用再定）
+当前 link 保存目标字符串，语法与降糖见 Builtin；上述扩展不改变已有节点的字段含义。

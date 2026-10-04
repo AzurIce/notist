@@ -272,7 +272,9 @@ error[semantic] @404..405: content is mounted with `[..]` after the call, not pa
 error[type] @111..131: unknown constructor `fn`
 error[type] @220..303: unknown constructor `note`
 error[type] @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
+error[type] @358..362: `list` takes only item children
 error[type] @393..410: unknown constructor `demo`
+error[type] @469..476: `raw` requires `text`
 error[type] @469..476: `raw` takes no children
 error[type] @497..506: unknown constructor `f`
 error[type] @530..542: unknown constructor `f`
@@ -324,12 +326,16 @@ error[type] @566..576: unknown constructor `f`
     (paragraph @241..259
       (text @241..259 :text "块 body 第一段")
     )
-    (list @261..290 :ordered false
+    (list @261..290 :ordered false :start 1
       (listitem @261..275
-        (text @263..275 :text "列表项甲")
+        (paragraph @263..275
+          (text @263..275 :text "列表项甲")
+        )
       )
       (listitem @276..290
-        (text @278..290 :text "列表项乙")
+        (paragraph @278..290
+          (text @278..290 :text "列表项乙")
+        )
       )
     )
     (paragraph @292..301
@@ -344,10 +350,8 @@ error[type] @566..576: unknown constructor `f`
     )
     (text @318..350 :text "块 body 喂给 inline 构造器")
   )
-  (list @352..363
-    (paragraph @352..363
-      (text @358..362 :text "body")
-    )
+  (list @352..363 :ordered false :start 1
+    (text @358..362 :text "body")
   )
   (paragraph @364..391
     (text @364..391 :text "inline body 提升为段落")
@@ -360,9 +364,11 @@ error[type] @566..576: unknown constructor `f`
     (paragraph @443..455
       (text @443..455 :text "块级匿名")
     )
-    (list @457..465 :ordered false
+    (list @457..465 :ordered false :start 1
       (listitem @457..465
-        (text @459..465 :text "列表")
+        (paragraph @459..465
+          (text @459..465 :text "列表")
+        )
       )
     )
   )

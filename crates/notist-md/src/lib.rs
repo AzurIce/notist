@@ -63,7 +63,6 @@ fn normalize_table_inline(exprs: &mut [Expr]) {
         {
             if let Some(Value::Str(text)) = fields.get("text") {
                 let text = match name.as_str() {
-                    "text" => Some(strings::decode(text)),
                     "math" => Some(text.replace("\\|", "|")),
                     _ => None,
                 };
@@ -86,7 +85,6 @@ impl<'a> Lowerer<'a> {
     fn description_of(&self, node: NodeRef) -> String {
         fn append(expr: &Expr, out: &mut String) {
             if let Expr::Call {
-                name,
                 fields,
                 children,
                 ..
@@ -95,11 +93,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(Value::Str(text)) =
                     fields.get("text").or_else(|| fields.get("description"))
                 {
-                    if name == "text" {
-                        out.push_str(&strings::decode(text));
-                    } else {
-                        out.push_str(text);
-                    }
+                    out.push_str(text);
                 }
                 for child in children {
                     append(child, out);
@@ -179,7 +173,7 @@ impl<'a> Lowerer<'a> {
                 }
                 if !text_buf.is_empty() {
                     out.push(Expr::text(
-                        std::mem::take(text_buf),
+                        strings::decode(&std::mem::take(text_buf)),
                         TextRange::new((start as u32).into(), (text_end as u32).into()),
                     ));
                 } else {
@@ -250,13 +244,14 @@ impl<'a> Lowerer<'a> {
                 .with_children(self.children(node)),
             KindData::List(l) => Expr::call("list", span)
                 .with_field("ordered", Value::Bool(l.is_ordered()))
+                .with_field("start", Value::Int(if l.is_ordered() { l.start() as i64 } else { 1 }))
                 .with_children(self.children(node)),
             KindData::ListItem(_) => Expr::call("item", span).with_children(self.children(node)),
             KindData::CodeSpan(c) => Expr::call("raw", span).with_field("text", Value::Str(c.str(self.src).into_owned())),
             KindData::Emphasis(_) => Expr::call("emph", span).with_children(self.children(node)),
             KindData::Strong(_) => Expr::call("strong", span).with_children(self.children(node)),
             KindData::Link(l) => Expr::call("link", span)
-                .with_field("target", Value::Str(l.destination().str(self.src).to_string()))
+                .with_field("target", Value::Str(strings::decode(l.destination().str(self.src))))
                 .with_children(self.children(node)),
             KindData::Image(i) => {
                 let mut expr = Expr::call("embed", span)

@@ -1,0 +1,81 @@
+= Types & Literals
+
+类型及其字面量在本节定义。共用 trivia、调用与内容解析见 [Syntax](grammar/README.not)，记法见 [Grammar Notation](grammar/notation.not)，构造器签名见 [Builtin](builtin.not)。
+
+== 标量
+
+- Unit — 唯一值 `()`
+- Bool — `true` / `false`
+- Int — i64 十进制
+- Float — f64 十进制（`0.5`；`.5`、`1.` 不合法）
+
+```grammar
+lex Digit ::= ["0".."9"]
+lex Number ::= Digit+ ("." Digit+)?
+syntax Unit ::= LPAREN RPAREN
+syntax Bool ::= "true" / "false"
+syntax NumericValue ::= MINUS? NUMBER
+```
+
+数字无科学计数法；负号与 NUMBER 必须紧邻，形成 Neg 节点，不属于 Number token。当前只支持这一个字面量前缀，没有通用一元运算。整数溢出在 Desugar 产生 semantic 诊断。
+
+== String
+
+UTF-8，四种形态，产出同一类型：
+
+- `"..."` — 行内，转义
+- `"""..."""` — 多行，转义
+- `r#"..."#` — raw 行内（`#` 层级 ≥1，任意）
+- `r#"""..."""#` — raw 多行
+
+转义集恰好五个：`\"` `\\` `\n` `\r` `\t`；raw 形态不处理转义。行内形态不跨行。多行形态：开引号后须立即换行（该换行不计入值），收尾去掉一个换行，不做 dedent。
+
+String 由 Code lexer 识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断在 Desugar 执行。
+
+== 内容
+
+`[...]` 是内容字面量，flank（两端内侧有无空白）决定 flavor：
+
+- `[x]`（两端内侧紧贴）→ InlineContent — inline 序列，inline 文法
+- `[ x ]`（两端内侧均为空白或换行）→ Content — 文档内容（调用森林），全块级文法；不透明：无相等性、不可模式匹配
+
+```notation
+flavor(open, close) =
+  Content if kind(open + 1) in {Whitespace, Newline}
+             and kind(close - 1) in {Whitespace, Newline}
+  else InlineContent
+```
+
+仅一端留白或内部跨行不会自行声明 Content；空 `[]` 为 InlineContent。
+
+位置：内容字面量只出现在两处——调用的 body 槽（挂载为 children，结构而非参数）和 `#` 后的 markup 位置（物化为透明节点 `group`，渲染即内容本身，可承接注解）。flank 空白不属于内容；inline 声明的内容不允许空行（诊断并按软换行吸收）。
+
+`InlineContent <: Content`：inline 挂载可提升为单段落 Content，空挂载提升为空 children；反向不转换。构造器签名据此声明 children 的接受类型，具体结构槽约束归对应 builtin 小节。
+
+== 集合
+
+- Array — 有序不可变：`(1, 2, 3)`；单元素须尾逗号 `(1,)`；空 `(,)`
+- Dict — 有序不可变：`("k": v)`；裸标识符 key 是字符串 key 的糖；空 `(:)`；重复 key 后者覆盖、位置不动
+
+集合字面量判别完全局部：出现 `k: v` 项 → Dict；否则出现逗号 → Array；否则为 grouping（`(x)` 永远不是集合，`()` 是 Unit）。
+
+```grammar
+syntax ArgKey ::= IDENT / STR
+syntax Value ::= STR / NumericValue / Bool / Collection
+syntax Collection ::=
+  Unit / "(" ":" ")" / "(" "," ")"
+  / LPAREN Trivia* Member (Trivia* COMMA Trivia* Member)* Trivia* COMMA?
+    Trivia* RPAREN
+syntax Member ::= ArgKey COLON Trivia* Value / Value
+syntax Dict ::= value:Collection @classification(value) == Dict
+```
+
+classification 按上面的局部判别执行。Grouping 必须恰有一个值；Dict 中的游离值产生 semantic 诊断。Trivia 与 Args 使用 Syntax 中的规则；当前 parser 对缺失 / 重复逗号的容错也适用于集合。
+
+当前 core 的 Dict 与 `.not` 字面量都只支持字符串 key；源码 key 仅解析 IDENT / STR，裸 `true` 作 key 也是字符串。其他 key 类型及其源码写法见 [Draft](draft.not)。
+
+内容字面量可被 parser 保留在参数或集合中，但 Desugar 诊断其位置非法，不将其作为可用的 Value。裸标识符值除 true / false 外产生 semantic 诊断。
+
+== 函数
+
+当前 `.not` 仅提供内容函数调用，没有 Function 值或闭包字面量。函数定义与脚本能力见 Draft。

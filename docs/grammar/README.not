@@ -176,6 +176,7 @@ scanner Balanced(open, close, cross_blocks; ctx) -> { end, close } | Miss {
   depth = 0
   从 cursor 逐 token 扫描至 ctx.limit：
     若非 cross_blocks 且当前为 NL 且 block_end 成立，返回 Miss
+    若 cross_blocks 且 OpaqueClose 成功，越过完整 raw / math payload
     kind == open 时 depth += 1
     kind == close 时 depth -= 1；depth == 0 则返回 { end: p + 1, close: p }
   返回 Miss
@@ -191,7 +192,7 @@ syntax algorithm CallBody(ctx) {
 }
 ```
 
-always_false 为恒假谓词。Balanced 按 token kind 计数，字符串和转义 token 中的括号不计入深度；它只用于预探测，不改变正文 scanner 的边界。实际正文消费不以探测到的 close 建立新 limit。
+always_false 为恒假谓词。Balanced 按 token kind 计数，字符串和转义 token 中的括号不计入深度；探测内容槽时也越过完整 raw / math payload，内部括号不关闭外层内容槽。它只用于预探测，不改变正文 scanner 的边界。实际正文消费不以探测到的 close 建立新 limit。
 
 调用入口先探测 Args 的平衡（cross_blocks=false），再探测内容槽的平衡（true）。Args 未平衡时只将 HASH 返回文字；内容槽未闭合时在容器末尾给出 syntax 诊断：已闭合的具名 Args 仍形成无 body 的调用，其他前缀退回文字。
 

@@ -51,31 +51,24 @@ impl Parser<'_> {
         }
         let mut end = start;
         let mut pipes = Vec::new();
-        let mut literal_end = None;
         while let Some(kind) = self.kind_at(end) {
             if kind == SyntaxKind::Newline {
                 break;
             }
-            if literal_end.is_some_and(|close| end > close) {
-                literal_end = None;
-            }
             // Strings and comments are already opaque tokens. Complete calls
-            // also own their internal pipes and newlines, including bodies
-            // containing paragraphs or nested tables.
+            // and raw/math payloads own their internal separators as well.
             if kind == SyntaxKind::Hash
-                && literal_end.is_none()
                 && let Some(call_end) = self.code_call_at(end).and_then(|call| call.end())
             {
                 end = call_end;
                 continue;
             }
+            if let Some(close) = self.opaque_close_at(end) {
+                end = close + 1;
+                continue;
+            }
             if kind == SyntaxKind::Pipe {
                 pipes.push(end);
-                literal_end = None;
-            } else if literal_end.is_none()
-                && matches!(kind, SyntaxKind::Backtick | SyntaxKind::Dollar)
-            {
-                literal_end = self.table_literal_end_at(end, kind);
             }
             end += 1;
         }
@@ -112,16 +105,6 @@ impl Parser<'_> {
             end,
             has_pipe,
         })
-    }
-
-    /// Raw and math payloads contain literal call spellings. Their pipes
-    /// still separate table cells, so a pipe resets this opaque region.
-    fn table_literal_end_at(&self, start: usize, delimiter: SyntaxKind) -> Option<usize> {
-        match delimiter {
-            SyntaxKind::Backtick => self.raw_inline_close_at(start),
-            SyntaxKind::Dollar => self.math_close_at(start, false),
-            _ => unreachable!(),
-        }
     }
 
     pub(super) fn table(&mut self) {

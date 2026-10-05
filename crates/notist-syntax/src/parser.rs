@@ -399,11 +399,12 @@ impl<'a> Parser<'a> {
         !matches!(prev, SyntaxKind::Whitespace | SyntaxKind::Newline)
     }
 
-    /// `$x$` is inline math; `$ x $` is a block equation. Matching flanks
-    /// determine the flavor, while the payload stays opaque. Empty or
-    /// unclosed forms remain literal text.
+    /// `$x$` is inline math; `$ x $` is block math. Matching flanks determine
+    /// the flavor. Block payloads own their newlines, including blank lines;
+    /// inline payloads stay within the enclosing block. Empty or unclosed
+    /// forms remain literal text.
     fn math(&mut self) {
-        let Some(close) = self.math_close_at(self.pos, true) else {
+        let Some(close) = self.math_close_at(self.pos) else {
             self.eat();
             return;
         };
@@ -414,7 +415,7 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn math_close_at(&self, start: usize, cross_lines: bool) -> Option<usize> {
+    fn math_close_at(&self, start: usize) -> Option<usize> {
         let padded = |i| {
             matches!(
                 self.kind_at(i),
@@ -424,7 +425,7 @@ impl<'a> Parser<'a> {
         let block = padded(start + 1);
         let mut end = start + 1;
         while let Some(kind) = self.kind_at(end) {
-            if kind == SyntaxKind::Newline && (!cross_lines || self.line_ends_block_at(end)) {
+            if !block && kind == SyntaxKind::Newline && self.line_ends_block_at(end) {
                 break;
             }
             if kind == SyntaxKind::Dollar && padded(end - 1) == block {
@@ -464,6 +465,16 @@ impl<'a> Parser<'a> {
             end += 1;
         }
         None
+    }
+
+    /// Opaque payload boundaries are shared by their parser and enclosing
+    /// scanners, so internal delimiters cannot split a cell, label or body.
+    fn opaque_close_at(&self, start: usize) -> Option<usize> {
+        match self.kind_at(start) {
+            Some(SyntaxKind::Backtick) => self.raw_inline_close_at(start),
+            Some(SyntaxKind::Dollar) => self.math_close_at(start),
+            _ => None,
+        }
     }
 
     /// Links, both spellings: `[[target]]` / `[[target|text]]` and
@@ -526,14 +537,9 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::Backslash) if self.kind_at(i + 1) == Some(SyntaxKind::Newline) => {
                     break None;
                 }
-                Some(kind @ (SyntaxKind::Backtick | SyntaxKind::Dollar)) => {
+                Some(SyntaxKind::Backtick | SyntaxKind::Dollar) => {
                     // Brackets inside opaque inline payloads are not label delimiters.
-                    let found = if kind == SyntaxKind::Backtick {
-                        self.raw_inline_close_at(i)
-                    } else {
-                        self.math_close_at(i, true)
-                    };
-                    i = found.map_or(i + 1, |end| end + 1);
+                    i = self.opaque_close_at(i).map_or(i + 1, |end| end + 1);
                 }
                 Some(SyntaxKind::LBracket) => {
                     depth += 1;
@@ -834,6 +840,10 @@ impl<'a> Parser<'a> {
             };
             if !cross_blocks && kind == SyntaxKind::Newline && self.line_ends_block_at(i) {
                 return Balanced::BlockEnd;
+            }
+            if cross_blocks && let Some(end) = self.opaque_close_at(i) {
+                i = end + 1;
+                continue;
             }
             if kind == open {
                 depth += 1;

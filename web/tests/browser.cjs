@@ -73,6 +73,27 @@ const { chromium } = require('playwright');
     assert.equal(await block.count(), 1);
     assert.equal(await block.locator('math').getAttribute('display'), 'block');
     assert.equal(await block.evaluate(node => node.closest('p')), null);
+    // Native tables let complete math payloads own pipes and blank lines.
+    await page.fill('#path', 'math.not');
+    await page.locator('#path').dispatchEvent('change');
+    const payload = String.raw`f(x) = \int_{-\infty}^\infty
+
+\hat{f}(\xi)\,e^{2 \pi i \xi x}
+\,d\xi`;
+    await page.fill('#src', `| package | content |\n| --- | --- |\n| katex | LaTeX 数学呈现 $\n${payload}\n$ |\n| absolute | $|x|$ |\n| next | row |`);
+    await page.waitForFunction(payload => {
+      const doc = document.querySelector('#preview').contentDocument;
+      const nodes = [...(doc?.querySelectorAll('katex-math') ?? [])];
+      return nodes.length === 2 && nodes[0].getAttribute('notist-text') === payload
+        && nodes.every(node => node.shadowRoot?.querySelector('.katex') && !node.shadowRoot.querySelector('.error').textContent);
+    }, payload);
+    const native = page.frameLocator('#preview');
+    assert.equal(await native.locator('table tr').count(), 4);
+    assert.equal(await native.locator('table tr').nth(1).locator('td').count(), 2);
+    assert.equal(await native.locator('table tr').nth(1).locator('td').nth(1).locator('katex-math[notist-block="true"]').count(), 1);
+    assert.equal(await native.locator('katex-math').nth(1).getAttribute('notist-text'), '|x|');
+    assert.equal(await native.locator('table tr').last().textContent(), 'nextrow');
+    assert.equal(await page.locator('#diags').textContent(), '✓ 无诊断');
     // Content paths respect the prepared Vault root; package dependency files
     // outside that root remain usable for declarations and components.
     await page.fill('#src', '[outside](../outside.not) ![asset](../outside.svg)');

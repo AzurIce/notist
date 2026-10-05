@@ -2,7 +2,7 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..93
+Document@0..115
   Text@0..6 "面积"
   Whitespace@6..7 " "
   Math@7..12
@@ -13,44 +13,78 @@ Document@0..93
   Text@13..19 "搞定"
   Newline@19..20 "\n"
   Newline@20..21 "\n"
-  Dollar@21..22 "$"
-  Whitespace@22..23 " "
-  Text@23..38 "两侧有空格"
-  Dollar@38..39 "$"
-  Whitespace@39..40 " "
-  Text@40..46 "不是"
-  Whitespace@46..47 " "
-  Text@47..51 "math"
-  Newline@51..52 "\n"
-  Newline@52..53 "\n"
-  Text@53..62 "未闭合"
-  Whitespace@62..63 " "
-  Dollar@63..64 "$"
-  Text@64..65 "x"
-  Whitespace@65..66 " "
-  Text@66..78 "只是文本"
-  Newline@78..79 "\n"
-  Newline@79..80 "\n"
-  Dollar@80..81 "$"
-  Dollar@81..82 "$"
-  Whitespace@82..83 " "
-  Text@83..92 "空内容"
-  Newline@92..93 "\n"
+  Math@21..37
+    Dollar@21..22 "$"
+    Newline@22..23 "\n"
+    Whitespace@23..25 "  "
+    Text@25..26 "x"
+    Pipe@26..27 "|"
+    Text@27..28 "y"
+    Whitespace@28..29 " "
+    Plus@29..30 "+"
+    Newline@30..31 "\n"
+    Newline@31..32 "\n"
+    Whitespace@32..34 "  "
+    Text@34..35 "z"
+    Newline@35..36 "\n"
+    Dollar@36..37 "$"
+  Newline@37..38 "\n"
+  Newline@38..39 "\n"
+  List@39..114
+    ListItem@39..71
+      Minus@39..40 "-"
+      Whitespace@40..41 " "
+      Dollar@41..42 "$"
+      Whitespace@42..43 " "
+      Text@43..58 "两侧有空格"
+      Dollar@58..59 "$"
+      Whitespace@59..60 " "
+      Text@60..66 "不是"
+      Whitespace@66..67 " "
+      Text@67..71 "math"
+    Newline@71..72 "\n"
+    ListItem@72..99
+      Minus@72..73 "-"
+      Whitespace@73..74 " "
+      Text@74..83 "未闭合"
+      Whitespace@83..84 " "
+      Dollar@84..85 "$"
+      Text@85..86 "x"
+      Whitespace@86..87 " "
+      Text@87..99 "只是文本"
+    Newline@99..100 "\n"
+    ListItem@100..114
+      Minus@100..101 "-"
+      Whitespace@101..102 " "
+      Dollar@102..103 "$"
+      Dollar@103..104 "$"
+      Whitespace@104..105 " "
+      Text@105..114 "空内容"
+  Newline@114..115 "\n"
 
 === core ===
-(doc @0..93
+(doc @0..115
   (paragraph @0..19
     (text @0..7 :text "面积 ")
     (math @7..12 :text "a^2")
     (text @12..19 :text " 搞定")
   )
-  (paragraph @21..51
-    (text @21..51 :text "$ 两侧有空格$ 不是 math")
-  )
-  (paragraph @53..78
-    (text @53..78 :text "未闭合 $x 只是文本")
-  )
-  (paragraph @80..92
-    (text @80..92 :text "$$ 空内容")
+  (math @21..37 :block true :text "x|y +\n\n  z")
+  (list @39..114 :ordered false :start 1
+    (listitem @39..71
+      (paragraph @41..71
+        (text @41..71 :text "$ 两侧有空格$ 不是 math")
+      )
+    )
+    (listitem @72..99
+      (paragraph @74..99
+        (text @74..99 :text "未闭合 $x 只是文本")
+      )
+    )
+    (listitem @100..114
+      (paragraph @102..114
+        (text @102..114 :text "$$ 空内容")
+      )
+    )
   )
 )

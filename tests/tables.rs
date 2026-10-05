@@ -169,8 +169,8 @@ fn body_rows_pad_missing_cells_and_ignore_excess_cells() {
 }
 
 #[test]
-fn table_pipes_can_be_escaped_in_text_formatting_raw_and_math() {
-    let not = "| value |\n| --- |\n| a\\|b *c\\|d* `e\\|f` $g\\|h$ |";
+fn table_pipes_are_escaped_in_markup_and_owned_by_opaque_payloads() {
+    let not = "| value |\n| --- |\n| a\\|b *c\\|d* `e|f` $g|h$ |";
     let md = "| value |\n| --- |\n| a\\|b **c\\|d** `e\\|f` $g\\|h$ |";
     let not = analyze("test.not", not);
     assert_eq!(normalized(not.clone()), normalized(analyze("test.md", md)));
@@ -203,13 +203,16 @@ fn table_pipes_can_be_escaped_in_text_formatting_raw_and_math() {
 }
 
 #[test]
-fn block_math_splits_cell_content_and_keeps_table_pipe_escaping() {
+fn block_math_splits_cell_content_and_preserves_frontend_pipe_rules() {
     let source = r#"| formula | tail |
 | --- | --- |
-| before $ x\|y $ after | end |
+| before $ x|y $ after | end |
 "#;
-    for path in ["test.not", "test.md"] {
-        let root = analyze(path, source);
+    for (path, source) in [
+        ("test.not", source.to_owned()),
+        ("test.md", source.replace("x|y", r"x\|y")),
+    ] {
+        let root = analyze(path, &source);
         let cell = &root.children[0].children[1].children[0];
         assert_eq!(
             cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
@@ -242,6 +245,123 @@ $ x|y $
     assert_eq!(
         equations[1].fields.get("text"),
         Some(&Value::Str("a\\|b".into()))
+    );
+}
+
+#[test]
+fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
+    for newline in ["\n", "\r\n", "\r"] {
+        let payload = [
+            r"\f\relax{x} = \int_{-\infty}^\infty",
+            r"\f\hat\xi\,e^{2 \pi i \xi x}",
+            r"\,d\xi",
+        ]
+        .join(newline);
+        let formula = format!("${newline}{payload}{newline}$");
+        let source = format!(
+            "| package | content |{newline}| --- | --- |{newline}\
+             | [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 {formula} |{newline}\
+             | after | following |{newline}{newline}outside"
+        );
+        let root = analyze("test.not", &source);
+        let table = &root.children[0];
+        assert_eq!(table.ctor, Ctor::Table);
+        assert_eq!(table.children.len(), 3);
+        assert!(table.children.iter().all(|row| row.children.len() == 2));
+        let cell = &table.children[1].children[1];
+        assert_eq!(
+            cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
+            [&Ctor::Paragraph, &Ctor::Math]
+        );
+        let math = &cell.children[1];
+        assert_eq!(math.level, Level::Block);
+        assert_eq!(math.fields.get("text"), Some(&Value::Str(payload)));
+        assert_eq!(
+            &source[usize::from(math.span.start())..usize::from(math.span.end())],
+            formula
+        );
+        assert!(cell.span.contains_range(math.span));
+        assert_eq!(text(&table.children[2]), "afterfollowing");
+        assert_eq!(text(&root.children[1]), "outside");
+        let html = notist_html::Renderer::new().render_with_diagnostics(&root);
+        assert!(html.diagnostics.is_empty(), "{:?}", html.diagnostics);
+        assert_eq!(html.html.matches("<tr>").count(), 3);
+        assert_eq!(html.html.matches("<div class=\"notist-math\"").count(), 1);
+    }
+}
+
+#[test]
+fn math_in_headers_and_cells_owns_blank_lines_pipes_and_markup_tokens() {
+    let payload = r#"x|y
+
+#strong[literal | text]
+= also literal
+\| remains escaped"#;
+    let source = format!(
+        "| $\n{payload}\n$ | $a|b$ |\n| --- | --- |\n\
+         | before $\n{payload}\n$ after | end |\n| next | row |"
+    );
+    let root = analyze("test.not", &source);
+    let table = &root.children[0];
+    assert_eq!(table.children.len(), 3);
+    assert!(table.children.iter().all(|row| row.children.len() == 2));
+    let equations: Vec<_> = table
+        .descendants()
+        .filter(|n| n.ctor == Ctor::Math)
+        .collect();
+    assert_eq!(equations.len(), 3);
+    assert_eq!(
+        equations[0].fields.get("text"),
+        Some(&Value::Str(payload.into()))
+    );
+    assert_eq!(
+        equations[1].fields.get("text"),
+        Some(&Value::Str("a|b".into()))
+    );
+    assert_eq!(equations[1].level, Level::Inline);
+    assert_eq!(
+        equations[2].fields.get("text"),
+        Some(&Value::Str(payload.into()))
+    );
+    let cell = &table.children[1].children[0];
+    assert_eq!(
+        cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
+        [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+    );
+    assert_eq!(text(&cell.children[0]).trim(), "before");
+    assert_eq!(text(&cell.children[2]).trim(), "after");
+    assert!(table.find(|n| n.ctor == Ctor::Strong).is_none());
+    assert_eq!(text(&table.children[2]), "nextrow");
+}
+
+#[test]
+fn newline_after_a_math_closer_ends_the_row_even_before_a_standalone_pipe() {
+    let source = "| name | content |\n| --- | --- |\n| math | $\nx\n$\n|\n| next | row |";
+    let root = analyze("test.not", source);
+    let table = &root.children[0];
+    assert_eq!(table.children.len(), 4);
+    assert!(
+        table.children[2]
+            .children
+            .iter()
+            .all(|cell| cell.children.is_empty())
+    );
+    assert_eq!(text(&table.children[3]), "nextrow");
+}
+
+#[test]
+fn markdown_tables_keep_physical_rows_and_gfm_pipe_escaping() {
+    let source = "| name | content |\n| --- | --- |\n| math | $\nx +\ny\n$ |\n| next | row |";
+    let not = analyze("test.not", source);
+    let md = analyze("test.md", source);
+    assert_eq!(not.children[0].children.len(), 3);
+    assert_eq!(md.children[0].children.len(), 6);
+    assert!(md.find(|n| n.ctor == Ctor::Math).is_none());
+    let source = "| first | second |\n| --- | --- |\n| `left | right` |\n| $left | right$ |";
+    let md = analyze("test.md", source);
+    assert!(
+        md.find(|n| matches!(n.ctor, Ctor::RawInline | Ctor::Math))
+            .is_none()
     );
 }
 
@@ -411,7 +531,7 @@ fn grouped_cells_accept_paragraphs_lists_and_nested_pipe_tables() {
 }
 
 #[test]
-fn calls_keep_raw_math_and_nested_table_pipe_escaping_in_their_own_scope() {
+fn calls_and_nested_tables_keep_opaque_payloads_unchanged() {
     let body = concat!(
         "#[\n",
         r"`raw|literal\|escaped` $math|literal\|escaped$",
@@ -440,7 +560,7 @@ fn calls_keep_raw_math_and_nested_table_pipe_escaping_in_their_own_scope() {
         [
             Value::Str(r"raw|literal\|escaped".into()),
             Value::Str(r"math|literal\|escaped".into()),
-            Value::Str(r"nested\\|pipe".into()),
+            Value::Str(r"nested\\\|pipe".into()),
         ]
     );
 }
@@ -482,35 +602,23 @@ fn multiline_comments_are_opaque_inside_a_logical_row() {
 }
 
 #[test]
-fn literal_calls_in_raw_and_math_do_not_protect_table_pipes() {
-    for delimiter in ["`", "$"] {
-        let src = format!(
-            "| a | b |\n| --- | --- |\n| {delimiter}#strong[one | two]{delimiter} |\n| next | row |"
-        );
+fn opaque_payloads_own_literal_calls_and_pipes() {
+    for (open, close) in [("`", "`"), ("$", "$"), ("$ ", " $")] {
+        let payload = r"#strong[one | two]\|escaped";
+        let src =
+            format!("| a | b |\n| --- | --- |\n| {open}{payload}{close} | next |\n| next | row |");
         let parse = notist::syntax::parser::parse_document(&src);
         assert_eq!(parse.syntax().to_string(), src);
         let table = Table::cast(parse.syntax().children().next().unwrap()).unwrap();
         let rows: Vec<_> = table.rows().collect();
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1].cells().count(), 2, "{src}");
-        assert!(
-            parse
-                .syntax()
-                .descendants()
-                .all(|node| !matches!(node.kind(), SyntaxKind::RawInline | SyntaxKind::Math))
-        );
-        let escaped = format!(
-            "| a | b |\n| --- | --- |\n| {delimiter}#strong[one\\|two]{delimiter} | next |"
-        );
-        let root = analyze("test.not", &escaped);
+        let root = analyze("test.not", &src);
         let cell = &root.children[0].children[1].children[0];
-        let payload = cell
+        let node = cell
             .find(|node| matches!(node.ctor, Ctor::RawInline | Ctor::Math))
             .unwrap();
-        assert_eq!(
-            payload.fields.get("text"),
-            Some(&Value::Str("#strong[one|two]".into()))
-        );
+        assert_eq!(node.fields.get("text"), Some(&Value::Str(payload.into())));
         assert!(cell.find(|node| node.ctor == Ctor::Strong).is_none());
     }
     let root = analyze(
@@ -518,8 +626,12 @@ fn literal_calls_in_raw_and_math_do_not_protect_table_pipes() {
         "| a | b |\n| --- | --- |\n| `left | #strong[x | y] right` |",
     );
     assert_eq!(
-        text(&root.children[0].children[1].children[1]),
-        "x | y right`"
+        root.children[0].children[1].children[0]
+            .find(|n| n.ctor == Ctor::RawInline)
+            .unwrap()
+            .fields
+            .get("text"),
+        Some(&Value::Str("left | #strong[x | y] right".into()))
     );
 }
 
@@ -536,6 +648,9 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
         "#()[body",
         "plain (text",
         "plain [text",
+        "`unclosed",
+        "$unclosed",
+        "$ unclosed",
     ] {
         let src = format!("| a | b |\n| --- | --- |\n| {body} | tail |\n| next | row |");
         let parse = notist::syntax::parser::parse_document(&src);
@@ -546,17 +661,14 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
 }
 
 #[test]
-fn inline_delimiters_cannot_pair_across_cells_or_rows() {
+fn emphasis_and_links_cannot_pair_across_cells_or_rows() {
     let src = "| *left | right* |\n| --- | --- |\n| `left | right` |\n| $left | right$ |\n| [broken | label](target) |";
     let root = analyze("test.not", src);
     let table = &root.children[0];
     assert_eq!(table.children.len(), 4);
     assert!(
         table
-            .find(|n| matches!(
-                n.ctor,
-                Ctor::Strong | Ctor::RawInline | Ctor::Math | Ctor::Link
-            ))
+            .find(|n| matches!(n.ctor, Ctor::Strong | Ctor::Link))
             .is_none()
     );
     for cell in table.children.iter().flat_map(|r| &r.children) {

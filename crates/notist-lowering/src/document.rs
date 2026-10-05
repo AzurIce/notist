@@ -1,4 +1,4 @@
-use rowan::{NodeOrToken, TextRange, TextSize, WalkEvent};
+use rowan::{NodeOrToken, TextRange, TextSize};
 
 use crate::annotation_dict;
 use notist_core::diag::{Diagnostic, Phase};
@@ -260,26 +260,7 @@ fn lower_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
                 .cells()
                 .take(width)
                 .map(|cell| {
-                    let mut payloads = Vec::new();
-                    for node in cell.content().filter_map(|el| el.into_node()) {
-                        let mut walk = node.preorder();
-                        while let Some(event) = walk.next() {
-                            if let WalkEvent::Enter(node) = event {
-                                match node.kind() {
-                                    SyntaxKind::CodeCall => walk.skip_subtree(),
-                                    SyntaxKind::RawInline | SyntaxKind::Math => {
-                                        payloads.push(node.text_range());
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    let mut inline = lower_inline(cell.content(), diags);
-                    // Pipe escaping belongs to table syntax, including opaque raw/math
-                    // payloads outside calls. Call bodies use their own markup grammar;
-                    // nested tables lower their own escapes exactly once.
-                    unescape_table_pipes(&mut inline, &payloads);
+                    let inline = lower_inline(cell.content(), diags);
                     let children = if inline.is_empty() {
                         Vec::new()
                     } else {
@@ -307,27 +288,6 @@ fn lower_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
             ),
         )
         .with_children(rows)
-}
-
-fn unescape_table_pipes(exprs: &mut [Expr], payloads: &[TextRange]) {
-    for expr in exprs {
-        if let Expr::Call {
-            name,
-            fields,
-            children,
-            span,
-            ..
-        } = expr
-        {
-            if matches!(name.as_str(), "raw" | "math")
-                && payloads.contains(span)
-                && let Some(Value::Str(text)) = fields.get("text")
-            {
-                fields.insert("text", Value::Str(text.replace("\\|", "|")));
-            }
-            unescape_table_pipes(children, payloads);
-        }
-    }
 }
 
 fn lower_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {

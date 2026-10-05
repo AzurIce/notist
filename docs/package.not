@@ -127,7 +127,7 @@ to = "typst::math"
 转换生成独立输出树，保留字段、children、属性和源码范围，原始 Analysis 不变。replace 不转换数学方言；直接限定调用也可以使用对应组件。执行语义、兼容性与 lib API 见 [IR Transforms](designs/transforms.not)。
 
 == 实现与示例
-j
+
 | Package | 内容 |
 | --- | --- |
 | [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 #grammar::diagram(r#"lex Digit -> [`0`-`9`];"#) |
@@ -138,7 +138,11 @@ stateDiagram-v2
     [*] --> s1
     s1 --> [*]
 """#) |
-| [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 |
+| [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 #katex::math(r#"""
+f(\relax{x}) = \int_{-\infty}^\infty
+\hat{f}(\xi)\,e^{2 \pi i \xi x}
+\,d\xi
+"""#, true)|
 | [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG $ e^(i pi) = -1 $ |
 | [shader](https://github.com/AzurIce/notist/blob/main/packages/shader/README.not) | WebGPU / WGSL 全屏 shader、动画与交互 #shader::canvas(r#"""
 fn palette(t: f32) -> vec3f {

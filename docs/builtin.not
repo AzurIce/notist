@@ -291,7 +291,7 @@ scanner MathTail(ctx) -> { end, payload, block } | Miss {
   let begin = cursor
   let block = kind(begin) in { Whitespace, Newline }
   for p from begin to ctx.limit {
-    if kind(p) == Newline and block_end(p, ctx) { return Miss }
+    if not block and kind(p) == Newline and block_end(p, ctx) { return Miss }
     if kind(p) == Dollar and
        (kind(p - 1) in { Whitespace, Newline }) == block {
       if trim(source(tokens[begin..p])) == "" { return Miss }
@@ -314,9 +314,9 @@ recover Math on Miss when kind(rule_start) == Dollar {
 }
 ```
 
-payload 不透明。开后与闭前都非空白时为行内数学，都为空白时为块级数学；只有一端留白、空 payload 或全为空白的 payload 保留为普通文字。两种形式允许跨软换行，但不跨空行或其他块边界。
+payload 不透明。开后与闭前都非空白时为行内数学，都为空白时为块级数学；只有一端留白、空 payload 或全为空白的 payload 保留为普通文字。行内形式允许跨软换行，不跨空行或其他块边界。原生块级形式扫描至匹配的闭美元符号或容器 limit；内部的空行、管道符和类似标题或列表的文字都归公式源码。
 
-math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在 block 为 true 时 trim 首尾布局空白；行内 payload 原样保留。块级语法糖写入 block: true，行内语法糖省略 block。Markdown 使用相同的界定规则，其段落解析会去掉续行的前导空白；代码内容与转义的美元符号不触发数学解析。
+math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在 block 为 true 时 trim 首尾布局空白；行内 payload 原样保留。块级语法糖写入 block: true，行内语法糖省略 block。Markdown 使用相同的留白匹配规则，但 payload 仍受 Markdown 块范围限制，不跨空行或其他块边界；其段落解析会去掉续行的前导空白。代码内容与转义的美元符号不触发数学解析。
 
 === link
 
@@ -361,7 +361,7 @@ scanner LinkFrame(embed; ctx) -> { end, label_close, destination_close } | Miss 
 
 scanner OpaqueClose(p, ctx) -> { close } | Miss {
   要求 kind(p) 为 Backtick 或 Dollar
-  Dollar：使用 MathTail 的留白匹配、非空 payload 与块边界规则
+  Dollar：使用 MathTail 的留白匹配、非空 payload 与对应类别的边界规则
           成功则返回对应闭美元符号下标，失败返回 Miss
   从 p + 1 逐 token 扫描至 ctx.limit：
     遇 NL：返回 Miss
@@ -641,8 +641,9 @@ scanner TableLine(ctx) -> { end, cells, has_pipe } | Miss {
   从 cursor 按逻辑行扫描至外层 NL 或 ctx.limit：
     STR / comment 是不透明 token，内部换行和管道符不参与分割
     HASH 处完整 CodeCall 的探测成功 ⇒ 越过整个调用，内部 NL / Pipe 不参与分割
-    raw / math payload 中的 HASH 保持字面含义，不探测调用
-    其余 Pipe token 记录下标，并结束当前 raw / math payload 区域
+    Backtick / Dollar 处 OpaqueClose 的探测成功 ⇒ 越过整个 raw / math payload
+      内部 NL / Pipe 不参与分割，HASH 保持字面含义
+    其余 Pipe token 记录下标
   去掉行首 / 行尾 Whitespace token
   空行 ⇒ Miss
   去掉首 / 尾各一个 Pipe token（存在时）
@@ -658,7 +659,7 @@ ast table_row(frame, header, width) -> ε => row(header: header)[
 ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)];
 """#)
 
-原生语法糖按逻辑行解析：只有完整调用外部的 NL 才结束表格行，字符串与注释 token 内部的换行也不结束行。字符串和完整调用内部的管道符由内部语法处理；其他字面 `|` 使用 `\|`，raw / math 内也适用。调用沿用 CodeCall 的边界规则；未闭合的调用不保护管道符或换行。Markdown 表格沿用 GFM 的物理行规则。
+原生语法糖按逻辑行解析：最外层 NL 结束表格行，最外层 Pipe 分隔单元格。完整 raw、math、字符串、注释和调用内部的管道符归内部内容；块级 math、字符串、注释和调用内部的换行也不结束行。raw / math 的源码保持自身的反斜杠，普通 Markup 中的字面 `|` 使用 `\|`。调用沿用 CodeCall 的边界规则；未闭合的调用或不透明界定符不保护管道符或换行。闭合公式之后的换行已在最外层，末尾管道符写在同一行，例如 `$ |`。Markdown 表格沿用 GFM 的物理行规则，其行内 raw / math 中的管道符仍须按 GFM 转义。
 
 需要多段内容、列表或嵌套表格时，用 `#[ ... ]` 包裹单元格内容，两端内侧留白以使用 Content 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
@@ -683,7 +684,7 @@ ast table_cell(range) -> ε => cell()[
 ast MD_TableCell -> MD.TableCell(body) => cell()[lower(body)];
 """#)
 
-table_inline 在 range.start 解析 TableCell 并 lower；随后只对调用外部的 raw / math payload 中的 `\|` 去掉反斜杠。调用参数与正文保留自身的转义规则，正文中的嵌套表格自行处理一次表格转义。空区间产生空 cell。
+table_inline 在 range.start 解析 TableCell 并 lower，沿用正文的转义规则，不对 raw / math payload 额外解码。空区间产生空 cell。
 
 === group
 

@@ -13,7 +13,7 @@ export default class Math extends HTMLElement {
   constructor() {
     super();
     const root = this.attachShadow({ mode: "open" });
-    root.innerHTML = `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>`;
+    root.innerHTML = `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; } .error { color: #a21; font: inherit; margin-left: .4em; } .error:empty { display: none; }</style><span class="formula"></span><span class="error" role="status"></span>`;
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = stylesheet;

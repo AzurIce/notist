@@ -383,6 +383,76 @@ fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
 }
 
 #[test]
+fn block_math_owns_blank_lines_block_markers_and_brackets_within_containers() {
+    for newline in ["\n", "\r\n", "\r"] {
+        let payload = [
+            "x|y",
+            "",
+            "= literal heading",
+            "- literal list item",
+            "]",
+            "#strong[opaque]",
+        ]
+        .join(newline);
+        let formula = format!("${newline}{payload}{newline}$");
+        for source in [
+            format!("before {formula} after"),
+            format!("#callout[{newline}before {formula} after{newline}]{newline}{newline}outside"),
+            format!(
+                "- before{newline}  {} after{newline}- next",
+                formula.replace(newline, &format!("{newline}  "))
+            ),
+        ] {
+            let root = analyze(&source);
+            let equations: Vec<_> = root
+                .descendants()
+                .filter(|n| n.ctor == Ctor::Math)
+                .collect();
+            assert_eq!(equations.len(), 1, "{source}");
+            let equation = equations[0];
+            assert_eq!(equation.level, Level::Block);
+            assert_eq!(
+                equation.fields.get("text"),
+                Some(&Value::Str(payload.clone()))
+            );
+            assert!(root.find(|n| n.ctor == Ctor::Strong).is_none());
+            let source_formula =
+                &source[usize::from(equation.span.start())..usize::from(equation.span.end())];
+            assert!(source_formula.starts_with('$') && source_formula.ends_with('$'));
+            if source.starts_with("#callout") {
+                assert_eq!(root.children[0].ctor, Ctor::Callout);
+                assert_eq!(text_of(&root.children[1]), "outside");
+            }
+            if source.starts_with('-') {
+                assert_eq!(root.children[0].children.len(), 2);
+                assert_eq!(text_of(&root.children[0].children[1]), "next");
+            }
+        }
+    }
+}
+
+#[test]
+fn inline_math_keeps_block_boundaries_and_block_math_keeps_list_item_limits() {
+    for source in ["$first\n\nsecond$", "$first\n---\nsecond$"] {
+        let root = analyze(source);
+        assert!(root.find(|n| n.ctor == Ctor::Math).is_none(), "{source}");
+    }
+    let root = analyze("- before $ unclosed\n- next $ x $ after\n\noutside");
+    let list = &root.children[0];
+    assert_eq!(list.children.len(), 2);
+    assert!(list.children[0].find(|n| n.ctor == Ctor::Math).is_none());
+    assert_eq!(
+        list.children[1]
+            .find(|n| n.ctor == Ctor::Math)
+            .unwrap()
+            .fields
+            .get("text"),
+        Some(&Value::Str("x".into()))
+    );
+    assert_eq!(text_of(&root.children[1]), "outside");
+}
+
+#[test]
 fn empty_mismatched_escaped_or_unclosed_math_remains_literal() {
     let engine = Pipeline::default();
     for source in [
@@ -392,8 +462,6 @@ fn empty_mismatched_escaped_or_unclosed_math_remains_literal() {
         "$ x$",
         "$x $",
         "$ x",
-        "$ \n\nx $",
-        "$ x\n---\ny $",
         "\\$ x \\$",
         "`$ x $`",
     ] {
@@ -423,6 +491,8 @@ fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
         "$unclosed",
         "$first\n\nsecond$",
         "$first\n---\nsecond$",
+        "$ \n\nx $",
+        "$ x\n---\ny $",
         "[label](https://example.com/$target$)",
     ] {
         let md = engine

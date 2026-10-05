@@ -5,4 +5,8 @@ output = "../target/site"
 
 [dev-dependencies]
 grammar = { path = "../packages/grammar" }
+katex = { path = "../packages/katex", transforms = false }
 typst = { path = "../packages/typst" }
+widgets = { path = "../packages/widgets" }
+mermaid = { path = "../packages/mermaid" }
+shader = { path = "../packages/shader" }

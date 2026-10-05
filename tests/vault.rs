@@ -526,6 +526,7 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
         "packages/widgets/README.not",
         "packages/grammar/README.not",
         "packages/typst/README.not",
+        "packages/shader/README.not",
     ];
     let mut local = Vault::open(&root);
     let mut files = BTreeMap::new();
@@ -577,6 +578,13 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
         assert!(disk.analysis.diagnostics().is_empty());
         assert!(disk.transformed.diagnostics.is_empty());
         assert!(disk.rendered.diagnostics.is_empty());
+        assert!(
+            !disk.rendered.used_components.is_empty(),
+            "{path} must contain actual package calls"
+        );
+        if path == "packages/shader/README.not" {
+            assert_eq!(disk.rendered.html.matches("<shader-canvas ").count(), 2);
+        }
         assert_eq!(disk.analysis, prepared.analysis);
         assert_eq!(disk.transformed, prepared.transformed);
         assert_eq!(disk.rendered.html, prepared.rendered.html);

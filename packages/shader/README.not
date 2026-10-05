@@ -1,0 +1,113 @@
+= WebGPU Shader
+
+这个 package 在文档中运行 ShaderToy 风格的全屏 fragment shader。源码使用 [WGSL](https://www.w3.org/TR/WGSL/)，组件负责创建 WebGPU 管线、传入 uniform 和驱动动画，无需构建步骤或 CDN 依赖。
+
+== 调用
+
+```notc
+fn canvas(source: String, width: Int = 960, height: Int = 540, paused: Bool = false) -> Content;
+```
+
+source 定义 `fn mainImage(fragCoord: vec2f) -> vec4f`，返回 RGBA 颜色。fragCoord 是画布像素坐标，原点位于左下角；像素中心从 0.5 开始。宿主自动添加 vertex / fragment 入口、全屏三角形与 uniform 声明。
+
+width 和 height 是 1 到 16384 之间的整数，设置最大 CSS 宽度和宽高比；窄容器中等比缩小。实际渲染分辨率跟随画布尺寸和设备像素比，像素比最多取 2，并受 GPU 纹理尺寸上限约束。paused 为 true 时绘制静止画面，仍响应尺寸和鼠标变化。
+
+使用者在 Notist.toml 中添加依赖，路径相对于该清单：
+
+```toml
+[dependencies]
+shader = { path = "../packages/shader" }
+```
+
+== 动态色场
+
+#shader::canvas(r#"""
+fn palette(t: f32) -> vec3f {
+  return 0.5 + 0.5 * cos(6.283185 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
+}
+
+fn mainImage(fragCoord: vec2f) -> vec4f {
+  let uv = (2.0 * fragCoord - uniforms.iResolution.xy) / uniforms.iResolution.y;
+  let time = uniforms.iTime;
+  let wave = sin(uv.x * 4.0 + time) * cos(uv.y * 4.0 - time * 0.7);
+  let rings = sin(length(uv) * 10.0 - time * 2.0 + wave);
+  let color = palette(rings * 0.18 + length(uv) * 0.15 + time * 0.05);
+  return vec4f(color, 1.0);
+}
+"""#)
+
+展开“源码”可编辑当前画面，点击“编译并运行”或按 Ctrl / ⌘ + Enter 重新编译。改动仅作用于当前浏览器组件；要保存到文档，请修改调用中的 source。工具栏提供暂停 / 播放、重置时间与帧数、全屏。控制区与编辑区继承页面的主题颜色和字体，随站点的明暗主题切换。
+
+== 鼠标光晕
+
+移动鼠标或拖动触屏指针改变光晕位置，按住主按钮改变颜色。这个例子初始暂停，鼠标仍能更新画面。
+
+#shader::canvas(r#"""
+fn mainImage(fragCoord: vec2f) -> vec4f {
+  let resolution = uniforms.iResolution.xy;
+  let moved = any(uniforms.iMouse.xy != vec2f(0.0));
+  let center = select(resolution * 0.5, uniforms.iMouse.xy, moved);
+  let uv = (fragCoord - center) / resolution.y;
+  let glow = 0.018 / (length(uv) + 0.025);
+  let tint = select(vec3f(0.15, 0.55, 1.0), vec3f(1.0, 0.2, 0.5), uniforms.iMouse.z > 0.0);
+  return vec4f(vec3f(0.015, 0.02, 0.04) + glow * tint, 1.0);
+}
+"""#, width: 720, height: 360, paused: true)
+
+== Uniform
+
+所有字段通过只读 uniform 变量 uniforms 访问，例如 `uniforms.iTime`：
+
+| 字段 | WGSL 类型 | 含义 |
+| --- | --- | --- |
+| iResolution | vec3f | 实际渲染宽、高、1 |
+| iTime | f32 | 从首次绘制或重置开始的动画秒数，暂停期间不增长 |
+| iTimeDelta | f32 | 与上一动画帧的时间间隔；首帧和暂停重绘为 0 |
+| iFrame | u32 | 从 0 开始的绘制帧编号，暂停重绘也计数 |
+| iFrameRate | f32 | 1 / iTimeDelta，间隔为 0 时取 0 |
+| iMouse | vec4f | xy 为最近指针位置；zw 为按下位置，按住时为正，释放 / 取消时为负 |
+| iDate | vec4f | 浏览器本地时间的年、月（1 到 12）、日、当天秒数 |
+
+iMouse 与 fragCoord 使用相同的左下角像素坐标；首次交互前为全 0，边缘按下位置用极小正值表示，保证符号能表示按下状态。指针捕获支持画布外的拖动与释放。月份按 1 到 12 编码。
+
+源码可以包含辅助函数、常量与开头的 WGSL 指令。uniforms、NotistShaderUniforms、notistShaderVertex、notistShaderFragment 由宿主保留。此版本提供单 pass 的程序化画面；纹理 / 音频 channel 与 Buffer 多 pass 尚未提供。ShaderToy 的 GLSL 源码需要改写为 WGSL。
+
+== 生命周期与错误
+
+源码属性更新重新编译，成功后重置时间、帧数和鼠标。尺寸与 paused 更新复用 GPU 管线。错误显示在组件内，编译错误带源码行列号，最后成功的画面保留；后续有效源码可以恢复。宿主声明引起的入口错误标记为“入口 / uniform”。
+
+画面离开视口或页面隐藏时停止动画，返回后继续，隐藏期间不计入动画时间。组件移除时取消动画、断开 observer 和页面监听器、销毁 GPU 资源；重连后重新创建。过期的初始化和编译任务不会覆盖新源码。设备丢失或 GPU 错误也显示在组件内，点击“重置”或更新参数可重试。
+
+浏览器需要支持 [WebGPU](https://www.w3.org/TR/webgpu/)，通过 HTTPS 或 localhost 访问。缺少 API、适配器或安全上下文时，组件显示原因。
+
+== 构建与预览
+
+在仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- check packages/shader/README.not
+cargo run -p notist-cli -- html packages/shader/README.not --out-dir target/shader-demo
+python3 -m http.server
+```
+
+通过 localhost 打开 /target/shader-demo/。目录组件入口及 renderer.js、style.js 随 HTML 一起发布。
+
+Web 预览先运行 ./web/build.sh，通过 localhost 打开 /web/，配置 URL 填 ../packages/shader/Notist.toml，源码路径填 README.not，点击“载入项目”。
+
+== 验证
+
+packages/shader/tests/browser.cjs 通过 GPU buffer 回读验证实际像素，同时验证 uniform、时间与暂停、鼠标和缩放、编辑与错误恢复、组件重连、设备丢失、静态导出与 Worker 预览。像素回读发生在当前 canvas texture 呈现之前，避免依赖平台 compositor 的截图行为。
+
+先导出 target/shader-demo、构建 web/pkg，并通过 HTTP 服务仓库。Playwright 须在 NODE_PATH 上可用：
+
+```sh
+NOTIST_TEST_URL=http://127.0.0.1:8000 node packages/shader/tests/browser.cjs
+```
+
+NOTIST_CHROMIUM 指定 Chromium 路径，NOTIST_HEADLESS=false 使用有窗口的浏览器；NOTIST_WEBGPU_ARGS 用 JSON 数组追加测试浏览器的 GPU 启动参数。例如使用提供 SwiftShader 的 Chromium：
+
+```sh
+NOTIST_WEBGPU_ARGS='["--enable-features=Vulkan","--use-vulkan=swiftshader","--use-angle=swiftshader","--disable-vulkan-surface"]' node packages/shader/tests/browser.cjs
+```
+
+GPU 回读与 canvas 呈现是两项验证。测试将页面截图保存为 target/shader-demo/preview.png，截图仍需视觉检查；本机无头 Vulkan / SwiftShader 环境能回读正确的 GPU 像素，但 compositor 截图中的 canvas 为空。实际预览需在具备正常 WebGPU 呈现能力的浏览器中查看。

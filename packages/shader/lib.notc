@@ -1,0 +1,1 @@
+fn canvas(source: String, width: Int = 960, height: Int = 540, paused: Bool = false) -> Content;

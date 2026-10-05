@@ -1,21 +1,20 @@
 = Types & Literals
 
-类型及其字面量在本节定义。共用 trivia、调用与内容解析见 [Syntax](grammar/README.not)，记法见 [Grammar Notation](grammar/notation.not)，构造器签名见 [Builtin](builtin.not)。
-
-== 标量
-
-- Unit — 唯一值 `()`
-- Bool — `true` / `false`
-- Int — i64 十进制
-- Float — f64 十进制（`0.5`；`.5`、`1.` 不合法）
 
 #grammar::diagram(r#"""
 lex Digit -> [`0`-`9`];
 lex Number -> Digit+ (`.` Digit+)?;
-syntax Unit -> LPAREN RPAREN;
-syntax Bool -> `true` | `false`;
-syntax NumericValue -> MINUS? NUMBER;
 """#)
+
+== 标量
+
+- Unit — 唯一值 `()`
+  #grammar::diagram(r#"syntax Unit -> LPAREN RPAREN;"#)
+- Bool — `true` / `false`
+  #grammar::diagram(r#"syntax Bool -> `true` | `false`;"#)
+- Int — i64 十进制
+- Float — f64 十进制（`0.5`；`.5`、`1.` 不合法）
+  #grammar::diagram(r#"syntax NumericValue -> MINUS? NUMBER;"#)
 
 数字无科学计数法；负号与 NUMBER 必须紧邻，形成 Neg 节点，不属于 Number token。当前只支持这一个字面量前缀，没有通用一元运算。整数溢出由 notist-lowering 的字面量转换产生 semantic 诊断。
 

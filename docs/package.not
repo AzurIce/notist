@@ -127,11 +127,30 @@ to = "typst::math"
 转换生成独立输出树，保留字段、children、属性和源码范围，原始 Analysis 不变。replace 不转换数学方言；直接限定调用也可以使用对应组件。执行语义、兼容性与 lib API 见 [IR Transforms](designs/transforms.not)。
 
 == 实现与示例
-
+j
 | Package | 内容 |
 | --- | --- |
-| [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 |
-| [widgets](https://github.com/AzurIce/notist/blob/main/packages/widgets/README.not) | panel、badge 与嵌套内容的组合示例 |
-| [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | Mermaid 图形组件 |
+| [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 #grammar::diagram(r#"lex Digit -> [`0`-`9`];"#) |
+| [widgets](https://github.com/AzurIce/notist/blob/main/packages/widgets/README.not) | #widgets::panel[panel、#widgets::badge("badge") 与嵌套内容的组合示例] |
+| [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | Mermaid 图形组件 #mermaid::diagram(r#"""
+stateDiagram-v2
+    direction LR
+    [*] --> s1
+    s1 --> [*]
+"""#) |
 | [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 |
-| [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG |
+| [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG $ e^(i pi) = -1 $ |
+| [shader](https://github.com/AzurIce/notist/blob/main/packages/shader/README.not) | WebGPU / WGSL 全屏 shader、动画与交互 #shader::canvas(r#"""
+fn palette(t: f32) -> vec3f {
+  return 0.5 + 0.5 * cos(6.283185 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
+}
+
+fn mainImage(fragCoord: vec2f) -> vec4f {
+  let uv = (2.0 * fragCoord - uniforms.iResolution.xy) / uniforms.iResolution.y;
+  let time = uniforms.iTime;
+  let wave = sin(uv.x * 4.0 + time) * cos(uv.y * 4.0 - time * 0.7);
+  let rings = sin(length(uv) * 10.0 - time * 2.0 + wave);
+  let color = palette(rings * 0.18 + length(uv) * 0.15 + time * 0.05);
+  return vec4f(color, 1.0);
+}
+"""#) |

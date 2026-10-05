@@ -1,4 +1,6 @@
-import init, { analyze_project, configuration, describe_project } from "./pkg/notist.js";
+import init, { analyze_prepared, configuration, describe_prepared } from "./pkg/notist.js";
+
+import { emptyInputs, loadInputs } from "./project-inputs.js";
 
 const srcEl = document.querySelector("#src");
 const tokensEl = document.querySelector("#tokens");
@@ -11,8 +13,7 @@ const diagsEl = document.querySelector("#diags");
 const showwsEl = document.querySelector("#showws");
 const corpusEl = document.querySelector("#corpus");
 
-let projectConfig = "";
-let projectPackages = {};
+let projectInputs = emptyInputs();
 let projectLoadGeneration = 0;
 const pathEl = document.querySelector("#path");
 const configEl = document.querySelector("#config-url");
@@ -200,7 +201,7 @@ corpusEl.addEventListener("change", async () => {
 });
 
 function render() {
-  const data = JSON.parse(analyze_project(pathEl.value, srcEl.value, projectConfig, JSON.stringify(projectPackages)));
+  const data = JSON.parse(analyze_prepared(pathEl.value, srcEl.value, JSON.stringify(projectInputs)));
   if (data.error || !data.core && !data.tree) {
     renderDiags(data.diagnostics ?? [{phase: "project", start: 0, end: 0, message: data.error}]);
     previewEl.srcdoc = "";
@@ -252,46 +253,14 @@ async function main() {
 
 main();
 
-async function fetchText(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`${response.status}: ${url}`);
-  return response.text();
-}
 async function loadProject() {
   const generation = ++projectLoadGeneration;
   const sourcePath = pathEl.value.trim();
   const originalSource = srcEl.value;
   try {
-    if (!configEl.value.trim()) { projectConfig = ""; projectPackages = {}; render(); return; }
+    if (!configEl.value.trim()) { projectInputs = emptyInputs(); render(); return; }
     const configURL = new URL(configEl.value, location.href);
-    const config = await fetchText(configURL);
-    const manifest = JSON.parse(configuration(config));
-    if (!manifest.dependencies) throw new Error(manifest.diagnostics.map(d => d.message).join("\n"));
-    const packages = {};
-    const roots = new Map();
-    for (const dependency of manifest.dependencies) {
-      const root = new URL(dependency.path.replace(/\/?$/, "/"), configURL);
-      roots.set(dependency.name, root);
-      packages[dependency.name] = { source: await fetchText(new URL("lib.notc", root)), components: {}, entries: {} };
-    }
-    const description = JSON.parse(describe_project(config, JSON.stringify(packages)));
-    if (!description.functions) throw new Error(description.error ?? description.diagnostics.map(d => `${d.path}: ${d.message}`).join("\n"));
-    for (const fn of description.functions) {
-      const root = roots.get(fn.package);
-      const entries = fn.entries.map(path => new URL(path.split("/").map(encodeURIComponent).join("/"), root));
-      const available = await Promise.all(entries.map(async url => {
-        const response = await fetch(url, { method: "HEAD" });
-        if (response.status === 404) return false;
-        if (!response.ok) throw new Error(`${response.status}: ${url}`);
-        return true;
-      }));
-      if (available.every(Boolean)) throw new Error(`Conflicting component entries: ${fn.package}::${fn.name}`);
-      const entry = entries.find((_, index) => available[index]);
-      if (entry) {
-        packages[fn.package].components[fn.name] = entry.href;
-        packages[fn.package].entries[fn.name] = fn.entries[entries.indexOf(entry)];
-      }
-    }
+    const inputs = await loadInputs(configURL, { configuration, describe_prepared });
     if (generation !== projectLoadGeneration) return;
     let loadedSource;
     if (sourcePath) {
@@ -300,8 +269,7 @@ async function loadProject() {
     }
     if (generation !== projectLoadGeneration) return;
     // Publish one complete environment; preserve edits made during loading.
-    projectConfig = config;
-    projectPackages = packages;
+    projectInputs = inputs;
     if (loadedSource !== undefined && pathEl.value.trim() === sourcePath && srcEl.value === originalSource) {
       srcEl.value = loadedSource;
       pathEl.value = sourcePath;

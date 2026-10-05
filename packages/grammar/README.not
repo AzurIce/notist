@@ -33,7 +33,7 @@ source 为统一的匹配与结果构造规则文本。组件始终先展示源�
 
 == 自身配置
 
-本目录的 Notist.toml 将 grammar = { path = "." } 注册到当前文档环境。这个配置用于 README 的分析与预览；其他项目引入此 package 时只读取 lib.notc 与组件资源，不递归加载这个配置。
+本目录的 Notist.toml 通过 [package].name = "grammar" 确定包身份。作为 README 的根环境时自动注册 lib.notc；其他项目引入这个目录时读取清单与声明。
 
 == Example
 

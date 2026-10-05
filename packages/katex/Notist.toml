@@ -1,5 +1,5 @@
-[dependencies]
-katex = { path = "." }
+[package]
+name = "katex"
 
 [[transforms]]
 kind = "replace"

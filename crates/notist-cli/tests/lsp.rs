@@ -88,6 +88,11 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
         "[dependencies]\nwidgets = {path = './widgets'}\n",
     )
     .unwrap();
+    std::fs::write(
+        temp.path().join("widgets/Notist.toml"),
+        "[package]\nname = 'widgets'",
+    )
+    .unwrap();
     let module = temp.path().join("widgets/lib.notc");
     let source = "fn panel(title: String)[children: Content] -> Content;";
     std::fs::write(&module, source).unwrap();

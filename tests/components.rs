@@ -170,12 +170,31 @@ fn missing_html_targets_and_filesystem_entry_conflicts() {
 #[test]
 fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() {
     let config = "[dependencies]\nwidgets = {path = './widgets'}\n";
-    let packages = serde_json::json!({"widgets":{"source":"fn panel()[children: Content] -> Content;", "components":{"panel":"https://example.test/panel.js"}}}).to_string();
-    let preview: serde_json::Value = serde_json::from_str(&notist::preview::analyze_preview(
+    let inputs = notist::PreparedInputs {
+        root: "/preview".into(),
+        config: Some("Notist.toml".into()),
+        files: std::collections::BTreeMap::from([
+            ("Notist.toml".into(), config.as_bytes().to_vec()),
+            (
+                "widgets/Notist.toml".into(),
+                b"[package]\nname = 'widgets'".to_vec(),
+            ),
+            (
+                "widgets/lib.notc".into(),
+                b"fn panel()[children: Content] -> Content;".to_vec(),
+            ),
+            ("widgets/components/panel.js".into(), Vec::new()),
+        ]),
+        module_urls: std::collections::BTreeMap::from([(
+            "widgets/components/panel.js".into(),
+            "https://example.test/panel.js".into(),
+        )]),
+    };
+    let message = serde_json::to_string(&inputs).unwrap();
+    let preview: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
         "test.not",
         "#widgets::panel()[content]",
-        config,
-        &packages,
+        &message,
     ))
     .unwrap();
     assert!(preview["diagnostics"].as_array().unwrap().is_empty());
@@ -184,11 +203,10 @@ fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() 
         preview["used_components"][0]["module"],
         "https://example.test/panel.js"
     );
-    let module: serde_json::Value = serde_json::from_str(&notist::preview::analyze_preview(
+    let module: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
         "lib.notc",
         "fn f(value: Int = false) -> Content; fn g() -> Content;",
-        "",
-        "{}",
+        &message,
     ))
     .unwrap();
     assert_eq!(module["tree"]["kind"], "Module");

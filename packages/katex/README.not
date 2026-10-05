@@ -10,11 +10,11 @@ text 是不带外围 `$` 的 LaTeX 数学源码。components/math.js 默认导�
 
 == 自身配置
 
-本目录 Notist.toml 注册自身并将内置 math 替换为 katex::math：
+本目录 Notist.toml 确定包身份，并公开内置 math 到 katex::math 的默认转换：
 
 ```toml
-[dependencies]
-katex = { path = "." }
+[package]
+name = "katex"
 
 [[transforms]]
 kind = "replace"
@@ -22,7 +22,7 @@ from = "notist::math"
 to = "katex::math"
 ```
 
-这个配置用于 README 的分析与预览。其他项目引入 package 时只读取 lib.notc 与组件资源，需要在自己的配置中显式声明 transforms。
+README 的根环境自动注册自身。其他项目引入 package 时读取清单、声明与组件，自动使用公开的 transforms；根配置可以显式覆盖对应默认规则。
 
 替换保留公式原文与源码范围，原始 Analysis 仍保存内置身份。`.not` 与 Markdown 的 math 共用同一个替换目标；直接调用 katex::math 不需要替换。规则与 lib API 见 [IR Transforms](../../docs/designs/transforms.not)。
 

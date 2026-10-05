@@ -8,7 +8,7 @@
 - [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
 - [Grammar Package](../packages/grammar/README.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
 - [Pipeline](designs/pipeline.not)：语法规则与内容树在各实现阶段的处理职责。
-- [Packages](packages/README.not)：package 机制、组件约定、自身预览配置与各 package 的索引。
+- [Package Model](package.not)：package 的定义、命名空间、使用者环境与自身文档环境。
 - [Content Function Extensions](designs/content-functions.not)：内置与外部函数的统一定义、.notc 声明和 package 装配、HTML 组件协议与 host 接口。
 - [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。

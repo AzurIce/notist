@@ -16,11 +16,11 @@ Sum: #typst::math("sum_(i=1)^n i = frac(n(n+1), 2)"). Matrix: #typst::math("mat(
 
 == 配置切换
 
-本目录的 Notist.toml 注册自身，将内置 math 的替换目标设为 typst::math：
+本目录的 Notist.toml 确定包身份，并公开内置 math 到 typst::math 的默认转换：
 
 ```toml
-[dependencies]
-typst = { path = "." }
+[package]
+name = "typst"
 
 [[transforms]]
 kind = "replace"
@@ -36,7 +36,7 @@ $frac(a, b)$
 #typst::math("sum_(i=1)^n i")
 ```
 
-Markdown 的数学节点也使用同一个替换目标。IR 保留公式原文，不转换数学方言；Typst 使用 `frac(a, b)`、`sqrt(x)` 等写法，[数学语法](https://typst.app/docs/reference/math/) 与 KaTeX 接收的 LaTeX 不同。本页的公式分别展示语法糖、显式内置调用与直接 package 调用，都由本目录配置使用 Typst 呈现。其他项目引入 package 时只读取 lib.notc 与组件资源，不加载本目录的预览配置。
+Markdown 的数学节点也使用同一个替换目标。IR 保留公式原文，不转换数学方言；Typst 使用 `frac(a, b)`、`sqrt(x)` 等写法，[数学语法](https://typst.app/docs/reference/math/) 与 KaTeX 接收的 LaTeX 不同。本页的公式分别展示语法糖、显式内置调用与直接 package 调用，都由本目录配置使用 Typst 呈现。其他项目引入 package 时也读取清单并使用公开的 transforms，开发依赖与开发转换只在根环境生效。
 
 == 组件实现
 

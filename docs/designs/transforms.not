@@ -1,6 +1,8 @@
 = IR Transforms
 
-transforms 在源码分析得到 Item 后生成用于输出的内容树。配置按序执行，所有输出后端可以消费转换结果；HTML 继续按目标函数身份呈现节点。源码分析管线见 [Pipeline](pipeline.not)，定义与组件见 [Content Function Extensions](content-functions.not)，实际例子见 [Packages](../packages/README.not)。
+transforms 在源码分析得到 Item 后生成用于输出的内容树。根配置与 package 默认规则先按作用域合成有序计划，所有输出后端可以消费转换结果；HTML 继续按目标函数身份呈现节点。源码分析管线见 [Pipeline](pipeline.not)，定义与组件见 [Content Function Extensions](content-functions.not)，实际例子见 [Package Model](../package.not)。
+
+package 公开的 transforms 随 dependencies 自动引入；同源同目标去重，不同目标冲突。根 transforms 覆盖相同源身份的默认规则；根 dev-transforms 再覆盖相同源身份的根公开规则。根规则保持声明顺序，开发配置只在根环境生效。完整配置作用域见 [Package Model](../package.not)。
 
 == 配置
 
@@ -14,9 +16,9 @@ from = "notist::math"
 to = "katex::math"
 ```
 
-当前仅支持 replace。from 与 to 必须是完整的 package::function；依赖键确定当前环境的包名，内置包名为 notist。多个 transforms 按数组顺序执行。没有配置时转换树与原始树相同。
+当前仅支持 replace。from 与 to 必须是完整的 package::function；package 清单的 name 确定规范包名，依赖键须与 name 匹配，内置包名为 notist。合成后的转换计划按顺序执行。计划为空时转换树与原始树相同。
 
-environment::parse_config 返回 Configuration，其中 dependencies 保存来源路径，transforms 保存 Replace 与配置 span。解析不读取依赖；Environment 装配全部声明后，在同一个 Registry 中编译转换计划，身份或契约错误保留 Notist.toml 的来源与范围。失败不返回部分计划。
+environment::parse_config 返回 Configuration，包含 package 元数据、公开与开发依赖、公开与开发转换规则，并保存对应的配置 span。解析不读取依赖；Environment 装配全部声明后，在同一个 Registry 中编译转换计划，身份或契约错误保留 Notist.toml 的来源与范围。失败不返回部分计划。
 
 == Replace
 

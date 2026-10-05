@@ -11,6 +11,10 @@ fn resources(config: &str, declaration: &str, component: bool) -> MemoryResource
         "../packages/katex/lib.notc",
         declaration.as_bytes().to_vec(),
     );
+    resources.insert(
+        "../packages/katex/Notist.toml",
+        b"[package]\nname = 'katex'".to_vec(),
+    );
     if component {
         resources.insert(
             "../packages/katex/components/math.js",
@@ -260,7 +264,6 @@ fn missing_components_do_not_invalidate_transforms_and_no_config_keeps_defaults(
 
 #[test]
 fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins() {
-    let packages = serde_json::json!({"katex": {"source": DECLARATION, "components": {"math": "https://host.test/math.js"}}}).to_string();
     let source = "$x$ #math(false)";
     let config = CONFIG.replace("../packages/katex", "./packages/katex");
     let inputs = PreparedInputs {
@@ -268,6 +271,10 @@ fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins
         config: Some("Notist.toml".into()),
         files: BTreeMap::from([
             ("Notist.toml".into(), config.as_bytes().to_vec()),
+            (
+                "packages/katex/Notist.toml".into(),
+                b"[package]\nname = 'katex'".to_vec(),
+            ),
             (
                 "packages/katex/lib.notc".into(),
                 DECLARATION.as_bytes().to_vec(),
@@ -280,19 +287,20 @@ fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins
         )]),
     };
     let message = serde_json::to_string(&inputs).unwrap();
-    let render: serde_json::Value = serde_json::from_str(&notist::preview::render_preview(
-        "doc.not", source, &config, &packages,
-    ))
-    .unwrap();
-    let worker: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
+    let native = inputs
+        .clone()
+        .into_vault()
+        .render_html("doc.not", source, RenderOptions::default())
+        .unwrap();
+    let render: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
         "doc.not", source, &message,
     ))
     .unwrap();
-    let debug: serde_json::Value = serde_json::from_str(&notist::preview::analyze_preview(
-        "doc.not", source, &config, &packages,
+    let debug: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
+        "doc.not", source, &message,
     ))
     .unwrap();
-    assert_eq!(render, worker);
+    assert_eq!(render["html"], native.rendered.html);
     for key in ["html", "diagnostics", "used_components", "source_map"] {
         assert_eq!(render[key], debug[key], "{key}");
     }

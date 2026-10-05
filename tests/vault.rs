@@ -15,6 +15,10 @@ fn memory() -> MemoryResources {
         "Notist.toml",
         b"[dependencies]\nwidgets = {path = 'widgets'}".to_vec(),
     );
+    resources.insert(
+        "widgets/Notist.toml",
+        b"[package]\nname = 'widgets'".to_vec(),
+    );
     resources.insert("widgets/lib.notc", b"fn panel(title: String = \"outer\")[children: Content] -> Content; fn badge(label: String) -> InlineContent;".to_vec());
     resources.insert("widgets/components/panel/index.js", Vec::new());
     resources.insert("widgets/components/badge.js", Vec::new());
@@ -79,6 +83,10 @@ fn nearest_configs_and_document_index_share_environment_selection() {
         b"[dependencies]\nwidgets = {path = 'other'}".to_vec(),
     );
     resources.insert(
+        "nested/other/Notist.toml",
+        b"[package]\nname = 'widgets'".to_vec(),
+    );
+    resources.insert(
         "nested/other/lib.notc",
         b"fn badge(label: Int) -> InlineContent;".to_vec(),
     );
@@ -130,6 +138,10 @@ fn overlays_include_unsaved_configs_and_declarations_and_errors_keep_source() {
         (
             PathBuf::from("unsaved/Notist.toml"),
             "[dependencies]\nwidgets = {path = 'new'}".into(),
+        ),
+        (
+            PathBuf::from("unsaved/new/Notist.toml"),
+            "[package]\nname = 'widgets'".into(),
         ),
         (
             PathBuf::from("unsaved/new/lib.notc"),
@@ -194,6 +206,10 @@ fn html_entry_conflicts_do_not_invalidate_semantic_declarations() {
     resources.insert(
         "Notist.toml",
         b"[dependencies]\nwidgets = {path = 'widgets'}".to_vec(),
+    );
+    resources.insert(
+        "widgets/Notist.toml",
+        b"[package]\nname = 'widgets'".to_vec(),
     );
     resources.insert(
         "widgets/lib.notc",
@@ -305,7 +321,7 @@ fn document_links_reach_sibling_packages_using_their_own_configs() {
     );
     resources.insert(
         "packages/demo/Notist.toml",
-        b"[dependencies]\ndemo = {path = '.'}".to_vec(),
+        b"[package]\nname = 'demo'".to_vec(),
     );
     resources.insert(
         "packages/demo/lib.notc",
@@ -354,6 +370,8 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
         let config = environment.config_path().unwrap();
         files.insert(config.to_path_buf(), std::fs::read(config).unwrap());
         for package in environment.packages().values() {
+            let manifest = package.root.join("Notist.toml");
+            files.insert(manifest.clone(), std::fs::read(manifest).unwrap());
             files.insert(
                 package.root.join("lib.notc"),
                 package.source.as_bytes().to_vec(),
@@ -449,26 +467,8 @@ fn logical_resolution_and_directory_failures_are_consistent_between_hosts() {
 
 #[test]
 fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
-    let config = "[dependencies]\nwidgets = {path = 'widgets'}";
-    let packages = serde_json::json!({"widgets":{"source":"fn panel()[children: Content] -> Content; fn badge(label: String) -> InlineContent;","components":{"panel":"https://host.test/panel.js","badge":"https://host.test/badge.js"}}}).to_string();
-    let plain: serde_json::Value = serde_json::from_str(&notist::preview::render_preview(
-        "doc.not", DOCUMENT, config, &packages,
-    ))
-    .unwrap();
-    let debug: serde_json::Value = serde_json::from_str(&notist::preview::analyze_preview(
-        "doc.not", DOCUMENT, config, &packages,
-    ))
-    .unwrap();
-    assert!(
-        plain.get("tree").is_none() && plain.get("ir1").is_none() && plain.get("core").is_none()
-    );
-    assert!(debug.get("tree").is_some());
-    for field in ["html", "source_map", "used_components", "diagnostics"] {
-        assert_eq!(plain[field], debug[field]);
-    }
-    assert!(!plain["source_map"].as_array().unwrap().is_empty());
     let resources = memory();
-    let inputs = PreparedInputs {
+    let mut inputs = PreparedInputs {
         root: resources.root().into(),
         config: None,
         files: resources.files().clone(),
@@ -483,22 +483,37 @@ fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
             ),
         ]),
     };
-    let worker: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
-        "doc.not",
-        DOCUMENT,
-        &serde_json::to_string(&inputs).unwrap(),
+    let message = serde_json::to_string(&inputs).unwrap();
+    let plain: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
+        "doc.not", DOCUMENT, &message,
     ))
     .unwrap();
-    assert_eq!(worker["used_components"], plain["used_components"]);
-    assert_eq!(worker["source_map"], plain["source_map"]);
-    // Distinguish rendering recovery from semantic diagnostics even when both
-    // use the semantic phase. All browser ranges retain the originating path.
-    let missing: serde_json::Value = serde_json::from_str(&notist::preview::render_preview(
+    let debug: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
+        "doc.not", DOCUMENT, &message,
+    ))
+    .unwrap();
+    assert!(
+        plain.get("tree").is_none() && plain.get("ir1").is_none() && plain.get("core").is_none()
+    );
+    assert!(debug.get("tree").is_some());
+    for field in ["html", "source_map", "used_components", "diagnostics"] {
+        assert_eq!(plain[field], debug[field]);
+    }
+    assert!(!plain["source_map"].as_array().unwrap().is_empty());
+    let native = inputs
+        .clone()
+        .into_vault()
+        .render_html("doc.not", DOCUMENT, RenderOptions::default())
+        .unwrap();
+    assert_eq!(plain["html"], native.rendered.html);
+    inputs
+        .files
+        .remove(&PathBuf::from("/vault/widgets/components/panel/index.js"));
+    inputs.module_urls.clear();
+    let missing: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
         "doc.not",
         "#widgets::panel()[visible]",
-        config,
-        &serde_json::json!({"widgets":{"source":"fn panel()[children: Content] -> Content;"}})
-            .to_string(),
+        &serde_json::to_string(&inputs).unwrap(),
     ))
     .unwrap();
     assert_eq!(missing["diagnostics"][0]["origin"], "render");

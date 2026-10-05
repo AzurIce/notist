@@ -1,6 +1,6 @@
 = Code Syntax
 
-`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包结构与用法见 [Packages](../packages/README.not)，注册与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
+`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包结构与用法见 [Package Model](../package.not)，注册与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
 
 == 词法
 

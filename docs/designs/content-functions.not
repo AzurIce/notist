@@ -85,7 +85,7 @@ let document = pipeline.analyze("document.not", source, &registry)?;
 
 === 函数身份
 
-函数身份保留包归属，例如 mermaid::diagram。当前 package 没有自己的清单，项目 dependencies 的键就是环境中的包名；目录名不参与名称解析，不额外引入规范包名与别名。notist 为保留的内置包名。
+函数身份保留包归属，例如 mermaid::diagram。package 的 Notist.toml 通过 [package].name 确定规范包名；dependency 的键必须与该名称一致，当前不支持别名。目录名不参与名称解析，notist 为保留的内置包名。完整作用域与装配规则见 [Package Model](../package.not)。
 
 Item::function_id 返回规范 FunctionId。内置 Ctor 保留原有枚举变体，合法外部调用使用 Ctor::Extension(ExtensionCtor)，保存 id、children 接受规则和返回类别；未知调用继续使用 Ctor::Custom。Ctor::name 返回 Cow<str>，扩展名称为完整限定名。
 
@@ -201,11 +201,11 @@ renderer 生成 HTML 并记录实际使用的组件，返回 html、diagnostics 
 
 == 加载与装配
 
-Package 是带有 lib.notc 的目录。第一阶段只有这一个 Code 模块，loader 不发现其他 .notc 文件、不解析模块或 import。需要 HTML 呈现时按约定附带 components/ 下的浏览器资源，它们不构成 Notist 的模块系统。
+Package 是带有 Notist.toml 清单与 lib.notc 的目录。Code 只有这一个模块，loader 不发现其他 .notc 文件、不解析模块或 import。需要 HTML 呈现时按约定附带 components/ 下的浏览器资源，它们不构成 Notist 的模块系统。
 
-项目 Notist.toml 使用 dependencies 引入本地 package，例如 mermaid = { path = "./packages/mermaid" }。路径相对于项目配置所在目录，资源按包目录中的固定约定取得。package 不需要清单，签名只声明在 lib.notc 中。它可以附带 README.not 与用于该文档预览的 Notist.toml；使用者引入 package 时不递归加载这个文档配置。
+项目 Notist.toml 使用 dependencies 引入本地 package，例如 mermaid = { path = "./packages/mermaid" }。路径相对于声明它的清单目录，package 必须有 [package].name。根 package 自动注册自身，普通文档项目可省略 [package]。README 的开发依赖与转换分别声明在 dev-dependencies 与 dev-transforms，只在根环境装配。
 
-第一阶段装配项目直接声明的依赖，package 之间的依赖及其包名作用域以后设计。parse_module 只解析单文件源码，不执行依赖加载。
+宿主递归装配 dependencies 及其公开 transforms，共享 package 加载一次，名称冲突与依赖循环产生诊断。根配置可以覆盖依赖的默认转换；不同目标争用同一源身份时要求根显式选择。parse_module 只解析单文件源码，不执行依赖加载。
 
 声明分析将唯一入口的 Module AST 转换为 DefinitionModule，再通过共同校验安装到 Registry。依赖或声明失败不进行部分安装。第一版读取声明即可完成加载；复杂 scripting、模块及执行后端在需要时另行设计。
 
@@ -250,7 +250,9 @@ cargo run -p notist-cli -- json packages/mermaid/lib.notc
 
 notist-cli 是独立的命令行 crate，依赖顶层 notist，生成名为 notist 的可执行文件。命令行解析、终端诊断、静态页面发布、query 输出包装和 LSP 服务适配位于该 crate；tokio 与 tower-lsp 也只由 CLI 的 lsp feature 引入。顶层库提供 Vault、查询选择与共享 IR JSON，不包含语言服务或终端依赖。notist-cli 默认启用 lsp 子命令，使用 --no-default-features 可仅构建其他命令。
 
-Web 预览由 config URL 取得配置和声明，并检查 describe_project 返回的 HTML 候选入口。PreviewPackage 记录声明、已选入口与发布 URL，preview::prepare 装配内存 Vault。render_preview / WASM render_project 返回普通预览结果，analyze_preview / analyze_project 按需附带调试阶段；二者均只处理一次正文。render_prepared 接受序列化 PreparedInputs，供宿主准备输入后的 Worker 使用。JSON 结果包含 diagnostics、html、source_map、used_components；diagnostics 的 origin 区分 analysis、render 与 environment，path 保留来源，组件记录区分 module URL 与 resource 路径。声明错误携带其来源路径。
+Web 预览由 config URL 递归取得清单与声明，把原始资源放入 PreparedInputs。configuration 提供纯配置结构用于资源准备；describe_prepared 装配同一个 Environment，返回函数身份、逻辑包目录和组件候选入口。宿主检测入口并设置 module_urls，保留同一份资源视图。
+
+render_prepared 返回普通预览结果，analyze_prepared 按需附带调试阶段，两者都消费序列化 PreparedInputs，正文只处理一次。WASM 使用相同名称的导出；原生、浏览器与 Worker 复用 Vault 装配，不维护另一套依赖或转换合并规则。JSON 包含 diagnostics、html、source_map、used_components；诊断 origin 区分 analysis、transform、render 与 environment，path 保留来源，组件记录区分 module URL 与 resource 路径。
 
 可分发的浏览器 runtime 位于 crates/notist-html/runtime，提供参数解码与 registerComponents；包入口为 @notist/html-runtime。web/component-protocol.js 只重导出该实现。组件在预览 iframe 中 import、注册与显示，.notc 编辑使用独立模块分析入口。Rust 不解析或执行组件 JS。
 

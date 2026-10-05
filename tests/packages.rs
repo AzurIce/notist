@@ -127,7 +127,7 @@ fn serialized_extensions_need_no_package_to_restore_category_and_children() {
     );
 }
 #[test]
-fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
+fn loader_uses_manifest_names_nearest_config_and_editor_sources_atomically() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir_all(root.join("packages/actual/components")).unwrap();
@@ -135,7 +135,12 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
     let config = root.join("Notist.toml");
     std::fs::write(
         &config,
-        "[dependencies]\nalias = {path = 'packages/actual'}\n",
+        "[dependencies]\nactual = {path = 'packages/actual'}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("packages/actual/Notist.toml"),
+        "[package]\nname = 'actual'",
     )
     .unwrap();
     let module = root.join("packages/actual/lib.notc");
@@ -145,8 +150,8 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
         .cloned()
         .unwrap();
     assert_eq!(project.config_path(), Some(config.as_path()));
-    assert!(project.registry().resolve("alias::badge").is_ok());
-    assert!(project.registry().resolve("actual::badge").is_err());
+    assert!(project.registry().resolve("actual::badge").is_ok());
+    assert!(project.registry().resolve("alias::badge").is_err());
     let mut overlays = std::collections::BTreeMap::new();
     overlays.insert(
         module.clone(),
@@ -171,12 +176,12 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
             .environment_for("nested/deep/test.not")
             .unwrap()
             .registry()
-            .resolve("alias::badge")
+            .resolve("actual::badge")
             .is_ok()
     );
     std::fs::write(
         &config,
-        "[dependencies]\nalias = {path = 'packages/actual'}\nmissing = {path = 'missing'}\n",
+        "[dependencies]\nactual = {path = 'packages/actual'}\nmissing = {path = 'missing'}\n",
     )
     .unwrap();
     let errors = Environment::load_from(&notist::FsResources::new(root), &config).unwrap_err();

@@ -1,6 +1,6 @@
 # IR Transforms 与内置内容的 Package 呈现
 
-2026-10-05 · 状态：内置 replace 已实现并验收 · 范围：IR 转换、项目配置、内置 replace、package 组件、宿主扩展边界
+2026-10-05 · 状态：内置 replace 与 package 作用域已实现；条件筛选待讨论 · 范围：IR 转换、项目配置、内置 replace、package 组件、宿主扩展边界
 
 ## 动机
 
@@ -124,6 +124,62 @@ katex 示例位于仓库根目录 packages/katex，自带 Notist.toml 与 README
 
 HTML 按目标函数身份发现组件，used_components、注册入口、目录资源和浏览器 URL 都归目标 package。缺少目标组件是渲染诊断，不是转换签名错误；无需覆盖内置 HTML 注册项。
 
+## 后续条件筛选：待讨论
+
+考虑将匹配条件扩展为“规范函数身份 + 节点谓词”，根据参数与 attrs 选择需要转换的节点。现有 Item 已保留绑定后的 fields 与 attrs，两者均为 Dict；纯谓词读取这些值即可，不需要为筛选改变 IR，也不执行用户代码。
+
+以下仅为讨论中的配置示意，尚未实现或确定为正式语法；raw → diagram 还需要独立的参数映射与类别设计，不能仅靠现有 replace 执行：
+
+```toml
+[[transforms]]
+kind = "replace"
+from = "notist::raw"
+to = "mermaid::diagram"
+
+[transforms.where]
+and = [
+  { args = { lang = { eq = "mermaid" } } },
+  { not = { attrs = { skip = { eq = true } } } },
+]
+```
+
+配置显式区分 args 与 attrs：args 对应 IR 的已绑定 fields，attrs 对应节点属性，避免裸 lang 键的查找范围不明确。上例希望匹配语言为 mermaid 且未明确设置 skip = true 的节点。where 省略时可保持按函数身份匹配的现有行为。
+
+### 缺失与空值
+
+Dict::get 返回 Option<&Value>，能够区分键不存在与键存在但取某个值。建议使用明确的存在性谓词，不将缺失折叠成 false、空字符串或 Unit：
+
+| 意图 | 条件示意 |
+| --- | --- |
+| 属性不存在 | `{ attrs = { skip = { exists = false } } }` |
+| 属性存在，不关心值 | `{ attrs = { skip = { exists = true } } }` |
+| 属性值为空字符串 | `{ attrs = { skip = { eq = "" } } }` |
+| 属性值为 false | `{ attrs = { skip = { eq = false } } }` |
+
+建议缺失键的 eq 结果为 false。因此 not(eq(true)) 接受缺失、false 与其他不等于 true 的值；若只接受显式 false，应写 eq = false。Value::Unit（源码中的 `()`）是实际值，不等于键缺失。TOML 没有原生 null / Unit 字面量；如果需要判断 Unit，应另行确定谓词表达，不借用空字符串或缺失作为编码。
+
+args 匹配分析后的绑定值。有默认值的参数会看到已物化的默认值；可选且未提供的参数可能缺失。这套筛选不能判断一个有默认值的参数是否在源码中显式传入，不为此扩展当前 IR 的来源记录。
+
+### 谓词与校验边界
+
+首批可考虑 and / or / not / eq / exists，由配置解析为纯谓词树，在函数身份匹配后检查。字段名、args 与 attrs 的边界、值比较语义、组合项与空组合的合法性仍需确定。args 字段可以根据源 FunctionDef 校验名称与值类型；attrs 没有统一字段 schema，不能套用参数声明校验。数组、字典、浮点数及 Unit 的比较与配置编码也需明确，不引入隐式类型转换。
+
+谓词仅决定是否匹配，不负责改名参数、计算值、消费属性、改变 children 或内容类别。已有的契约校验、恢复树诊断与逐规则遍历语义如何与条件匹配组合，需要在实现前确定。
+
+### 默认规则冲突与根覆盖
+
+当前 package 默认规则按 from 身份去重、检查冲突，根规则也按 from 覆盖。加入 where 后，同一个 raw 可能分别有 mermaid、其他语言的规则；沿用现有分组会把这些规则全部判为冲突，根配置覆盖一个条件也会删除其他条件的默认规则。
+
+需要重新讨论规则身份、去重、冲突与覆盖粒度，以及多个谓词同时匹配时的行为。相同谓词结构可以比较，但谓词结构不同并不证明匹配集合互斥；不能直接把任意谓词的逻辑重叠判断当成装配条件。是否使用显式规则名称、条件结构或其他覆盖机制尚未确定。
+
+### raw → diagram 与字段映射
+
+筛选不解除 replace 的同契约限制。notist::raw 的参数为 text / block / lang，返回级别由 block 决定；mermaid::diagram 的参数为 source / theme，返回固定 Block。现有 replace 因字段与返回契约不同而拒绝转换，即使 where 能选择 lang = mermaid 的节点也不会改变这一点。
+
+实际支持此用例还需要设计 text → source 的字段映射、lang / block 的处理、theme 默认值的绑定，以及源节点级别与目标固定 Block 的一致性校验；不能丢弃现有字段或默认假定所有带语言标记的 raw 均为块级。倾向先把纯条件筛选与参数重写分开讨论，再确定是否需要独立转换类型。
+
+本节记录后续方向与待决问题，不修改已实现 replace 的正式契约，也不表示已经支持 where 配置。
+
 ## 后续 Stdio 扩展
 
 同一个有序列表可在后续扩展为：
@@ -181,10 +237,10 @@ command = ["my-notist-transform", "--option"]
 - pipeline 新增 transforms 模块，计划编译检查身份与契约，逐规则遍历 children；字段验证复用 core 的 FunctionDef，不做再次绑定或默认值插入。
 - 配置解析返回 dependencies 与有序 transforms；Environment 在同一声明环境编译计划，Vault 保留源码分析树并生成独立输出树。
 - CLI、普通预览、调试预览与 PreparedInputs / Worker 路径共同执行转换；诊断来源区分 analysis、transform、render 和 environment。
-- 实际 package 迁到仓库根目录 packages/，docs/packages/ 保留机制与索引，各 package 自带 README.not 与 Notist.toml。workspace、构建入口、忽略规则、声明路径与测试同步迁移，不保留旧路径或兼容入口。
+- 实际 package 迁到仓库根目录 packages/，docs/package.not 保留模型说明与示例索引，各 package 自带 README.not 与 Notist.toml。workspace、构建入口、忽略规则、声明路径与测试同步迁移，不保留旧路径或兼容入口。
 - katex package 声明同契约 math，默认导出组件，使用固定版本 KaTeX ESM / CSS。Example 展示内置调用、语法糖和直接 package 调用；组件支持属性更新、重连与错误恢复。
 - typst package 提供相同的 math 签名，通过 typst.ts 的固定版本 WASM 在浏览器编译 Typst 数学源码并输出 SVG。共享编译器串行处理公式，保留源码与错误恢复，按字号缩放并使用 Typst 基线；packages/typst/README.not 展示直接调用和替换配置。replace 不转换 LaTeX 与 Typst 数学方言。
-- 各 package 的 Notist.toml 注册自身并装配 README 的预览环境；widgets 的组合示例显式引入相邻 package。docs/packages/ 只保留机制与索引，grammar 展示页并入 package README。依赖加载不递归读取 package 的文档配置。
+- 各 package 的 Notist.toml 注册自身并装配 README 的预览环境；widgets 的组合示例显式引入相邻 package。docs/package.not 只保留模型说明与示例索引，grammar 展示页并入 package README。package 清单提供 name、公开依赖与默认转换；宿主递归加载公开依赖，dev-dependencies 与 dev-transforms 只在根环境生效。
 - Vault::index 补载实际链接到的正文，以逻辑绝对身份去重、解析跨目录链接，诊断与 backlinks 仍使用扫描根相对路径；缺失目标与锚点继续校验，循环链接不重复分析。
 
 ## 验证结果
@@ -194,3 +250,12 @@ command = ["my-notist-transform", "--option"]
 - Chromium 验证静态导出、Web 预览、Markdown math、KaTeX 参数更新 / 重连 / 错误恢复及字体加载；迁移后的 grammar WASM 与组件资源继续通过浏览器验证。
 - Typst 浏览器验证覆盖实际 SVG、多个公式的编译隔离、属性更新、重连、错误恢复、空值清除、字号与基线，以及 .not / Markdown 经 Worker 使用替换配置。CLI 测试验证真实 Typst package 的签名兼容、两种前端输出与目录组件资源复制。
 - 严格 workspace Clippy 仍受既有警告影响，涉及 Markdown、pipeline 和资源 / 索引等未修改实现；本次新增转换代码与接入未产生 Clippy 警告。
+
+## Package 清单与作用域实施
+
+- 每个 package 必须提供 Notist.toml 的 [package].name；根配置自动注册 lib.notc，依赖键与规范名称匹配，普通文档项目可无 package 身份。
+- loader 递归读取公开依赖，共享资源去重，检查循环与同名不同来源；依赖的默认转换自动引入，相同规则去重，冲突要求根显式覆盖。
+- 根 dev-dependencies 仅引入依赖的公开配置；根 dev-transforms 覆盖同源默认与公开规则，不传播给消费者。
+- 浏览器资源准备、描述、普通呈现与调试统一使用 PreparedInputs，删除 PreviewPackage 和原有 config + package map 的重复入口；原生与 WASM 共用图装配与转换作用域规则。
+- package 模型集中在 docs/package.not，各 package 的清单与 README 迁移到新模型。
+- workspace 全特性测试通过；新增测试覆盖共享依赖、循环与名称冲突、默认规则冲突与根覆盖、开发作用域隔离及诊断出处。JS 资源准备测试、文档目录检查、五个 package 的 HTML 导出、Web WASM 构建与实际 Chromium 预览验证均通过。

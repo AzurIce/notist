@@ -1,2 +1,2 @@
-[dependencies]
-grammar = { path = "." }
+[package]
+name = "grammar"

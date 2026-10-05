@@ -13,6 +13,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 b"[dependencies]\nwidgets = {path = 'packages/widgets'}".to_vec(),
             ),
             (
+                PathBuf::from("packages/widgets/Notist.toml"),
+                b"[package]\nname = 'widgets'".to_vec(),
+            ),
+            (
                 PathBuf::from("packages/widgets/lib.notc"),
                 include_bytes!("../packages/widgets/lib.notc").to_vec(),
             ),

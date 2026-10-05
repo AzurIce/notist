@@ -76,6 +76,7 @@ const { chromium } = require('playwright');
       await gate;
       await route.fulfill({ body: '[dependencies]\nlate = {path = "./late"}' });
     });
+    await page.route('**/late/Notist.toml', route => route.fulfill({ body: '[package]\nname = "late"' }));
     await page.route('**/late/lib.notc', route => route.fulfill({ body: 'fn flag() -> Content;' }));
     await page.route('**/late/components/**', route => route.fulfill({ status: 404, body: '' }));
     await page.fill('#path', 'scratch.not');

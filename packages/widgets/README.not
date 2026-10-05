@@ -24,9 +24,9 @@ badge 是行内内容函数，显示 label 与 count。components/badge.js 是�
 
 == 自身配置
 
-Notist.toml 注册自身 widgets = { path = "." }。Example 还使用相邻的 [Mermaid](../mermaid/README.not) 与 [KaTeX](../katex/README.not)，因此本目录的文档环境也注册它们，并将内置 math 替换为 katex::math。
+Notist.toml 声明 [package].name = "widgets" 并自动注册自身。Example 还使用相邻的 [Mermaid](../mermaid/README.not) 与 [KaTeX](../katex/README.not)，因此将它们放进 dev-dependencies。KaTeX 的公开默认转换将这个文档环境的内置 math 替换为 katex::math。
 
-这是 README 的文档依赖，其他项目引入 widgets 时只读取 lib.notc 与组件资源，不递归加载本目录的 Notist.toml。
+这些开发依赖只在本目录的配置作为根环境时装配，其他项目引入 widgets 时读取清单的公开配置，不引入开发依赖。
 
 == Example
 

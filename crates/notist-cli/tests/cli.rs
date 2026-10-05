@@ -104,9 +104,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(
         project.path().join("Notist.toml"),
-        format!(
-            "[dependencies]\ntypst = {{path = {package:?}}}\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'typst::math'\n"
-        ),
+        format!("[dependencies]\ntypst = {{path = {package:?}}}\n"),
     )
     .unwrap();
     for (name, source, count) in [

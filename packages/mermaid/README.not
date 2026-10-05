@@ -12,7 +12,7 @@ source 是 Mermaid 图形源码，theme 支持 default、dark、forest 和 neutr
 
 == 自身配置
 
-本目录 Notist.toml 注册 mermaid = { path = "." }，用于 README 的分析与预览。其他项目在自己的配置中注册该目录即可，不递归加载这个配置。
+本目录 Notist.toml 声明 [package].name = "mermaid"。根环境自动注册自身，其他项目引入该目录时读取清单与声明。
 
 == Example
 
@@ -30,4 +30,4 @@ python3 -m http.server
 
 通过 HTTP 打开 /target/mermaid-demo/。Web 预览配置 ../packages/mermaid/Notist.toml，源码路径为 README.not。
 
-若需离线分发，package 作者提供本地 Mermaid 依赖产物。通用组件约定见 [Packages](../../docs/packages/README.not)，参数协议见 [Content Function Extensions](../../docs/designs/content-functions.not)。
+若需离线分发，package 作者提供本地 Mermaid 依赖产物。通用组件约定见 [Package Model](../../docs/package.not)，参数协议见 [Content Function Extensions](../../docs/designs/content-functions.not)。

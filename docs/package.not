@@ -1,0 +1,125 @@
+= Package Model
+
+package 是带有 Notist.toml 清单和唯一 Code 入口 lib.notc 的目录。清单确定 package 的身份、公开依赖和输出转换；声明进入与内置函数共同的 Registry；可选的 HTML 组件按公开函数身份与参数呈现内容。
+
+本节定义 package 的边界、名称、注册与配置作用域。具体函数接口、构建步骤和可运行示例放在各 package 自己的 README.not。
+
+== 定义与资源
+
+```text
+packages/example/
+├── lib.notc
+├── Notist.toml
+├── README.not
+└── components/
+    ├── badge.js
+    └── panel/
+        ├── index.js
+        └── style.js
+```
+
+lib.notc 是唯一的 Code 入口，只包含内容函数签名声明。package 不发现其他 Code 模块，不执行函数体、脚本或 import。声明文法见 [Code Syntax](grammar/code.not)。
+
+components/ 是可选的 HTML 实现：函数 badge 使用 components/badge.js，函数 panel 可以使用 components/panel/index.js 并附带辅助模块与资源。同名两种入口同时存在时报冲突。组件入口默认导出 HTMLElement 类，宿主负责标签注册和资源发布；完整协议见 [Content Function Extensions](designs/content-functions.not)。
+
+README.not 是 package 的文档，可包含真实的内容函数调用。Notist.toml 装配该文档的环境。package 还可以携带 Rust 源码、构建脚本与浏览器依赖；它们属于实现资源，不构成 Notist 的 Code 模块系统。
+
+== 函数身份与调用
+
+Notist.toml 必须包含 [package].name，名称是 package 的规范命名空间，与目录名称无关：
+
+```toml
+[package]
+name = "widgets"
+```
+
+名称使用与限定调用相同的标识符规则，区分大小写，不能使用保留名 notist。使用者的 dependency 键必须与清单名称一致，当前不支持别名。
+
+调用 `#widgets::panel("Title")[body]` 查找 widgets::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入。声明返回 Content 或 InlineContent 决定内容类别；IR 保留函数身份、字段、children、属性与源码范围。
+
+内置函数属于 notist 命名空间，prelude 提供 `#callout` 等简写；notist 是保留包名。外部组件标签包含注册包名与函数名，例如 widgets-panel 和 mermaid-diagram。
+
+名称解析、定义校验与目标绑定使用共同 Registry。分析过程不执行组件；组件内部 DOM 不进入文档 IR。HTML 映射与输出接口见 [HTML Rendering](html.not)。
+
+== 使用者环境
+
+项目在 Notist.toml 中注册直接依赖，路径相对于声明它的清单所在目录：
+
+```toml
+[dependencies]
+grammar = { path = "../packages/grammar" }
+katex = { path = "../packages/katex" }
+```
+
+普通文档项目可以没有 [package] 与 lib.notc；有 [package] 的根配置则自动注册本目录的 lib.notc，不需要用 dependencies 再次引入自身。
+
+宿主递归读取 dependencies 指向的 Notist.toml 与 lib.notc。共享依赖按规范资源路径只加载一次；循环依赖、名称与 dependency 键不符、同名 package 来自不同目录、缺失清单或声明均产生诊断。配置和声明错误时不返回部分装配的正式环境。
+
+package 依赖图不引入 Code 模块：parse_module 仍只解析一份 lib.notc，资源与图装配由宿主承担。Environment::load_from 使用资源视图装配；Environment::from_packages 接收宿主已经准备好的包身份和声明源码，提供无 IO 的注册入口。
+
+== 公开配置与开发配置
+
+| 配置 | package 被依赖加载 | 配置作为文档环境的根 |
+| --- | --- | --- |
+| dependencies | 递归装配 | 递归装配 |
+| transforms | 提供默认转换 | 作为根的显式转换 |
+| dev-dependencies | 不装配 | 装配这些依赖的公开配置 |
+| dev-transforms | 不执行 | 覆盖相同源身份的默认与公开转换 |
+
+例如 widgets 的 README 使用相邻的 mermaid 与 katex；它们声明在 dev-dependencies，使用者引入 widgets 时不会自动获得这些示例依赖：
+
+```toml
+[package]
+name = "widgets"
+
+[dev-dependencies]
+mermaid = { path = "../mermaid" }
+katex = { path = "../katex" }
+```
+
+根配置的 dev-dependencies 也只引入依赖的公开配置，不递归开启它们的开发配置。所有已读取清单都必须符合配置语法；不生效的开发规则不进行目标解析或契约校验，不要求开发依赖的资源存在。
+
+根配置由显式 --config 或文档最近父目录的 Notist.toml 选中，不合并父级配置。直接检查或导出 package 的 README.not 就会使用其自身的开发环境。
+
+目录级检查扫描正文并补载实际链接到的文档。每个文档选择自己的根配置，缺失文件与锚点继续诊断；远程 URL 不下载。文档链接遍历与 package 依赖装配分别处理。
+
+== 默认输出转换与覆盖
+
+package 的 transforms 随公开依赖自动引入。例如 katex 的清单声明：
+
+```toml
+[package]
+name = "katex"
+
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "katex::math"
+```
+
+使用者引入 katex 后，内置数学节点就具有同契约的 package 替换目标，无须再次声明规则。依赖提供的默认规则按 from 身份选择；相同 from / to 去重，相同 from 的不同目标产生冲突诊断，不根据依赖读取顺序静默选择。
+
+根 transforms 覆盖同源身份的依赖默认规则；根 dev-transforms 再覆盖同源身份的默认规则和根 transforms。根自己的规则保留声明顺序。未被覆盖的默认规则按依赖先于依赖者的顺序加入计划；同一清单内保持声明顺序。
+
+例如同时引入 katex 与 typst 时，两者默认替换 notist::math；根配置需要显式选择：
+
+```toml
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "typst::math"
+```
+
+所有生效作用域内声明的转换都根据完整 Registry 校验，包括被根覆盖的默认规则；诊断保留声明所在的清单、源码与范围。开发作用域外的 dev-transforms 不参加校验。
+
+转换生成独立输出树，保留字段、children、属性和源码范围，原始 Analysis 不变。replace 不转换数学方言；直接限定调用也可以使用对应组件。执行语义、兼容性与 lib API 见 [IR Transforms](designs/transforms.not)。
+
+== 实现与示例
+
+| Package | 内容 |
+| --- | --- |
+| [grammar](../packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 |
+| [widgets](../packages/widgets/README.not) | panel、badge 与嵌套内容的组合示例 |
+| [mermaid](../packages/mermaid/README.not) | Mermaid 图形组件 |
+| [katex](../packages/katex/README.not) | LaTeX 数学呈现 |
+| [typst](../packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG |

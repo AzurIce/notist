@@ -1,5 +1,5 @@
-[dependencies]
-typst = { path = "." }
+[package]
+name = "typst"
 
 [[transforms]]
 kind = "replace"

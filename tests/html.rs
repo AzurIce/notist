@@ -1,6 +1,33 @@
 use notist::{Ctor, Item, Pipeline, Value};
 use notist_html::{Renderer, escape_attribute, escape_text, is_safe_url, render};
 
+#[test]
+fn publication_url_resolver_preserves_url_safety_and_source_tree() {
+    let root = analyze("not", "[Guide](guide.not) ![Picture](picture.svg)");
+    let before = root.clone();
+    let output = Renderer::new()
+        .with_url_resolver(|_, url| match url {
+            "guide.not" => Some("../guide/".into()),
+            "picture.svg" => Some("../media/picture.svg".into()),
+            _ => None,
+        })
+        .render_with_diagnostics(&root);
+    assert!(output.diagnostics.is_empty());
+    assert!(output.html.contains("href=\"../guide/\""));
+    assert!(output.html.contains("href=\"../media/picture.svg\""));
+    assert_eq!(root, before);
+    let output = Renderer::new()
+        .with_url_resolver(|_, _| Some("javascript:bad".into()))
+        .render_with_diagnostics(&root);
+    assert_eq!(output.diagnostics.len(), 2);
+    assert!(!output.html.contains("href="));
+    let root = analyze("not", "[Bad](javascript:bad)");
+    let output = Renderer::new()
+        .with_url_resolver(|_, _| panic!("unsafe input must not reach resolver"))
+        .render_with_diagnostics(&root);
+    assert_eq!(output.diagnostics.len(), 1);
+}
+
 fn analyze(extension: &str, src: &str) -> Item {
     let document = Pipeline::default()
         .analyze(

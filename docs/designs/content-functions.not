@@ -234,7 +234,7 @@ HTML 的 component_entries 和 select_component_entry 定义两种候选与冲�
 
 Resources 提供 read、kind、entries 和逻辑路径解析。MemoryResources 是拥有输入的内存视图，OverlayResources 让未保存正文、配置和声明覆盖底层资源。examples/prepared_preview.rs 展示完整输入准备、Worker 消息和结果消费，可用 cargo run --example prepared_preview 验证。PreparedInputs 可序列化，包含逻辑根、文件字节、显式配置与模块 URL；into_vault 在 Worker 内装配。宿主异步准备输入后，同步调用正文管线。资源目录与 URL 的相对路径由宿主发布策略决定。
 
-Vault 在当前输入视图中保留已装配 Environment；输入变化后创建新的视图与 Vault。宿主任务需要同时标识正文和环境版本，拒绝过期结果。该接口不提供细粒度增量计算或跨视图缓存。Vault::index 派生 VaultIndex，保存文档索引、诊断、链接与 backlinks。宿主扫描指定目录，并补载资源视图中实际链接到的正文文件；每个文件使用自己的最近配置，循环引用只分析一次。索引路径相对于扫描目录，外部文档可以包含 ..；缺失目标与锚点继续产生诊断，不取得远程 URL。
+Vault 在当前输入视图中保留已装配 Environment；输入变化后创建新的视图与 Vault。宿主任务需要同时标识正文和环境版本，拒绝过期结果。该接口不提供细粒度增量计算或跨视图缓存。Vault::index 派生 VaultIndex，保存文档索引、诊断、链接与 backlinks。宿主扫描指定目录，并补载 Vault 根内实际链接到的正文文件；每个文件使用自己的最近配置，循环引用只分析一次。索引路径相对于 Vault 根，扫描子目录不改变内容边界。本地 link 与 embed 越界产生诊断，不补载外部正文；缺失目标与锚点继续校验，不取得远程 URL。package 的声明依赖与实现资源允许位于 Vault 外，完整边界见 [Pipeline](pipeline.not)。
 
 notist-cli 的 html 命令将已生成片段和实际使用组件装配到目录：index.html、components.js 与 packages/<编码包名>/components/ 下的文件。目录组件复制整目录，保留辅助模块与资源的相对路径；简单入口只复制该 JS。资源必须是普通文件或目录。CLI 按静态目录布局生成发布 URL 与去重的注册入口；浏览器拒绝已有标签的冲突实现。
 

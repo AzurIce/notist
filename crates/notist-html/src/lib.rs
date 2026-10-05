@@ -27,6 +27,7 @@ pub use escape::{escape_attribute, escape_text};
 pub use url::is_safe_url;
 
 type Hook<'a> = Box<dyn Fn(&Item) -> Option<String> + 'a>;
+type UrlResolver<'a> = Box<dyn Fn(&Item, &str) -> Option<String> + 'a>;
 
 /// An HTML fragment and problems encountered while rendering it.
 ///
@@ -71,9 +72,19 @@ pub struct Renderer<'a> {
     math: Option<Hook<'a>>,
     source_map: bool,
     registry: HtmlRegistry,
+    url_resolver: Option<UrlResolver<'a>>,
 }
 
 impl<'a> Renderer<'a> {
+    /// Resolve link/embed targets using explicit host data, without IO. `None`
+    /// keeps the source URL. Both source and resolved URLs are checked for safety.
+    pub fn with_url_resolver(
+        mut self,
+        resolve: impl Fn(&Item, &str) -> Option<String> + 'a,
+    ) -> Self {
+        self.url_resolver = Some(Box::new(resolve));
+        self
+    }
     pub fn with_registry(mut self, registry: HtmlRegistry) -> Self {
         self.registry = registry;
         self
@@ -431,8 +442,17 @@ impl State<'_, '_> {
 
     fn url(&mut self, item: &Item, field: &str, attribute: &str) {
         if let Some(url) = string_field(item, field) {
-            if is_safe_url(url) {
-                self.attr(attribute, url);
+            let resolved = is_safe_url(url)
+                .then(|| {
+                    self.renderer
+                        .url_resolver
+                        .as_ref()
+                        .and_then(|resolve| resolve(item, url))
+                })
+                .flatten();
+            let target = resolved.as_deref().unwrap_or(url);
+            if is_safe_url(url) && is_safe_url(target) {
+                self.attr(attribute, target);
             } else {
                 self.diagnostic(
                     item,

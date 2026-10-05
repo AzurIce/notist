@@ -9,9 +9,45 @@ struct Lsp {
     stdin: ChildStdin,
     messages: Receiver<Value>,
 }
+
+#[test]
+fn language_server_reports_and_clears_outside_vault_references() {
+    let temp = tempfile::tempdir().unwrap();
+    let uri = url::Url::from_file_path(temp.path().join("page.md"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::new(temp.path());
+    server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    server.until(|message| message["id"] == 1);
+    server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"markdown","version":1,"text":"[outside](../outside.not) ![image](../outside.svg)"}}}));
+    let invalid = server.until(|message| {
+        message["method"] == "textDocument/publishDiagnostics" && message["params"]["uri"] == uri
+    });
+    let diagnostics = invalid["params"]["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 2);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("outside Vault root")
+    }));
+    assert_eq!(diagnostics[0]["range"]["start"]["character"], 0);
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"[inside](sub/../inside.not) ![remote](https://example.test/image.svg)"}]}}));
+    let valid = server.until(|message| {
+        message["method"] == "textDocument/publishDiagnostics" && message["params"]["uri"] == uri
+    });
+    assert!(
+        valid["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
 impl Lsp {
-    fn new() -> Self {
+    fn new(root: &std::path::Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root)
             .arg("lsp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -99,7 +135,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     let document = temp.path().join("document.not");
     let uri = url::Url::from_file_path(&document).unwrap().to_string();
     let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
-    let mut server = Lsp::new();
+    let mut server = Lsp::new(temp.path());
     server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
     server.until(|message| message["id"] == 1);
     server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));

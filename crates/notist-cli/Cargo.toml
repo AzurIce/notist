@@ -14,11 +14,16 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 [dependencies]
 notist = { path = "../.." }
 notist-html = { path = "../notist-html" }
+notist-ssg = { path = "../notist-ssg" }
 clap = { version = "4", features = ["derive"] }
 codespan-reporting = "0.12"
 serde_json = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+percent-encoding = "2"
+tiny_http = "0.12"
+notify = "8"
+tempfile = "3"
 tower-lsp = { version = "0.20", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "io-std", "sync", "time"], optional = true }
 

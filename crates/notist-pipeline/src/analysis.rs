@@ -120,9 +120,14 @@ impl Analysis {
         &self.root
     }
 
-    /// Syntax, semantic, and type diagnostics collected by the pipeline.
+    /// Syntax, semantic, and type diagnostics, including attached host checks.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Attach diagnostics from checks that require host context, preserving IR.
+    pub fn extend_diagnostics(&mut self, diagnostics: impl IntoIterator<Item = Diagnostic>) {
+        self.diagnostics.extend(diagnostics);
     }
 
     /// Take ownership of the tree and diagnostics.

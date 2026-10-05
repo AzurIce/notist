@@ -12,6 +12,7 @@
 - [Content Function Extensions](designs/content-functions.not)：内置与外部函数的统一定义、.notc 声明和 package 装配、HTML 组件协议与 host 接口。
 - [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
+- [Static Site Generation](ssg.not)：README 路由、站点构建、主题与本地预览。
 - [Draft](draft.not)：尚未确定的设计。
 
 语法规则使用 Grammar Notation 表达；类型与字面量归 Types，具体函数及其语法糖归 Builtin，其他共用规则归 Syntax。函数小节引用共用规则，不重复定义。

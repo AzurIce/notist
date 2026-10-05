@@ -1,8 +1,13 @@
-mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
+#[cfg(not(target_arch = "wasm32"))]
+mod preview;
 mod query;
+#[cfg(not(target_arch = "wasm32"))]
+mod site;
 
+#[cfg(not(target_arch = "wasm32"))]
+use notist::Resources;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::path::PathBuf;
@@ -42,6 +47,20 @@ enum Command {
         #[arg(long, default_value = "target/notist-html")]
         out_dir: PathBuf,
     },
+    /// Publish all selected Vault documents as a static site
+    Build {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    /// Serve the site with file watching and live reload
+    Preview {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8000")]
+        address: String,
+    },
     /// Run the language server over stdio
     #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
     Lsp,
@@ -52,6 +71,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let config = cli.config.as_deref();
     match cli.command {
+        Command::Build { root, out_dir } => site::build(&root, config, out_dir.as_deref()),
+        Command::Preview { root, address } => preview::serve(&root, config, &address),
         Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
             format!(
@@ -143,8 +164,26 @@ fn main() -> ExitCode {
                 emit_source(&file, &src, &output.transformed.diagnostics);
                 return ExitCode::FAILURE;
             }
-            let environment = vault.environment_for(&file).expect("assembled environment");
-            match html::build_rendered_page(output.rendered, environment, &out_dir) {
+            let environment = vault
+                .environment_for(&file)
+                .expect("assembled environment")
+                .clone();
+            let resources = site::Files::new(vault.resources().root());
+            let publication = notist_ssg::page(
+                output.rendered,
+                &environment,
+                &resources,
+                &notist_ssg::SiteConfig {
+                    output: notist::resources::normalize(
+                        &std::env::current_dir().unwrap().join(&out_dir),
+                    ),
+                    ..notist_ssg::SiteConfig::default()
+                },
+            );
+            match publication.and_then(|publication| {
+                site::publish(&publication, &out_dir, vault.resources().root())?;
+                Ok(out_dir.join("index.html"))
+            }) {
                 Ok(result) => {
                     println!("{}", result.display());
                     ExitCode::SUCCESS
@@ -256,6 +295,7 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
         Ok(library) => library,
         Err(error) => return emit_vault_error(error),
     };
+    let vault_root = vault.resources().root();
     let diagnostics = library.check();
     let mut files = SimpleFiles::new();
     let mut ids = std::collections::HashMap::new();
@@ -263,7 +303,7 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
     let config = Config::default();
     for (path, d) in &diagnostics {
         let id = *ids.entry(path.clone()).or_insert_with(|| {
-            let full = dir.join(path);
+            let full = vault_root.join(path);
             let src = std::fs::read_to_string(&full).unwrap_or_default();
             files.add(full.display().to_string(), src)
         });

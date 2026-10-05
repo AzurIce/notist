@@ -6,13 +6,19 @@
 
 == Crate 与宿主边界
 
-notist-core 定义 Expr、Item、Value、函数签名、Registry、诊断和内容索引；共同声明校验属于这些模型。notist-syntax 提供无损 CST 与 AST 视图；notist-md 只将 Markdown 转成 Expr。
+notist-core 定义 Expr、Item、Value、函数签名、Registry、诊断和内容索引；共同声明校验属于这些模型。notist-syntax 提供无损 CST 与 AST 视图；notist-markup 复用 syntax 与 core，将显式调用参数、注解及字面量 lower 为共享值。notist-md 将 Markdown 与 Notist 扩展语法转成 Expr，调用正文由 Markdown 自身解析。
 
-notist-pipeline 依赖 core、syntax 和 md，组织源码到 Item 的转换，并通过 analyze_module 将 .notc 转成 core 的 DefinitionModule。Pipeline::analyze(path, source, registry) 接收显式输入；path 仅用于选择前端，不读文件。Pipeline::inspect 在同一次处理过程中收集调试 CST 和中间 IR；普通 analyze 不生成这份调试结果。
+notist-pipeline 依赖 core、syntax、markup 和 md，组织源码到 Item 的转换，并通过 analyze_module 将 .notc 转成 core 的 DefinitionModule。Pipeline::analyze(path, source, registry) 接收显式输入；path 仅用于选择前端，不读文件。Pipeline::inspect 在同一次处理过程中收集调试 CST 和中间 IR；普通 analyze 不生成这份调试结果。
 
 顶层 notist::Vault 通过 Resources 取得配置、声明和组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 pipeline 与 HTML。一个 Vault 可以包含多个配置环境。notist-html 只依赖 core，不反向依赖 pipeline 或 Vault。
 
 Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、原始 Analysis、TransformOutput 和完整 RenderResult。正文只处理一次，输出前按配置执行 [IR Transforms](transforms.not)。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
+
+Vault 的内容边界由 Resources::root 确定，与最近配置所在目录及 index 的扫描目录分别处理。本地 link 与 embed 的目标按文档目录解析并规范化，越过 Vault 根时在引用节点产生 semantic 诊断，不补载外部文档；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 `//` 的外部 URL 保留为外部链接，不读取或发布为 Vault 内容。
+
+边界诊断附加到 Vault::analyze / inspect 的 Analysis，普通呈现、调试预览与语言服务共用该结果。纯 Pipeline 不知道 Vault 根，不执行内容边界检查。VaultIndex::from_documents 为显式传入的根执行相同检查，已有诊断不重复添加。
+
+Vault::index 扫描指定目录，并补载 Vault 内实际链接到的正文。检查结果与 backlinks 的路径相对于 Vault 根，扫描子目录不缩小内容边界。package 的清单依赖和组件实现资源可以位于 Vault 外；资源访问接口的根不是整个进程的文件读取沙箱，package 文档不会因安装依赖自动加入正文索引。
 
 notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。
 
@@ -23,9 +29,9 @@ notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
 - trivia（空白、换行、注释）是一等 token，全保留
 
-// 与 Markdown 不同：Markdown 的元素是闭集合，语法层面即可确定 Inline/Block；
-// Notist 的内容函数 `#xxx()` 的级别依赖构造器已注册的签名或调用点 flavor 声明，
-// 因此文档树结构不能在语法层面确定，只能以平铺森林呈现，延迟到 Shape 阶段组装。
+// 标准 Markdown 元素在语法层面即可确定 Inline/Block；两个前端中的显式调用
+// `#xxx()` 都依赖已注册的签名或调用点 flavor，因此调用的结构归属
+// 延迟到共享 Shape 阶段组装。
 
 *Parse*
 

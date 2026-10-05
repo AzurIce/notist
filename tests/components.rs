@@ -160,7 +160,7 @@ fn missing_html_targets_and_filesystem_entry_conflicts() {
         source: std::fs::read_to_string(fake.path().join("lib.notc")).unwrap(),
     }])
     .unwrap();
-    let mut vault = notist::Vault::open(".").with_environment(project);
+    let mut vault = notist::Vault::open(fake.path()).with_environment(project);
     let notist::VaultError::Environment(errors) = vault.html_registry("test.not").unwrap_err()
     else {
         panic!("expected component binding diagnostics");

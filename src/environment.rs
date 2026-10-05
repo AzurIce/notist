@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::resources::{ResourceKind, Resources};
 use crate::{Diagnostic, Phase, Registry, TextRange, analyze_module, builtins};
+use notist_pipeline::transforms::{Replace, TransformPlan};
 
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
@@ -20,18 +21,31 @@ pub struct Dependency {
 }
 
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Config {
     #[serde(default)]
     dependencies: BTreeMap<String, toml::Spanned<LocalDependency>>,
+    #[serde(default)]
+    transforms: Vec<toml::Spanned<TransformConfig>>,
 }
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum TransformConfig {
+    Replace { from: String, to: String },
+}
+#[derive(serde::Deserialize)]
 struct LocalDependency {
     path: String,
 }
 
-pub fn parse_config(source: &str) -> Result<Vec<Dependency>, Vec<Diagnostic>> {
+#[derive(Debug, Clone)]
+pub struct Configuration {
+    pub dependencies: Vec<Dependency>,
+    pub transforms: Vec<Replace>,
+}
+
+/// Parse configuration without reading packages or resolving function identities.
+/// Unknown fields are ignored; known fields and transform kinds are validated.
+pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
     let config: Config = toml::from_str(source).map_err(|error| {
         let span = error.span().unwrap_or(0..0);
         vec![Diagnostic::new(
@@ -41,6 +55,7 @@ pub fn parse_config(source: &str) -> Result<Vec<Dependency>, Vec<Diagnostic>> {
         )]
     })?;
     let mut dependencies = Vec::new();
+    let mut transforms = Vec::new();
     let mut diagnostics = Vec::new();
     for (name, entry) in config.dependencies {
         let span = range(entry.span());
@@ -65,8 +80,37 @@ pub fn parse_config(source: &str) -> Result<Vec<Dependency>, Vec<Diagnostic>> {
             });
         }
     }
+    for entry in config.transforms {
+        let span = range(entry.span());
+        let TransformConfig::Replace { from, to } = entry.into_inner();
+        let mut identity = |name: &str| {
+            let parts: Vec<_> = name.split("::").collect();
+            if parts.len() == 2
+                && parts
+                    .iter()
+                    .all(|part| notist_core::definitions::valid_name(part))
+            {
+                Some(crate::FunctionId::new(parts[0], parts[1]))
+            } else {
+                diagnostics.push(Diagnostic::new(
+                    Phase::Semantic,
+                    span,
+                    format!("transform identity must be `package::function`: `{name}`"),
+                ));
+                None
+            }
+        };
+        let from = identity(&from);
+        let to = identity(&to);
+        if let (Some(from), Some(to)) = (from, to) {
+            transforms.push(Replace { from, to, span });
+        }
+    }
     if diagnostics.is_empty() {
-        Ok(dependencies)
+        Ok(Configuration {
+            dependencies,
+            transforms,
+        })
     } else {
         Err(diagnostics)
     }
@@ -85,6 +129,7 @@ pub struct Environment {
     config_path: Option<PathBuf>,
     packages: BTreeMap<String, Package>,
     registry: Registry,
+    transforms: TransformPlan,
 }
 
 impl Default for Environment {
@@ -93,6 +138,7 @@ impl Default for Environment {
             config_path: None,
             packages: BTreeMap::new(),
             registry: builtins::registry().clone(),
+            transforms: TransformPlan::default(),
         }
     }
 }
@@ -106,6 +152,14 @@ impl Environment {
     }
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+    pub fn transforms(&self) -> &TransformPlan {
+        &self.transforms
+    }
+    /// Compile an explicit plan against the installed declarations, without IO.
+    pub fn with_transforms(mut self, rules: &[Replace]) -> Result<Self, Vec<Diagnostic>> {
+        self.transforms = TransformPlan::compile(rules, &self.registry)?;
+        Ok(self)
     }
     /// Install explicitly supplied declaration sources; performs no IO.
     pub fn from_packages(
@@ -150,7 +204,7 @@ impl Environment {
                 message.to_string(),
             )]
         })?;
-        let dependencies = parse_config(&config_source).map_err(|errors| {
+        let config = parse_config(&config_source).map_err(|errors| {
             errors
                 .into_iter()
                 .map(|diagnostic| SourceDiagnostic {
@@ -162,7 +216,7 @@ impl Environment {
         })?;
         let mut packages = Vec::new();
         let mut diagnostics = Vec::new();
-        for dependency in dependencies {
+        for dependency in config.dependencies {
             let root =
                 crate::resources::normalize(&config_path.parent().unwrap().join(&dependency.path));
             let entry = root.join("lib.notc");
@@ -182,11 +236,21 @@ impl Environment {
         }
         // Still analyze available packages to report every source error together.
         match Self::from_packages(packages) {
-            Ok(mut environment) if diagnostics.is_empty() => {
-                environment.config_path = Some(config_path);
-                Ok(environment)
-            }
-            Ok(_) => Err(diagnostics),
+            Ok(environment) => match environment.with_transforms(&config.transforms) {
+                Ok(mut environment) if diagnostics.is_empty() => {
+                    environment.config_path = Some(config_path);
+                    Ok(environment)
+                }
+                Ok(_) => Err(diagnostics),
+                Err(errors) => {
+                    diagnostics.extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
+                        path: config_path.clone(),
+                        source: config_source.clone(),
+                        diagnostic,
+                    }));
+                    Err(diagnostics)
+                }
+            },
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
                 Err(diagnostics)

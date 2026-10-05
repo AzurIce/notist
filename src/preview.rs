@@ -16,7 +16,7 @@ pub struct PreviewPackage {
 
 pub fn configuration_json(config: &str) -> String {
     match crate::environment::parse_config(config) {
-        Ok(dependencies) => json!({"dependencies": dependencies.iter().map(|dependency| json!({"name":dependency.name,"path":dependency.path})).collect::<Vec<_>>()}).to_string(),
+        Ok(config) => json!({"dependencies": config.dependencies.iter().map(|dependency| json!({"name":dependency.name,"path":dependency.path})).collect::<Vec<_>>(), "transforms":config.transforms.iter().map(|rule|json!({"kind":"replace","from":rule.from.to_string(),"to":rule.to.to_string()})).collect::<Vec<_>>()}).to_string(),
         Err(errors) => json!({"diagnostics": errors.iter().map(|error| diagnostic_json("Notist.toml", "environment", error)).collect::<Vec<_>>()}).to_string(),
     }
 }
@@ -27,7 +27,7 @@ pub fn prepare(
     config: &str,
     packages: &BTreeMap<String, PreviewPackage>,
 ) -> Result<Vault<MemoryResources>, Value> {
-    let dependencies = crate::environment::parse_config(config).map_err(|errors| json!({"diagnostics":errors.iter().map(|error| diagnostic_json("Notist.toml", "environment", error)).collect::<Vec<_>>()}))?;
+    let configuration = crate::environment::parse_config(config).map_err(|errors| json!({"diagnostics":errors.iter().map(|error| diagnostic_json("Notist.toml", "environment", error)).collect::<Vec<_>>()}))?;
     let mut inputs = PreparedInputs {
         root: "/preview".into(),
         config: Some("Notist.toml".into()),
@@ -37,7 +37,7 @@ pub fn prepare(
     inputs
         .files
         .insert("Notist.toml".into(), config.as_bytes().to_vec());
-    for dependency in dependencies {
+    for dependency in configuration.dependencies {
         let package = packages.get(&dependency.name).ok_or_else(
             || json!({"error":format!("missing declaration source for `{}`", dependency.name)}),
         )?;
@@ -81,6 +81,7 @@ pub fn render_preview(path: &str, src: &str, config: &str, packages_json: &str) 
         Ok(mut vault) => match vault.render_html(path, src, RenderOptions::default()) {
             Ok(output) => {
                 let mut data = json!({"diagnostics":output.analysis.diagnostics().iter().map(|error|diagnostic_json(path,"analysis",error)).collect::<Vec<_>>()});
+                append_transforms(&mut data, path, &output.transformed);
                 append_render(&mut data, path, output.rendered);
                 data.to_string()
             }
@@ -102,6 +103,7 @@ pub fn render_prepared(path: &str, src: &str, inputs_json: &str) -> String {
     {
         Ok(output) => {
             let mut data = json!({"diagnostics":output.analysis.diagnostics().iter().map(|error|diagnostic_json(path,"analysis",error)).collect::<Vec<_>>()});
+            append_transforms(&mut data, path, &output.transformed);
             append_render(&mut data, path, output.rendered);
             data.to_string()
         }
@@ -131,8 +133,13 @@ pub fn analyze_preview(path: &str, src: &str, config: &str, packages_json: &str)
     ))
     .unwrap();
     annotate_analysis(&mut data, path);
-    match vault.render_item(path, analysis.root(), RenderOptions::default()) {
-        Ok(rendered) => append_render(&mut data, path, rendered),
+    match vault.render_output(path, analysis.root(), RenderOptions::default()) {
+        Ok(output) => {
+            append_transforms(&mut data, path, &output.transformed);
+            // Debug consumers can compare the original and output identities.
+            data["transformed"] = crate::json::item(&output.transformed.root);
+            append_render(&mut data, path, output.rendered);
+        }
         Err(error) => return error_json(error).to_string(),
     }
     data.to_string()
@@ -142,6 +149,14 @@ fn annotate_analysis(data: &mut Value, path: &str) {
         diagnostic["path"] = json!(path);
         diagnostic["origin"] = json!("analysis");
     }
+}
+fn append_transforms(data: &mut Value, path: &str, output: &crate::transforms::TransformOutput) {
+    data["diagnostics"].as_array_mut().unwrap().extend(
+        output
+            .diagnostics
+            .iter()
+            .map(|error| diagnostic_json(path, "transform", error)),
+    );
 }
 fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult) {
     data["html"] = json!(result.html);

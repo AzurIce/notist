@@ -1,0 +1,7 @@
+[dependencies]
+typst = { path = "." }
+
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "typst::math"

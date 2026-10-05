@@ -1,0 +1,80 @@
+= IR Transforms
+
+transforms 在源码分析得到 Item 后生成用于输出的内容树。配置按序执行，所有输出后端可以消费转换结果；HTML 继续按目标函数身份呈现节点。源码分析管线见 [Pipeline](pipeline.not)，定义与组件见 [Content Function Extensions](content-functions.not)，实际例子见 [Packages](../packages/README.not)。
+
+== 配置
+
+```toml
+[dependencies]
+katex = { path = "../packages/katex" }
+
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "katex::math"
+```
+
+当前仅支持 replace。from 与 to 必须是完整的 package::function；依赖键确定当前环境的包名，内置包名为 notist。多个 transforms 按数组顺序执行。没有配置时转换树与原始树相同。
+
+environment::parse_config 返回 Configuration，其中 dependencies 保存来源路径，transforms 保存 Replace 与配置 span。解析不读取依赖；Environment 装配全部声明后，在同一个 Registry 中编译转换计划，身份或契约错误保留 Notist.toml 的来源与范围。失败不返回部分计划。
+
+== Replace
+
+replace 将匹配的构造器改为目标签名对应的构造器；外部目标成为带有目标身份、children 契约和内容类别的 ExtensionCtor。fields、children、attrs、span 和最终 level 保留，节点顺序不变。替换后的 children 仍属于透明的内容树，组件内部 DOM 继续由组件实现。
+
+单条 replace 遍历整棵 children 树，每个节点只匹配一次，不重新匹配刚替换出的身份。下一条规则消费前一条结果；A → B、B → C 按序得到 C，反序得到 B。规则可指回内置目标，也可包含同身份替换，不循环到固定点。
+
+普通参数仍只包含 Value，不引入 Content 参数、slot 或函数求值。替换不重跑 Resolve、reflow 或 sectionize。
+
+=== 契约兼容
+
+源与目标必须已注册，并满足：
+
+- 返回规则均为相同的固定 Inline 或 Block；动态级别和 Inherit 不支持。
+- children 接受契约相同。
+- 参数集合的名称、类型、必填 / 可选 / 默认值规则和值域约束相同。参数排列和位置参数写法不影响已绑定的 fields；声明位置和说明文字不参与比较。
+- 默认值保留完整 Value 语义，浮点数按比特比较，包括负零及 NaN；集合保留元素与字典顺序。
+- 不涉及结构槽或内置 heading、section、list、item、table、row、cell 的结构职责。
+
+replace 不改名或计算参数，不补齐新参数，不改变内容级别，不插入、删除或重排节点。
+
+=== 恢复树
+
+已分析的恢复树仍可能包含非法字段或挂载。执行时使用源定义检查值域、必填字段、已物化默认值、额外字段、children 和类别。ExtensionCtor 的契约快照也必须与计划一致。
+
+节点不符合契约时保留该节点并产生转换诊断，仍继续转换其中合法的后代；不静默丢弃内容。Doc 与未知名称 Custom 没有可替换的函数身份。
+
+== 纯 API
+
+```rust
+use notist::transforms::{Replace, TransformPlan};
+
+let rules = [Replace {
+    from: notist::FunctionId::new("notist", "math"),
+    to: notist::FunctionId::new("katex", "math"),
+    span: notist::TextRange::empty(0.into()),
+}];
+let plan = TransformPlan::compile(&rules, registry)?;
+let output = plan.apply(analysis.root());
+// output.root 与 output.diagnostics；analysis 保留源码树。
+```
+
+TransformPlan 属于 notist-pipeline。compile 接收显式规则与 Registry，保存已校验定义的快照；apply 借用原树并返回独立的 TransformOutput，不修改 Analysis，不执行文件、网络或进程操作。默认空计划保留整棵树。
+
+Environment::with_transforms 在已有声明环境中设置计划；transforms() 只读访问该计划。Vault::transform(path, item) 按文档配置应用计划，返回 TransformOutput；调用者可将结果交给任何后端。
+
+== 输出与诊断
+
+Vault::render_html(path, source, options) 只分析一次，返回 HtmlOutput：path、原始 analysis、transformed 和 rendered。transformed 保存输出树与转换诊断，rendered 保存 HTML、渲染诊断、source_map 和 used_components。
+
+Vault::render_output(path, item, options) 接收原始分析树，转换一次再渲染，返回 ItemOutput：transformed 与 rendered。已经转换过的树直接交给 notist_html::Renderer，不再次调用该组合入口。
+
+LSP、query 和 VaultIndex 使用原始 Analysis。渲染的 source map 与逐节点诊断继续指向原始源码范围；转换身份不会改变出处。CLI 导出检查源码诊断与转换诊断，再发布 HTML。浏览器适配器分别标注 analysis、transform、render 与 environment 来源；调试预览同时返回 core 和 transformed 树，普通预览不收集调试树。
+
+HTML 按转换后的 package 身份发现组件，记录和发布其实际资源。安装 katex 后，`$x^2$` 的输出节点是 katex::math，组件标签是 katex-math。缺少组件属于渲染诊断，签名和转换计划仍然有效。
+
+== 宿主与扩展边界
+
+Environment / Vault 负责配置及资源装配，pipeline 负责纯转换，notist-html 消费输出树。PreparedInputs 将配置源码、声明、资源身份及 module_urls 交给内存 / Worker 宿主，因此本地与浏览器使用相同转换逻辑。无需 HTML 目标覆盖配置或内置 handler 特例。
+
+command / stdio 扩展、通用结构重写、参数映射与后端筛选尚不支持。外部程序协议需另行定义版本、无损 IR 编码、来源信息、结果校验和失败行为；现有调试 JSON 与组件参数协议不是进程协议。

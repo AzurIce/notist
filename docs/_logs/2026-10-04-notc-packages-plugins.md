@@ -275,7 +275,7 @@ flowchart TD
 - package：Project 提供纯源码装配与本地文件 loader，支持最近配置、显式配置、来源诊断及编辑器覆盖，失败不返回部分环境。
 - HTML：HtmlRegistry 统一绑定内置与组件，协议 v1 保留标量与复杂值，RenderResult 记录实际使用组件；host 复制目录资源并生成去重注册入口。
 - 工具：CLI 提供 html 构建及 .notc 检查 / CST / JSON；LSP 使用相同 loader，支持声明符号、hover、限定调用跳转和未保存声明的诊断刷新；Web 提供显式配置装配、组件 iframe 预览与模块检查。
-- 示例：docs/packages/README.not 的 Example 中的嵌套 panel、简单 badge 和 Mermaid 已走通声明 → 调用 → IR → 静态 HTML / Web 预览。
+- 示例：packages/widgets/README.not 的 Example 中的嵌套 panel、简单 badge 和 Mermaid 已走通声明 → 调用 → IR → 静态 HTML / Web 预览。
 - 验证：workspace 全特性测试、WASM 构建、文档检查与 JS 协议测试通过；CLI / LSP 进程测试覆盖装配与恢复。Chromium 验证静态页面、Mermaid SVG、i64 精度、shadow root 复用及 Web 预览，未产生页面异常。
 
 浏览器示例使用固定版本 Mermaid CDN 资源；离线分发由 package 提供本地浏览器依赖。第一阶段仍只有一个 lib.notc，没有 Code 求值、WASM 插件执行、传递依赖或远程包解析。

@@ -14,15 +14,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             ),
             (
                 PathBuf::from("packages/widgets/lib.notc"),
-                include_bytes!("../docs/packages/widgets/lib.notc").to_vec(),
+                include_bytes!("../packages/widgets/lib.notc").to_vec(),
             ),
             (
                 PathBuf::from("packages/widgets/components/panel/index.js"),
-                include_bytes!("../docs/packages/widgets/components/panel/index.js").to_vec(),
+                include_bytes!("../packages/widgets/components/panel/index.js").to_vec(),
             ),
             (
                 PathBuf::from("packages/widgets/components/badge.js"),
-                include_bytes!("../docs/packages/widgets/components/badge.js").to_vec(),
+                include_bytes!("../packages/widgets/components/badge.js").to_vec(),
             ),
         ]),
         // Publishing the directory preserves index.js's relative style import.
@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         RenderOptions::default(),
     )?;
     assert!(output.analysis.diagnostics().is_empty());
+    assert!(output.transformed.diagnostics.is_empty());
     assert!(output.rendered.diagnostics.is_empty());
     println!("{}", output.rendered.html);
     for component in &output.rendered.used_components {

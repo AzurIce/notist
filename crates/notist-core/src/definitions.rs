@@ -237,7 +237,27 @@ impl FunctionDef {
                 format!("too many positional arguments for `{call_name}`"),
             ));
         }
-        // Validate in signature order, then insert defaults to preserve field order.
+        self.validate_fields(&fields, call_name, span, diagnostics);
+        // Insert defaults after validation to preserve field order.
+        for parameter in &self.parameters {
+            if fields.get(&parameter.name).is_none()
+                && let ParameterMode::Default(value) = &parameter.mode
+            {
+                fields.insert(&parameter.name, value.clone());
+            }
+        }
+        fields
+    }
+
+    /// Check named values without normalizing or modifying them. Extra fields
+    /// are retained by source recovery; consumers decide whether to accept them.
+    pub fn validate_fields(
+        &self,
+        fields: &Dict,
+        call_name: &str,
+        span: TextRange,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
         for parameter in &self.parameters {
             match fields.get(&parameter.name) {
                 None if parameter.mode == ParameterMode::Required => {
@@ -259,14 +279,6 @@ impl FunctionDef {
                 _ => {}
             }
         }
-        for parameter in &self.parameters {
-            if fields.get(&parameter.name).is_none()
-                && let ParameterMode::Default(value) = &parameter.mode
-            {
-                fields.insert(&parameter.name, value.clone());
-            }
-        }
-        fields
     }
 }
 

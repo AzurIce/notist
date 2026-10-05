@@ -1,15 +1,15 @@
 = Grammar Package
 
 lib.notc 定义内容函数，components/diagram/index.js 默认导出 Web Component。
-src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](../../grammar/notation.not)，使用 railroad 生成 SVG；同一实现供原生 Rust 与 WASM 使用。
+src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](../../docs/grammar/notation.not)，使用 railroad 生成 SVG；同一实现供原生 Rust 与 WASM 使用。
 
 == Build and view
 
 需要 just、wasm32-unknown-unknown Rust target，以及与 Cargo.toml 相同版本的 wasm-bindgen-cli（0.2.129）。
 
 ```sh
-just --justfile docs/packages/grammar/justfile build
-cargo run -p notist-cli -- html docs/grammar/diagrams.not --out-dir target/grammar-demo
+just --justfile packages/grammar/justfile build
+cargo run -p notist-cli -- html packages/grammar/README.not --out-dir target/grammar-demo
 python3 -m http.server
 ```
 
@@ -19,25 +19,109 @@ python3 -m http.server
 
 NOTIST_WASM_BINDGEN 可指定 wasm-bindgen 可执行文件。wasm/ 是构建产物，不提交源码库；分发已构建 package 时须包含它。
 
-现有 Web viewer 同样可展示组件：先构建 web/build.sh，载入 ../docs/Notist.toml，再把 diagrams.not 的内容放进编辑器。
+现有 Web viewer 同样可展示组件：先构建 web/build.sh，载入 ../packages/grammar/Notist.toml，源码路径填写 README.not。
 
 == Content function
 
-```signature
-grammar::diagram(source: String, rule?: String, theme: String = "light") -> Content
+```notc
+fn diagram(source: String, rule?: String, theme: String = "light") -> Content;
 ```
 
 source 为统一的匹配与结果构造规则文本。组件始终先展示源码，再展示对应的图；源码仅需维护一份。缺省渲染其中所有产生式，rule 指定只绘制一个。支持 light、dark、rust、coal、navy、ayu 主题。
 
 参数更新会重新绘图，移除并重新挂载也可继续使用。同一浏览器模块实例共享 WASM 初始化；错误包含一基行号、Unicode 字符列号并保留源码。
 
-组件直接使用示例：
+== 自身配置
+
+本目录的 Notist.toml 将 grammar = { path = "." } 注册到当前文档环境。这个配置用于 README 的分析与预览；其他项目引入此 package 时只读取 lib.notc 与组件资源，不递归加载这个配置。
+
+== Example
+
+规则引用可以点击跳转；有序选择的分支按编号尝试。源码与轨道图来自同一次 grammar::diagram 调用。
+
+=== Markup calls
+
+#grammar::diagram(r#"""
+syntax CodeCall(ctx) ->
+  `#` name:Path args:Args(ctx) body:CallBody(ctx)?
+  | `#` name:Path body:CallBody(ctx)
+  | `#` body:CallBody(ctx);
+
+syntax Path -> segment:IDENT (COLON_COLON segment:IDENT)*;
+
+syntax Args(ctx) ->
+  LPAREN Trivia* (Argument (Trivia* COMMA Trivia* Argument)* Trivia* COMMA?)?
+  Trivia* RPAREN;
+
+syntax Argument -> key:ArgKey COLON Trivia* value:Value | value:Value;
+"""#, theme: "rust")
+
+=== Code declarations
+
+#grammar::diagram(r#"""
+syntax FunctionDecl ->
+  FN ^ Trivia* name:IDENT Trivia* parameters:ParameterList Trivia*
+  mount:ChildrenDecl? Trivia* ARROW Trivia* result:TypeRef Trivia* SEMICOLON;
+
+syntax ParameterList ->
+  LPAREN Trivia*
+  (parameter:Parameter (Trivia* COMMA Trivia* parameter:Parameter)*
+   Trivia* COMMA?)?
+  Trivia* RPAREN;
+
+syntax Parameter ->
+  name:IDENT Trivia*
+  (QUESTION Trivia* COLON Trivia* ty:TypeRef
+   | COLON Trivia* ty:TypeRef (Trivia* default:DefaultValue)?);
+
+syntax ChildrenDecl ->
+  LBRACKET Trivia* `children` Trivia* COLON Trivia* ty:TypeRef Trivia* RBRACKET;
+"""#)
+
+=== Context and scanners
+
+#grammar::diagram(r#"""
+syntax Item(m, i, ctx) ->
+  @{ column(cursor) === i }
+  marker:TokenKind(m) WS
+  let c = { column(cursor) }
+  extent:probe ItemExtent(c; ctx)
+  body:within(extent.end,
+    ItemBody(ctx with block_indent=c, body_start=cursor));
+
+syntax Table(ctx) ->
+  @{ table_start(cursor, ctx) }
+  header:scan TableLine(ctx)
+  NL delimiter:scan TableLine(ctx)
+  (!@{ block_end(cursor, ctx) } NL rows:scan TableLine(ctx))*;
+"""#)
+
+=== Lexical rules
+
+#grammar::diagram(r#"""
+lex Whitespace -> [` ` U+0009]+;
+lex Newline -> (U+000D U+000A) | U+000A | U+000D;
+lex Digit -> [`0`-`9`];
+lex Number -> Digit+ (`.` Digit+)?;
+"""#)
+
+=== Select one rule
+
+#grammar::diagram(r#"""
+lex Digit -> [`0`-`9`];
+lex Number -> Digit+ (`.` Digit+)?;
+"""#, rule: "Number", theme: "dark")
+
+=== Match and construct
 
 #grammar::diagram(r#"""
 syntax Heading(ctx) ->
   marker:EQ WS body:InlineRun(ctx, always_true, None)
   => heading(level: size(marker))[lower(body)];
-"""#)
+
+ast MD_Heading -> MD.Heading(level, body)
+  => heading(level: level)[lower(body)];
+"""#, theme: "rust")
 
 == Native API
 
@@ -77,4 +161,4 @@ tests/browser.cjs 验证静态页、WASM 资源复制、规则跳转、参数更
 
 NOTIST_TEST_URL 可指定 HTTP 地址，NOTIST_CHROMIUM 可指定 Chromium 路径。构建 Web viewer 后，设置 NOTIST_TEST_WEB=1 会一并验证现有预览 iframe 的 package 加载与绘图。
 
-设置 NOTIST_TEST_DOCS=1 会验证所有规范页的源码与图。运行前将 builtin.not、grammar/README.not、grammar/code.not、grammar/notation.not、types.not、packages/grammar/README.not 分别导出到 target/grammar-docs 下的 builtin、markup、code、notation、types、package 目录。
+设置 NOTIST_TEST_DOCS=1 会验证所有规范页的源码与图。运行前将 docs/builtin.not、docs/grammar/README.not、docs/grammar/code.not、docs/grammar/notation.not、docs/types.not、packages/grammar/README.not 分别导出到 target/grammar-docs 下的 builtin、markup、code、notation、types、package 目录。

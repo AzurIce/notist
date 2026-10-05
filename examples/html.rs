@@ -16,7 +16,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let analysis = output.analysis;
     let rendered = output.rendered;
-    for diagnostic in analysis.diagnostics().iter().chain(&rendered.diagnostics) {
+    for diagnostic in analysis
+        .diagnostics()
+        .iter()
+        .chain(&output.transformed.diagnostics)
+        .chain(&rendered.diagnostics)
+    {
         eprintln!(
             "{}: {:?}: {}",
             path.display(),

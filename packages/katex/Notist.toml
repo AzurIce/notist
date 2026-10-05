@@ -1,6 +1,5 @@
 [dependencies]
-grammar = { path = "../packages/grammar" }
-katex = { path = "../packages/katex" }
+katex = { path = "." }
 
 [[transforms]]
 kind = "replace"

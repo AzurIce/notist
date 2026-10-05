@@ -111,7 +111,7 @@ const { chromium } = require("playwright");
       for (const [name, file] of [
         ["builtin", "docs/builtin.not"], ["markup", "docs/grammar/README.not"],
         ["code", "docs/grammar/code.not"], ["notation", "docs/grammar/notation.not"],
-        ["types", "docs/types.not"], ["package", "docs/packages/grammar/README.not"],
+        ["types", "docs/types.not"], ["package", "packages/grammar/README.not"],
       ]) {
         const document = await fs.readFile(path.resolve(file), "utf8");
         const count = (document.match(/#grammar::diagram\(/g) ?? []).length;
@@ -126,7 +126,8 @@ const { chromium } = require("playwright");
           const source = await component.getAttribute("notist-source");
           assert.equal(await component.locator(".source code").textContent(), source, name);
           const rules = (source.match(/^(lex|syntax|ast)\s+\w+(?:\([^\n]*?\))?\s*->/gm) ?? []).length;
-          assert.equal(await component.locator("svg").count(), rules, name);
+          const selected = await component.getAttribute("notist-rule");
+          assert.equal(await component.locator("svg").count(), selected ? 1 : rules, name);
         }
       }
     }
@@ -135,13 +136,13 @@ const { chromium } = require("playwright");
     if (process.env.NOTIST_TEST_WEB === "1") {
       await page.goto(`${base}/web/`);
       await page.waitForSelector("#core .kind");
-      await page.fill("#config-url", "../docs/Notist.toml");
-      await page.fill("#path", "grammar/diagrams.not");
-      const loaded = page.waitForResponse(response => response.url() === `${base}/docs/grammar/diagrams.not`);
+      await page.fill("#config-url", "../packages/grammar/Notist.toml");
+      await page.fill("#path", "README.not");
+      const loaded = page.waitForResponse(response => response.url() === `${base}/packages/grammar/README.not`);
       await page.click("#load-project");
       await loaded;
-      const source = await fs.readFile(path.resolve("docs/grammar/diagrams.not"), "utf8");
-      await page.fill("#path", "grammar/diagrams.not");
+      const source = await fs.readFile(path.resolve("packages/grammar/README.not"), "utf8");
+      await page.fill("#path", "README.not");
       await page.locator("#path").dispatchEvent("change");
       await page.fill("#src", source);
       await page.waitForFunction(() => document.querySelector("#core").textContent.includes("grammar::diagram"));

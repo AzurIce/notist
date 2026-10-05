@@ -289,7 +289,7 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
     assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 1);
     let (analysis, inspection) = vault.inspect("doc.not", DOCUMENT).unwrap();
     vault
-        .render_item("doc.not", analysis.root(), RenderOptions::default())
+        .render_output("doc.not", analysis.root(), RenderOptions::default())
         .unwrap();
     assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 2);
     assert!(inspection.syntax.is_none());
@@ -297,30 +297,79 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
 }
 
 #[test]
+fn document_links_reach_sibling_packages_using_their_own_configs() {
+    let mut resources = MemoryResources::new("/repo");
+    resources.insert(
+        "docs/README.not",
+        b"@(id: \"root\")\n= Docs\n\n[Example](../packages/demo/README.not#anchor) [Missing](../packages/missing/README.not) [Remote](https://example.test/README.not)".to_vec(),
+    );
+    resources.insert(
+        "packages/demo/Notist.toml",
+        b"[dependencies]\ndemo = {path = '.'}".to_vec(),
+    );
+    resources.insert(
+        "packages/demo/lib.notc",
+        b"fn badge(label: String) -> InlineContent;".to_vec(),
+    );
+    resources.insert(
+        "packages/demo/README.not",
+        b"@(id: \"anchor\")\n= Package\n\n#demo::badge(\"hello\")\n\n[Back](../../docs/README.not#root) [Bad anchor](../../docs/README.not#missing)".to_vec(),
+    );
+    resources.insert(
+        "packages/unrelated/README.not",
+        b"#unregistered::function()".to_vec(),
+    );
+    let index = Vault::new(resources).index("docs").unwrap();
+    let diagnostics = index.check();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|(path, diagnostic)| {
+        path == Path::new("README.not")
+            && diagnostic
+                .message
+                .contains("../packages/missing/README.not")
+    }));
+    assert!(diagnostics.iter().any(|(path, diagnostic)| {
+        path == Path::new("../packages/demo/README.not")
+            && diagnostic.message.contains("missing item `#missing`")
+    }));
+    assert_eq!(index.backlinks(Path::new("README.not")).len(), 2);
+    assert_eq!(
+        index.backlinks(Path::new("../packages/demo/README.not"))[0].0,
+        Path::new("README.not")
+    );
+}
+
+#[test]
 fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+    let paths = [
+        "packages/widgets/README.not",
+        "packages/grammar/README.not",
+        "packages/typst/README.not",
+    ];
     let mut local = Vault::open(&root);
-    let environment = local.environment_for("packages/README.not").unwrap();
-    let mut files = BTreeMap::from([(
-        PathBuf::from("Notist.toml"),
-        std::fs::read(root.join("Notist.toml")).unwrap(),
-    )]);
-    for package in environment.packages().values() {
-        files.insert(
-            package.root.join("lib.notc"),
-            package.source.as_bytes().to_vec(),
-        );
-    }
-    for definition in environment
-        .registry()
-        .functions()
-        .filter(|definition| definition.id.package != "notist")
-    {
-        let package = &environment.packages()[&definition.id.package];
-        for entry in notist_html::components::component_entries(&definition.id.name) {
-            let path = package.root.join(entry);
-            if path.is_file() {
-                files.insert(path, Vec::new());
+    let mut files = BTreeMap::new();
+    for document in paths {
+        let environment = local.environment_for(document).unwrap();
+        let config = environment.config_path().unwrap();
+        files.insert(config.to_path_buf(), std::fs::read(config).unwrap());
+        for package in environment.packages().values() {
+            files.insert(
+                package.root.join("lib.notc"),
+                package.source.as_bytes().to_vec(),
+            );
+        }
+        for definition in environment
+            .registry()
+            .functions()
+            .filter(|definition| definition.id.package != "notist")
+        {
+            let package = &environment.packages()[&definition.id.package];
+            for entry in notist_html::components::component_entries(&definition.id.name) {
+                let path = package.root.join(entry);
+                if path.is_file() {
+                    files.insert(path, Vec::new());
+                }
             }
         }
     }
@@ -335,23 +384,19 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
     let mut worker = serde_json::from_str::<PreparedInputs>(&json)
         .unwrap()
         .into_vault();
-    for (path, source) in [
-        (
-            "packages/README.not",
-            std::fs::read_to_string(root.join("packages/README.not")).unwrap(),
-        ),
-        (
-            "grammar/diagrams.not",
-            std::fs::read_to_string(root.join("grammar/diagrams.not")).unwrap(),
-        ),
-    ] {
+    for path in paths {
+        let source = std::fs::read_to_string(root.join(path)).unwrap();
         let disk = local
             .render_html(path, &source, RenderOptions::default())
             .unwrap();
         let prepared = worker
             .render_html(path, &source, RenderOptions::default())
             .unwrap();
+        assert!(disk.analysis.diagnostics().is_empty());
+        assert!(disk.transformed.diagnostics.is_empty());
+        assert!(disk.rendered.diagnostics.is_empty());
         assert_eq!(disk.analysis, prepared.analysis);
+        assert_eq!(disk.transformed, prepared.transformed);
         assert_eq!(disk.rendered.html, prepared.rendered.html);
         assert_eq!(disk.rendered.diagnostics, prepared.rendered.diagnostics);
         assert_eq!(disk.rendered.source_map, prepared.rendered.source_map);

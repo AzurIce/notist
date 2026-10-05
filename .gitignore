@@ -3,8 +3,8 @@
 
 AGENTS.local.md
 /web/pkg
-/docs/packages/grammar/components/diagram/wasm
-/docs/packages/grammar/target
+/packages/grammar/components/diagram/wasm
+/packages/grammar/target
 
 test.typ
 test.pdf

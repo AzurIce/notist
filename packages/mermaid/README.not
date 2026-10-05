@@ -1,0 +1,33 @@
+= Mermaid
+
+lib.notc 定义块级图形函数：
+
+```notc
+fn diagram(source: String, theme: String = "default") -> Content;
+```
+
+source 是 Mermaid 图形源码，theme 支持 default、dark、forest 和 neutral；不支持的主题按 default 呈现。components/diagram/index.js 默认导出 HTMLElement 类，由 HTML host 注册 mermaid-diagram。
+
+组件使用固定版本 Mermaid 11.12.0 的浏览器 ESM 模块，来自 CDN，首次呈现需要网络。它按参数更新重新绘图，支持重连，忽略过期任务，错误显示在组件内。模块串行绘制图形，避免共享 Mermaid 状态冲突。IR 只保存调用参数，图形内部 DOM 由组件生成。
+
+== 自身配置
+
+本目录 Notist.toml 注册 mermaid = { path = "." }，用于 README 的分析与预览。其他项目在自己的配置中注册该目录即可，不递归加载这个配置。
+
+== Example
+
+#mermaid::diagram("graph LR; A[Markup] --> B[IR]; B --> C[HTML]")
+
+== 构建与预览
+
+无需单独构建 package。在仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- check packages/mermaid/README.not
+cargo run -p notist-cli -- html packages/mermaid/README.not --out-dir target/mermaid-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/mermaid-demo/。Web 预览配置 ../packages/mermaid/Notist.toml，源码路径为 README.not。
+
+若需离线分发，package 作者提供本地 Mermaid 依赖产物。通用组件约定见 [Packages](../../docs/packages/README.not)，参数协议见 [Content Function Extensions](../../docs/designs/content-functions.not)。

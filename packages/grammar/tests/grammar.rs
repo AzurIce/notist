@@ -3,12 +3,14 @@ use notist_grammar::{ExprKind, RenderOptions, Theme, parse, render_source};
 #[test]
 fn parses_and_draws_actual_documentation_productions() {
     let documents = [
-        ("notation", include_str!("../../../grammar/notation.not")),
-        ("markup", include_str!("../../../grammar/README.not")),
-        ("code", include_str!("../../../grammar/code.not")),
-        ("types", include_str!("../../../types.not")),
-        ("builtin", include_str!("../../../builtin.not")),
-        ("diagrams", include_str!("../../../grammar/diagrams.not")),
+        (
+            "notation",
+            include_str!("../../../docs/grammar/notation.not"),
+        ),
+        ("markup", include_str!("../../../docs/grammar/README.not")),
+        ("code", include_str!("../../../docs/grammar/code.not")),
+        ("types", include_str!("../../../docs/types.not")),
+        ("builtin", include_str!("../../../docs/builtin.not")),
         ("package", include_str!("../README.not")),
     ];
     let mut count = 0;
@@ -18,7 +20,7 @@ fn parses_and_draws_actual_documentation_productions() {
             let grammar = parse(block).unwrap_or_else(|error| panic!("{name}: {error}\n{block}"));
             if name == "code" {
                 let directory =
-                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../grammar");
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/grammar");
                 for import in &grammar.imports {
                     assert!(
                         directory.join(&import.from).is_file(),

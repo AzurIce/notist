@@ -86,12 +86,12 @@ HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, 
 
 组件的命名、notist-protocol="1" 参数协议及目标冲突规则见 [Content Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
 
-Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回正文分析及完整渲染结果。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
+Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回原始正文分析、transformed 输出树及完整渲染结果。配置的 [IR Transforms](designs/transforms.not) 在渲染前执行；renderer 本身只消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
 
 notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板、发布 URL 和文件复制由 CLI 的 html 模块处理。内存与浏览器宿主消费 Vault::render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 
 ```sh
-cargo run -p notist-cli -- html docs/packages/README.not --out-dir target/packages-demo
+cargo run -p notist-cli -- html packages/widgets/README.not --out-dir target/packages-demo
 python3 -m http.server
 ```
 

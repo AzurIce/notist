@@ -1,0 +1,51 @@
+= KaTeX Math
+
+lib.notc 定义行内数学函数：
+
+```notc
+fn math(text: String) -> InlineContent;
+```
+
+text 是不带外围 `$` 的 LaTeX 数学源码。components/math.js 默认导出 HTMLElement 类，由 HTML host 注册 katex-math；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
+
+== 自身配置
+
+本目录 Notist.toml 注册自身并将内置 math 替换为 katex::math：
+
+```toml
+[dependencies]
+katex = { path = "." }
+
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "katex::math"
+```
+
+这个配置用于 README 的分析与预览。其他项目引入 package 时只读取 lib.notc 与组件资源，需要在自己的配置中显式声明 transforms。
+
+替换保留公式原文与源码范围，原始 Analysis 仍保存内置身份。`.not` 与 Markdown 的 math 共用同一个替换目标；直接调用 katex::math 不需要替换。规则与 lib API 见 [IR Transforms](../../docs/designs/transforms.not)。
+
+== Example
+
+Pythagoras: $x^2 + y^2 = z^2$.
+
+Builtin call: #math("E = mc^2"). Direct call: #katex::math(r#"\frac{a}{b}"#).
+
+== 组件行为
+
+模块延迟加载，同一模块实例共享加载任务。组件处理属性更新与重连，过期任务不覆盖新内容；公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
+
+== 构建与预览
+
+无需单独构建 package。在仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- check packages/katex/README.not
+cargo run -p notist-cli -- html packages/katex/README.not --out-dir target/katex-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/katex-demo/。Web 预览配置 ../packages/katex/Notist.toml，源码路径为 README.not。
+
+首次呈现需要访问固定版本 CDN；离线分发时须提供本地依赖产物。与 [Typst Math](../typst/README.not) 切换时需注意数学方言，replace 不转换 LaTeX 与 Typst 语法。

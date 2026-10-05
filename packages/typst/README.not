@@ -1,0 +1,61 @@
+= Typst Math
+
+packages/typst/ 提供浏览器端的 Typst 数学呈现。lib.notc 声明：
+
+```notc
+fn math(text: String) -> InlineContent;
+```
+
+组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。它与 notist::math、katex::math 具有相同的调用契约，可直接调用或通过 transforms 替换内置节点。
+
+== Example
+
+Fraction: $frac(a, b)$. Root: #math("sqrt(x^2 + y^2)").
+
+Sum: #typst::math("sum_(i=1)^n i = frac(n(n+1), 2)"). Matrix: #typst::math("mat(1, 2; 3, 4)").
+
+== 配置切换
+
+本目录的 Notist.toml 注册自身，将内置 math 的替换目标设为 typst::math：
+
+```toml
+[dependencies]
+typst = { path = "." }
+
+[[transforms]]
+kind = "replace"
+from = "notist::math"
+to = "typst::math"
+```
+
+该环境中的 `.not` 文档可写：
+
+```not
+$frac(a, b)$
+#math("sqrt(x^2 + y^2)")
+#typst::math("sum_(i=1)^n i")
+```
+
+Markdown 的数学节点也使用同一个替换目标。IR 保留公式原文，不转换数学方言；Typst 使用 `frac(a, b)`、`sqrt(x)` 等写法，[数学语法](https://typst.app/docs/reference/math/) 与 KaTeX 接收的 LaTeX 不同。本页的公式分别展示语法糖、显式内置调用与直接 package 调用，都由本目录配置使用 Typst 呈现。其他项目引入 package 时只读取 lib.notc 与组件资源，不加载本目录的预览配置。
+
+== 组件实现
+
+components/math/index.js 默认导出 HTMLElement 类；compiler.js 负责延迟加载、共享编译器和串行编译，不手写组件注册。公式通过 sys.inputs 传入固定 Typst 模板，按 math 模式解析，不拼接到模板源码里。
+
+组件使用 [typst.ts](https://github.com/Myriad-Dreamin/typst.ts) 的 0.7.0 浏览器模块、编译器 WASM 与 SVG renderer WASM，及 typst-assets v0.13.1 中的 New Computer Modern 数学与正文字体。固定版本资源从 CDN 加载，首次呈现需要网络；编译器 WASM 约 28 MB。离线分发时需将依赖产物随 package 提供。
+
+SVG 随继承的字号缩放，通过 Typst 元数据取得基线，并包含超出段落边界的公式笔画。公式源码用作 SVG 的无障碍标签。属性更新与重连重新呈现；过期任务不覆盖新内容。公式错误或依赖加载失败时保留原文并显示错误，后续有效公式仍可呈现。
+
+== 构建与验证
+
+这个 package 无需单独的构建步骤。CLI 发布组件入口及相对导入的 compiler.js：
+
+```sh
+cargo run -p notist-cli -- check packages/typst/README.not
+cargo run -p notist-cli -- html packages/typst/README.not --out-dir target/typst-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/typst-demo/。Web 预览配置 ../packages/typst/Notist.toml，文档路径填写 README.not。
+
+浏览器验证使用 packages/typst/tests/browser.cjs，运行前导出上述页面、构建 web/pkg 并通过 HTTP 服务仓库。Playwright 须在 NODE_PATH 上可用；NOTIST_TEST_URL 指定服务地址，NOTIST_CHROMIUM 指定 Chromium 路径。

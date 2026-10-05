@@ -37,13 +37,14 @@ pub mod prepared;
 pub mod preview;
 pub use prepared::PreparedInputs;
 pub mod environment;
+pub use notist_pipeline::transforms;
 pub mod query;
 pub mod resources;
 pub mod vault;
 pub mod vault_index;
 pub use environment::{Environment, Package, SourceDiagnostic};
 pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
-pub use vault::{HtmlOutput, RenderOptions, Vault, VaultError};
+pub use vault::{HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError};
 pub use vault_index::VaultIndex;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

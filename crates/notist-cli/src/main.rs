@@ -139,6 +139,10 @@ fn main() -> ExitCode {
                 emit_source(&file, &src, output.analysis.diagnostics());
                 return ExitCode::FAILURE;
             }
+            if !output.transformed.diagnostics.is_empty() {
+                emit_source(&file, &src, &output.transformed.diagnostics);
+                return ExitCode::FAILURE;
+            }
             let environment = vault.environment_for(&file).expect("assembled environment");
             match html::build_rendered_page(output.rendered, environment, &out_dir) {
                 Ok(result) => {

@@ -3,7 +3,8 @@ use crate::environment::{discover_config_in, issue};
 use crate::resources::{FsResources, ResourceError, ResourceKind, Resources};
 use crate::{Analysis, Environment, Pipeline, SourceDiagnostic, UnsupportedFormat};
 use notist_html::{HtmlRegistry, ModuleLocator, RenderResult, Renderer};
-use std::collections::BTreeMap;
+use notist_pipeline::transforms::TransformOutput;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -51,12 +52,20 @@ impl Default for RenderOptions {
     }
 }
 
-/// Both sets of diagnostics refer to this document source. Package/config
+/// Analysis, transform and render diagnostics refer to this document source. Package/config
 /// failures instead return source-bearing VaultError::Environment entries.
 #[derive(Debug)]
 pub struct HtmlOutput {
     pub path: PathBuf,
     pub analysis: Analysis,
+    pub transformed: TransformOutput,
+    pub rendered: RenderResult,
+}
+
+/// Rendering of an existing analysis tree, with the transformed output tree.
+#[derive(Debug)]
+pub struct ItemOutput {
+    pub transformed: TransformOutput,
     pub rendered: RenderResult,
 }
 
@@ -167,47 +176,83 @@ impl<R: Resources> Vault<R> {
     ) -> Result<HtmlOutput, VaultError> {
         let path = path.as_ref();
         let analysis = self.analyze(path, source)?;
-        let rendered = self.render_item(path, analysis.root(), options)?;
+        let ItemOutput {
+            transformed,
+            rendered,
+        } = self.render_output(path, analysis.root(), options)?;
         Ok(HtmlOutput {
             path: self.resources.resolve(path),
             analysis,
+            transformed,
             rendered,
         })
     }
-    pub fn render_item(
+    /// Apply this document's configured plan without invoking a backend.
+    pub fn transform(
+        &mut self,
+        path: impl AsRef<Path>,
+        item: &crate::Item,
+    ) -> Result<TransformOutput, VaultError> {
+        Ok(self.environment_for(path)?.transforms().apply(item))
+    }
+
+    /// Transform an analysis tree once and render the result. Callers with an
+    /// already transformed tree can pass it directly to notist_html::Renderer.
+    pub fn render_output(
         &mut self,
         path: impl AsRef<Path>,
         item: &crate::Item,
         options: RenderOptions,
-    ) -> Result<RenderResult, VaultError> {
+    ) -> Result<ItemOutput, VaultError> {
+        let path = path.as_ref();
+        let transformed = self.transform(path, item)?;
         let mut renderer = Renderer::new().with_registry(self.html_registry(path)?);
         if options.source_map {
             renderer = renderer.with_source_map();
         }
-        Ok(renderer.render_with_diagnostics(item))
+        let rendered = renderer.render_with_diagnostics(&transformed.root);
+        Ok(ItemOutput {
+            transformed,
+            rendered,
+        })
     }
-    /// Build a document-link index through the same resources and environments.
+    /// Index the directory and reachable linked documents, including sibling
+    /// directories, through the same resources and nearest environments.
     pub fn index(&mut self, root: impl AsRef<Path>) -> Result<crate::VaultIndex, VaultError> {
         let root = self.resources.resolve(root.as_ref());
         let mut directories = vec![root.clone()];
-        let mut documents = Vec::new();
+        let mut pending = Vec::new();
         while let Some(directory) = directories.pop() {
             for path in self.resources.entries(&directory)? {
                 match self.resources.kind(&path)? {
                     Some(ResourceKind::Directory) => directories.push(path),
                     Some(ResourceKind::File) if self.pipeline.supports(&path) => {
-                        let source = self.resources.source(&path)?;
-                        let analysis = self.analyze(&path, &source)?;
-                        documents.push((
-                            path.strip_prefix(&root).unwrap_or(&path).to_path_buf(),
-                            analysis,
-                        ));
+                        pending.push(path);
                     }
                     _ => {}
                 }
             }
         }
-        Ok(crate::VaultIndex::from_documents(documents))
+        let mut visited = BTreeSet::new();
+        let mut documents = Vec::new();
+        while let Some(path) = pending.pop() {
+            if !visited.insert(path.clone()) {
+                continue;
+            }
+            let source = self.resources.source(&path)?;
+            let analysis = self.analyze(&path, &source)?;
+            for target in crate::vault_index::linked_paths(&path, analysis.root()) {
+                let resource = self.resources.resolve(&target);
+                if !visited.contains(&resource)
+                    && self.pipeline.supports(&resource)
+                    && self.resources.kind(&resource)? == Some(ResourceKind::File)
+                {
+                    pending.push(resource);
+                }
+            }
+            documents.push((path, analysis));
+        }
+        Ok(crate::VaultIndex::from_documents(&root, documents))
     }
 }
 impl Vault<FsResources> {

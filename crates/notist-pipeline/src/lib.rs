@@ -15,6 +15,7 @@ mod literals;
 pub mod materialize;
 pub mod resolve;
 pub mod shape;
+pub mod transforms;
 
 /// Shared backend for any frontend's lowered Expr forest.
 pub fn process(

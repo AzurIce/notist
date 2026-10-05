@@ -10,6 +10,7 @@ use crate::item::{Ctor, Item, Value};
 
 /// A derived document index and link graph, with root-relative paths.
 pub struct VaultIndex {
+    root: PathBuf,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -30,7 +31,7 @@ enum Target {
     External,
     /// `[[#item]]`: an id in the current document.
     SameDoc { item: String },
-    /// A path relative to the linking file, normalized root-relative.
+    /// A normalized identity resolved relative to the linking document.
     Path { path: PathBuf, item: Option<String> },
 }
 
@@ -75,6 +76,18 @@ fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
         .collect()
 }
 
+/// Document paths needed by the host to complete a link graph. This performs
+/// no IO; schemes and same-document anchors do not request another resource.
+pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
+    collect_links(item, path.parent().unwrap_or(Path::new("")))
+        .into_iter()
+        .filter_map(|link| match link.target {
+            Target::Path { path, .. } => Some(path),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Same-document link checks, shared by single-file checks and the vault.
 pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) {
     for node in item.descendants() {
@@ -98,10 +111,17 @@ pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) 
 }
 
 impl VaultIndex {
-    /// Build the derived index from already processed, root-relative documents.
-    pub fn from_documents(documents: impl IntoIterator<Item = (PathBuf, crate::Analysis)>) -> Self {
+    /// Build from processed documents using an absolute logical root. Relative
+    /// document paths resolve against that root; link identities are absolute
+    /// internally, while diagnostics and backlinks use root-relative paths.
+    pub fn from_documents(
+        root: impl AsRef<Path>,
+        documents: impl IntoIterator<Item = (PathBuf, crate::Analysis)>,
+    ) -> Self {
+        let root = normalize(root.as_ref());
         let mut docs = HashMap::new();
         for (path, analysis) in documents {
+            let path = normalize(&root.join(path));
             let (item, mut diagnostics) = analysis.into_parts();
             let index = Index::build(&item, &mut diagnostics);
             let links = collect_links(&item, path.parent().unwrap_or(Path::new("")));
@@ -114,13 +134,14 @@ impl VaultIndex {
                 },
             );
         }
-        Self { docs }
+        Self { root, docs }
     }
 
     /// Pipeline diagnostics per document, then link-resolution diagnostics.
     pub fn check(&self) -> Vec<(PathBuf, Diagnostic)> {
         let mut out = Vec::new();
         for (path, doc) in &self.docs {
+            let path = self.relative(path);
             out.extend(doc.diagnostics.iter().map(|d| (path.clone(), d.clone())));
             for link in &doc.links {
                 match &link.target {
@@ -143,7 +164,10 @@ impl VaultIndex {
                             Diagnostic::new(
                                 Phase::Semantic,
                                 link.span,
-                                format!("unresolved link target `{}`", target.display()),
+                                format!(
+                                    "unresolved link target `{}`",
+                                    self.relative(target).display()
+                                ),
                             ),
                         )),
                         Some(doc2) => {
@@ -156,7 +180,7 @@ impl VaultIndex {
                                             link.span,
                                             format!(
                                                 "missing item `#{item}` in `{}`",
-                                                target.display()
+                                                self.relative(target).display()
                                             ),
                                         ),
                                     ));
@@ -173,13 +197,13 @@ impl VaultIndex {
 
     /// All links pointing at `path` (normalized, vault-root-relative).
     pub fn backlinks(&self, path: &Path) -> Vec<(PathBuf, TextRange)> {
-        let path = normalize(path);
+        let path = normalize(&self.root.join(path));
         let mut out = Vec::new();
         for (source, doc) in &self.docs {
             for link in &doc.links {
                 if let Target::Path { path: p, .. } = &link.target {
                     if *p == path {
-                        out.push((source.clone(), link.span));
+                        out.push((self.relative(source), link.span));
                     }
                 }
             }
@@ -189,5 +213,22 @@ impl VaultIndex {
                 .then(u32::from(a.1.start()).cmp(&u32::from(b.1.start())))
         });
         out
+    }
+
+    fn relative(&self, path: &Path) -> PathBuf {
+        let base: Vec<_> = self.root.components().collect();
+        let target: Vec<_> = path.components().collect();
+        let shared = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+        if shared == 0 {
+            return path.to_path_buf();
+        }
+        let mut relative = PathBuf::new();
+        for _ in &base[shared..] {
+            relative.push("..");
+        }
+        for component in &target[shared..] {
+            relative.push(component.as_os_str());
+        }
+        relative
     }
 }

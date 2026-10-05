@@ -1,0 +1,65 @@
+= Widgets
+
+lib.notc 定义两个内容函数，components/ 提供对应的 Web Component。
+
+== panel
+
+```notc
+fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+```
+
+panel 是块级内容函数。title 显示标题，expanded 决定初始展开状态；正文通过唯一的 children 槽传入，组件使用 slot 显示已渲染的内容。children 保留在文档 IR 中，组件内部的 DOM 不进入 IR。
+
+components/panel/index.js 默认导出 HTMLElement 类，相对导入 style.js；HTML host 注册 widgets-panel，并复制组件目录以保留 import 路径。
+
+== badge
+
+```notc
+fn badge(label: String, count: Int = 1) -> InlineContent;
+```
+
+badge 是行内内容函数，显示 label 与 count。components/badge.js 是单文件组件入口；使用 BigInt 读取 count，保留 i64 精度。HTML host 注册 widgets-badge。
+
+完整参数协议与生命周期契约见 [Content Function Extensions](../../docs/designs/content-functions.not)。
+
+== 自身配置
+
+Notist.toml 注册自身 widgets = { path = "." }。Example 还使用相邻的 [Mermaid](../mermaid/README.not) 与 [KaTeX](../katex/README.not)，因此本目录的文档环境也注册它们，并将内置 math 替换为 katex::math。
+
+这是 README 的文档依赖，其他项目引入 widgets 时只读取 lib.notc 与组件资源，不递归加载本目录的 Notist.toml。
+
+== Example
+
+A simple #widgets::badge("badge", 9223372036854775807) inside a paragraph.
+
+#widgets::panel("Pipeline")[
+  This content remains part of the document tree. Formula: #math("E = mc^2").
+
+  #widgets::panel("Nested", expanded: false)[
+    Nested children retain their order and identity.
+  ]
+
+  #mermaid::diagram("graph LR; A[Markup] --> B[IR]; B --> C[HTML]")
+]
+
+Pythagoras: $x^2 + y^2 = z^2$. Direct package call: #katex::math(r#"\frac{a}{b}"#).
+
+两个 panel 展示嵌套 children 与 expanded 参数；badge 展示大整数属性；Mermaid 呈现嵌套图形；三个公式分别展示内置调用、语法糖与直接 package 调用。
+
+== 构建与预览
+
+在仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- check packages/widgets/README.not
+cargo run -p notist-cli -- html packages/widgets/README.not --out-dir target/packages-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/packages-demo/。Widgets 本身无需构建步骤或 CDN；组合示例中的 Mermaid 与 KaTeX 从固定版本 CDN 加载依赖。
+
+Web 预览先构建 ./web/build.sh，通过 HTTP 打开 /web/，配置 URL 为 ../packages/widgets/Notist.toml，源码路径为 README.not，点击“载入项目”。
+
+== 验证
+
+web/tests/browser.cjs 验证此 Example 的静态页面、组件更新与重连、项目预览、数学替换与模块诊断。运行前导出 target/packages-demo 并构建 web/pkg，Playwright 须在 NODE_PATH 上可用。NOTIST_TEST_URL 指定服务地址，NOTIST_CHROMIUM 指定 Chromium 路径。

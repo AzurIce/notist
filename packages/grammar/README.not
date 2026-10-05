@@ -1,7 +1,7 @@
 = Grammar Package
 
 lib.notc 定义内容函数，components/diagram/index.js 默认导出 Web Component。
-src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](../../docs/grammar/notation.not)，使用 railroad 生成 SVG；同一实现供原生 Rust 与 WASM 使用。
+src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](https://github.com/AzurIce/notist/blob/main/docs/grammar/notation.not)，使用 railroad 生成 SVG；同一实现供原生 Rust 与 WASM 使用。
 
 == Build and view
 

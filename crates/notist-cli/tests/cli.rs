@@ -15,11 +15,11 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
             .unwrap()
             .contains("Usage: notist")
     );
-    let document = root.join("packages/widgets/README.not");
+    let document = root.join("docs/components/README.not");
     let query = Command::new(env!("CARGO_BIN_EXE_notist"))
         .args(["query"])
         .arg(&document)
-        .arg("function:widgets::panel")
+        .arg("function:notist-doc::panel")
         .output()
         .unwrap();
     assert!(query.status.success());
@@ -61,7 +61,7 @@ fn html_command_publishes_used_components_and_relative_assets() {
     let result = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(&root)
         .arg("html")
-        .arg(root.join("packages/widgets/README.not"))
+        .arg(root.join("docs/components/README.not"))
         .arg("--out-dir")
         .arg(output.path())
         .output()
@@ -75,17 +75,17 @@ fn html_command_publishes_used_components_and_relative_assets() {
     assert!(
         output
             .path()
-            .join("_notist/packages/widgets/components/panel/style.js")
+            .join("_notist/packages/notist-doc/components/panel/style.js")
             .is_file()
     );
     assert!(
         output
             .path()
-            .join("_notist/packages/widgets/components/badge.js")
+            .join("_notist/packages/notist-doc/components/badge.js")
             .is_file()
     );
     let registrations = std::fs::read_to_string(output.path().join("components.js")).unwrap();
-    assert_eq!(registrations.matches("customElements.define").count(), 4);
+    assert_eq!(registrations.matches("customElements.define").count(), 5);
     assert!(registrations.contains("katex-math"));
     assert!(
         output
@@ -94,8 +94,9 @@ fn html_command_publishes_used_components_and_relative_assets() {
             .is_file()
     );
     let html = std::fs::read_to_string(output.path().join("index.html")).unwrap();
-    assert_eq!(html.matches("<katex-math ").count(), 3);
-    assert_eq!(registrations.matches("widgets-panel").count(), 1);
+    assert_eq!(html.matches("<katex-math ").count(), 1);
+    assert_eq!(html.matches("<typst-math ").count(), 2);
+    assert_eq!(registrations.matches("notist-doc-panel").count(), 1);
 }
 
 #[test]

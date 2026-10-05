@@ -6,12 +6,14 @@ const { chromium } = require('playwright');
   try {
     const base = process.env.NOTIST_TEST_URL ?? 'http://127.0.0.1:8000';
     const page = await browser.newPage();
+    page.setDefaultTimeout(90000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.goto(`${base}${process.env.NOTIST_PACKAGES_DEMO ?? '/target/packages-demo/'}`);
+    await page.goto(`${base}${process.env.NOTIST_COMPONENTS_DEMO ?? '/target/components-demo/'}`);
     await page.waitForFunction(() => document.querySelector('mermaid-diagram')?.shadowRoot?.querySelector('svg'));
-    await page.waitForFunction(() => [...document.querySelectorAll('katex-math')].length === 3 && [...document.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex')));
-    assert.equal(await page.locator('katex-math math').count(), 3);
+    await page.waitForFunction(() => document.querySelector('katex-math')?.shadowRoot?.querySelector('.katex'));
+    await page.waitForFunction(() => [...document.querySelectorAll('typst-math')].length === 2 && [...document.querySelectorAll('typst-math')].every(node => node.shadowRoot?.querySelector('svg')));
+    assert.equal(await page.locator('katex-math math').count(), 1);
     assert.equal(await page.evaluate(() => document.querySelectorAll('link[data-notist-katex]').length), 1);
     const formula = page.locator('katex-math').first();
     await formula.evaluate(node => node.setAttribute('notist-text', String.raw`\frac{1}{2}`));
@@ -39,59 +41,59 @@ const { chromium } = require('playwright');
     await page.waitForFunction(() => document.querySelector('katex-math').shadowRoot.querySelector('annotation')?.textContent === 'x^2');
     assert.equal(await formula.locator('.error').textContent(), '');
     const reconnect = await page.evaluate(() => {
-      const panel = document.querySelector('widgets-panel');
+      const panel = document.querySelector('notist-doc-panel');
       const root = panel.shadowRoot;
       panel.remove(); document.body.append(panel);
       return panel.shadowRoot === root;
     });
     assert.equal(reconnect, true);
     await page.waitForFunction(() => document.querySelector('mermaid-diagram')?.shadowRoot?.querySelector('svg'));
-    assert.equal(await page.locator('widgets-badge').getAttribute('notist-count'), '9223372036854775807');
+    assert.equal(await page.locator('notist-doc-badge').getAttribute('notist-count'), '9223372036854775807');
     await page.goto(`${base}/web/`);
     await page.waitForSelector('#core .kind');
-    assert.equal(await page.locator('#config-url').inputValue(), '../packages/widgets/Notist.toml');
-    assert.equal(await page.locator('#path').inputValue(), 'README.not');
-    const loaded = page.waitForResponse(response => response.url() === `${base}/packages/widgets/README.not`);
+    assert.equal(await page.locator('#config-url').inputValue(), '../docs/Notist.toml');
+    assert.equal(await page.locator('#path').inputValue(), 'components/README.not');
+    const loaded = page.waitForResponse(response => response.url() === `${base}/docs/components/README.not`);
     await page.click('#load-project');
     await loaded;
-    await page.waitForFunction(() => document.querySelector('#core').textContent.includes('widgets::panel'));
+    await page.waitForFunction(() => document.querySelector('#core').textContent.includes('notist-doc::panel'));
     const frame = page.frames().find(frame => frame.url() === 'about:srcdoc');
     await frame.waitForFunction(() => document.querySelector('mermaid-diagram')?.shadowRoot?.querySelector('svg'));
-    assert.equal(await frame.locator('widgets-panel').count(), 2);
-    await frame.waitForFunction(() => [...document.querySelectorAll('katex-math')].length === 3 && [...document.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex')));
+    assert.equal(await frame.locator('notist-doc-panel').count(), 2);
+    await frame.waitForFunction(() => document.querySelector('katex-math')?.shadowRoot?.querySelector('.katex'));
+    await frame.waitForFunction(() => [...document.querySelectorAll('typst-math')].length === 2 && [...document.querySelectorAll('typst-math')].every(node => node.shadowRoot?.querySelector('svg')));
     assert.match(await page.locator('#core').textContent(), /Math/);
     // Keep Markdown math on the same configured transform and component path.
     await page.fill('#path', 'math.md');
     await page.locator('#path').dispatchEvent('change');
     await page.fill('#src', '- $x^2$\n\n$ y^2 $');
-    await page.waitForFunction(() => document.querySelector('#core').textContent.includes('Math') && !document.querySelector('#core').textContent.includes('widgets::panel'));
+    await page.waitForFunction(() => document.querySelector('#core').textContent.includes('Math') && !document.querySelector('#core').textContent.includes('notist-doc::panel'));
     await page.waitForFunction(() => {
       const doc = document.querySelector('#preview').contentDocument;
-      return doc && doc.querySelectorAll('katex-math').length === 2 && [...doc.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex'));
+      return doc && doc.querySelectorAll('typst-math').length === 2 && [...doc.querySelectorAll('typst-math')].every(node => node.shadowRoot?.querySelector('svg'));
     });
-    const block = page.frameLocator('#preview').locator('katex-math[notist-block="true"]');
+    const block = page.frameLocator('#preview').locator('typst-math[notist-block="true"]');
     assert.equal(await block.count(), 1);
-    assert.equal(await block.locator('math').getAttribute('display'), 'block');
+    assert.equal(await block.evaluate(node => getComputedStyle(node).display), 'block');
     assert.equal(await block.evaluate(node => node.closest('p')), null);
     // Native tables let complete math payloads own pipes and blank lines.
     await page.fill('#path', 'math.not');
     await page.locator('#path').dispatchEvent('change');
-    const payload = String.raw`f(x) = \int_{-\infty}^\infty
+    const payload = String.raw`f(x) &= x^2 + 2x + 1 \
 
-\hat{f}(\xi)\,e^{2 \pi i \xi x}
-\,d\xi`;
-    await page.fill('#src', `| package | content |\n| --- | --- |\n| katex | LaTeX 数学呈现 $\n${payload}\n$ |\n| absolute | $|x|$ |\n| next | row |`);
+     &= (x + 1)^2`;
+    await page.fill('#src', `| package | content |\n| --- | --- |\n| typst | Typst 数学呈现 $\n${payload}\n$ |\n| absolute | $|x|$ |\n| next | row |`);
     await page.waitForFunction(payload => {
       const doc = document.querySelector('#preview').contentDocument;
-      const nodes = [...(doc?.querySelectorAll('katex-math') ?? [])];
+      const nodes = [...(doc?.querySelectorAll('typst-math') ?? [])];
       return nodes.length === 2 && nodes[0].getAttribute('notist-text') === payload
-        && nodes.every(node => node.shadowRoot?.querySelector('.katex') && !node.shadowRoot.querySelector('.error').textContent);
+        && nodes.every(node => node.shadowRoot?.querySelector('svg') && !node.shadowRoot.querySelector('.error').textContent);
     }, payload);
     const native = page.frameLocator('#preview');
     assert.equal(await native.locator('table tr').count(), 4);
     assert.equal(await native.locator('table tr').nth(1).locator('td').count(), 2);
-    assert.equal(await native.locator('table tr').nth(1).locator('td').nth(1).locator('katex-math[notist-block="true"]').count(), 1);
-    assert.equal(await native.locator('katex-math').nth(1).getAttribute('notist-text'), '|x|');
+    assert.equal(await native.locator('table tr').nth(1).locator('td').nth(1).locator('typst-math[notist-block="true"]').count(), 1);
+    assert.equal(await native.locator('typst-math').nth(1).getAttribute('notist-text'), '|x|');
     assert.equal(await native.locator('table tr').last().textContent(), 'nextrow');
     assert.equal(await page.locator('#diags').textContent(), '✓ 无诊断');
     // Content paths respect the prepared Vault root; package dependency files

@@ -87,7 +87,7 @@ fn math(text: String, block?: Bool) -> Content<block>;
 
 TypeRef 保留路径与递归类型实参，支持 Array<String> 等形式。解析不判断类型是否存在、类型实参数量、Content 是否可用于普通参数或返回类型是否属于内容类型；analyze_module 与共同注册层完成这些检查。普通参数支持 Unit、Bool、Int、Float、String、Dict 和 Array；Array 可不带元素类型，也可带一个递归的 Value 类型。其他基本类型不接受类型实参。
 
-返回类型 Content 与 InlineContent 分别固定为块级与行内。Content<block> 引用本函数的 Bool 参数 block：其值为 true 时返回块级内容，false 或省略时返回行内内容；也可引用其他名称的 Bool 参数。这是声明式类别选择，不求值表达式。实参必须是一个未限定的参数名，且该参数必须存在并具有 Bool 类型。children 挂载仍只接受无实参的 Content 或 InlineContent。
+返回类型 Content 与 InlineContent 分别固定为块级与行内。Content<block> 引用本函数的 Bool 参数 block：补齐默认值后，其值为 true 时返回块级内容，false 或没有值时返回行内内容；也可引用其他名称的 Bool 参数。例如 `block?: Bool` 省略时为行内，`block: Bool = true` 省略时为块级。这是声明式类别选择，不求值表达式。实参必须是一个未限定的参数名，且该参数必须存在并具有 Bool 类型。children 挂载仍只接受无实参的 Content 或 InlineContent。
 
 默认值采用与 Markup 参数相同的字面量 CST：标量 token、Neg、Unit、Array、Dict、Group 和 Entry。集合的缺失／重复逗号恢复行为也共用。裸名称可在恢复后的默认值中保留，是否为 Bool 字面量、非法转义、整数溢出与默认值类型均由共享值转换及定义校验处理；语法解析成功不等于定义可以安装。analyze_module(package, source) 在失败时返回带源码范围的 diagnostics，成功时返回 DefinitionModule；不执行文件读取或 Registry 安装。
 

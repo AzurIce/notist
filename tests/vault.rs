@@ -523,7 +523,7 @@ fn package_dependencies_outside_the_vault_remain_available() {
 fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     let paths = [
-        "packages/widgets/README.not",
+        "docs/components/README.not",
         "packages/grammar/README.not",
         "packages/typst/README.not",
         "packages/shader/README.not",

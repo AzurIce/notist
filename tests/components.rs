@@ -129,10 +129,14 @@ fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
 }
 #[test]
 fn missing_html_targets_and_filesystem_entry_conflicts() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/widgets");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
     let project = Environment::load_from(&notist::FsResources::new(&root), "Notist.toml").unwrap();
     let missing = notist::Pipeline::default()
-        .analyze("test.not", "#widgets::badge(\"test\")", project.registry())
+        .analyze(
+            "test.not",
+            "#notist-doc::badge(\"test\")",
+            project.registry(),
+        )
         .unwrap();
     let rendered = Renderer::new().render_with_diagnostics(missing.root());
     assert!(

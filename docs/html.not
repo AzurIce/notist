@@ -93,8 +93,8 @@ Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回原�
 notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板与资源计划由 notist-ssg 处理，CLI 负责文件系统发布；组件资源位于 _notist/packages/。多页面路由、链接改写、主题和预览见 [Static Site Generation](ssg.not)。内存与浏览器宿主消费 Vault::render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 
 ```sh
-cargo run -p notist-cli -- html packages/widgets/README.not --out-dir target/packages-demo
+cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo
 python3 -m http.server
 ```
 
-访问 /target/packages-demo/ 查看页面；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。
+访问 /target/components-demo/ 查看 [Vault 组件示例](components/README.not)；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。

@@ -26,7 +26,7 @@ README 的根环境自动注册自身。其他项目引入 package 时读取清�
 
 需要仅通过直接调用使用 KaTeX 时，在依赖项中设置 `katex = { path = "../packages/katex", transforms = false }`。开关默认 true；完整作用域见 [Package Model](https://github.com/AzurIce/notist/blob/main/docs/package.not)。
 
-替换保留公式原文与源码范围，原始 Analysis 仍保存内置身份。`.not` 与 Markdown 的 math 共用同一个替换目标；直接调用 katex::math 不需要替换。规则与 lib API 见 [IR Transforms](../../docs/designs/transforms.not)。
+替换保留公式原文与源码范围，原始 Analysis 仍保存内置身份。`.not` 与 Markdown 的 math 共用同一个替换目标；直接调用 katex::math 不需要替换。规则与 lib API 见 [IR Transforms](https://github.com/AzurIce/notist/blob/main/docs/designs/transforms.not)。
 
 == Example
 
@@ -58,4 +58,4 @@ python3 -m http.server
 
 通过 HTTP 打开 /target/katex-demo/。Web 预览配置 ../packages/katex/Notist.toml，源码路径为 README.not。
 
-首次呈现需要访问固定版本 CDN；离线分发时须提供本地依赖产物。与 [Typst Math](../typst/README.not) 切换时需注意数学方言，replace 不转换 LaTeX 与 Typst 语法。
+首次呈现需要访问固定版本 CDN；离线分发时须提供本地依赖产物。与 [Typst Math](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) 切换时需注意数学方言，replace 不转换 LaTeX 与 Typst 语法。

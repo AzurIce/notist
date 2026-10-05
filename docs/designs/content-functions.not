@@ -45,7 +45,7 @@ children 的签名表达 None、Inline、普通 Content、透明内容及特定�
 fn foo(arga: String, argb: Int = 1)[children: Content] -> Content;
 ```
 
-这里 children 是函数的尾部挂载，不是允许传入 Content 的普通参数。声明以分号结束，没有函数体。Content 返回类型对应块级调用，InlineContent 对应行内调用。Content<block> 引用声明中的 Bool 参数，true 对应块级，其余合法值对应行内；如 `fn math(text: String, block?: Bool) -> Content<block>;`。
+这里 children 是函数的尾部挂载，不是允许传入 Content 的普通参数。声明以分号结束，没有函数体。Content 返回类型对应块级调用，InlineContent 对应行内调用。Content<block> 引用声明中的 Bool 参数，补齐默认值后为 true 对应块级，false 或没有值对应行内；如 `fn math(text: String, block?: Bool) -> Content<block>;`。
 
 `.not` 是 Markup，内容函数调用及其参数、挂载均属于 Markup 语法。MarkdownFrontend 同样支持显式内容函数和注解，调用头及字面量使用共用规则，children 正文使用 Markdown；语法归属见 [文档前端](frontends.not)。`.notc` 是持续 Code 模式的声明模块；两个入口位于同一个 notist-syntax crate，共享基础词法和字面量，分别产生 Document 与 Module CST / AST。模块定义不进入文档 Expr / Item。
 
@@ -205,7 +205,7 @@ Package 是带有 Notist.toml 清单与 lib.notc 的目录。Code 只有这一�
 
 项目 Notist.toml 使用 dependencies 引入本地 package，例如 mermaid = { path = "./packages/mermaid" }。路径相对于声明它的清单目录，package 必须有 [package].name。根 package 自动注册自身，普通文档项目可省略 [package]。README 的开发依赖与转换分别声明在 dev-dependencies 与 dev-transforms，只在根环境装配。
 
-宿主递归装配 dependencies 及其公开 transforms，共享 package 加载一次，名称冲突与依赖循环产生诊断。根配置可以覆盖依赖的默认转换；不同目标争用同一源身份时要求根显式选择。parse_module 只解析单文件源码，不执行依赖加载。
+宿主递归装配 dependencies，共享 package 加载一次，名称冲突与依赖循环产生诊断。dependencies 与 dev-dependencies 的每个项接受 transforms 布尔开关，默认 true；false 关闭该包的公开默认转换，声明、组件与公开依赖照常装配。共享包的任一引入项启用时，其默认转换生效。根配置可以覆盖依赖的默认转换；不同目标争用同一源身份时要求根显式选择。parse_module 只解析单文件源码，不执行依赖加载。
 
 声明分析将唯一入口的 Module AST 转换为 DefinitionModule，再通过共同校验安装到 Registry。依赖或声明失败不进行部分安装。第一版读取声明即可完成加载；复杂 scripting、模块及执行后端在需要时另行设计。
 
@@ -228,7 +228,7 @@ Vault::new(resources) 接收只读资源视图；Vault::open(root) 使用本地�
 
 Environment::load_from(resources, config) 读取配置及其直接依赖，Environment::from_packages 接收 Package 的名称、逻辑根路径与声明源码。任一依赖或声明失败均不返回部分正式环境。VaultError::Environment 保留 Vec<SourceDiagnostic> 中的路径、源码与 Diagnostic；资源不存在、访问失败和非法 UTF-8 有独立 ResourceError。
 
-同一 Environment 的 Registry 供正文和 HTML 使用，lib.notc 不在 HTML 侧再次解析。Vault::analyze(document, source) 返回 Analysis；render_html(document, source, options) 同时返回 Analysis 与 RenderResult，分别保存正文诊断和渲染诊断。RenderOptions 默认启用 source map；范围是传入正文的 UTF-8 字节偏移，宿主负责编辑器坐标转换。
+同一 Environment 的 Registry 供正文和 HTML 使用，lib.notc 不在 HTML 侧再次解析。Vault::analyze(document, source) 返回 Analysis；render_html(document, source, options) 返回 HtmlOutput，包含原始 analysis、transformed 输出树与 rendered 渲染结果，分别保存正文、转换和渲染诊断。RenderOptions 默认启用 source map；范围是传入正文的 UTF-8 字节偏移，宿主负责编辑器坐标转换。
 
 HTML 的 component_entries 和 select_component_entry 定义两种候选与冲突规则，Vault 通过 Resources 检查它们。HtmlRegistry::from_bindings(&registry, &bindings) 使用已安装 FunctionDef，原子地校验目标。ModuleLocator::Resource 保存资源路径，ModuleLocator::Url 保存浏览器发布位置；Vault::with_module_urls 将已选中的资源身份映射为 URL。缺少实现仅在调用它时产生渲染诊断；纯语义处理不要求 HTML 装配成功。
 
@@ -239,9 +239,9 @@ Vault 在当前输入视图中保留已装配 Environment；输入变化后创�
 notist-cli 的 html 命令将已生成片段和实际使用组件装配到目录：index.html、components.js 与 _notist/packages/<编码包名>/components/ 下的文件。目录组件复制整目录，保留辅助模块与资源的相对路径；简单入口只复制该 JS。资源必须是普通文件或目录。CLI 按静态目录布局生成发布 URL 与去重的注册入口；浏览器拒绝已有标签的冲突实现。
 
 ```sh
-cargo run -p notist-cli -- check packages/widgets/README.not
-cargo run -p notist-cli -- html packages/widgets/README.not --out-dir target/packages-demo
-cargo run -p notist-cli -- query packages/widgets/README.not function:widgets::panel
+cargo run -p notist-cli -- check docs/components/README.not
+cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo
+cargo run -p notist-cli -- query docs/components/README.not function:notist-doc::panel
 cargo run -p notist-cli -- check packages/mermaid/lib.notc
 cargo run -p notist-cli -- json packages/mermaid/lib.notc
 ```
@@ -258,6 +258,6 @@ render_prepared 返回普通预览结果，analyze_prepared 按需附带调试�
 
 == 示例与验证
 
-packages/widgets/README.not 的 Example 提供 widgets.panel 的嵌套 children、widgets.badge 的大整数和 mermaid.diagram 的图形呈现。Mermaid 示例依赖浏览器可加载的固定版本 CDN 模块；需要离线发布时由 package 作者提供本地依赖产物。
+[Vault 组件示例](../components/README.not) 使用根配置的 notist-doc 包身份，提供 panel 的嵌套 children、badge 的大整数，以及 Mermaid、Typst 与 KaTeX 的组合呈现。数学语法糖由 Typst 替换，KaTeX 关闭默认转换后继续通过限定调用使用。涉及 CDN 的组件需要浏览器可加载其固定版本依赖；离线发布时由组件作者提供本地产物。
 
 使用同一组定义分别原生注册与 .notc 声明加载，比较参数绑定、诊断和最终 IR；验证模块解析的无损性、声明错误恢复和包原子装配。HTML 验证覆盖转义、false、缺失参数、复杂值、大整数、嵌套 children、组件资源去重，以及组件连接与断开。已有内置函数与两种前端的行为使用现有测试验证。

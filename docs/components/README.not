@@ -1,0 +1,72 @@
+= Vault 组件示例
+
+本目录提供文档 Vault 自用的 panel 与 badge 示例。它们由 docs/lib.notc 声明，docs/components/ 提供 Web Component 实现，使用 docs/Notist.toml 中的 notist-doc 命名空间。可复用组件包及其边界见 [Package Model](../package.not)。
+
+== panel
+
+```notc
+fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+```
+
+panel 是块级内容函数。title 显示标题，expanded 决定初始展开状态；正文通过唯一的 children 槽传入，组件使用 slot 显示已渲染的内容。children 保留在文档 IR 中，组件内部的 DOM 不进入 IR。
+
+components/panel/index.js 默认导出 HTMLElement 类，相对导入 style.js；HTML host 注册 notist-doc-panel，并复制组件目录以保留 import 路径。
+
+== badge
+
+```notc
+fn badge(label: String, count: Int = 1) -> InlineContent;
+```
+
+badge 是行内内容函数，显示 label 与 count。components/badge.js 是单文件组件入口；使用 BigInt 读取 count，保留 i64 精度。HTML host 注册 notist-doc-badge。
+
+完整参数协议与生命周期契约见 [Content Function Extensions](../designs/content-functions.not)。
+
+== 自身配置
+
+Vault 根配置声明自身身份，自动读取同目录的 lib.notc，无须通过 dependencies 再引入自己：
+
+```toml
+[package]
+name = "notist-doc"
+```
+
+正文用 `#notist-doc::panel[...]` 与 `#notist-doc::badge("标签")` 的限定调用，组件路径仍相对于 Vault 根。普通的 `#panel` 不会查找本地组件；未限定名称只使用内置 prelude。
+
+组合示例还使用 [Mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not)、[Typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) 与 [KaTeX](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not)。docs/Notist.toml 将它们放进 dev-dependencies：内置 math 默认转换为 typst::math；katex 的 transforms 为 false，直接限定调用仍使用 KaTeX。转换保持公式原文，不转换 Typst 与 LaTeX 方言。
+
+== Example
+
+A simple #notist-doc::badge("badge", 9223372036854775807) inside a paragraph.
+
+#notist-doc::panel("Pipeline")[
+  This content remains part of the document tree. Formula: #math("E = m c^2").
+
+  #notist-doc::panel("Nested", expanded: false)[
+    Nested children retain their order and identity.
+  ]
+
+  #mermaid::diagram("graph LR; A[Markup] --> B[IR]; B --> C[HTML]")
+]
+
+Pythagoras: $x^2 + y^2 = z^2$. Direct package call: #katex::math(r#"\frac{a}{b}"#).
+
+两个 panel 展示嵌套 children 与 expanded 参数；badge 展示大整数属性；Mermaid 呈现嵌套图形。内置调用和语法糖使用 Typst，直接 katex::math 调用使用 LaTeX。
+
+== 构建与预览
+
+在仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- check docs/components/README.not
+cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo
+python3 -m http.server
+```
+
+通过 HTTP 打开 /target/components-demo/。panel 与 badge 无需构建步骤或 CDN；组合示例中的 Mermaid、Typst 与 KaTeX 从固定版本 CDN 加载依赖。
+
+Web 预览先构建 ./web/build.sh，通过 HTTP 打开 /web/，配置 URL 为 ../docs/Notist.toml，源码路径为 components/README.not，点击“载入项目”。
+
+== 验证
+
+web/tests/browser.cjs 验证此 Example 的静态页面、组件更新与重连、项目预览、数学替换与模块诊断。运行前导出 target/components-demo 并构建 web/pkg，Playwright 须在 NODE_PATH 上可用。NOTIST_TEST_URL 指定服务地址，NOTIST_CHROMIUM 指定 Chromium 路径，NOTIST_COMPONENTS_DEMO 可指定示例页面路径。

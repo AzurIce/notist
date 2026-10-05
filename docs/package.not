@@ -30,14 +30,14 @@ Notist.toml 必须包含 [package].name，名称是 package 的规范命名空�
 
 ```toml
 [package]
-name = "widgets"
+name = "example"
 ```
 
 名称使用与限定调用相同的标识符规则，区分大小写，不能使用保留名 notist。使用者的 dependency 键必须与清单名称一致，当前不支持别名。
 
-原生 .not 与 Markdown 扩展中的调用 `#widgets::panel("Title")[body]` 都查找 widgets::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入，并使用所在文档前端的语法；前端与 AST lowering 的职责见 [文档前端](designs/frontends.not)。声明返回 Content 或 InlineContent 决定内容类别，Content<block> 则按布尔参数选择类别；IR 保留函数身份、字段、children、属性与源码范围。
+原生 .not 与 Markdown 扩展中的调用 `#example::panel("Title")[body]` 都查找 example::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入，并使用所在文档前端的语法；前端与 AST lowering 的职责见 [文档前端](designs/frontends.not)。声明返回 Content 或 InlineContent 决定内容类别，Content<block> 则按补齐默认值后的布尔参数选择类别；IR 保留函数身份、字段、children、属性与源码范围。
 
-内置函数属于 notist 命名空间，prelude 提供 `#callout` 等简写；notist 是保留包名。外部组件标签包含注册包名与函数名，例如 widgets-panel 和 mermaid-diagram。
+内置函数属于 notist 命名空间，prelude 提供 `#callout` 等简写；notist 是保留包名。外部组件标签包含注册包名与函数名，例如 example-panel 和 mermaid-diagram。
 
 名称解析、定义校验与目标绑定使用共同 Registry。分析过程不执行组件；组件内部 DOM 不进入文档 IR。HTML 映射与输出接口见 [HTML Rendering](html.not)。
 
@@ -59,6 +59,26 @@ katex = { path = "../packages/katex" }
 
 package 依赖图不引入 Code 模块：parse_module 仍只解析一份 lib.notc，资源与图装配由宿主承担。Environment::load_from 使用资源视图装配；Environment::from_packages 接收宿主已经准备好的包身份和声明源码，提供无 IO 的注册入口。
 
+== Vault 自身的组件
+
+Vault 可以直接在自己的根目录声明组件，作为该 Vault 的内容函数使用：
+
+```text
+docs/
+├── Notist.toml       # [package] name = "notist-doc"
+├── lib.notc          # 声明 panel、badge
+└── components/
+    ├── README.not
+    ├── badge.js
+    └── panel/
+        ├── index.js
+        └── style.js
+```
+
+根配置的 [package] 自动装配本目录的 lib.notc 与 components/。正文写 `#notist-doc::panel[内容]` 或 `#notist-doc::badge("标签")`；未限定的 `#panel` 不会查找本地组件。组件标签分别为 notist-doc-panel 与 notist-doc-badge，资源发布仍使用相同的 package 协议。
+
+[Vault 组件示例](components/README.not) 展示嵌套正文、大整数参数及与可复用 package 的组合。这些组件服务于 docs Vault，packages/ 中的组件包则供其他 Vault 引入。
+
 == 公开配置与开发配置
 
 | 配置 | package 被依赖加载 | 配置作为文档环境的根 |
@@ -68,11 +88,11 @@ package 依赖图不引入 Code 模块：parse_module 仍只解析一份 lib.not
 | dev-dependencies | 不装配 | 装配这些依赖的公开配置 |
 | dev-transforms | 不执行 | 覆盖相同源身份的默认与公开转换 |
 
-例如 widgets 的 README 使用相邻的 mermaid 与 katex；它们声明在 dev-dependencies，使用者引入 widgets 时不会自动获得这些示例依赖：
+例如 example 的 README 使用相邻的 mermaid 与 katex；它们声明在 dev-dependencies，使用者引入 example 时不会自动获得这些示例依赖：
 
 ```toml
 [package]
-name = "widgets"
+name = "example"
 
 [dev-dependencies]
 mermaid = { path = "../mermaid" }
@@ -131,7 +151,6 @@ to = "typst::math"
 | Package | 内容 |
 | --- | --- |
 | [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 #grammar::diagram(r#"lex Digit -> [`0`-`9`];"#) |
-| [widgets](https://github.com/AzurIce/notist/blob/main/packages/widgets/README.not) | #widgets::panel[panel、#widgets::badge("badge") 与嵌套内容的组合示例] |
 | [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | Mermaid 图形组件 #mermaid::diagram(r#"""
 stateDiagram-v2
     direction LR

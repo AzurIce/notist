@@ -30,7 +30,7 @@
 
 crate 依赖方向如下，箭头表示依赖。`notist-html` 消费 core 模型，不依赖 pipeline 或顶层 Vault；Markdown 前端继续只输出共享 Expr。
 
-```mermaid
+#mermaid::diagram(r#"""
 flowchart TD
     CLI["notist-cli：notist 可执行文件"] --> APP["notist：Vault 与装配"]
     APP --> PIPE["notist-pipeline"]
@@ -41,7 +41,7 @@ flowchart TD
     PIPE --> CORE
     MD --> CORE
     HTML --> CORE
-```
+"""#)
 
 资源取得和环境装配由顶层协调。`lib.notc` 经 pipeline 转成 core 定义；正文处理和 HTML 绑定使用同一份声明环境。
 

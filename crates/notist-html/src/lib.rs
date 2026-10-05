@@ -113,8 +113,8 @@ impl<'a> Renderer<'a> {
         self
     }
 
-    /// Supply the inner HTML of inline math's `span.notist-math` or a block
-    /// equation's `div.notist-math`.
+    /// Supply the inner HTML of math's `span.notist-math` (inline) or
+    /// `div.notist-math` (block).
     ///
     /// Returning `None` displays escaped formula text. As with the embed
     /// callback, returned HTML is trusted application output.

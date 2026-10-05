@@ -30,4 +30,4 @@ python3 -m http.server
 
 通过 HTTP 打开 /target/mermaid-demo/。Web 预览配置 ../packages/mermaid/Notist.toml，源码路径为 README.not。
 
-若需离线分发，package 作者提供本地 Mermaid 依赖产物。通用组件约定见 [Package Model](../../docs/package.not)，参数协议见 [Content Function Extensions](../../docs/designs/content-functions.not)。
+若需离线分发，package 作者提供本地 Mermaid 依赖产物。通用组件约定见 [Package Model](https://github.com/AzurIce/notist/blob/main/docs/package.not)，参数协议见 [Content Function Extensions](https://github.com/AzurIce/notist/blob/main/docs/designs/content-functions.not)。

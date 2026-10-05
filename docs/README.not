@@ -10,6 +10,7 @@
 - [Document Frontends](designs/frontends.not)：Frontend Trait、默认实现、AST lowering、注册与解析产物捕获。
 - [Pipeline](designs/pipeline.not)：crate 职责、共享 IR 转换阶段与 Vault 宿主边界。
 - [Package Model](package.not)：package 的定义、命名空间、使用者环境与自身文档环境。
+- [Vault 组件示例](components/README.not)：在 Vault 根声明并使用 panel、badge，组合其他 package 的图形与数学组件。
 - [Content Function Extensions](designs/content-functions.not)：内置与外部函数的统一定义、.notc 声明和 package 装配、HTML 组件协议与 host 接口。
 - [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。

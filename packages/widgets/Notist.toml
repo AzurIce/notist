@@ -1,6 +1,0 @@
-[package]
-name = "widgets"
-
-[dev-dependencies]
-mermaid = { path = "../mermaid" }
-katex = { path = "../katex" }

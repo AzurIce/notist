@@ -17,4 +17,6 @@
 
 `_logs/` 保存历史记录；当前行为以规范和实现为准。
 
+- [IR Transforms 与内置内容的 Package 呈现](_logs/2026-10-05-ir-transforms.md)：未实现的有序转换设计，首阶段提供内置 replace，stdio 扩展留待后续。
+- [Pipeline、Vault 与 HTML 装配边界](_logs/2026-10-05-pipeline-vault-html.md)：共享管线、资源输入与宿主 API 的重构记录。
 - [.notc 声明模块与 Package / Plugin 扩展](_logs/2026-10-04-notc-packages-plugins.md)：以扩展 content function 与 Web Component 为首个目标的架构变更记录。

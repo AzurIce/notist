@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decodeValue, readParameter } from "../component-protocol.js";
+import { decodeValue, readParameter, registerComponents } from "../component-protocol.js";
 
 test("collection protocol retains integer precision, float bits and dictionary order", () => {
   const decoded = decodeValue(["dict", [
@@ -21,4 +21,24 @@ test("missing, empty and false scalar parameters remain distinct", () => {
   assert.equal(readParameter(element, "missing", "String"), undefined);
   assert.equal(readParameter(element, "count", "Int"), -9223372036854775808n);
   assert.equal(readParameter(element, "ratio", "Float"), Infinity);
+});
+
+test("distributed runtime registers once and rejects missing URLs or conflicting implementations", async () => {
+  const previous = globalThis.customElements;
+  const constructors = new Map();
+  let registrations = 0;
+  globalThis.customElements = {
+    get: tag => constructors.get(tag),
+    define: (tag, implementation) => { registrations++; constructors.set(tag, implementation); },
+  };
+  try {
+    const first = { tag: "test-widget", module: "data:text/javascript,export default class First {}" };
+    await registerComponents([first, first]);
+    await registerComponents([first]);
+    assert.equal(registrations, 1);
+    const second = { ...first, module: "data:text/javascript,export default class Second {}" };
+    await assert.rejects(registerComponents([second]), /Conflicting Notist component/);
+    await assert.rejects(registerComponents([first, second]), /Conflicting Notist component/);
+    await assert.rejects(registerComponents([{ tag: "missing-widget", module: null }]), /No published module URL/);
+  } finally { globalThis.customElements = previous; }
 });

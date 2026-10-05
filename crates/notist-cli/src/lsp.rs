@@ -11,13 +11,9 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::item::{Ctor, Item, Value};
+use notist::item::{Ctor, Item, Value};
 
-/// Run the language server over stdio.
-pub async fn serve() {
-    serve_with_config(None).await;
-}
-
+/// Run the language server over stdio with the CLI configuration.
 pub async fn serve_with_config(config: Option<std::path::PathBuf>) {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -97,8 +93,8 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let lines = LineIndex::new(src);
-            let parse = crate::syntax::parse_module(src);
-            let module = crate::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let parse = notist::syntax::parse_module(src);
+            let module = notist::syntax::ast::Module::cast(parse.syntax()).unwrap();
             let symbols = module
                 .functions()
                 .filter_map(|function| {
@@ -139,8 +135,8 @@ impl LanguageServer for Backend {
             };
             let lines = LineIndex::new(src);
             let offset = lines.offset(src, position);
-            let parse = crate::syntax::parse_module(src);
-            let module = crate::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let parse = notist::syntax::parse_module(src);
+            let module = notist::syntax::ast::Module::cast(parse.syntax()).unwrap();
             let target = module
                 .functions()
                 .find(|function| function.range().contains((offset as u32).into()));
@@ -246,7 +242,7 @@ impl LanguageServer for Backend {
         };
         // `#item`：当前文档内的 id
         if let Some(item_id) = target_text.strip_prefix('#') {
-            let index = crate::index::Index::build(&item, &mut Vec::new());
+            let index = notist::index::Index::build(&item, &mut Vec::new());
             let Some(span) = index.by_id(item_id) else {
                 return Ok(None);
             };
@@ -265,7 +261,7 @@ impl LanguageServer for Backend {
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()));
         let Some(dir) = doc_dir else { return Ok(None) };
-        let target_path = crate::vault::normalize(&dir.join(path_part));
+        let target_path = notist::resources::normalize(&dir.join(path_part));
         let Ok(target_uri) = Url::from_file_path(&target_path) else {
             return Ok(None);
         };
@@ -288,27 +284,48 @@ impl Backend {
     async fn project(
         &self,
         uri: &Url,
-    ) -> std::result::Result<crate::project::Project, Vec<crate::project::SourceDiagnostic>> {
-        let path = uri.to_file_path().unwrap_or_else(|_| "document.not".into());
-        let overlays = self
-            .documents
-            .lock()
-            .await
+    ) -> std::result::Result<notist::Environment, Vec<notist::SourceDiagnostic>> {
+        self.with_vault(|vault| {
+            vault
+                .environment_for(uri.to_file_path().unwrap_or_else(|_| "document.not".into()))
+                .cloned()
+        })
+        .await
+        .map_err(|error| source_errors(uri, error))
+    }
+
+    async fn with_vault<T>(
+        &self,
+        operation: impl FnOnce(
+            &mut notist::Vault<notist::OverlayResources<'_, notist::FsResources>>,
+        ) -> std::result::Result<T, notist::VaultError>,
+    ) -> std::result::Result<T, notist::VaultError> {
+        let documents = self.documents.lock().await.clone();
+        let base = notist::FsResources::default();
+        let mut vault = self.vault_from_documents(&base, &documents);
+        operation(&mut vault)
+    }
+
+    fn vault_from_documents<'a>(
+        &self,
+        base: &'a notist::FsResources,
+        documents: &HashMap<Url, String>,
+    ) -> notist::Vault<notist::OverlayResources<'a, notist::FsResources>> {
+        let overlays = documents
             .iter()
             .filter_map(|(uri, source)| Some((uri.to_file_path().ok()?, source.clone())))
             .collect();
-        let config = self
-            .config
-            .clone()
-            .or_else(|| crate::project::discover_config_with_sources(&path, &overlays));
-        let Some(config) = config else {
-            return Ok(crate::project::Project::default());
-        };
-        crate::project::Project::load_with_sources(config, &overlays)
+        let mut vault = notist::Vault::new(notist::OverlayResources::new(base, &overlays));
+        if let Some(config) = &self.config {
+            vault = vault.with_config(config);
+        }
+        vault
     }
 
     async fn refresh(&self) {
         let documents = self.documents.lock().await.clone();
+        let base = notist::FsResources::default();
+        let mut vault = self.vault_from_documents(&base, &documents);
         let mut published: HashMap<Url, Vec<Diagnostic>> = documents
             .keys()
             .map(|uri| (uri.clone(), Vec::new()))
@@ -318,23 +335,22 @@ impl Backend {
         }
         for (uri, source) in &documents {
             let diagnostics = if uri.path().ends_with(".notc") {
-                crate::analyze_module("package", source)
+                notist::analyze_module("package", source)
                     .err()
                     .unwrap_or_default()
             } else if uri.path().ends_with("Notist.toml") {
-                crate::project::parse_config(source)
+                notist::environment::parse_config(source)
                     .err()
                     .unwrap_or_default()
             } else {
-                match self.project(uri).await {
-                    Ok(project) => project
-                        .analyzer()
-                        .analyze(
-                            uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
-                            source,
-                        )
-                        .map(|analysis| analysis.into_parts().1)
-                        .unwrap_or_default(),
+                match vault
+                    .analyze(
+                        uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
+                        source,
+                    )
+                    .map_err(|error| source_errors(uri, error))
+                {
+                    Ok(analysis) => analysis.into_parts().1,
                     Err(errors) => {
                         for error in errors {
                             if let Ok(error_uri) = Url::from_file_path(&error.path) {
@@ -344,8 +360,8 @@ impl Backend {
                                     .push(lsp_diagnostic(&error.source, &error.diagnostic));
                             }
                         }
-                        vec![crate::Diagnostic::new(
-                            crate::Phase::Semantic,
+                        vec![notist::Diagnostic::new(
+                            notist::Phase::Semantic,
                             Default::default(),
                             "project configuration or package declarations are invalid",
                         )]
@@ -380,10 +396,11 @@ impl Backend {
     }
 
     async fn analyzed(&self, uri: &Url) -> Option<(String, Item)> {
-        let src = self.documents.lock().await.get(uri)?.clone();
-        let project = self.project(uri).await.ok()?;
-        let (item, _) = project
-            .analyzer()
+        let documents = self.documents.lock().await.clone();
+        let src = documents.get(uri)?.clone();
+        let base = notist::FsResources::default();
+        let mut vault = self.vault_from_documents(&base, &documents);
+        let (item, _) = vault
             .analyze(
                 uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
                 &src,
@@ -394,10 +411,25 @@ impl Backend {
     }
 }
 
+fn source_errors(uri: &Url, error: notist::VaultError) -> Vec<notist::SourceDiagnostic> {
+    match error {
+        notist::VaultError::Environment(errors) => errors,
+        error => vec![notist::SourceDiagnostic {
+            path: uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
+            source: String::new(),
+            diagnostic: notist::Diagnostic::new(
+                notist::Phase::Semantic,
+                Default::default(),
+                error.to_string(),
+            ),
+        }],
+    }
+}
+
 /// The smallest item whose span contains `offset`.
 fn smallest_at(item: &Item, offset: usize) -> Option<&Item> {
     for child in &item.children {
-        if child.span.contains(rowan::TextSize::from(offset as u32)) {
+        if child.span.contains(notist::TextSize::from(offset as u32)) {
             return Some(smallest_at(child, offset).unwrap_or(child));
         }
     }
@@ -510,7 +542,7 @@ impl LineIndex {
         end
     }
 
-    fn range(&self, src: &str, span: rowan::TextRange) -> Range {
+    fn range(&self, src: &str, span: notist::TextRange) -> Range {
         Range::new(
             self.position(src, usize::from(span.start())),
             self.position(src, usize::from(span.end())),
@@ -522,10 +554,10 @@ fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
     if !uri.path().ends_with(".not") {
         return None;
     }
-    crate::syntax::parse_document(source)
+    notist::syntax::parse_document(source)
         .syntax()
         .descendants()
-        .filter_map(crate::syntax::ast::CodeCall::cast)
+        .filter_map(notist::syntax::ast::CodeCall::cast)
         .find_map(|call| {
             let path = call.path()?;
             path.range()
@@ -534,7 +566,7 @@ fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
         })
 }
 
-fn lsp_diagnostic(source: &str, diagnostic: &crate::Diagnostic) -> Diagnostic {
+fn lsp_diagnostic(source: &str, diagnostic: &notist::Diagnostic) -> Diagnostic {
     Diagnostic {
         range: LineIndex::new(source).range(source, diagnostic.span),
         severity: Some(DiagnosticSeverity::ERROR),
@@ -550,7 +582,14 @@ mod tests {
 
     #[test]
     fn smallest_at_finds_innermost() {
-        let (item, _) = crate::analyze("内容 *粗体* 文字\n");
+        let (item, _) = notist::Pipeline::default()
+            .analyze(
+                "test.not",
+                "内容 *粗体* 文字\n",
+                notist::builtins::registry(),
+            )
+            .unwrap()
+            .into_parts();
         // 体 at byte 11，粗 at 8
         let found = smallest_at(&item, 11).unwrap();
         assert_eq!(found.ctor.name(), "Text");

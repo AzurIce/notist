@@ -1,9 +1,13 @@
-use notist::{Ctor, Item, Notist, Value};
+use notist::{Ctor, Item, Pipeline, Value};
 use notist_html::{Renderer, escape_attribute, escape_text, is_safe_url, render};
 
 fn analyze(extension: &str, src: &str) -> Item {
-    let document = Notist::default()
-        .analyze(format!("test.{extension}"), src)
+    let document = Pipeline::default()
+        .analyze(
+            format!("test.{extension}"),
+            src,
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(
         document.diagnostics().is_empty(),
@@ -273,8 +277,12 @@ fn structural_groups_are_flattened_and_unrepresentable_attrs_are_reported() {
 
 #[test]
 fn recovery_nodes_render_without_panicking_and_report_rendering_issues() {
-    let document = Notist::default()
-        .analyze("test.not", "#unknown[body]\n#list[text]\n#table[wrong]")
+    let document = Pipeline::default()
+        .analyze(
+            "test.not",
+            "#unknown[body]\n#list[text]\n#table[wrong]",
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(!document.diagnostics().is_empty());
     let result = Renderer::new().render_with_diagnostics(document.root());

@@ -211,7 +211,14 @@ fn literal_conversion_is_shared_and_preserves_integer_range_and_dict_order() {
     );
     assert_eq!(data.get("first"), Some(&Value::Int(3)));
     assert_eq!(defaults.get("label"), Some(&Value::Str("raw \\q".into())));
-    let document = notist::analyze("#list(start: -9223372036854775808)[]");
+    let document = notist::Pipeline::default()
+        .analyze(
+            "test.not",
+            "#list(start: -9223372036854775808)[]",
+            notist::builtins::registry(),
+        )
+        .unwrap()
+        .into_parts();
     assert!(document.1.is_empty(), "{:?}", document.1);
     assert_eq!(
         document.0.children[0].fields.get("start"),
@@ -290,8 +297,14 @@ fn qualified_builtin_calls_produce_the_same_ir_as_prelude_calls() {
         ),
         ("#list[#item[first]]", "#notist::list[#notist::item[first]]"),
     ] {
-        let (plain_tree, plain_diags) = notist::analyze(plain);
-        let (qualified_tree, qualified_diags) = notist::analyze(qualified);
+        let (plain_tree, plain_diags) = notist::Pipeline::default()
+            .analyze("test.not", plain, notist::builtins::registry())
+            .unwrap()
+            .into_parts();
+        let (qualified_tree, qualified_diags) = notist::Pipeline::default()
+            .analyze("test.not", qualified, notist::builtins::registry())
+            .unwrap()
+            .into_parts();
         assert!(plain_diags.is_empty());
         assert!(qualified_diags.is_empty());
         assert_eq!(normalize(plain_tree), normalize(qualified_tree));
@@ -324,7 +337,14 @@ fn multiline_default_strings_share_framing_escapes_and_raw_behavior() {
                 module.functions[0].parameters[0].mode,
                 ParameterMode::Default(Value::Str(expected.into()))
             );
-            let (document, diagnostics) = notist::analyze(&format!("#text(text: {literal})"));
+            let (document, diagnostics) = notist::Pipeline::default()
+                .analyze(
+                    "test.not",
+                    &format!("#text(text: {literal})"),
+                    notist::builtins::registry(),
+                )
+                .unwrap()
+                .into_parts();
             assert!(diagnostics.is_empty(), "{literal:?}: {diagnostics:?}");
             assert_eq!(
                 document.children[0].children[0].fields.get("text"),

@@ -34,6 +34,32 @@ const { chromium } = require('playwright');
     await page.locator('#path').dispatchEvent('change');
     await page.fill('#src', 'fn bad(value: Int = false) -> Content; fn good() -> Content;');
     await page.waitForFunction(() => document.querySelector('#tree').textContent.includes('Module') && document.querySelector('#diags').textContent.includes('default'));
+    // A slow previous environment must not replace a later explicit reset.
+    let releaseConfig;
+    let configRequested;
+    const requested = new Promise(resolve => { configRequested = resolve; });
+    const gate = new Promise(resolve => { releaseConfig = resolve; });
+    await page.route('**/slow.toml', async route => {
+      configRequested();
+      await gate;
+      await route.fulfill({ body: '[dependencies]\nlate = {path = "./late"}' });
+    });
+    await page.route('**/late/lib.notc', route => route.fulfill({ body: 'fn flag() -> Content;' }));
+    await page.route('**/late/components/**', route => route.fulfill({ status: 404, body: '' }));
+    await page.fill('#path', 'scratch.not');
+    await page.locator('#path').dispatchEvent('change');
+    await page.fill('#src', '#late::flag()');
+    await page.fill('#config-url', '../slow.toml');
+    await page.click('#load-project');
+    await requested;
+    await page.fill('#config-url', '');
+    await page.click('#load-project');
+    const lastCheck = page.waitForResponse(response => response.url().endsWith('/late/components/flag/index.js'));
+    releaseConfig();
+    await lastCheck;
+    // Allow the fulfilled response and its continuation to reach the page.
+    await page.waitForTimeout(50);
+    assert.match(await page.locator('#diags').textContent(), /unknown constructor/);
     assert.deepEqual(errors, []);
     console.log('Static HTML, reconnection, project preview and module diagnostics passed.');
   } finally { await browser.close(); }

@@ -1,240 +1,280 @@
-use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+//! Vault orchestration: resources, declaration environments and typed outputs.
+use crate::environment::{discover_config_in, issue};
+use crate::resources::{FsResources, ResourceError, ResourceKind, Resources};
+use crate::{Analysis, Environment, Pipeline, SourceDiagnostic, UnsupportedFormat};
+use notist_html::{HtmlRegistry, ModuleLocator, RenderResult, Renderer};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use rowan::TextRange;
-
-use crate::diag::{Diagnostic, Phase};
-use crate::index::Index;
-use crate::item::{Ctor, Item, Value};
-
-/// A vault of linked documents rooted at a directory: per-document
-/// analysis plus the link graph.
-pub struct Vault {
-    docs: HashMap<PathBuf, Doc>,
+#[derive(Debug)]
+pub enum VaultError {
+    Environment(Vec<SourceDiagnostic>),
+    Unsupported(UnsupportedFormat),
+    Resource(ResourceError),
 }
-
-struct Doc {
-    index: Index,
-    links: Vec<Link>,
-    diagnostics: Vec<Diagnostic>,
-}
-
-struct Link {
-    span: TextRange,
-    target: Target,
-}
-
-/// A link target after splitting the `#item` suffix.
-enum Target {
-    /// `https:`-style schemes never resolve.
-    External,
-    /// `[[#item]]`: an id in the current document.
-    SameDoc { item: String },
-    /// A path relative to the linking file, normalized root-relative.
-    Path { path: PathBuf, item: Option<String> },
-}
-
-fn has_scheme(target: &str) -> bool {
-    target.split_once(':').is_some_and(|(scheme, _)| {
-        !scheme.is_empty()
-            && scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    })
-}
-
-/// Normalize `.` / `..` segments without touching the filesystem.
-pub(crate) fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            c => out.push(c.as_os_str()),
-        }
-    }
-    out
-}
-
-fn parse_target(target: &str, file_dir: &Path) -> Target {
-    if let Some(item) = target.strip_prefix('#') {
-        return Target::SameDoc {
-            item: item.to_string(),
-        };
-    }
-    if has_scheme(target) {
-        return Target::External;
-    }
-    let (path, item) = match target.split_once('#') {
-        Some((path, item)) => (path, Some(item.to_string())),
-        None => (target, None),
-    };
-    Target::Path {
-        path: normalize(&file_dir.join(path)),
-        item,
-    }
-}
-
-fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
-    item.descendants()
-        .filter(|item| item.ctor == Ctor::Link)
-        .filter_map(|item| match item.fields.get("target") {
-            Some(Value::Str(target)) => Some(Link {
-                span: item.span,
-                target: parse_target(target, file_dir),
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Same-document link checks, shared by single-file checks and the vault.
-pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) {
-    for node in item.descendants() {
-        if node.ctor != Ctor::Link {
-            continue;
-        }
-        let Some(Value::Str(target)) = node.fields.get("target") else {
-            continue;
-        };
-        let Some(item) = target.strip_prefix('#') else {
-            continue;
-        };
-        if index.by_id(item).is_none() {
-            diags.push(Diagnostic::new(
-                Phase::Semantic,
-                node.span,
-                format!("missing item `#{item}` in this document"),
-            ));
-        }
-    }
-}
-
-impl Vault {
-    /// Load every `.not`, `.md` and `.markdown` file under `root` (recursively), running the full
-    /// pipeline per document.
-    pub fn load(root: &Path) -> std::io::Result<Self> {
-        Self::load_with(root, |path, src| {
-            Ok(crate::Notist::default()
-                .analyze(path, src)
-                .expect("supported document")
-                .into_parts())
-        })
-    }
-
-    /// Load with a host-selected environment for each document.
-    pub fn load_with(
-        root: &Path,
-        analyze: impl Fn(&Path, &str) -> std::io::Result<(Item, Vec<Diagnostic>)>,
-    ) -> std::io::Result<Self> {
-        let mut docs = HashMap::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(dir)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path
-                    .extension()
-                    .is_some_and(|ext| matches!(ext.to_str(), Some("not" | "md" | "markdown")))
-                {
-                    let src = std::fs::read_to_string(&path)?;
-                    let (item, mut diagnostics) = analyze(&path, &src)?;
-                    let index = Index::build(&item, &mut diagnostics);
-                    let rel_dir = path
-                        .parent()
-                        .map(|p| p.strip_prefix(root).unwrap_or(p))
-                        .unwrap_or(Path::new(""))
-                        .to_path_buf();
-                    let links = collect_links(&item, &rel_dir);
-                    let key = normalize(path.strip_prefix(root).unwrap_or(&path));
-                    docs.insert(
-                        key,
-                        Doc {
-                            index,
-                            links,
-                            diagnostics,
-                        },
-                    );
-                }
-            }
-        }
-        Ok(Vault { docs })
-    }
-
-    /// Pipeline diagnostics per document, then link-resolution diagnostics.
-    pub fn check(&self) -> Vec<(PathBuf, Diagnostic)> {
-        let mut out = Vec::new();
-        for (path, doc) in &self.docs {
-            out.extend(doc.diagnostics.iter().map(|d| (path.clone(), d.clone())));
-            for link in &doc.links {
-                match &link.target {
-                    Target::External => {}
-                    Target::SameDoc { item } => {
-                        if doc.index.by_id(item).is_none() {
-                            out.push((
-                                path.clone(),
-                                Diagnostic::new(
-                                    Phase::Semantic,
-                                    link.span,
-                                    format!("missing item `#{item}` in this document"),
-                                ),
-                            ));
-                        }
+impl std::fmt::Display for VaultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Environment(errors) => {
+                for (i, error) in errors.iter().enumerate() {
+                    if i > 0 {
+                        writeln!(f)?;
                     }
-                    Target::Path { path: target, item } => match self.docs.get(target) {
-                        None => out.push((
-                            path.clone(),
-                            Diagnostic::new(
-                                Phase::Semantic,
-                                link.span,
-                                format!("unresolved link target `{}`", target.display()),
-                            ),
-                        )),
-                        Some(doc2) => {
-                            if let Some(item) = item {
-                                if doc2.index.by_id(item).is_none() {
-                                    out.push((
-                                        path.clone(),
-                                        Diagnostic::new(
-                                            Phase::Semantic,
-                                            link.span,
-                                            format!(
-                                                "missing item `#{item}` in `{}`",
-                                                target.display()
-                                            ),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    },
+                    write!(f, "{}: {}", error.path.display(), error.diagnostic.message)?;
                 }
+                Ok(())
             }
+            Self::Unsupported(error) => error.fmt(f),
+            Self::Resource(error) => error.fmt(f),
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.span.start().cmp(&b.1.span.start())));
-        out
     }
+}
+impl std::error::Error for VaultError {}
+impl From<ResourceError> for VaultError {
+    fn from(error: ResourceError) -> Self {
+        Self::Resource(error)
+    }
+}
+impl From<UnsupportedFormat> for VaultError {
+    fn from(error: UnsupportedFormat) -> Self {
+        Self::Unsupported(error)
+    }
+}
 
-    /// All links pointing at `path` (normalized, vault-root-relative).
-    pub fn backlinks(&self, path: &Path) -> Vec<(PathBuf, TextRange)> {
-        let path = normalize(path);
-        let mut out = Vec::new();
-        for (source, doc) in &self.docs {
-            for link in &doc.links {
-                if let Target::Path { path: p, .. } = &link.target {
-                    if *p == path {
-                        out.push((source.clone(), link.span));
+#[derive(Debug, Clone, Copy)]
+pub struct RenderOptions {
+    pub source_map: bool,
+}
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self { source_map: true }
+    }
+}
+
+/// Both sets of diagnostics refer to this document source. Package/config
+/// failures instead return source-bearing VaultError::Environment entries.
+#[derive(Debug)]
+pub struct HtmlOutput {
+    pub path: PathBuf,
+    pub analysis: Analysis,
+    pub rendered: RenderResult,
+}
+
+/// One immutable resource view, potentially containing multiple nearest configs.
+/// Environment assembly is retained within this view; replace the Vault when
+/// inputs change. No mutable source cache or incremental compiler is implied.
+pub struct Vault<R = FsResources> {
+    resources: R,
+    pipeline: Pipeline,
+    environments: BTreeMap<Option<PathBuf>, Environment>,
+    config: Option<PathBuf>,
+    module_urls: BTreeMap<PathBuf, String>,
+}
+impl<R: Resources> Vault<R> {
+    pub fn new(resources: R) -> Self {
+        Self {
+            resources,
+            pipeline: Pipeline::default(),
+            environments: BTreeMap::new(),
+            config: None,
+            module_urls: BTreeMap::new(),
+        }
+    }
+    pub fn resources(&self) -> &R {
+        &self.resources
+    }
+    pub fn with_pipeline(mut self, pipeline: Pipeline) -> Self {
+        self.pipeline = pipeline;
+        self
+    }
+    pub fn with_config(mut self, path: impl AsRef<Path>) -> Self {
+        self.config = Some(self.resources.resolve(path.as_ref()));
+        self
+    }
+    /// Supply a pure, already assembled default environment. Nearest or explicit
+    /// configs still select their own environments.
+    pub fn with_environment(mut self, environment: Environment) -> Self {
+        let key = environment.config_path().map(Path::to_path_buf);
+        if key.is_some() {
+            self.config = key.clone();
+        }
+        self.environments.insert(key, environment);
+        self
+    }
+    /// Host publication mapping. Resource paths remain distinct from browser URLs.
+    pub fn with_module_urls(mut self, urls: BTreeMap<PathBuf, String>) -> Self {
+        self.module_urls = urls
+            .into_iter()
+            .map(|(path, url)| (self.resources.resolve(&path), url))
+            .collect();
+        self
+    }
+    fn ensure_environment(&mut self, path: &Path) -> Result<Option<PathBuf>, VaultError> {
+        let key = match &self.config {
+            Some(config) => Some(config.clone()),
+            None => discover_config_in(&self.resources, path)?,
+        };
+        if !self.environments.contains_key(&key) {
+            let environment = match &key {
+                Some(config) => Environment::load_from(&self.resources, config)
+                    .map_err(VaultError::Environment)?,
+                None => Environment::default(),
+            };
+            self.environments.insert(key.clone(), environment);
+        }
+        Ok(key)
+    }
+    pub fn environment_for(&mut self, path: impl AsRef<Path>) -> Result<&Environment, VaultError> {
+        let key = self.ensure_environment(path.as_ref())?;
+        Ok(&self.environments[&key])
+    }
+    pub fn analyze(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+    ) -> Result<Analysis, VaultError> {
+        let path = path.as_ref();
+        let key = self.ensure_environment(path)?;
+        Ok(self
+            .pipeline
+            .analyze(path, source, self.environments[&key].registry())?)
+    }
+    pub fn inspect(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+    ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
+        let path = path.as_ref();
+        let key = self.ensure_environment(path)?;
+        Ok(self
+            .pipeline
+            .inspect(path, source, self.environments[&key].registry())?)
+    }
+    pub fn analyze_resource(&mut self, path: impl AsRef<Path>) -> Result<Analysis, VaultError> {
+        let source = self.resources.source(path.as_ref())?;
+        self.analyze(path, &source)
+    }
+    pub fn html_registry(&mut self, path: impl AsRef<Path>) -> Result<HtmlRegistry, VaultError> {
+        let key = self.ensure_environment(path.as_ref())?;
+        bind_html(&self.environments[&key], &self.resources, &self.module_urls)
+            .map_err(VaultError::Environment)
+    }
+    pub fn render_html(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+        options: RenderOptions,
+    ) -> Result<HtmlOutput, VaultError> {
+        let path = path.as_ref();
+        let analysis = self.analyze(path, source)?;
+        let rendered = self.render_item(path, analysis.root(), options)?;
+        Ok(HtmlOutput {
+            path: self.resources.resolve(path),
+            analysis,
+            rendered,
+        })
+    }
+    pub fn render_item(
+        &mut self,
+        path: impl AsRef<Path>,
+        item: &crate::Item,
+        options: RenderOptions,
+    ) -> Result<RenderResult, VaultError> {
+        let mut renderer = Renderer::new().with_registry(self.html_registry(path)?);
+        if options.source_map {
+            renderer = renderer.with_source_map();
+        }
+        Ok(renderer.render_with_diagnostics(item))
+    }
+    /// Build a document-link index through the same resources and environments.
+    pub fn index(&mut self, root: impl AsRef<Path>) -> Result<crate::VaultIndex, VaultError> {
+        let root = self.resources.resolve(root.as_ref());
+        let mut directories = vec![root.clone()];
+        let mut documents = Vec::new();
+        while let Some(directory) = directories.pop() {
+            for path in self.resources.entries(&directory)? {
+                match self.resources.kind(&path)? {
+                    Some(ResourceKind::Directory) => directories.push(path),
+                    Some(ResourceKind::File) if self.pipeline.supports(&path) => {
+                        let source = self.resources.source(&path)?;
+                        let analysis = self.analyze(&path, &source)?;
+                        documents.push((
+                            path.strip_prefix(&root).unwrap_or(&path).to_path_buf(),
+                            analysis,
+                        ));
                     }
+                    _ => {}
                 }
             }
         }
-        out.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then(u32::from(a.1.start()).cmp(&u32::from(b.1.start())))
-        });
-        out
+        Ok(crate::VaultIndex::from_documents(documents))
+    }
+}
+impl Vault<FsResources> {
+    pub fn open(root: impl AsRef<Path>) -> Self {
+        Self::new(FsResources::new(root))
+    }
+}
+
+/// Shared host orchestration; entry rules and target validation belong to HTML.
+pub(crate) fn bind_html(
+    environment: &Environment,
+    resources: &(impl Resources + ?Sized),
+    urls: &BTreeMap<PathBuf, String>,
+) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
+    let mut bindings = BTreeMap::new();
+    let mut errors = Vec::new();
+    for definition in environment
+        .registry()
+        .functions()
+        .filter(|definition| definition.id.package != "notist")
+    {
+        let package = &environment.packages()[&definition.id.package];
+        let result = (|| -> Result<Option<ModuleLocator>, String> {
+            let entries = notist_html::components::component_entries(&definition.id.name)
+                .map(|entry| resources.resolve(&package.root.join(entry)));
+            let available = [
+                resources.kind(&entries[0]).map_err(|e| e.to_string())? == Some(ResourceKind::File),
+                resources.kind(&entries[1]).map_err(|e| e.to_string())? == Some(ResourceKind::File),
+            ];
+            let entry =
+                notist_html::components::select_component_entry(&definition.id.name, available)?;
+            Ok(entry.map(|entry| {
+                let path = resources.resolve(&package.root.join(entry));
+                match urls.get(&path) {
+                    Some(url) => ModuleLocator::Url(url.clone()),
+                    None => ModuleLocator::Resource(path),
+                }
+            }))
+        })();
+        match result {
+            Ok(Some(module)) => {
+                bindings.insert(definition.id.clone(), module);
+            }
+            Ok(None) => {}
+            Err(message) => errors.push(issue(
+                &package.root.join("lib.notc"),
+                &package.source,
+                definition.span,
+                message,
+            )),
+        }
+    }
+    match HtmlRegistry::from_bindings(environment.registry(), &bindings) {
+        Ok(registry) if errors.is_empty() => Ok(registry),
+        Ok(_) => Err(errors),
+        Err(binding_errors) => {
+            for error in binding_errors {
+                let package = &environment.packages()[&error.id.package];
+                let span = environment.registry().get(&error.id).unwrap().span;
+                errors.push(issue(
+                    &package.root.join("lib.notc"),
+                    &package.source,
+                    span,
+                    error.message,
+                ));
+            }
+            Err(errors)
+        }
     }
 }

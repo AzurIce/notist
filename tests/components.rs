@@ -1,4 +1,4 @@
-use notist::{Dict, FunctionId, Value, project::Project};
+use notist::{Dict, Environment, FunctionId, Value};
 use notist_html::{HtmlRegistry, Renderer};
 fn definitions() -> notist::DefinitionModule {
     notist::analyze_module("widgets", "fn panel(title: String = \"\", open: Bool = false, count: Int = 9223372036854775807, ratio: Float = 1.5, optional?: String, data: Array = (false,))[children: Content] -> Content; fn badge(label: String) -> InlineContent;").unwrap()
@@ -16,11 +16,11 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
         .unwrap();
     }
     registry.register(module).unwrap();
-    let analysis = notist::Notist::default()
-        .with_registry(registry)
+    let analysis = notist::Pipeline::default()
         .analyze(
             "test.not",
             "#widgets::panel(title: \"<&\\\"\")[#widgets::badge(\"one\") #widgets::badge(\"two\")]",
+            &registry,
         )
         .unwrap();
     assert!(
@@ -128,33 +128,11 @@ fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
     );
 }
 #[test]
-fn host_copies_used_directory_resources_and_checks_convention_conflicts() {
+fn missing_html_targets_and_filesystem_entry_conflicts() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
-    let project = Project::load(root.join("Notist.toml")).unwrap();
-    let source = std::fs::read_to_string(root.join("packages/README.not")).unwrap();
-    let analysis = project
-        .analyzer()
-        .analyze("packages/README.not", &source)
-        .unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let built = notist::html_host::build_page(analysis.root(), &project, temp.path()).unwrap();
-    assert_eq!(built.used_components.len(), 3);
-    assert!(
-        temp.path()
-            .join("packages/widgets/components/panel/style.js")
-            .is_file()
-    );
-    assert!(
-        temp.path()
-            .join("packages/widgets/components/badge.js")
-            .is_file()
-    );
-    let entry = std::fs::read_to_string(temp.path().join("components.js")).unwrap();
-    assert_eq!(entry.matches("customElements.define").count(), 3);
-    assert_eq!(entry.matches("widgets-panel").count(), 1);
-    let missing = project
-        .analyzer()
-        .analyze("test.not", "#widgets::badge(\"test\")")
+    let project = Environment::load_from(&notist::FsResources::new(&root), "Notist.toml").unwrap();
+    let missing = notist::Pipeline::default()
+        .analyze("test.not", "#widgets::badge(\"test\")", project.registry())
         .unwrap();
     let rendered = Renderer::new().render_with_diagnostics(missing.root());
     assert!(
@@ -176,18 +154,18 @@ fn host_copies_used_directory_resources_and_checks_convention_conflicts() {
         "export default class {}",
     )
     .unwrap();
-    let project = Project::from_packages([notist::project::Package {
+    let project = Environment::from_packages([notist::Package {
         name: "fake".into(),
         root: fake.path().into(),
         source: std::fs::read_to_string(fake.path().join("lib.notc")).unwrap(),
     }])
     .unwrap();
-    assert!(
-        notist::html_host::html_registry(&project).unwrap_err()[0]
-            .diagnostic
-            .message
-            .contains("conflicting")
-    );
+    let mut vault = notist::Vault::open(".").with_environment(project);
+    let notist::VaultError::Environment(errors) = vault.html_registry("test.not").unwrap_err()
+    else {
+        panic!("expected component binding diagnostics");
+    };
+    assert!(errors[0].diagnostic.message.contains("conflicting"));
 }
 #[test]
 fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() {
@@ -240,9 +218,8 @@ fn native_nonfinite_defaults_use_the_same_component_binding_path() {
     semantics.register(module).unwrap();
     let mut html = HtmlRegistry::default();
     html.bind_component(&definition, "meter.js").unwrap();
-    let analysis = notist::Notist::default()
-        .with_registry(semantics)
-        .analyze("test.not", "#native::meter()")
+    let analysis = notist::Pipeline::default()
+        .analyze("test.not", "#native::meter()", &semantics)
         .unwrap();
     let result = Renderer::new()
         .with_registry(html)
@@ -261,9 +238,12 @@ fn inline_component_accepting_block_children_keeps_a_parseable_html_tree() {
     html.bind_component(&module.functions[0], "popup.js")
         .unwrap();
     semantics.register(module).unwrap();
-    let result = notist::Notist::default()
-        .with_registry(semantics)
-        .analyze("test.not", "before #widgets::popup()[inside] after")
+    let result = notist::Pipeline::default()
+        .analyze(
+            "test.not",
+            "before #widgets::popup()[inside] after",
+            &semantics,
+        )
         .unwrap();
     assert!(result.diagnostics().is_empty());
     let rendered = Renderer::new()

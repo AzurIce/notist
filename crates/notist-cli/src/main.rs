@@ -1,3 +1,8 @@
+mod html;
+#[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
+mod lsp;
+mod query;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::path::PathBuf;
@@ -10,7 +15,7 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self, Config};
 
 #[derive(Parser)]
-#[command(version, about = "the Notist document toolchain", long_about = None)]
+#[command(name = "notist", version, about = "the Notist document toolchain", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -38,7 +43,7 @@ enum Command {
         out_dir: PathBuf,
     },
     /// Run the language server over stdio
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
     Lsp,
 }
 
@@ -52,9 +57,9 @@ fn main() -> ExitCode {
             format!(
                 "{:#?}",
                 if is_module(&file) {
-                    notist_syntax::parse_module(src)
+                    notist::syntax::parse_module(src)
                 } else {
-                    notist_syntax::parse_document(src)
+                    notist::syntax::parse_document(src)
                 }
                 .syntax()
             )
@@ -63,12 +68,12 @@ fn main() -> ExitCode {
             format!("{:#?}\n", notist::analyze_module("package", src))
         }),
         Command::Core { file } => {
-            let project = match load_project(&file, config) {
-                Ok(project) => project,
+            let mut vault = match load_vault(&file, config) {
+                Ok(vault) => vault,
                 Err(code) => return code,
             };
             print_with(&file, |src| {
-                let Ok(document) = project.analyzer().analyze(&file, src) else {
+                let Ok(document) = vault.analyze(&file, src) else {
                     return format!("unsupported file extension: {}", file.display());
                 };
                 let mut out = String::new();
@@ -88,51 +93,56 @@ fn main() -> ExitCode {
         Command::Json { file } if is_module(&file) => print_with(&file, |src| {
             notist::cst_json::analyze_module_json("package", src)
         }),
-        Command::Json { file } => match load_project(&file, config) {
-            Ok(project) => print_with(&file, |src| {
-                notist::cst_json::analyze_document_json(&file, src, project.registry())
+        Command::Json { file } => match load_vault(&file, config) {
+            Ok(mut vault) => print_with(&file, |src| match vault.inspect(&file, src) {
+                Ok((analysis, inspection)) => {
+                    notist::cst_json::inspection_json(&analysis, Some(&inspection))
+                }
+                Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
             }),
             Err(code) => code,
         },
         Command::Query { file, selector } => match read(&file) {
             Ok(src) => {
-                let project = match load_project(&file, config) {
-                    Ok(project) => project,
+                let mut vault = match load_vault(&file, config) {
+                    Ok(vault) => vault,
                     Err(code) => return code,
                 };
-                let Ok(document) = project.analyzer().analyze(&file, &src) else {
+                let Ok(document) = vault.analyze(&file, &src) else {
                     eprintln!("unsupported file extension: {}", file.display());
                     return ExitCode::FAILURE;
                 };
                 let matches = notist::query::select(document.root(), &selector);
-                println!("{}", notist::query::render_json(&src, &matches));
+                println!("{}", query::render_json(&src, &matches));
                 ExitCode::SUCCESS
             }
             Err(code) => code,
         },
         Command::Html { file, out_dir } => {
-            let project = match load_project(&file, config) {
-                Ok(project) => project,
+            let mut vault = match load_vault(&file, config) {
+                Ok(vault) => vault,
                 Err(code) => return code,
             };
             let src = match read(&file) {
                 Ok(src) => src,
                 Err(code) => return code,
             };
-            let document = match project.analyzer().analyze(&file, &src) {
-                Ok(document) => document,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            if !document.diagnostics().is_empty() {
-                emit_source(&file, &src, document.diagnostics());
+            let output =
+                match vault.render_html(&file, &src, notist::RenderOptions { source_map: false }) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            if !output.analysis.diagnostics().is_empty() {
+                emit_source(&file, &src, output.analysis.diagnostics());
                 return ExitCode::FAILURE;
             }
-            match notist::html_host::build_page(document.root(), &project, &out_dir) {
+            let environment = vault.environment_for(&file).expect("assembled environment");
+            match html::build_rendered_page(output.rendered, environment, &out_dir) {
                 Ok(result) => {
-                    println!("{}", result.page.display());
+                    println!("{}", result.display());
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
@@ -141,13 +151,13 @@ fn main() -> ExitCode {
                 }
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
         Command::Lsp => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            runtime.block_on(notist::lsp::serve_with_config(cli.config));
+            runtime.block_on(lsp::serve_with_config(cli.config));
             ExitCode::SUCCESS
         }
     }
@@ -162,7 +172,7 @@ fn read(file: &Path) -> Result<String, ExitCode> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn print_with(file: &Path, f: impl Fn(&str) -> String) -> ExitCode {
+fn print_with(file: &Path, mut f: impl FnMut(&str) -> String) -> ExitCode {
     match read(file) {
         Ok(src) => {
             print!("{}", f(&src));
@@ -192,11 +202,11 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    let project = match load_project(file, config) {
-        Ok(project) => project,
+    let mut vault = match load_vault(file, config) {
+        Ok(vault) => vault,
         Err(code) => return code,
     };
-    let Ok(document) = project.analyzer().analyze(file, &src) else {
+    let Ok(document) = vault.analyze(file, &src) else {
         eprintln!("unsupported file extension: {}", file.display());
         return ExitCode::FAILURE;
     };
@@ -204,7 +214,7 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
     // id/tag 约定是 .not 的注解语义，只在该前端下检查
     if file.extension().is_some_and(|ext| ext == "not") {
         let index = notist::index::Index::build(&item, &mut diagnostics);
-        notist::vault::check_doc_links(&item, &index, &mut diagnostics);
+        notist::vault_index::check_doc_links(&item, &index, &mut diagnostics);
     }
     let files = SimpleFile::new(file.display().to_string(), &src);
     let writer = StandardStream::stderr(ColorChoice::Auto);
@@ -234,27 +244,13 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
-    let library = match notist::vault::Vault::load_with(dir, |path, src| {
-        let project = notist::project::Project::for_document(path, config).map_err(|errors| {
-            std::io::Error::other(
-                errors
-                    .iter()
-                    .map(|e| format!("{}: {}", e.path.display(), e.diagnostic.message))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-        })?;
-        Ok(project
-            .analyzer()
-            .analyze(path, src)
-            .expect("supported document")
-            .into_parts())
-    }) {
+    let mut vault = match load_vault(dir, config) {
+        Ok(vault) => vault,
+        Err(code) => return code,
+    };
+    let library = match vault.index(dir) {
         Ok(library) => library,
-        Err(err) => {
-            eprintln!("{}: {err}", dir.display());
-            return ExitCode::FAILURE;
-        }
+        Err(error) => return emit_vault_error(error),
     };
     let diagnostics = library.check();
     let mut files = SimpleFiles::new();
@@ -292,13 +288,25 @@ fn is_module(file: &Path) -> bool {
     file.extension().is_some_and(|ext| ext == "notc")
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn load_project(file: &Path, config: Option<&Path>) -> Result<notist::project::Project, ExitCode> {
-    notist::project::Project::for_document(file, config).map_err(|errors| {
-        for error in errors {
-            emit_source(&error.path, &error.source, &[error.diagnostic]);
+fn load_vault(file: &Path, config: Option<&Path>) -> Result<notist::Vault, ExitCode> {
+    let mut vault = notist::Vault::open(".");
+    if let Some(config) = config {
+        vault = vault.with_config(config);
+    }
+    vault.environment_for(file).map_err(emit_vault_error)?;
+    Ok(vault)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_vault_error(error: notist::VaultError) -> ExitCode {
+    match error {
+        notist::VaultError::Environment(errors) => {
+            for error in errors {
+                emit_source(&error.path, &error.source, &[error.diagnostic]);
+            }
         }
-        ExitCode::FAILURE
-    })
+        error => eprintln!("{error}"),
+    }
+    ExitCode::FAILURE
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {

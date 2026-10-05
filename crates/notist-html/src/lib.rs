@@ -21,7 +21,7 @@ mod attributes;
 pub mod components;
 mod escape;
 mod url;
-pub use components::{Component, HtmlRegistry, Target};
+pub use components::{BindingError, Component, HtmlRegistry, ModuleLocator, Target};
 
 pub use escape::{escape_attribute, escape_text};
 pub use url::is_safe_url;

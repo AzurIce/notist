@@ -86,8 +86,8 @@ A simple #widgets::badge("badge", 9223372036854775807) inside a paragraph.
 在仓库根目录执行：
 
 ```sh
-cargo run -- check docs/packages/README.not
-cargo run -- html docs/packages/README.not --out-dir target/packages-demo
+cargo run -p notist-cli -- check docs/packages/README.not
+cargo run -p notist-cli -- html docs/packages/README.not --out-dir target/packages-demo
 python3 -m http.server
 ```
 

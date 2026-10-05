@@ -1,16 +1,14 @@
-use notist::{
-    Ctor, FunctionId, Notist, Value,
-    builtins::Level,
-    project::{Package, Project},
-};
-fn environment() -> Project {
-    Project::from_packages([Package { name: "widgets".into(), root: "virtual/widgets".into(), source: "fn panel(title: String = \"Panel\")[children: Content] -> Content; fn badge(label: String)[children: InlineContent] -> InlineContent; fn leaf(value?: Int) -> Content;".into() }]).unwrap()
+use notist::{Ctor, Environment, FunctionId, Package, Pipeline, Value, builtins::Level};
+fn environment() -> Environment {
+    Environment::from_packages([Package { name: "widgets".into(), root: "virtual/widgets".into(), source: "fn panel(title: String = \"Panel\")[children: Content] -> Content; fn badge(label: String)[children: InlineContent] -> InlineContent; fn leaf(value?: Int) -> Content;".into() }]).unwrap()
 }
 #[test]
 fn extensions_reflow_traverse_query_and_debug_with_resolved_identity() {
     let project = environment();
     let src = "before #widgets::badge(\"yes\")[inside] #widgets::panel()[\nbody #widgets::badge(\"nested\")\n] after";
-    let analysis = project.analyzer().analyze("test.not", src).unwrap();
+    let analysis = notist::Pipeline::default()
+        .analyze("test.not", src, project.registry())
+        .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
         "{:?}",
@@ -33,12 +31,11 @@ fn extensions_reflow_traverse_query_and_debug_with_resolved_identity() {
         2
     );
     assert!(notist::query::select(analysis.root(), "level:block").contains(&panel));
-    let json: serde_json::Value =
-        serde_json::from_str(&notist::query::render_json(src, &[panel])).unwrap();
-    assert_eq!(json[0]["function"], "widgets::panel");
-    assert_eq!(json[0]["level"], "block");
-    assert_eq!(json[0]["fields"]["title"], "Panel");
-    assert!(!json[0]["children"].as_array().unwrap().is_empty());
+    let json = notist::json::item(panel);
+    assert_eq!(json["function"], "widgets::panel");
+    assert_eq!(json["level"], "block");
+    assert_eq!(json["fields"]["title"], "Panel");
+    assert!(!json["children"].as_array().unwrap().is_empty());
     let debug: serde_json::Value = serde_json::from_str(
         &notist::cst_json::analyze_json_with_registry(src, project.registry()),
     )
@@ -57,7 +54,9 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
         ("#widgets::missing()", "unknown"),
         ("#widgets::sub::f()", "not supported"),
     ] {
-        let result = project.analyzer().analyze("test.not", source).unwrap();
+        let result = notist::Pipeline::default()
+            .analyze("test.not", source, project.registry())
+            .unwrap();
         assert!(
             result
                 .diagnostics()
@@ -67,9 +66,8 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
             result.diagnostics()
         );
     }
-    let result = project
-        .analyzer()
-        .analyze("test.not", "#widgets::badge(1)")
+    let result = notist::Pipeline::default()
+        .analyze("test.not", "#widgets::badge(1)", project.registry())
         .unwrap();
     assert!(
         result
@@ -84,8 +82,12 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
             .any(|d| d.message.contains("unknown"))
     );
     assert!(
-        Notist::default()
-            .analyze("test.not", "#widgets::badge(\"x\")")
+        Pipeline::default()
+            .analyze(
+                "test.not",
+                "#widgets::badge(\"x\")",
+                notist::builtins::registry()
+            )
             .unwrap()
             .diagnostics()
             .iter()
@@ -95,9 +97,12 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
 #[cfg(feature = "serde")]
 #[test]
 fn serialized_extensions_need_no_package_to_restore_category_and_children() {
-    let root = environment()
-        .analyzer()
-        .analyze("test.not", "#widgets::panel()[content]")
+    let root = notist::Pipeline::default()
+        .analyze(
+            "test.not",
+            "#widgets::panel()[content]",
+            environment().registry(),
+        )
         .unwrap()
         .into_parts()
         .0;
@@ -135,7 +140,10 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
     .unwrap();
     let module = root.join("packages/actual/lib.notc");
     std::fs::write(&module, "fn badge() -> InlineContent;").unwrap();
-    let project = Project::for_document(root.join("nested/deep/test.not"), None).unwrap();
+    let project = notist::Vault::open(root)
+        .environment_for("nested/deep/test.not")
+        .cloned()
+        .unwrap();
     assert_eq!(project.config_path(), Some(config.as_path()));
     assert!(project.registry().resolve("alias::badge").is_ok());
     assert!(project.registry().resolve("actual::badge").is_err());
@@ -144,14 +152,23 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
         module.clone(),
         "fn badge(count: Unknown) -> Content;".into(),
     );
-    let errors = Project::load_with_sources(&config, &overlays).unwrap_err();
+    let errors = Environment::load_from(
+        &notist::OverlayResources::new(&notist::FsResources::new(root), &overlays),
+        &config,
+    )
+    .unwrap_err();
     assert_eq!(errors[0].path, module);
     assert!(errors[0].diagnostic.message.contains("unknown"));
     std::fs::write(root.join("nested/Notist.toml"), "").unwrap();
-    let inner = Project::for_document(root.join("nested/deep/test.not"), None).unwrap();
+    let inner = notist::Vault::open(root)
+        .environment_for("nested/deep/test.not")
+        .cloned()
+        .unwrap();
     assert!(inner.packages().is_empty());
     assert!(
-        Project::for_document(root.join("nested/deep/test.not"), Some(&config))
+        notist::Vault::open(root)
+            .with_config(&config)
+            .environment_for("nested/deep/test.not")
             .unwrap()
             .registry()
             .resolve("alias::badge")
@@ -162,11 +179,11 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
         "[dependencies]\nalias = {path = 'packages/actual'}\nmissing = {path = 'missing'}\n",
     )
     .unwrap();
-    let errors = Project::load(&config).unwrap_err();
+    let errors = Environment::load_from(&notist::FsResources::new(root), &config).unwrap_err();
     assert_eq!(errors[0].path, config);
     assert!(!errors[0].diagnostic.span.is_empty());
     assert!(
-        Project::from_packages([Package {
+        Environment::from_packages([Package {
             name: "notist".into(),
             root: root.into(),
             source: "fn x() -> Content;".into()
@@ -177,7 +194,7 @@ fn loader_uses_dependency_keys_nearest_config_and_editor_sources_atomically() {
 
 #[test]
 fn namespaced_identity_is_case_sensitive_and_same_local_names_stay_separate() {
-    let project = Project::from_packages([
+    let project = Environment::from_packages([
         Package {
             name: "one".into(),
             root: "one".into(),
@@ -191,7 +208,9 @@ fn namespaced_identity_is_case_sensitive_and_same_local_names_stay_separate() {
     ])
     .unwrap();
     let source = "#one::A() #one::a() #two::a()";
-    let result = project.analyzer().analyze("test.not", source).unwrap();
+    let result = notist::Pipeline::default()
+        .analyze("test.not", source, project.registry())
+        .unwrap();
     assert!(result.diagnostics().is_empty());
     for identity in ["one::A", "one::a", "two::a"] {
         assert_eq!(
@@ -205,18 +224,20 @@ fn namespaced_identity_is_case_sensitive_and_same_local_names_stay_separate() {
     }
     let item = notist::query::select(result.root(), "function:one::A")[0];
     assert!(notist::dump::dump(item).contains("one::A"));
-    let json: serde_json::Value =
-        serde_json::from_str(&notist::query::render_json(source, &[item])).unwrap();
-    assert_eq!(json[0]["ctor"], "one::A");
+    let json = notist::json::item(item);
+    assert_eq!(json["ctor"], "one::A");
 }
 
 #[cfg(feature = "serde")]
 #[test]
-fn float_serialization_and_query_wire_preserve_every_f64_bit_pattern() {
+fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
     for value in [
         0.0,
         -0.0,
         1.0,
+        f64::MAX,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
         f64::INFINITY,
         f64::NEG_INFINITY,
         f64::from_bits(0x7ff8_0000_0000_0042),
@@ -229,10 +250,9 @@ fn float_serialization_and_query_wire_preserve_every_f64_bit_pattern() {
         };
         assert_eq!(restored.to_bits(), value.to_bits());
         let item = notist::Item::new(Ctor::Text, Default::default()).with_field("float", original);
-        let json: serde_json::Value =
-            serde_json::from_str(&notist::query::render_json("", &[&item])).unwrap();
+        let json = notist::json::item(&item);
         assert_eq!(
-            json[0]["typed_fields"][1][0][1],
+            json["typed_fields"][1][0][1],
             serde_json::json!(["float", format!("{:016x}", value.to_bits())])
         );
     }

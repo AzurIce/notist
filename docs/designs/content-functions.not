@@ -1,6 +1,6 @@
 = Content Function Extensions
 
-一个扩展由两部分组成：lib.notc 中的类型签名，以及实现 HTML 呈现的 Web Component。项目通过 Notist.toml 装配本地依赖，分析与渲染保留内容函数的公开调用结构。声明语法见 [Code Syntax](../grammar/code.not)，整体任务见 [Package / Plugin 设计记录](../_logs/2026-10-04-notc-packages-plugins.md)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
+一个扩展由两部分组成：lib.notc 中的类型签名，以及实现 HTML 呈现的 Web Component。项目通过 Notist.toml 装配本地依赖，分析与渲染保留内容函数的公开调用结构。声明语法见 [Code Syntax](../grammar/code.not)，现有函数规则见 [Builtin](../builtin.not)，分析管线见 [Pipeline](pipeline.not)，已有渲染接口见 [HTML Rendering](../html.not)。
 
 == 两部分的职责
 
@@ -51,7 +51,7 @@ fn foo(arga: String, argb: Int = 1)[children: Content] -> Content;
 
 Resolve 从同一个 Registry 执行名称解析、参数归位、默认值补齐、类型检查和 children 检查。未知函数与已注册的合法扩展需要区分；错误恢复保留原始字段和子内容并产生诊断。
 
-返回内容类别参与现有 reflow，块级扩展可以从候选段落中切出。heading 开启 section 等文档结构算法继续由 core 管线负责，扩展的基本注册不要求提供额外结构算法或求值回调。
+返回内容类别参与现有 reflow，块级扩展可以从候选段落中切出。heading 开启 section 等文档结构算法由 notist-pipeline 负责，扩展的基本注册不要求提供额外结构算法或求值回调。
 
 Registry 校验声明中的重复参数、默认值类型、函数名冲突及结构引用。包注册全部通过后提交，失败不留下部分结果。注册完成后分析使用不可变的环境。
 
@@ -76,11 +76,11 @@ Registry::new 与 Default 创建空注册表；builtins::registry 返回不可�
 
 FunctionDef.bind_fields 共用位置参数归位、必填检查、已知字段类型与值域检查和默认值补齐。可选字段不补值，非法显式值不被默认值覆盖，额外具名字段继续保留。原生定义的位置参数标记保留已有内置行为；.notc 参数均按声明顺序接受位置绑定。
 
-Notist::default().with_registry(registry) 使用显式装配的签名环境，保留默认 .not 与 Markdown 前端。Frontends::analyze_with_registry 与 core::analyze_with_registry 提供相同的底层入口；这些 API 不读取文件。
+Pipeline::default().analyze(path, source, &registry) 使用显式装配的签名环境，保留默认 .not 与 Markdown 前端；这些 API 不读取文件。
 
 ```rust
-let analyzer = notist::Notist::default().with_registry(registry);
-let document = analyzer.analyze("document.not", source)?;
+let pipeline = notist::Pipeline::default();
+let document = pipeline.analyze("document.not", source, &registry)?;
 ```
 
 === 函数身份
@@ -91,7 +91,7 @@ Item::function_id 返回规范 FunctionId。内置 Ctor 保留原有枚举变体
 
 最终 Item 保留 fields、children、attrs、span 与 level；level 为 Block 或 Inline，保存本次分析确定的类别。遍历仍是 children 上的 preorder，不进入组件内部 DOM。公开字段或 children 被手动修改时，调用者同时维护 level；with_field 与 with_children 会更新可推导的类别。
 
-query 支持 function:package::name 的精确身份匹配与 level:block / level:inline；现有 id、tag、ctor selector 保留，扩展 ctor 名称按限定身份精确匹配，内置 ctor 维持原有忽略大小写行为。query JSON 与 debug JSON 提供 function、level、fields、attrs、children；typed_fields 与 typed_attrs 使用协议 v1 的递归 Value 表示，保留精确类型、数字比特和字典顺序，普通 fields / attrs 是便于阅读的 JSON 视图。dump 的扩展名称保留大小写并显示类别。
+query 支持 function:package::name 的精确身份匹配与 level:block / level:inline；现有 id、tag、ctor selector 保留，扩展 ctor 名称按限定身份精确匹配，内置 ctor 维持原有忽略大小写行为。notist::json::item 提供单个 IR 节点的共享 JSON 表示，query JSON 与 debug JSON 复用其字段编码。query 命令另外添加原始源码 text 与结果数组包装；function、level、fields、attrs、children 属于共享数据，typed_fields 与 typed_attrs 使用协议 v1 的递归 Value 表示，保留精确类型、数字比特和字典顺序，普通 fields / attrs 是便于阅读的 JSON 视图。dump 的扩展名称保留大小写并显示类别。
 
 serde 特性序列化 ExtensionCtor 与 Item.level，恢复后不需要 package 文件。旧的内置树省略 level 时由字段和 children 推导；span 延续现有规则不参与 serde。有限 Float 保持现有数字表示；人类可读的非有限 Float 使用 {bits: "十六位十六进制"}，二进制 serializer 保持 f64。直接构造 Item 的下游需新增 level 字段，或使用 Item::new 及 builder。
 
@@ -207,7 +207,7 @@ Package 是带有 lib.notc 的目录。第一阶段只有这一个 Code 模块�
 
 声明分析将唯一入口的 Module AST 转换为 DefinitionModule，再通过共同校验安装到 Registry。依赖或声明失败不进行部分安装。第一版读取声明即可完成加载；复杂 scripting、模块及执行后端在需要时另行设计。
 
-notist-core 提供定义模型、Registry 与文档分析管线，不依赖 parser 或 HTML。分析层连接 syntax 与 core；notist-html 负责组件映射，应用负责取得文件和装配页面。lib 的纯分析入口接收已装配环境，不自动进行文件或网络操作。
+notist-core 提供定义模型、Registry 与共同校验，不依赖 parser 或 HTML。notist-pipeline 连接前端与 core，负责声明转换和正文管线。notist-html 提供组件入口规则与签名绑定；顶层 Vault 驱动资源取得和环境装配。pipeline 与 renderer 接收显式输入，不进行文件或网络操作。
 
 默认分析环境装配 core 签名与 .not、Markdown 前端；默认 HTML 环境装配内置 renderer。调用者可以配置前端、追加签名与组件实现。
 
@@ -222,23 +222,35 @@ notist-core 提供定义模型、Registry 与文档分析管线，不依赖 pars
 
 == Host API 与工具
 
-Project::load(config_path) 读取唯一项目配置及其直接依赖；Project::for_document(path, explicit_config) 使用显式配置或最近的父目录 Notist.toml，不合并多层配置。Project::from_packages 接收 Package 的名称、根路径与源码，纯内存装配，不读取文件。失败返回 Vec<SourceDiagnostic>，每项保存来源路径、源码和 Diagnostic；只有完整成功才返回不可变 Project。
+Vault::new(resources) 接收只读资源视图；Vault::open(root) 使用本地文件系统。environment_for(document) 选择显式配置或文档最近的父目录 Notist.toml，不合并多层配置。不同文档可以选择不同 Environment；registry、packages 和 config_path 在 Environment 中只读访问。
 
-Project::registry、packages、config_path 提供只读访问，Project::analyzer 创建默认前端的配置分析器。Project::load_with_sources 支持编辑器源码覆盖。语义加载不要求组件存在；HTML host 的 html_registry 按声明检查入口约定，缺失实现仅在使用时报告渲染诊断。
+Environment::load_from(resources, config) 读取配置及其直接依赖，Environment::from_packages 接收 Package 的名称、逻辑根路径与声明源码。任一依赖或声明失败均不返回部分正式环境。VaultError::Environment 保留 Vec<SourceDiagnostic> 中的路径、源码与 Diagnostic；资源不存在、访问失败和非法 UTF-8 有独立 ResourceError。
 
-html_host::build_page 将片段和实际使用组件装配到目录：index.html、components.js 与 packages/<编码包名>/components/ 下的文件。目录组件复制整目录，保留辅助模块与资源的相对路径；简单入口只复制该 JS。资源必须是普通文件或目录。registration_script 接收显式发布 URL，生成去重的注册入口；浏览器拒绝已有标签的冲突实现。
+同一 Environment 的 Registry 供正文和 HTML 使用，lib.notc 不在 HTML 侧再次解析。Vault::analyze(document, source) 返回 Analysis；render_html(document, source, options) 同时返回 Analysis 与 RenderResult，分别保存正文诊断和渲染诊断。RenderOptions 默认启用 source map；范围是传入正文的 UTF-8 字节偏移，宿主负责编辑器坐标转换。
+
+HTML 的 component_entries 和 select_component_entry 定义两种候选与冲突规则，Vault 通过 Resources 检查它们。HtmlRegistry::from_bindings(&registry, &bindings) 使用已安装 FunctionDef，原子地校验目标。ModuleLocator::Resource 保存资源路径，ModuleLocator::Url 保存浏览器发布位置；Vault::with_module_urls 将已选中的资源身份映射为 URL。缺少实现仅在调用它时产生渲染诊断；纯语义处理不要求 HTML 装配成功。
+
+Resources 提供 read、kind、entries 和逻辑路径解析。MemoryResources 是拥有输入的内存视图，OverlayResources 让未保存正文、配置和声明覆盖底层资源。examples/prepared_preview.rs 展示完整输入准备、Worker 消息和结果消费，可用 cargo run --example prepared_preview 验证。PreparedInputs 可序列化，包含逻辑根、文件字节、显式配置与模块 URL；into_vault 在 Worker 内装配。宿主异步准备输入后，同步调用正文管线。资源目录与 URL 的相对路径由宿主发布策略决定。
+
+Vault 在当前输入视图中保留已装配 Environment；输入变化后创建新的视图与 Vault。宿主任务需要同时标识正文和环境版本，拒绝过期结果。该接口不提供细粒度增量计算或跨视图缓存。Vault::index 派生 VaultIndex，保存文档索引、诊断、链接与 backlinks。
+
+notist-cli 的 html 命令将已生成片段和实际使用组件装配到目录：index.html、components.js 与 packages/<编码包名>/components/ 下的文件。目录组件复制整目录，保留辅助模块与资源的相对路径；简单入口只复制该 JS。资源必须是普通文件或目录。CLI 按静态目录布局生成发布 URL 与去重的注册入口；浏览器拒绝已有标签的冲突实现。
 
 ```sh
-cargo run -- check docs/packages/README.not
-cargo run -- html docs/packages/README.not --out-dir target/packages-demo
-cargo run -- query docs/packages/README.not function:widgets::panel
-cargo run -- check docs/packages/mermaid/lib.notc
-cargo run -- json docs/packages/mermaid/lib.notc
+cargo run -p notist-cli -- check docs/packages/README.not
+cargo run -p notist-cli -- html docs/packages/README.not --out-dir target/packages-demo
+cargo run -p notist-cli -- query docs/packages/README.not function:widgets::panel
+cargo run -p notist-cli -- check docs/packages/mermaid/lib.notc
+cargo run -p notist-cli -- json docs/packages/mermaid/lib.notc
 ```
 
-所有文档分析命令支持 --config 路径；CST 与模块分析只消费指定源码。LSP 使用同一 Project loader，保留未保存的配置与声明覆盖，重新诊断受影响的打开文档；限定调用可以跳到 lib.notc 声明。模块提供声明符号、hover 与诊断。
+所有文档分析命令支持 --config 路径；CST 与模块分析只消费指定源码。LSP 使用同一 Vault 装配入口，保留未保存的配置与声明覆盖，重新诊断受影响的打开文档；限定调用可以跳到 lib.notc 声明。模块提供声明符号、hover 与诊断。
 
-Web 预览由 config URL 获取配置、声明及约定的组件入口，WASM API 只消费显式源码和 module URL。preview::configuration_json、project_description、analyze_preview 是纯 host 接口；对应浏览器导出为 configuration、describe_project、analyze_project。组件在预览 iframe 中注册与显示，.notc 编辑使用独立模块分析入口。
+notist-cli 是独立的命令行 crate，依赖顶层 notist，生成名为 notist 的可执行文件。命令行解析、终端诊断、静态页面发布、query 输出包装和 LSP 服务适配位于该 crate；tokio 与 tower-lsp 也只由 CLI 的 lsp feature 引入。顶层库提供 Vault、查询选择与共享 IR JSON，不包含语言服务或终端依赖。notist-cli 默认启用 lsp 子命令，使用 --no-default-features 可仅构建其他命令。
+
+Web 预览由 config URL 取得配置和声明，并检查 describe_project 返回的 HTML 候选入口。PreviewPackage 记录声明、已选入口与发布 URL，preview::prepare 装配内存 Vault。render_preview / WASM render_project 返回普通预览结果，analyze_preview / analyze_project 按需附带调试阶段；二者均只处理一次正文。render_prepared 接受序列化 PreparedInputs，供宿主准备输入后的 Worker 使用。JSON 结果包含 diagnostics、html、source_map、used_components；diagnostics 的 origin 区分 analysis、render 与 environment，path 保留来源，组件记录区分 module URL 与 resource 路径。声明错误携带其来源路径。
+
+可分发的浏览器 runtime 位于 crates/notist-html/runtime，提供参数解码与 registerComponents；包入口为 @notist/html-runtime。web/component-protocol.js 只重导出该实现。组件在预览 iframe 中 import、注册与显示，.notc 编辑使用独立模块分析入口。Rust 不解析或执行组件 JS。
 
 == 示例与验证
 

@@ -1,6 +1,6 @@
 #[test]
 fn pipeline_dispatch_by_extension() {
-    let pipeline = notist::frontend::Frontends::default();
+    let pipeline = notist::Frontends::default();
     let (item, diags) = pipeline
         .analyze(std::path::Path::new("x.md"), "# 标题\n")
         .expect("md frontend");
@@ -23,15 +23,17 @@ fn pipeline_dispatch_by_extension() {
 
 #[test]
 fn default_pipeline_produces_renderable_ir_for_both_formats() {
-    use notist::{Ctor, Notist, Value};
+    use notist::{Ctor, Pipeline, Value};
 
-    let notist = Notist::default();
+    let notist = Pipeline::default();
     for (path, src) in [
         ("document.not", "= 标题\n\n正文 *强调*\n"),
         ("document.md", "# 标题\n\n正文 **强调**\n"),
         ("document.markdown", "# 标题\n\n正文 **强调**\n"),
     ] {
-        let document = notist.analyze(path, src).unwrap();
+        let document = notist
+            .analyze(path, src, notist::builtins::registry())
+            .unwrap();
         assert!(document.diagnostics().is_empty(), "{path}");
         assert_eq!(document.root().ctor, Ctor::Doc);
         let section = &document.root().children[0];
@@ -50,14 +52,28 @@ fn default_pipeline_produces_renderable_ir_for_both_formats() {
 
 #[test]
 fn pipeline_can_install_only_selected_frontends() {
-    use notist::{Frontend, Notist};
+    use notist::{Frontend, Pipeline};
 
-    assert!(Notist::new().analyze("document.not", "正文").is_err());
-    let notist = Notist::new().with_frontend(Frontend::notist());
-    assert!(notist.analyze("document.not", "正文").is_ok());
-    let error = notist.analyze("document.md", "正文").unwrap_err();
+    assert!(
+        Pipeline::new()
+            .analyze("document.not", "正文", notist::builtins::registry())
+            .is_err()
+    );
+    let notist = Pipeline::new().with_frontend(Frontend::notist());
+    assert!(
+        notist
+            .analyze("document.not", "正文", notist::builtins::registry())
+            .is_ok()
+    );
+    let error = notist
+        .analyze("document.md", "正文", notist::builtins::registry())
+        .unwrap_err();
     assert_eq!(error.path, std::path::Path::new("document.md"));
-    assert!(notist.analyze("untitled", "正文").is_err());
+    assert!(
+        notist
+            .analyze("untitled", "正文", notist::builtins::registry())
+            .is_err()
+    );
 }
 
 fn lower_plain_text(
@@ -75,14 +91,16 @@ fn lower_plain_text(
 
 #[test]
 fn custom_frontend_extends_defaults_and_can_override_an_extension() {
-    use notist::{Ctor, Frontend, Notist, Value};
+    use notist::{Ctor, Frontend, Pipeline, Value};
 
-    let notist = Notist::default().with_frontend(Frontend {
+    let notist = Pipeline::default().with_frontend(Frontend {
         extensions: &["txt", "md"],
         lower: lower_plain_text,
     });
     for path in ["document.txt", "document.md"] {
-        let document = notist.analyze(path, "# literal").unwrap();
+        let document = notist
+            .analyze(path, "# literal", notist::builtins::registry())
+            .unwrap();
         assert!(document.diagnostics().is_empty());
         assert_eq!(document.root().children[0].ctor, Ctor::Paragraph);
         assert_eq!(
@@ -94,7 +112,9 @@ fn custom_frontend_extends_defaults_and_can_override_an_extension() {
         ("document.not", "= Heading"),
         ("document.markdown", "# Heading"),
     ] {
-        let document = notist.analyze(path, src).unwrap();
+        let document = notist
+            .analyze(path, src, notist::builtins::registry())
+            .unwrap();
         assert!(
             document
                 .root()
@@ -106,10 +126,10 @@ fn custom_frontend_extends_defaults_and_can_override_an_extension() {
 
 #[test]
 fn source_errors_return_diagnostics_and_a_recovery_tree() {
-    use notist::{Ctor, Notist, Phase};
+    use notist::{Ctor, Phase, Pipeline};
 
-    let document = Notist::default()
-        .analyze("document.not", "#missing[x]")
+    let document = Pipeline::default()
+        .analyze("document.not", "#missing[x]", notist::builtins::registry())
         .unwrap();
     assert_eq!(document.diagnostics().len(), 1);
     assert_eq!(document.diagnostics()[0].phase, Phase::Type);

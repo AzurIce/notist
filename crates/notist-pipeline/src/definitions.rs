@@ -16,7 +16,7 @@ use crate::literals::syntax_value;
 /// partially installable module. Use `syntax::parse_module` for recovery ASTs.
 ///
 /// ```
-/// use notist::{analyze_module, builtins};
+/// use notist_pipeline::{analyze_module, builtins};
 ///
 /// let module = analyze_module("widgets", "fn badge(label: String) -> InlineContent;").unwrap();
 /// let mut registry = builtins::registry().clone();

@@ -1,7 +1,13 @@
 fn analyze(src: &str) -> (notist_core::item::Item, Vec<notist_core::diag::Diagnostic>) {
     let (forest, attrs, mut diags) = notist_md::lower(src);
     let span = rowan::TextRange::new(0.into(), (src.len() as u32).into());
-    let item = notist_core::analyze(forest, span, attrs, &mut diags);
+    let item = notist_pipeline::process(
+        forest,
+        span,
+        attrs,
+        notist_core::builtins::registry(),
+        &mut diags,
+    );
     (item, diags)
 }
 

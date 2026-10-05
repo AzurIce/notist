@@ -1,12 +1,16 @@
-use notist::{Ctor, Item, Notist, TextRange, Value};
+use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(extension: &str, src: &str) -> Item {
     if extension == "not" {
-        let parse = notist::syntax::parser::parse(src);
+        let parse = notist::syntax::parser::parse_document(src);
         assert_eq!(parse.syntax().to_string(), src, "lossless CST: {src:?}");
     }
-    let document = Notist::default()
-        .analyze(format!("test.{extension}"), src)
+    let document = Pipeline::default()
+        .analyze(
+            format!("test.{extension}"),
+            src,
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(
         document.diagnostics().is_empty(),
@@ -239,7 +243,9 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
         ),
         ("#table[#row(header: 1)[#cell[x]]]", "must be boolean"),
     ] {
-        let document = Notist::default().analyze("test.not", src).unwrap();
+        let document = Pipeline::default()
+            .analyze("test.not", src, notist::builtins::registry())
+            .unwrap();
         assert!(
             document
                 .diagnostics()
@@ -249,8 +255,12 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
             document.diagnostics()
         );
     }
-    let document = Notist::default()
-        .analyze("test.not", "#link(target: 42)[label]")
+    let document = Pipeline::default()
+        .analyze(
+            "test.not",
+            "#link(target: 42)[label]",
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert_eq!(
         document

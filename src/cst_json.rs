@@ -1,11 +1,10 @@
 use rowan::NodeOrToken;
 
 use notist_core::expr::{BodyFlavor, Expr};
+use notist_syntax::ast;
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
-use notist_syntax::{ast, parser};
 
 use crate::item::Item;
-use crate::{desugar, materialize};
 
 pub fn analyze_json(src: &str) -> String {
     analyze_json_with_registry(src, crate::builtins::registry())
@@ -53,7 +52,7 @@ pub fn analyze_module_json(package: &str, src: &str) -> String {
                     ));
                     if let crate::ParameterMode::Default(value) = &parameter.mode {
                         out.push_str(",\"default\":");
-                        crate::query::write_value(&mut out, value);
+                        crate::json::write_value(&mut out, value);
                         out.push_str(",\"typed_default\":");
                         out.push_str(&notist_html::components::value_json(value).to_string());
                     }
@@ -132,23 +131,40 @@ pub fn analyze_document_json(
     src: &str,
     registry: &crate::Registry,
 ) -> String {
-    if path.extension().is_some_and(|ext| ext == "not") {
-        return analyze_json_with_registry(src, registry);
-    }
-    match crate::Notist::default()
-        .with_registry(registry.clone())
-        .analyze(path, src)
-    {
-        Ok(analysis) => {
-            let mut out = String::from("{\"core\":");
-            write_item(&mut out, analysis.root());
-            out.push_str(",\"diagnostics\":");
-            write_diagnostics(&mut out, analysis.diagnostics());
-            out.push('}');
-            out
-        }
+    match crate::Pipeline::default().inspect(path, src, registry) {
+        Ok((analysis, inspection)) => inspection_json(&analysis, Some(&inspection)),
         Err(error) => format!("{{\"error\":{}}}", escape(&error.to_string())),
     }
+}
+
+/// Serialize already computed results; never reruns source processing.
+pub fn inspection_json(
+    analysis: &crate::Analysis,
+    inspection: Option<&notist_pipeline::Inspection>,
+) -> String {
+    let mut out = String::from("{");
+    if let Some(inspection) = inspection {
+        if let Some(syntax) = &inspection.syntax {
+            out.push_str("\"tree\":");
+            write_element(&mut out, NodeOrToken::Node(syntax.clone()));
+            if let Some(document) = ast::Document::cast(syntax.clone()) {
+                out.push_str(",\"ast\":");
+                write_ast(&mut out, &document);
+            }
+            out.push(',');
+        }
+        out.push_str("\"ir1\":");
+        write_forest(&mut out, analysis.root().span, &inspection.lowered);
+        out.push_str(",\"ir2\":");
+        write_forest(&mut out, analysis.root().span, &inspection.shaped);
+        out.push(',');
+    }
+    out.push_str("\"core\":");
+    write_item(&mut out, analysis.root());
+    out.push_str(",\"diagnostics\":");
+    write_diagnostics(&mut out, analysis.diagnostics());
+    out.push('}');
+    out
 }
 
 fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
@@ -169,46 +185,7 @@ fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
 }
 
 pub fn analyze_json_with_registry(src: &str, registry: &crate::Registry) -> String {
-    let parse = parser::parse_document(src);
-    let mut out = String::from("{\"tree\":");
-    write_element(&mut out, NodeOrToken::Node(parse.syntax()));
-    let mut diagnostics: Vec<crate::diag::Diagnostic> = parse
-        .diagnostics
-        .iter()
-        .map(|d| {
-            crate::diag::Diagnostic::new(crate::diag::Phase::Syntax, d.span, d.message.clone())
-        })
-        .collect();
-    if let Some(document) = ast::Document::cast(parse.syntax()) {
-        out.push_str(",\"ast\":");
-        write_ast(&mut out, &document);
-        let (exprs, meta) = desugar::desugar(&document, &mut diagnostics);
-        let range = document.range();
-        out.push_str(",\"ir1\":");
-        write_forest(&mut out, range, &exprs);
-        let exprs = crate::resolve::resolve_with_registry(exprs, registry, &mut diagnostics);
-        let exprs = crate::shape::shape(exprs);
-        out.push_str(",\"ir2\":");
-        write_forest(&mut out, range, &exprs);
-        out.push_str(",\"core\":");
-        let item = materialize::materialize_doc(&exprs, range, meta);
-        write_item(&mut out, &item);
-    }
-    out.push_str(",\"diagnostics\":[");
-    for (i, d) in diagnostics.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!(
-            "{{\"start\":{},\"end\":{},\"phase\":\"{}\",\"message\":{}}}",
-            u32::from(d.span.start()),
-            u32::from(d.span.end()),
-            d.phase,
-            escape(&d.message),
-        ));
-    }
-    out.push_str("]}");
-    out
+    analyze_document_json(std::path::Path::new("document.not"), src, registry)
 }
 
 fn write_element(out: &mut String, element: NodeOrToken<SyntaxNode, SyntaxToken>) {
@@ -546,9 +523,9 @@ fn write_item(out: &mut String, item: &Item) {
     ));
     out.push(',');
     // Keep the debug tree's typed children, while exposing all semantic fields.
-    crate::query::write_metadata(out, item);
+    crate::json::write_metadata(out, item);
     out.push_str(",\"attrs\":");
-    crate::query::write_value(out, &crate::Value::Dict(item.attrs.clone()));
+    crate::json::write_value(out, &crate::Value::Dict(item.attrs.clone()));
     let mut label = String::new();
     for (key, value) in item.fields.iter() {
         label.push_str(&format!(" :{key} {value}"));

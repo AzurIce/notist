@@ -1,15 +1,17 @@
 use notist::builtins::{Accepts, Level};
-use notist::{Ctor, Item, Notist, TextRange, Value};
+use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(src: &str) -> Item {
-    let parse = notist::syntax::parser::parse(src);
+    let parse = notist::syntax::parser::parse_document(src);
     assert!(
         parse.diagnostics.is_empty(),
         "{src:?}: {:?}",
         parse.diagnostics
     );
     assert_eq!(parse.syntax().to_string(), src, "CST must stay lossless");
-    let document = Notist::default().analyze("test.not", src).unwrap();
+    let document = Pipeline::default()
+        .analyze("test.not", src, notist::builtins::registry())
+        .unwrap();
     assert!(
         document.diagnostics().is_empty(),
         "{src:?}: {:?}",
@@ -171,7 +173,9 @@ fn new_functions_report_invalid_children_mounts() {
         ("#divider[x]", "`divider` takes no children"),
         ("#strike[ padded ]", "`strike` takes inline content"),
     ] {
-        let document = Notist::default().analyze("test.not", src).unwrap();
+        let document = Pipeline::default()
+            .analyze("test.not", src, notist::builtins::registry())
+            .unwrap();
         assert!(
             document
                 .diagnostics()
@@ -190,11 +194,21 @@ fn without_spans(mut item: Item) -> Item {
 
 #[test]
 fn markdown_and_notist_produce_the_same_callout_strike_and_divider_ir() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     let not = engine
-        .analyze("test.not", "#callout(kind: \"quote\")[~删除~]\n\n---\n")
+        .analyze(
+            "test.not",
+            "#callout(kind: \"quote\")[~删除~]\n\n---\n",
+            notist::builtins::registry(),
+        )
         .unwrap();
-    let md = engine.analyze("test.md", "> ~~删除~~\n\n---\n").unwrap();
+    let md = engine
+        .analyze(
+            "test.md",
+            "> ~~删除~~\n\n---\n",
+            notist::builtins::registry(),
+        )
+        .unwrap();
     assert!(not.diagnostics().is_empty());
     assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
     assert_eq!(
@@ -206,7 +220,9 @@ fn markdown_and_notist_produce_the_same_callout_strike_and_divider_ir() {
 #[test]
 fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
     let src = "alpha <em>beta</em> gamma\n\n<div>\nskipped\n</div>\n\nomega\n\n`<span>`\n";
-    let doc = Notist::default().analyze("test.md", src).unwrap();
+    let doc = Pipeline::default()
+        .analyze("test.md", src, notist::builtins::registry())
+        .unwrap();
     assert!(doc.diagnostics().is_empty(), "{:?}", doc.diagnostics());
     assert_eq!(text_of(doc.root()), "alpha beta gammaomega");
     assert!(
@@ -220,8 +236,12 @@ fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
         .unwrap();
     assert_eq!(raw.fields.get("text"), Some(&Value::Str("<span>".into())));
 
-    let doc = Notist::default()
-        .analyze("test.md", "<div>\nskipped\n</div>\n")
+    let doc = Pipeline::default()
+        .analyze(
+            "test.md",
+            "<div>\nskipped\n</div>\n",
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(doc.diagnostics().is_empty());
     assert!(doc.root().children.is_empty());
@@ -229,15 +249,19 @@ fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
 
 #[test]
 fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for src in [
         "前 $x^2 + y_1$ 后",
         "$*bold* [link](x) ~strike~ <tag> \\alpha$",
         "$甲\n乙$",
         "$x\\$y$",
     ] {
-        let not = engine.analyze("test.not", src).unwrap();
-        let md = engine.analyze("test.md", src).unwrap();
+        let not = engine
+            .analyze("test.not", src, notist::builtins::registry())
+            .unwrap();
+        let md = engine
+            .analyze("test.md", src, notist::builtins::registry())
+            .unwrap();
         assert!(not.diagnostics().is_empty(), "{src:?}");
         assert!(md.diagnostics().is_empty(), "{src:?}");
         assert_eq!(
@@ -248,7 +272,9 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
     }
 
     let src = "前 $x$ 后";
-    let md = engine.analyze("test.md", src).unwrap();
+    let md = engine
+        .analyze("test.md", src, notist::builtins::registry())
+        .unwrap();
     let math = md.root().find(|node| node.ctor == Ctor::Math).unwrap();
     assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
     assert_eq!(
@@ -258,7 +284,11 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
     assert!(math.children.is_empty());
 
     let md = engine
-        .analyze("test.md", "**粗 $x$** [链接 $y$](target)\n\n> $z$\n\n- $w$")
+        .analyze(
+            "test.md",
+            "**粗 $x$** [链接 $y$](target)\n\n> $z$\n\n- $w$",
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(md.diagnostics().is_empty());
     assert_eq!(
@@ -272,7 +302,7 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
 
 #[test]
 fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for src in [
         "\\$literal\\$",
         "`$code$`",
@@ -285,7 +315,9 @@ fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
         "$first\n---\nsecond$",
         "[label](https://example.com/$target$)",
     ] {
-        let md = engine.analyze("test.md", src).unwrap();
+        let md = engine
+            .analyze("test.md", src, notist::builtins::registry())
+            .unwrap();
         assert!(md.diagnostics().is_empty(), "{src:?}");
         assert!(
             md.root().find(|n| n.ctor == Ctor::Math).is_none(),
@@ -296,7 +328,7 @@ fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
 
 #[test]
 fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for (not_src, md_src) in [
         ("甲\n乙", "甲\n乙"),
         ("alpha \n beta", "alpha \n beta"),
@@ -313,8 +345,12 @@ fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
         ("$甲$ $乙$", "$甲$ $乙$"),
         ("*甲\n乙*", "**甲\n乙**"),
     ] {
-        let not = engine.analyze("test.not", not_src).unwrap();
-        let md = engine.analyze("test.md", md_src).unwrap();
+        let not = engine
+            .analyze("test.not", not_src, notist::builtins::registry())
+            .unwrap();
+        let md = engine
+            .analyze("test.md", md_src, notist::builtins::registry())
+            .unwrap();
         assert!(not.diagnostics().is_empty());
         assert!(md.diagnostics().is_empty());
         assert_eq!(
@@ -323,18 +359,26 @@ fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
             "{not_src:?} / {md_src:?}"
         );
     }
-    let md = engine.analyze("test.md", "甲\\\n乙\n\n丙").unwrap();
+    let md = engine
+        .analyze("test.md", "甲\\\n乙\n\n丙", notist::builtins::registry())
+        .unwrap();
     assert_eq!(text_of(md.root()), "甲乙丙");
     assert_eq!(md.root().children.len(), 3);
 
-    let md = engine.analyze("test.md", "```\n甲\n乙\n```\n").unwrap();
+    let md = engine
+        .analyze(
+            "test.md",
+            "```\n甲\n乙\n```\n",
+            notist::builtins::registry(),
+        )
+        .unwrap();
     let raw = md.root().find(|n| n.ctor == Ctor::RawInline).unwrap();
     assert_eq!(raw.fields.get("text"), Some(&Value::Str("甲\n乙\n".into())));
 }
 
 #[test]
 fn notist_embed_sugar_matches_function_and_markdown() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for target in [
         "picture.png",
         "clip.mp4",
@@ -347,7 +391,11 @@ fn notist_embed_sugar_matches_function_and_markdown() {
             "#embed(target: \"{target}\", description: \"资源\", title: \"说明\")"
         ));
         let md = engine
-            .analyze("test.md", &format!("![资源]({target} \"说明\")"))
+            .analyze(
+                "test.md",
+                &format!("![资源]({target} \"说明\")"),
+                notist::builtins::registry(),
+            )
             .unwrap();
         assert_eq!(without_spans(sugar.clone()), without_spans(function));
         assert_eq!(without_spans(sugar), without_spans(md.into_parts().0));
@@ -437,13 +485,17 @@ fn malformed_or_escaped_embeds_remain_literal_and_lossless() {
 
 #[test]
 fn explicit_breaks_preserve_containers_and_opaque_payloads() {
-    let engine = Notist::default();
-    let md = engine.analyze("test.md", "> 甲\\\n> 乙\n").unwrap();
+    let engine = Pipeline::default();
+    let md = engine
+        .analyze("test.md", "> 甲\\\n> 乙\n", notist::builtins::registry())
+        .unwrap();
     let quote = md.root().find(|node| node.ctor == Ctor::Callout).unwrap();
     assert_eq!(quote.children.len(), 2);
     assert_eq!(text_of(&quote.children[0]), "甲");
     assert_eq!(text_of(&quote.children[1]), "乙");
-    let md = engine.analyze("test.md", "- 甲\\\n  乙\n").unwrap();
+    let md = engine
+        .analyze("test.md", "- 甲\\\n  乙\n", notist::builtins::registry())
+        .unwrap();
     assert_eq!(
         md.root()
             .find(|node| node.ctor == Ctor::ListItem)
@@ -458,11 +510,19 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
         "`甲\\\n乙`",
         "甲\\\\\n乙",
     ] {
-        let md = engine.analyze("test.md", src).unwrap();
+        let md = engine
+            .analyze("test.md", src, notist::builtins::registry())
+            .unwrap();
         assert_eq!(md.root().children.len(), 1, "{src:?}");
     }
     for (extension, src) in [("not", "*甲\\\n乙*"), ("md", "**甲\\\n乙**")] {
-        let root = engine.analyze(&format!("test.{extension}"), src).unwrap();
+        let root = engine
+            .analyze(
+                &format!("test.{extension}"),
+                src,
+                notist::builtins::registry(),
+            )
+            .unwrap();
         assert_eq!(root.root().children.len(), 2);
         assert!(root.root().find(|node| node.ctor == Ctor::Strong).is_none());
     }
@@ -470,7 +530,7 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
 
 #[test]
 fn embed_function_and_markdown_share_fields_for_every_resource_type() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for target in [
         "assets/image.png",
         "assets/movie.mp4",
@@ -484,7 +544,9 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
             format!("#embed(target: \"{target}\", description: \"资源\", title: \"说明\")");
         let md_src = format!("![资源]({target} \"说明\")");
         let not = analyze(&not_src);
-        let md = engine.analyze("test.md", &md_src).unwrap();
+        let md = engine
+            .analyze("test.md", &md_src, notist::builtins::registry())
+            .unwrap();
         assert!(
             md.diagnostics().is_empty(),
             "{target}: {:?}",
@@ -516,12 +578,11 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
 
 #[test]
 fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     let md = engine
         .analyze(
             "test.md",
-            "![前 **粗** _斜_ `code` [链接](somewhere) $x$ 后](asset)\n\n![引用][resource]\n\n[resource]: clip.mp4 \"说明\"\n\n![](empty)\n",
-        )
+            "![前 **粗** _斜_ `code` [链接](somewhere) $x$ 后](asset)\n\n![引用][resource]\n\n[resource]: clip.mp4 \"说明\"\n\n![](empty)\n", notist::builtins::registry())
         .unwrap();
     assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
     let embeds: Vec<_> = md
@@ -554,7 +615,11 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
     assert!(embeds.iter().all(|e| e.children.is_empty()));
 
     let md = engine
-        .analyze("test.md", "[![描述](asset)](destination)")
+        .analyze(
+            "test.md",
+            "[![描述](asset)](destination)",
+            notist::builtins::registry(),
+        )
         .unwrap();
     assert!(md.diagnostics().is_empty());
     let link = md.root().find(|n| n.ctor == Ctor::Link).unwrap();
@@ -574,7 +639,7 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
     assert_eq!(notist::query::select(&root, "ctor:embed").len(), 1);
     assert_eq!(text_of(&root), "前  后");
 
-    let engine = Notist::default();
+    let engine = Pipeline::default();
     for (src, message) in [
         ("#embed(\"asset\")[内容]", "`embed` takes no children"),
         (
@@ -582,7 +647,9 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
             "too many positional arguments for `embed`",
         ),
     ] {
-        let doc = engine.analyze("test.not", src).unwrap();
+        let doc = engine
+            .analyze("test.not", src, notist::builtins::registry())
+            .unwrap();
         assert!(
             doc.diagnostics()
                 .iter()
@@ -594,8 +661,8 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
 
 #[test]
 fn markdown_embed_decodes_fields_once_and_keeps_code_payload_literal() {
-    let doc = Notist::default()
-        .analyze("test.md", r#"![A &amp; B &#20013; \*literal\* \&amp; &#38;amp; `&amp;` $\alpha$](asset\(1\)?a=1&amp;b=2 "A &quot;title&quot;")"#)
+    let doc = Pipeline::default()
+        .analyze("test.md", r#"![A &amp; B &#20013; \*literal\* \&amp; &#38;amp; `&amp;` $\alpha$](asset\(1\)?a=1&amp;b=2 "A &quot;title&quot;")"#, notist::builtins::registry())
         .unwrap();
     assert!(doc.diagnostics().is_empty());
     let embed = doc.root().find(|n| n.ctor == Ctor::Embed).unwrap();

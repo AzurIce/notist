@@ -4,6 +4,20 @@
 
 源码规则见 [Syntax](../grammar/README.not)，值域与字面量见 [Types](../types.not)，具体构造器契约和降糖见 [Builtin](../builtin.not)。本文定义各阶段的实现职责。
 
+== Crate 与宿主边界
+
+notist-core 定义 Expr、Item、Value、函数签名、Registry、诊断和内容索引；共同声明校验属于这些模型。notist-syntax 提供无损 CST 与 AST 视图；notist-md 只将 Markdown 转成 Expr。
+
+notist-pipeline 依赖 core、syntax 和 md，组织源码到 Item 的转换，并通过 analyze_module 将 .notc 转成 core 的 DefinitionModule。Pipeline::analyze(path, source, registry) 接收显式输入；path 仅用于选择前端，不读文件。Pipeline::inspect 在同一次处理过程中收集调试 CST 和中间 IR；普通 analyze 不生成这份调试结果。
+
+顶层 notist::Vault 通过 Resources 取得配置、声明和组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 pipeline 与 HTML。一个 Vault 可以包含多个配置环境。notist-html 只依赖 core，不反向依赖 pipeline 或 Vault。
+
+Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、Analysis 和完整 RenderResult。正文只处理一次。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
+
+notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。
+
+== 转换阶段
+
 *Lex*
 
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存

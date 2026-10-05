@@ -13,6 +13,7 @@ const corpusEl = document.querySelector("#corpus");
 
 let projectConfig = "";
 let projectPackages = {};
+let projectLoadGeneration = 0;
 const pathEl = document.querySelector("#path");
 const configEl = document.querySelector("#config-url");
 const previewEl = document.querySelector("#preview");
@@ -257,6 +258,9 @@ async function fetchText(url) {
   return response.text();
 }
 async function loadProject() {
+  const generation = ++projectLoadGeneration;
+  const sourcePath = pathEl.value.trim();
+  const originalSource = srcEl.value;
   try {
     if (!configEl.value.trim()) { projectConfig = ""; projectPackages = {}; render(); return; }
     const configURL = new URL(configEl.value, location.href);
@@ -268,28 +272,43 @@ async function loadProject() {
     for (const dependency of manifest.dependencies) {
       const root = new URL(dependency.path.replace(/\/?$/, "/"), configURL);
       roots.set(dependency.name, root);
-      packages[dependency.name] = { source: await fetchText(new URL("lib.notc", root)), components: {} };
+      packages[dependency.name] = { source: await fetchText(new URL("lib.notc", root)), components: {}, entries: {} };
     }
     const description = JSON.parse(describe_project(config, JSON.stringify(packages)));
     if (!description.functions) throw new Error(description.error ?? description.diagnostics.map(d => `${d.path}: ${d.message}`).join("\n"));
     for (const fn of description.functions) {
       const root = roots.get(fn.package);
-      const entries = [new URL(`components/${encodeURIComponent(fn.name)}.js`, root), new URL(`components/${encodeURIComponent(fn.name)}/index.js`, root)];
-      const available = await Promise.all(entries.map(async url => (await fetch(url, { method: "HEAD" })).ok));
+      const entries = fn.entries.map(path => new URL(path.split("/").map(encodeURIComponent).join("/"), root));
+      const available = await Promise.all(entries.map(async url => {
+        const response = await fetch(url, { method: "HEAD" });
+        if (response.status === 404) return false;
+        if (!response.ok) throw new Error(`${response.status}: ${url}`);
+        return true;
+      }));
       if (available.every(Boolean)) throw new Error(`Conflicting component entries: ${fn.package}::${fn.name}`);
       const entry = entries.find((_, index) => available[index]);
-      if (entry) packages[fn.package].components[fn.name] = entry.href;
+      if (entry) {
+        packages[fn.package].components[fn.name] = entry.href;
+        packages[fn.package].entries[fn.name] = fn.entries[entries.indexOf(entry)];
+      }
     }
-    // Commit only the complete environment; failed loads retain the previous project.
-    projectConfig = config;
-    projectPackages = packages;
-    const sourcePath = pathEl.value.trim();
+    if (generation !== projectLoadGeneration) return;
+    let loadedSource;
     if (sourcePath) {
       const response = await fetch(new URL(sourcePath, configURL));
-      if (response.ok) { srcEl.value = await response.text(); pathEl.value = sourcePath; }
+      if (response.ok) loadedSource = await response.text();
+    }
+    if (generation !== projectLoadGeneration) return;
+    // Publish one complete environment; preserve edits made during loading.
+    projectConfig = config;
+    projectPackages = packages;
+    if (loadedSource !== undefined && pathEl.value.trim() === sourcePath && srcEl.value === originalSource) {
+      srcEl.value = loadedSource;
+      pathEl.value = sourcePath;
     }
     render();
   } catch (error) {
+    if (generation !== projectLoadGeneration) return;
     renderDiags([{ phase: "project", start: 0, end: 0, message: error.message }]);
   }
 }

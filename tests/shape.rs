@@ -1,7 +1,14 @@
 #[test]
 fn reflow_splits_paragraphs_around_block_calls() {
     // 未知构造器诊断 + 恢复：block flavor 把段落切成兄弟
-    let (item, diags) = notist::analyze("文字\n#note[\n块 body\n]\n后续\n");
+    let (item, diags) = notist::Pipeline::default()
+        .analyze(
+            "test.not",
+            "文字\n#note[\n块 body\n]\n后续\n",
+            notist::builtins::registry(),
+        )
+        .unwrap()
+        .into_parts();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].message.contains("unknown constructor"));
     let dump = notist::dump::dump(&item);
@@ -28,7 +35,14 @@ fn reflow_splits_paragraphs_around_block_calls() {
 #[test]
 fn reflow_keeps_inline_calls_inside_paragraph() {
     // inline flavor 的调用不切
-    let (item, diags) = notist::analyze("文字 #note[x] 后续\n");
+    let (item, diags) = notist::Pipeline::default()
+        .analyze(
+            "test.not",
+            "文字 #note[x] 后续\n",
+            notist::builtins::registry(),
+        )
+        .unwrap()
+        .into_parts();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].message.contains("unknown constructor"));
     let dump = notist::dump::dump(&item);
@@ -37,7 +51,10 @@ fn reflow_keeps_inline_calls_inside_paragraph() {
 #[test]
 fn shape_groups_sections_by_heading_level() {
     let src = "序言\n\n= 一\n\n内容\n\n== 一点一\n\n细节\n\n= 二\n";
-    let (item, diags) = notist::analyze(src);
+    let (item, diags) = notist::Pipeline::default()
+        .analyze("test.not", src, notist::builtins::registry())
+        .unwrap()
+        .into_parts();
     assert!(diags.is_empty());
     let out = notist::dump::dump(&item);
     assert_eq!(
@@ -77,7 +94,10 @@ fn shape_groups_sections_by_heading_level() {
 fn shape_recurses_into_block_mounts() {
     // block body 内的段落候选同样切分、各自成节
     let src = "#note[\n前 #item[x] 后\n\n= 节\n]\n";
-    let (item, diags) = notist::analyze(src);
+    let (item, diags) = notist::Pipeline::default()
+        .analyze("test.not", src, notist::builtins::registry())
+        .unwrap()
+        .into_parts();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].message.contains("unknown constructor"));
     let out = notist::dump::dump(&item);
@@ -112,7 +132,10 @@ fn shape_recurses_into_block_mounts() {
 fn shape_transfers_heading_attrs_to_section() {
     // heading 的注解转移到其开启的 section 上（一个 heading 恰开启一个 section）
     let src = "@(id: \"intro\", tags: (\"a\",))\n= 一\n\n内容\n";
-    let (item, diags) = notist::analyze(src);
+    let (item, diags) = notist::Pipeline::default()
+        .analyze("test.not", src, notist::builtins::registry())
+        .unwrap()
+        .into_parts();
     assert!(diags.is_empty());
     let out = notist::dump::dump(&item);
     assert_eq!(

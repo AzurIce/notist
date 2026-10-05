@@ -1,23 +1,23 @@
 //! Configurable source frontends producing the shared Notist document IR.
 //!
 //! ```
-//! use notist::{Ctor, Notist};
+//! use notist::{MemoryResources, RenderOptions, Vault};
 //!
-//! let notist = Notist::default(); // .not, .md, and .markdown
-//! let document = notist.analyze("example.md", "# Title\n")?;
-//! assert!(document.diagnostics().is_empty());
-//! assert!(document.root().descendants().any(|node| node.ctor == Ctor::Heading));
-//! # Ok::<(), notist::UnsupportedFormat>(())
+//! let mut vault = Vault::new(MemoryResources::new("/notes"));
+//! let output = vault.render_html("example.md", "# Title\n", RenderOptions::default())?;
+//! assert!(output.analysis.diagnostics().is_empty());
+//! assert!(!output.rendered.source_map.is_empty());
+//! # Ok::<(), notist::VaultError>(())
 //! ```
 //!
-//! Renderers consume [`Item`], the same type exported by `notist-core`, so
-//! output crates can depend on `notist-core` without depending on frontends.
+//! [`Pipeline`] accepts explicit source and Registry inputs. [`Vault`] combines
+//! resource access, declaration environments and rendering; [`PreparedInputs`]
+//! transports host inputs to a Worker. Output crates consume core [`Item`].
+//! The `notist-cli` crate provides the executable, static-page publication and
+//! language-server host. This library has no terminal or LSP dependencies.
 
 pub use rowan::{TextRange, TextSize};
 
-pub use analysis::{Analysis, Notist, UnsupportedFormat};
-pub use definitions::analyze_module;
-pub use frontend::{Frontend, Frontends};
 pub use notist_core::definitions::{
     DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule,
     ValueConstraint, ValueType,
@@ -25,50 +25,25 @@ pub use notist_core::definitions::{
 pub use notist_core::diag::{Diagnostic, Phase};
 pub use notist_core::item::{Ctor, Dict, Item, Value};
 pub use notist_core::registry::Registry;
-pub use notist_core::{
-    builtins, diag, dump, expr, index, item, materialize, registry, resolve, shape,
+pub use notist_core::{builtins, diag, dump, expr, index, item, registry};
+pub use notist_pipeline::{
+    Analysis, Frontend, Frontends, Pipeline, UnsupportedFormat, analyze_module,
 };
 pub use notist_syntax as syntax;
 
-pub mod analysis;
 pub mod cst_json;
-pub mod definitions;
-pub mod desugar;
-pub mod frontend;
-pub mod html_host;
-mod literals;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod lsp;
+pub mod json;
+pub mod prepared;
 pub mod preview;
-pub mod project;
+pub use prepared::PreparedInputs;
+pub mod environment;
 pub mod query;
+pub mod resources;
 pub mod vault;
+pub mod vault_index;
+pub use environment::{Environment, Package, SourceDiagnostic};
+pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
+pub use vault::{HtmlOutput, RenderOptions, Vault, VaultError};
+pub use vault_index::VaultIndex;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
-
-/// Analyze a `.not` source with the full pipeline: parse → desugar, then the shared backend
-/// (resolve → shape → materialize). Diagnostics are collected per phase
-/// (syntax from the parser, semantic from desugar, type from resolve).
-/// Use [`Notist::analyze`] to select a frontend by file extension.
-pub fn analyze(src: &str) -> (item::Item, Vec<diag::Diagnostic>) {
-    let (forest, module_attrs, mut diagnostics) = desugar::lower_not(src);
-    let span = TextRange::new(0.into(), (src.len() as u32).into());
-    let item = notist_core::analyze(forest, span, module_attrs, &mut diagnostics);
-    (item, diagnostics)
-}
-
-pub fn dump_str(src: &str) -> String {
-    let (item, diagnostics) = analyze(src);
-    let mut out = String::new();
-    for d in &diagnostics {
-        out.push_str(&format!(
-            "error[{}] @{}..{}: {}\n",
-            d.phase,
-            u32::from(d.span.start()),
-            u32::from(d.span.end()),
-            d.message
-        ));
-    }
-    out.push_str(&dump::dump(&item));
-    out
-}

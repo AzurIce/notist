@@ -1,70 +1,14 @@
-//! Browser resource assembly. The fragment renderer itself performs no IO.
-use crate::{
-    Item,
-    project::{Project, SourceDiagnostic},
-};
-use notist_html::{Component, HtmlRegistry, Renderer};
+//! Static page publication for the HTML command.
+use notist::Environment;
+use notist_html::Component;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Bind convention-based modules. Missing modules are diagnosed only if called;
-/// conflicting entries and protocol collisions invalidate the target environment.
-pub fn html_registry(project: &Project) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
-    let mut registry = HtmlRegistry::default();
-    let mut errors = Vec::new();
-    for definition in project
-        .registry()
-        .functions()
-        .filter(|definition| definition.id.package != "notist")
-    {
-        let package = &project.packages()[&definition.id.package];
-        let file = package
-            .root
-            .join("components")
-            .join(format!("{}.js", definition.id.name));
-        let directory = package
-            .root
-            .join("components")
-            .join(&definition.id.name)
-            .join("index.js");
-        let error = if file.is_file() && directory.is_file() {
-            Some(format!(
-                "conflicting component entries: `{}` and `{}`",
-                file.display(),
-                directory.display()
-            ))
-        } else if file.is_file() || directory.is_file() {
-            let entry = if file.is_file() { file } else { directory };
-            registry
-                .bind_component(definition, entry.to_string_lossy())
-                .err()
-        } else {
-            None
-        };
-        if let Some(message) = error {
-            errors.push(SourceDiagnostic {
-                path: package.root.join("lib.notc"),
-                source: package.source.clone(),
-                diagnostic: crate::Diagnostic::new(
-                    crate::Phase::Semantic,
-                    definition.span,
-                    message,
-                ),
-            });
-        }
-    }
-    if errors.is_empty() {
-        Ok(registry)
-    } else {
-        Err(errors)
-    }
-}
-
 /// Generate registrations for the exact modules recorded by the renderer.
 /// Calling this repeatedly is safe; conflicting constructors raise an error.
-pub fn registration_script(
+fn registration_script(
     components: &[Component],
-    urls: &BTreeMap<crate::FunctionId, String>,
+    urls: &BTreeMap<notist::FunctionId, String>,
 ) -> Result<String, String> {
     let mut seen = BTreeMap::new();
     let mut output = String::new();
@@ -91,24 +35,13 @@ pub fn registration_script(
     Ok(output)
 }
 
-#[derive(Debug)]
-pub struct BuildResult {
-    pub page: PathBuf,
-    pub used_components: Vec<Component>,
-}
-
-/// Build a complete page and copy only its used component directories.
-pub fn build_page(item: &Item, project: &Project, output: &Path) -> Result<BuildResult, String> {
-    let registry = html_registry(project).map_err(|errors| {
-        errors
-            .iter()
-            .map(|error| format!("{}: {}", error.path.display(), error.diagnostic.message))
-            .collect::<Vec<_>>()
-            .join("\n")
-    })?;
-    let rendered = Renderer::new()
-        .with_registry(registry)
-        .render_with_diagnostics(item);
+/// Publish an already rendered result, preserving relative component assets.
+/// This is the filesystem/static-page adapter for Vault::render_html.
+pub fn build_rendered_page(
+    rendered: notist_html::RenderResult,
+    project: &Environment,
+    output: &Path,
+) -> Result<PathBuf, String> {
     if !rendered.diagnostics.is_empty() {
         return Err(rendered
             .diagnostics
@@ -123,7 +56,10 @@ pub fn build_page(item: &Item, project: &Project, output: &Path) -> Result<Build
     let mut destinations = BTreeSet::new();
     for component in &rendered.used_components {
         let package = &project.packages()[&component.id.package];
-        let source = Path::new(&component.module);
+        let source = component
+            .module
+            .resource()
+            .ok_or_else(|| format!("cannot copy browser URL for `{}`", component.id))?;
         let relative = source
             .strip_prefix(&package.root)
             .map_err(|error| error.to_string())?;
@@ -150,7 +86,7 @@ pub fn build_page(item: &Item, project: &Project, output: &Path) -> Result<Build
     // Reject source/destination overlap before recursive copying starts.
     for (source, destination) in &copies {
         let source = std::fs::canonicalize(source).map_err(|error| error.to_string())?;
-        let destination = crate::vault::normalize(
+        let destination = notist::resources::normalize(
             &std::env::current_dir()
                 .map_err(|error| error.to_string())?
                 .join(destination),
@@ -171,10 +107,7 @@ pub fn build_page(item: &Item, project: &Project, output: &Path) -> Result<Build
     );
     let page = output.join("index.html");
     std::fs::write(&page, html).map_err(|error| error.to_string())?;
-    Ok(BuildResult {
-        page,
-        used_components: rendered.used_components,
-    })
+    Ok(page)
 }
 fn copy_resource(source: &Path, destination: &Path) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(source).map_err(|error| error.to_string())?;

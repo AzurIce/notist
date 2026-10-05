@@ -5,13 +5,86 @@ use notist_core::{
     item::{Ctor, Value},
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// Resource identity and published browser URL have different host semantics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleLocator {
+    Resource(PathBuf),
+    Url(String),
+}
+impl ModuleLocator {
+    pub fn resource(&self) -> Option<&Path> {
+        if let Self::Resource(path) = self {
+            Some(path)
+        } else {
+            None
+        }
+    }
+    pub fn url(&self) -> Option<&str> {
+        if let Self::Url(url) = self {
+            Some(url)
+        } else {
+            None
+        }
+    }
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Resource(path) => path.as_os_str().is_empty(),
+            Self::Url(url) => url.is_empty(),
+        }
+    }
+}
+impl From<String> for ModuleLocator {
+    fn from(url: String) -> Self {
+        Self::Url(url)
+    }
+}
+impl From<&str> for ModuleLocator {
+    fn from(url: &str) -> Self {
+        Self::Url(url.into())
+    }
+}
+impl From<&String> for ModuleLocator {
+    fn from(url: &String) -> Self {
+        Self::Url(url.clone())
+    }
+}
+
+/// Relative candidates, in the package's logical resource root. Neither has priority.
+pub fn component_entries(name: &str) -> [PathBuf; 2] {
+    [
+        PathBuf::from("components").join(format!("{name}.js")),
+        PathBuf::from("components").join(name).join("index.js"),
+    ]
+}
+/// Validate availability without IO; access failures must be handled by the caller.
+pub fn select_component_entry(name: &str, available: [bool; 2]) -> Result<Option<PathBuf>, String> {
+    let entries = component_entries(name);
+    match available {
+        [true, true] => Err(format!(
+            "conflicting component entries: `{}` and `{}`",
+            entries[0].display(),
+            entries[1].display()
+        )),
+        [true, false] => Ok(Some(entries[0].clone())),
+        [false, true] => Ok(Some(entries[1].clone())),
+        [false, false] => Ok(None),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BindingError {
+    pub id: FunctionId,
+    pub message: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Component {
     pub id: FunctionId,
     pub tag: String,
     /// Browser module locator interpreted by the host, not the renderer.
-    pub module: String,
+    pub module: ModuleLocator,
     pub definition: FunctionDef,
 }
 #[derive(Debug, Clone)]
@@ -43,13 +116,39 @@ impl Default for HtmlRegistry {
     }
 }
 impl HtmlRegistry {
+    /// Bind all targets using the authoritative semantic registry. Errors do
+    /// not return a partially installed HTML environment; declarations remain valid.
+    pub fn from_bindings(
+        registry: &notist_core::registry::Registry,
+        bindings: &BTreeMap<FunctionId, ModuleLocator>,
+    ) -> Result<Self, Vec<BindingError>> {
+        let mut html = Self::default();
+        let mut errors = Vec::new();
+        for (id, module) in bindings {
+            let result = registry
+                .get(id)
+                .ok_or_else(|| format!("unknown component function `{id}`"))
+                .and_then(|definition| html.bind_component(definition, module.clone()));
+            if let Err(message) = result {
+                errors.push(BindingError {
+                    id: id.clone(),
+                    message,
+                });
+            }
+        }
+        if errors.is_empty() {
+            Ok(html)
+        } else {
+            Err(errors)
+        }
+    }
     pub fn get(&self, id: &FunctionId) -> Option<&Target> {
         self.targets.get(id)
     }
     pub fn bind_component(
         &mut self,
         definition: &FunctionDef,
-        module: impl Into<String>,
+        module: impl Into<ModuleLocator>,
     ) -> Result<(), String> {
         self.register(
             definition,

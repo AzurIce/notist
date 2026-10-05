@@ -553,21 +553,32 @@ dependencies = [
 name = "notist"
 version = "0.1.0"
 dependencies = [
- "clap",
- "codespan-reporting",
  "insta",
  "notist-core",
  "notist-html",
- "notist-md",
+ "notist-pipeline",
  "notist-syntax",
  "rowan",
  "serde",
  "serde_json",
  "tempfile",
- "tokio",
  "toml",
- "tower-lsp",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "notist-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "codespan-reporting",
+ "notist",
+ "notist-html",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower-lsp",
+ "url",
 ]
 
 [[package]]
@@ -601,6 +612,16 @@ dependencies = [
  "notist-core",
  "rowan",
  "rushdown",
+]
+
+[[package]]
+name = "notist-pipeline"
+version = "0.1.0"
+dependencies = [
+ "notist-core",
+ "notist-md",
+ "notist-syntax",
+ "rowan",
 ]
 
 [[package]]

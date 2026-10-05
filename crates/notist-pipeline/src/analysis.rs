@@ -8,23 +8,21 @@ use crate::{Diagnostic, Frontend, Frontends, Item};
 /// starts empty, so callers can choose exactly which frontends to install.
 ///
 /// ```
-/// use notist::{Frontend, Notist};
+/// use notist_pipeline::{Frontend, Pipeline};
 ///
-/// let notist = Notist::new().with_frontend(Frontend::markdown());
-/// assert!(notist.analyze("example.md", "Text").is_ok());
-/// assert!(notist.analyze("example.not", "Text").is_err());
+/// let notist = Pipeline::new().with_frontend(Frontend::markdown());
+/// assert!(notist.analyze("example.md", "Text", notist_pipeline::builtins::registry()).is_ok());
+/// assert!(notist.analyze("example.not", "Text", notist_pipeline::builtins::registry()).is_err());
 /// ```
-pub struct Notist {
+pub struct Pipeline {
     frontends: Frontends,
-    registry: crate::Registry,
 }
 
-impl Notist {
+impl Pipeline {
     /// An empty pipeline. Use [`Self::default`] for the built-in frontends.
     pub fn new() -> Self {
         Self {
             frontends: Frontends::new(),
-            registry: crate::builtins::registry().clone(),
         }
     }
 
@@ -34,14 +32,8 @@ impl Notist {
         self
     }
 
-    /// Use an explicitly assembled signature environment. Performs no IO.
-    pub fn with_registry(mut self, registry: crate::Registry) -> Self {
-        self.registry = registry;
-        self
-    }
-
-    pub fn registry(&self) -> &crate::Registry {
-        &self.registry
+    pub fn supports(&self, path: &Path) -> bool {
+        self.frontends.supports(path)
     }
 
     /// Analyze in-memory source, selecting a frontend by `path`'s extension.
@@ -55,19 +47,56 @@ impl Notist {
         &self,
         path: impl AsRef<Path>,
         src: &str,
+        registry: &crate::Registry,
     ) -> Result<Analysis, UnsupportedFormat> {
         let path = path.as_ref();
         let (root, diagnostics) = self
             .frontends
-            .analyze_with_registry(path, src, &self.registry)
+            .analyze_with_registry(path, src, registry)
             .ok_or_else(|| UnsupportedFormat {
                 path: path.to_path_buf(),
             })?;
         Ok(Analysis { root, diagnostics })
     }
+    /// Collect debug stages during the same source-to-IR pass. Custom frontends
+    /// still run exactly once; their debug result has no Notist CST.
+    pub fn inspect(
+        &self,
+        path: impl AsRef<Path>,
+        src: &str,
+        registry: &crate::Registry,
+    ) -> Result<(Analysis, Inspection), UnsupportedFormat> {
+        let path = path.as_ref();
+        let frontend = self
+            .frontends
+            .get(path)
+            .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
+        let syntax =
+            std::ptr::fn_addr_eq(frontend.lower, crate::desugar::lower_not as fn(&str) -> _)
+                .then(|| notist_syntax::parse_document(src));
+        let (forest, attrs, mut diagnostics) = match &syntax {
+            Some(parse) => crate::desugar::lower_parsed(parse),
+            None => (frontend.lower)(src),
+        };
+        let mut inspection = Inspection {
+            syntax: syntax.map(|parse| parse.syntax()),
+            lowered: forest.clone(),
+            shaped: Vec::new(),
+        };
+        let span = rowan::TextRange::new(0.into(), (src.len() as u32).into());
+        let root = crate::process_with_inspection(
+            forest,
+            span,
+            attrs,
+            registry,
+            &mut diagnostics,
+            Some(&mut inspection),
+        );
+        Ok((Analysis { root, diagnostics }, inspection))
+    }
 }
 
-impl Default for Notist {
+impl Default for Pipeline {
     fn default() -> Self {
         Self::new()
             .with_frontend(Frontend::notist())
@@ -115,3 +144,11 @@ impl std::fmt::Display for UnsupportedFormat {
 }
 
 impl std::error::Error for UnsupportedFormat {}
+
+/// Optional debugging data, absent from ordinary analysis and rendering outputs.
+#[derive(Debug)]
+pub struct Inspection {
+    pub syntax: Option<notist_syntax::syntax::SyntaxNode>,
+    pub lowered: Vec<crate::expr::Expr>,
+    pub shaped: Vec<crate::expr::RExpr>,
+}

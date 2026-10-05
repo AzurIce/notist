@@ -254,6 +254,6 @@ URL autolink、term list、smart quote、symbol shorthand、Typst 的 label / re
 | 正文分派、调用、注解、行内扫描 | `crates/notist-syntax/src/parser.rs` |
 | 表格探测及单元格范围 | `crates/notist-syntax/src/parser/table.rs` |
 | 目标与标题字段提取 | `crates/notist-syntax/src/ast.rs` |
-| 原生前端降糖 | `src/desugar.rs` |
+| 原生前端降糖 | `crates/notist-pipeline/src/desugar.rs` |
 | Markdown 映射 | `crates/notist-md/src/lib.rs` |
 | Markdown 字段解码 | `crates/notist-md/src/strings.rs` |

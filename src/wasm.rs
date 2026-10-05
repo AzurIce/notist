@@ -21,3 +21,13 @@ pub fn analyze_project(path: &str, src: &str, config: &str, packages: &str) -> S
 pub fn analyze_module(package: &str, src: &str) -> String {
     crate::cst_json::analyze_module_json(package, src)
 }
+
+#[wasm_bindgen]
+pub fn render_project(path: &str, src: &str, config: &str, packages: &str) -> String {
+    crate::preview::render_preview(path, src, config, packages)
+}
+
+#[wasm_bindgen]
+pub fn render_prepared(path: &str, src: &str, inputs: &str) -> String {
+    crate::preview::render_prepared(path, src, inputs)
+}

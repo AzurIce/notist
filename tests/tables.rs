@@ -1,11 +1,11 @@
 use notist::builtins::{Accepts, Level};
 use notist::syntax::ast::{Table, TableAlignment};
 use notist::syntax::syntax::SyntaxKind;
-use notist::{Ctor, Item, Notist, TextRange, Value};
+use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(path: &str, src: &str) -> Item {
     if path.ends_with(".not") {
-        let parse = notist::syntax::parser::parse(src);
+        let parse = notist::syntax::parser::parse_document(src);
         assert_eq!(parse.syntax().to_string(), src, "{src:?}");
         assert!(
             parse.diagnostics.is_empty(),
@@ -13,7 +13,9 @@ fn analyze(path: &str, src: &str) -> Item {
             parse.diagnostics
         );
     }
-    let analysis = Notist::default().analyze(path, src).unwrap();
+    let analysis = Pipeline::default()
+        .analyze(path, src, notist::builtins::registry())
+        .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
         "{src:?}: {:?}",
@@ -91,7 +93,7 @@ fn notist_markdown_and_content_functions_share_the_same_table_ir() {
 #[test]
 fn table_ast_exposes_rows_cells_header_and_all_alignments_losslessly() {
     let src = "| a | b | c | d |\r\n| --- | :--- | :---: | ---: |\r\n| 1 | 2 | 3 | 4 |";
-    let parse = notist::syntax::parser::parse(src);
+    let parse = notist::syntax::parser::parse_document(src);
     assert!(parse.diagnostics.is_empty());
     assert_eq!(parse.syntax().to_string(), src);
     let table = Table::cast(parse.syntax().children().next().unwrap()).unwrap();
@@ -308,7 +310,9 @@ fn malformed_table_markers_remain_prose_and_wrong_structural_children_diagnose()
         ("#row[text]", "`row` takes only cell children"),
         ("#row[#row[]]", "`row` takes only cell children"),
     ] {
-        let analysis = Notist::default().analyze("test.not", src).unwrap();
+        let analysis = Pipeline::default()
+            .analyze("test.not", src, notist::builtins::registry())
+            .unwrap();
         assert!(
             analysis
                 .diagnostics()
@@ -336,7 +340,7 @@ fn malformed_inline_content_in_cells_keeps_the_cst_lossless() {
         "[[wiki|text]]",
     ] {
         let src = format!("| a | b |\n| --- | --- |\n| {cell} | next |\n");
-        let parse = notist::syntax::parser::parse(&src);
+        let parse = notist::syntax::parser::parse_document(&src);
         assert_eq!(parse.syntax().to_string(), src);
         assert!(
             parse

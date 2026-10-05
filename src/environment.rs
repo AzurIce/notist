@@ -1,7 +1,8 @@
-//! Explicit project assembly and local filesystem loading.
+//! Declaration environment assembly through host-provided resources.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::resources::{ResourceKind, Resources};
 use crate::{Diagnostic, Phase, Registry, TextRange, analyze_module, builtins};
 
 #[derive(Debug, Clone)]
@@ -78,15 +79,15 @@ pub struct Package {
     pub source: String,
 }
 
-/// A fully installed environment. Assembly errors never return a partial project.
+/// A fully installed environment. Assembly errors never return a partial environment.
 #[derive(Debug, Clone)]
-pub struct Project {
+pub struct Environment {
     config_path: Option<PathBuf>,
     packages: BTreeMap<String, Package>,
     registry: Registry,
 }
 
-impl Default for Project {
+impl Default for Environment {
     fn default() -> Self {
         Self {
             config_path: None,
@@ -96,7 +97,7 @@ impl Default for Project {
     }
 }
 
-impl Project {
+impl Environment {
     pub fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
     }
@@ -106,22 +107,18 @@ impl Project {
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
-    pub fn analyzer(&self) -> crate::Notist {
-        crate::Notist::default().with_registry(self.registry.clone())
-    }
-
     /// Install explicitly supplied declaration sources; performs no IO.
     pub fn from_packages(
         packages: impl IntoIterator<Item = Package>,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        let mut project = Self::default();
+        let mut environment = Self::default();
         let mut diagnostics = Vec::new();
         for package in packages {
             let result = analyze_module(&package.name, &package.source)
-                .and_then(|module| project.registry.register(module));
+                .and_then(|module| environment.registry.register(module));
             match result {
                 Ok(()) => {
-                    project.packages.insert(package.name.clone(), package);
+                    environment.packages.insert(package.name.clone(), package);
                 }
                 Err(errors) => {
                     diagnostics.extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
@@ -133,25 +130,25 @@ impl Project {
             }
         }
         if diagnostics.is_empty() {
-            Ok(project)
+            Ok(environment)
         } else {
             Err(diagnostics)
         }
     }
 
-    /// Read one project configuration and its direct local dependencies.
-    pub fn load(config_path: impl AsRef<Path>) -> Result<Self, Vec<SourceDiagnostic>> {
-        Self::load_with_sources(config_path, &BTreeMap::new())
-    }
-
-    /// Filesystem host with editor overlays, keyed by absolute source paths.
-    pub fn load_with_sources(
+    /// Assemble declarations through a host-provided read-only resource snapshot.
+    pub fn load_from(
+        resources: &(impl Resources + ?Sized),
         config_path: impl AsRef<Path>,
-        overlays: &BTreeMap<PathBuf, String>,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        let config_path = absolute(config_path.as_ref());
-        let config_source = read_source(&config_path, overlays).map_err(|message| {
-            vec![issue(&config_path, "", TextRange::empty(0.into()), message)]
+        let config_path = resources.resolve(config_path.as_ref());
+        let config_source = resources.source(&config_path).map_err(|message| {
+            vec![issue(
+                &config_path,
+                "",
+                TextRange::empty(0.into()),
+                message.to_string(),
+            )]
         })?;
         let dependencies = parse_config(&config_source).map_err(|errors| {
             errors
@@ -167,9 +164,9 @@ impl Project {
         let mut diagnostics = Vec::new();
         for dependency in dependencies {
             let root =
-                crate::vault::normalize(&config_path.parent().unwrap().join(&dependency.path));
+                crate::resources::normalize(&config_path.parent().unwrap().join(&dependency.path));
             let entry = root.join("lib.notc");
-            match read_source(&entry, overlays) {
+            match resources.source(&entry) {
                 Ok(source) => packages.push(Package {
                     name: dependency.name,
                     root,
@@ -185,9 +182,9 @@ impl Project {
         }
         // Still analyze available packages to report every source error together.
         match Self::from_packages(packages) {
-            Ok(mut project) if diagnostics.is_empty() => {
-                project.config_path = Some(config_path);
-                Ok(project)
+            Ok(mut environment) if diagnostics.is_empty() => {
+                environment.config_path = Some(config_path);
+                Ok(environment)
             }
             Ok(_) => Err(diagnostics),
             Err(mut errors) => {
@@ -196,58 +193,36 @@ impl Project {
             }
         }
     }
-
-    pub fn for_document(
-        document: impl AsRef<Path>,
-        explicit_config: Option<&Path>,
-    ) -> Result<Self, Vec<SourceDiagnostic>> {
-        if let Some(config) = explicit_config {
-            return Self::load(config);
-        }
-        match discover_config(document.as_ref()) {
-            Some(config) => Self::load(config),
-            None => Ok(Self::default()),
-        }
-    }
 }
 
-pub fn discover_config(document: &Path) -> Option<PathBuf> {
-    discover_config_with_sources(document, &BTreeMap::new())
-}
-
-pub fn discover_config_with_sources(
+/// Discover one nearest configuration. Access failures are never treated as absence.
+pub fn discover_config_in(
+    resources: &(impl Resources + ?Sized),
     document: &Path,
-    overlays: &BTreeMap<PathBuf, String>,
-) -> Option<PathBuf> {
-    let document = absolute(document);
-    let directory = if document.is_dir() {
+) -> Result<Option<PathBuf>, crate::resources::ResourceError> {
+    let document = resources.resolve(document);
+    let directory = if resources.kind(&document)? == Some(ResourceKind::Directory) {
         document.as_path()
     } else {
-        document.parent()?
+        document.parent().unwrap_or(resources.root())
     };
-    directory
-        .ancestors()
-        .map(|directory| directory.join("Notist.toml"))
-        .find(|path| path.is_file() || overlays.contains_key(path))
-}
-fn absolute(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        crate::vault::normalize(path)
-    } else {
-        crate::vault::normalize(&std::env::current_dir().unwrap_or_default().join(path))
+    for directory in directory.ancestors() {
+        let config = directory.join("Notist.toml");
+        if resources.kind(&config)? == Some(ResourceKind::File) {
+            return Ok(Some(config));
+        }
     }
-}
-fn read_source(path: &Path, overlays: &BTreeMap<PathBuf, String>) -> Result<String, String> {
-    overlays
-        .get(path)
-        .cloned()
-        .map(Ok)
-        .unwrap_or_else(|| std::fs::read_to_string(path).map_err(|error| error.to_string()))
+    Ok(None)
 }
 fn range(span: std::ops::Range<usize>) -> TextRange {
     TextRange::new((span.start as u32).into(), (span.end as u32).into())
 }
-fn issue(path: &Path, source: &str, span: TextRange, message: String) -> SourceDiagnostic {
+pub(crate) fn issue(
+    path: &Path,
+    source: &str,
+    span: TextRange,
+    message: String,
+) -> SourceDiagnostic {
     SourceDiagnostic {
         path: path.into(),
         source: source.into(),

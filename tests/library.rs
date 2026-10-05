@@ -20,7 +20,7 @@ fn fixture() -> PathBuf {
 #[test]
 fn library_link_graph() {
     let dir = fixture();
-    let library = notist::vault::Vault::load(&dir).unwrap();
+    let library = notist::Vault::open(&dir).index(".").unwrap();
     let diags = library.check();
     let messages: Vec<_> = diags.iter().map(|(_, d)| d.message.as_str()).collect();
     assert!(

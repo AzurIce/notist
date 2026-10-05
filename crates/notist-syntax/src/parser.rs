@@ -41,11 +41,7 @@ enum Balanced {
     Unclosed(usize),
 }
 
-pub fn parse(src: &str) -> Parse {
-    parse_document(src)
-}
-
-/// Parse a Markup document. `parse` remains a compatibility alias.
+/// Parse a Markup document.
 pub fn parse_document(src: &str) -> Parse {
     Parser::new(src).run()
 }

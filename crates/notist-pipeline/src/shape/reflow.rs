@@ -106,8 +106,8 @@ pub(crate) fn is_block_element(expr: &RExpr) -> bool {
         return false;
     };
     if let Some(definition) = name
-        .source_name()
-        .and_then(|name| crate::builtins::registry().resolve(name).ok())
+        .function_id()
+        .and_then(|id| crate::builtins::registry().get(&id))
     {
         return definition.returns.level(fields, *body) == Level::Block;
     }

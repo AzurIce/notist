@@ -9,7 +9,7 @@ src/ 中的 notist-grammar Rust crate 解析 [Grammar Notation](../../grammar/no
 
 ```sh
 just --justfile docs/packages/grammar/justfile build
-cargo run -- html docs/grammar/diagrams.not --out-dir target/grammar-demo
+cargo run -p notist-cli -- html docs/grammar/diagrams.not --out-dir target/grammar-demo
 python3 -m http.server
 ```
 

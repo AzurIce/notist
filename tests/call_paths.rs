@@ -2,7 +2,7 @@ use notist::expr::Expr;
 
 #[test]
 fn desugar_preserves_qualified_targets_fields_and_children() {
-    let (forest, _, diagnostics) = notist::desugar::lower_not(
+    let (forest, _, diagnostics) = notist_pipeline::desugar::lower_not(
         "#mermaid::diagram(\"graph\", theme: \"dark\")[#other::badge[x]]",
     );
     assert!(diagnostics.is_empty(), "{diagnostics:?}");

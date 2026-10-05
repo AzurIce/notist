@@ -5,13 +5,13 @@
 == 使用
 
 ```rust
-let analysis = notist::Notist::default().analyze("example.not", source)?;
+let analysis = notist::Pipeline::default().analyze("example.not", source, notist::builtins::registry())?;
 let html = notist_html::render(analysis.root());
 ```
 
 仓库中可使用 `cargo run --example html -- document.not` 或 `.md` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
 
-`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，后者携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
+`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
 
 renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留段落、行内空白、raw payload 及节点身份。输入以完成 Resolve / Shape 的合法树为准；恢复节点采用可显示的回退形式。
 
@@ -82,14 +82,16 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 == Package 组件与完整页面
 
-HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, module_url) 将同一语义签名绑定到约定标签，Renderer::with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
+HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, ModuleLocator) 将同一语义签名绑定到约定标签，Renderer::with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
 
 组件的命名、notist-protocol="1" 参数协议及目标冲突规则见 [Content Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
 
-notist::html_host::html_registry 从 Project 与文件约定绑定目标；build_page 将页面、注册入口和实际使用的组件资源写入目录。可运行：
+Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回正文分析及完整渲染结果。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
+
+notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板、发布 URL 和文件复制由 CLI 的 html 模块处理。内存与浏览器宿主消费 Vault::render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 
 ```sh
-cargo run -- html docs/packages/README.not --out-dir target/packages-demo
+cargo run -p notist-cli -- html docs/packages/README.not --out-dir target/packages-demo
 python3 -m http.server
 ```
 

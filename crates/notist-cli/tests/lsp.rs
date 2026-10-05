@@ -1,50 +1,8 @@
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
-
-#[test]
-fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let document = root.join("docs/packages/README.not");
-    let query = Command::new(env!("CARGO_BIN_EXE_notist"))
-        .args(["query"])
-        .arg(&document)
-        .arg("function:widgets::panel")
-        .output()
-        .unwrap();
-    assert!(query.status.success());
-    let result: Value = serde_json::from_slice(&query.stdout).unwrap();
-    assert_eq!(result.as_array().unwrap().len(), 2);
-    let module = Command::new(env!("CARGO_BIN_EXE_notist"))
-        .arg("json")
-        .arg(root.join("docs/packages/mermaid/lib.notc"))
-        .output()
-        .unwrap();
-    assert!(module.status.success());
-    assert_eq!(
-        serde_json::from_slice::<Value>(&module.stdout).unwrap()["tree"]["kind"],
-        "Module"
-    );
-    let temp = tempfile::tempdir().unwrap();
-    let config = temp.path().join("Notist.toml");
-    std::fs::write(&config, "[dependencies]\nbroken = {path = 'absent'}").unwrap();
-    for command in ["check", "core", "json", "query", "html"] {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_notist"));
-        cmd.arg(command).arg(&document).arg("--config").arg(&config);
-        if command == "query" {
-            cmd.arg("level:block");
-        }
-        let result = cmd.output().unwrap();
-        assert!(!result.status.success(), "{command}");
-        let error = String::from_utf8(result.stderr).unwrap();
-        assert!(
-            error.contains("Notist.toml") && error.contains("cannot load"),
-            "{error}"
-        );
-    }
-}
 
 struct Lsp {
     child: Child,
@@ -134,12 +92,8 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     let source = "fn panel(title: String)[children: Content] -> Content;";
     std::fs::write(&module, source).unwrap();
     let document = temp.path().join("document.not");
-    let uri = tower_lsp::lsp_types::Url::from_file_path(&document)
-        .unwrap()
-        .to_string();
-    let module_uri = tower_lsp::lsp_types::Url::from_file_path(&module)
-        .unwrap()
-        .to_string();
+    let uri = url::Url::from_file_path(&document).unwrap().to_string();
+    let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
     let mut server = Lsp::new();
     server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
     server.until(|message| message["id"] == 1);

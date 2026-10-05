@@ -9,8 +9,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("usage: cargo run --example html -- <document.not|document.md>")?,
     );
     let source = std::fs::read_to_string(&path)?;
-    let analysis = notist::Notist::default().analyze(&path, &source)?;
-    let rendered = notist_html::Renderer::new().render_with_diagnostics(analysis.root());
+    let output = notist::Vault::open(".").render_html(
+        &path,
+        &source,
+        notist::RenderOptions { source_map: false },
+    )?;
+    let analysis = output.analysis;
+    let rendered = output.rendered;
     for diagnostic in analysis.diagnostics().iter().chain(&rendered.diagnostics) {
         eprintln!(
             "{}: {:?}: {}",

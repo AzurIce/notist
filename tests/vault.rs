@@ -320,7 +320,7 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
 }
 
 #[test]
-fn document_links_reach_sibling_packages_using_their_own_configs() {
+fn scans_follow_sibling_documents_within_the_vault_using_their_own_configs() {
     let mut resources = MemoryResources::new("/repo");
     resources.insert(
         "docs/README.not",
@@ -346,19 +346,176 @@ fn document_links_reach_sibling_packages_using_their_own_configs() {
     let diagnostics = index.check();
     assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
     assert!(diagnostics.iter().any(|(path, diagnostic)| {
-        path == Path::new("README.not")
-            && diagnostic
-                .message
-                .contains("../packages/missing/README.not")
+        path == Path::new("docs/README.not")
+            && diagnostic.message.contains("packages/missing/README.not")
     }));
     assert!(diagnostics.iter().any(|(path, diagnostic)| {
-        path == Path::new("../packages/demo/README.not")
+        path == Path::new("packages/demo/README.not")
             && diagnostic.message.contains("missing item `#missing`")
     }));
-    assert_eq!(index.backlinks(Path::new("README.not")).len(), 2);
+    assert_eq!(index.backlinks(Path::new("docs/README.not")).len(), 2);
     assert_eq!(
-        index.backlinks(Path::new("../packages/demo/README.not"))[0].0,
-        Path::new("README.not")
+        index.backlinks(Path::new("packages/demo/README.not"))[0].0,
+        Path::new("docs/README.not")
+    );
+}
+
+struct NoOutsideReads(MemoryResources);
+impl Resources for NoOutsideReads {
+    fn root(&self) -> &Path {
+        self.0.root()
+    }
+    fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        assert!(
+            self.resolve(path).starts_with(self.root()),
+            "outside read: {path:?}"
+        );
+        self.0.read(path)
+    }
+    fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+        // Nearest configuration discovery may inspect parent directories.
+        assert!(
+            !self.resolve(path).starts_with(Path::new("/repo/outside")),
+            "outside metadata: {path:?}"
+        );
+        self.0.kind(path)
+    }
+    fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
+        self.0.entries(path)
+    }
+}
+
+#[test]
+fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
+    let source = "[outside](../../outside/broken.not#missing) ![image](../../outside/image.svg) [prefix](/repo/docs-other/page.not) [remote](https://example.test/page.not) [inside](../README.not#home)";
+    let mut resources = MemoryResources::new("/repo/docs");
+    resources.insert("README.not", b"@(id: \"home\")\n= Home".to_vec());
+    resources.insert("../outside/broken.not", vec![255]);
+    resources.insert("../outside/Notist.toml", b"invalid = [".to_vec());
+    for extension in ["not", "md"] {
+        resources.insert(
+            format!("notes/page.{extension}"),
+            source.as_bytes().to_vec(),
+        );
+    }
+    let mut vault = Vault::new(NoOutsideReads(resources.clone()));
+    assert!(matches!(
+        vault.index("../outside"),
+        Err(VaultError::Resource(ResourceError::Access { .. }))
+    ));
+    assert!(
+        vault
+            .analyze("network.not", "#link(\"//example.test/page.not\")[network]")
+            .unwrap()
+            .diagnostics()
+            .is_empty()
+    );
+    for extension in ["not", "md"] {
+        let path = format!("notes/page.{extension}");
+        let analysis = vault.analyze(&path, source).unwrap();
+        let (inspected, _) = vault.inspect(&path, source).unwrap();
+        let output = vault
+            .render_html(&path, source, RenderOptions::default())
+            .unwrap();
+        assert_eq!(analysis, inspected);
+        assert_eq!(analysis, output.analysis);
+        assert_eq!(
+            analysis.diagnostics().len(),
+            3,
+            "{:?}",
+            analysis.diagnostics()
+        );
+        for diagnostic in analysis.diagnostics() {
+            assert_eq!(diagnostic.phase, notist::Phase::Semantic);
+            assert!(
+                diagnostic
+                    .message
+                    .contains("outside Vault root `/repo/docs`")
+            );
+            let span = usize::from(diagnostic.span.start())..usize::from(diagnostic.span.end());
+            let reference = &source[span];
+            assert!(
+                reference.contains("../../outside/") || reference.contains("/repo/docs-other/")
+            );
+        }
+    }
+    let index = vault.index("notes").unwrap();
+    assert_eq!(index.check().len(), 6, "{:?}", index.check());
+    assert_eq!(index.backlinks(Path::new("README.not")).len(), 2);
+    assert!(
+        index
+            .backlinks(Path::new("../outside/broken.not"))
+            .is_empty()
+    );
+    // The pure graph API enforces the same boundary on Pipeline-only results.
+    let analysis = notist::Pipeline::default()
+        .analyze("notes/page.not", source, notist::builtins::registry())
+        .unwrap();
+    let pure =
+        notist::VaultIndex::from_documents("/repo/docs", [("notes/page.not".into(), analysis)]);
+    let outside: Vec<_> = pure
+        .check()
+        .into_iter()
+        .filter(|(_, diagnostic)| diagnostic.message.contains("outside Vault root"))
+        .collect();
+    assert_eq!(outside.len(), 3);
+
+    let inputs = PreparedInputs {
+        root: resources.root().into(),
+        config: None,
+        files: resources.files().clone(),
+        module_urls: BTreeMap::new(),
+    };
+    let inputs_json = serde_json::to_string(&inputs).unwrap();
+    for render in [
+        notist::preview::render_prepared,
+        notist::preview::analyze_prepared,
+    ] {
+        let output: serde_json::Value =
+            serde_json::from_str(&render("notes/page.md", source, &inputs_json)).unwrap();
+        assert_eq!(output["diagnostics"].as_array().unwrap().len(), 3);
+        assert!(
+            output["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|diagnostic| diagnostic["origin"] == "analysis"
+                    && diagnostic["path"] == "notes/page.md")
+        );
+    }
+}
+
+#[test]
+fn package_dependencies_outside_the_vault_remain_available() {
+    let mut resources = MemoryResources::new("/repo/docs");
+    resources.insert(
+        "Notist.toml",
+        b"[dependencies]\ndemo = {path = '../packages/demo'}".to_vec(),
+    );
+    resources.insert(
+        "../packages/demo/Notist.toml",
+        b"[package]\nname = 'demo'".to_vec(),
+    );
+    resources.insert(
+        "../packages/demo/lib.notc",
+        b"fn badge(label: String) -> InlineContent;".to_vec(),
+    );
+    let mut vault = Vault::new(resources);
+    let source = "#demo::badge(\"hello\") [package](../packages/demo/README.not)";
+    let analysis = vault.analyze("README.not", source).unwrap();
+    assert!(
+        vault
+            .environment_for("README.not")
+            .unwrap()
+            .registry()
+            .resolve("demo::badge")
+            .is_ok()
+    );
+    assert_eq!(analysis.diagnostics().len(), 1);
+    assert!(
+        analysis.diagnostics()[0]
+            .message
+            .contains("outside Vault root")
     );
 }
 

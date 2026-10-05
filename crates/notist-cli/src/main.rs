@@ -4,6 +4,8 @@ mod lsp;
 mod query;
 
 #[cfg(not(target_arch = "wasm32"))]
+use notist::Resources;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -256,6 +258,7 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
         Ok(library) => library,
         Err(error) => return emit_vault_error(error),
     };
+    let vault_root = vault.resources().root();
     let diagnostics = library.check();
     let mut files = SimpleFiles::new();
     let mut ids = std::collections::HashMap::new();
@@ -263,7 +266,7 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
     let config = Config::default();
     for (path, d) in &diagnostics {
         let id = *ids.entry(path.clone()).or_insert_with(|| {
-            let full = dir.join(path);
+            let full = vault_root.join(path);
             let src = std::fs::read_to_string(&full).unwrap_or_default();
             files.add(full.display().to_string(), src)
         });

@@ -144,9 +144,15 @@ impl<R: Resources> Vault<R> {
     ) -> Result<Analysis, VaultError> {
         let path = path.as_ref();
         let key = self.ensure_environment(path)?;
-        Ok(self
-            .pipeline
-            .analyze(path, source, self.environments[&key].registry())?)
+        let mut analysis =
+            self.pipeline
+                .analyze(path, source, self.environments[&key].registry())?;
+        analysis.extend_diagnostics(crate::vault_index::check_content_paths(
+            self.resources.root(),
+            path,
+            analysis.root(),
+        ));
+        Ok(analysis)
     }
     pub fn inspect(
         &mut self,
@@ -155,9 +161,15 @@ impl<R: Resources> Vault<R> {
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
         let path = path.as_ref();
         let key = self.ensure_environment(path)?;
-        Ok(self
-            .pipeline
-            .inspect(path, source, self.environments[&key].registry())?)
+        let (mut analysis, inspection) =
+            self.pipeline
+                .inspect(path, source, self.environments[&key].registry())?;
+        analysis.extend_diagnostics(crate::vault_index::check_content_paths(
+            self.resources.root(),
+            path,
+            analysis.root(),
+        ));
+        Ok((analysis, inspection))
     }
     pub fn analyze_resource(&mut self, path: impl AsRef<Path>) -> Result<Analysis, VaultError> {
         let source = self.resources.source(path.as_ref())?;
@@ -216,10 +228,18 @@ impl<R: Resources> Vault<R> {
             rendered,
         })
     }
-    /// Index the directory and reachable linked documents, including sibling
-    /// directories, through the same resources and nearest environments.
+    /// Scan a directory and reachable documents within the Vault's resource
+    /// root. Returned paths are Vault-root-relative, including linked documents
+    /// outside the initial scan directory. Out-of-Vault references are diagnosed.
     pub fn index(&mut self, root: impl AsRef<Path>) -> Result<crate::VaultIndex, VaultError> {
         let root = self.resources.resolve(root.as_ref());
+        if !root.starts_with(self.resources.root()) {
+            return Err(ResourceError::Access {
+                path: root,
+                message: "scan directory is outside Vault root".into(),
+            }
+            .into());
+        }
         let mut directories = vec![root.clone()];
         let mut pending = Vec::new();
         while let Some(directory) = directories.pop() {
@@ -243,7 +263,8 @@ impl<R: Resources> Vault<R> {
             let analysis = self.analyze(&path, &source)?;
             for target in crate::vault_index::linked_paths(&path, analysis.root()) {
                 let resource = self.resources.resolve(&target);
-                if !visited.contains(&resource)
+                if resource.starts_with(self.resources.root())
+                    && !visited.contains(&resource)
                     && self.pipeline.supports(&resource)
                     && self.resources.kind(&resource)? == Some(ResourceKind::File)
                 {
@@ -252,7 +273,10 @@ impl<R: Resources> Vault<R> {
             }
             documents.push((path, analysis));
         }
-        Ok(crate::VaultIndex::from_documents(&root, documents))
+        Ok(crate::VaultIndex::from_documents(
+            self.resources.root(),
+            documents,
+        ))
     }
 }
 impl Vault<FsResources> {

@@ -59,6 +59,7 @@ fn html_command_publishes_used_components_and_relative_assets() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = tempfile::tempdir().unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(&root)
         .arg("html")
         .arg(root.join("packages/widgets/README.not"))
         .arg("--out-dir")
@@ -125,6 +126,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
         std::fs::write(&document, source).unwrap();
         let output = project.path().join(format!("{name}-html"));
         let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(project.path())
             .arg("html")
             .arg(&document)
             .arg("--out-dir")
@@ -152,4 +154,51 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
             );
         }
     }
+}
+
+#[test]
+fn checks_json_and_html_report_vault_escapes_at_the_source_reference() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("vault");
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    std::fs::write(root.join("README.not"), "= Home").unwrap();
+    // An invalid external file must never be loaded while checking links.
+    std::fs::write(temp.path().join("outside.not"), [255]).unwrap();
+    let source = "[outside](../../outside.not) ![asset](../../image.svg) [inside](../README.not)";
+    for extension in ["not", "md"] {
+        let document = format!("notes/page.{extension}");
+        std::fs::write(root.join(&document), source).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(&root)
+            .args(["check", &document])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        assert_eq!(stderr.matches("outside Vault root").count(), 2, "{stderr}");
+        assert!(stderr.contains(&document));
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(&root)
+            .args(["json", &document])
+            .output()
+            .unwrap();
+        let output: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(output["diagnostics"].as_array().unwrap().len(), 2);
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(&root)
+            .args(["html", &document])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(!root.join("target/notist-html/index.html").exists());
+    }
+    let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(&root)
+        .args(["check", "notes"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert_eq!(stderr.matches("outside Vault root").count(), 4, "{stderr}");
+    assert!(stderr.contains("notes/page.not") && stderr.contains("notes/page.md"));
 }

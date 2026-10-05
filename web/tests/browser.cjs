@@ -62,6 +62,12 @@ const { chromium } = require('playwright');
       const doc = document.querySelector('#preview').contentDocument;
       return doc && doc.querySelectorAll('katex-math').length === 2 && [...doc.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex'));
     });
+    // Content paths respect the prepared Vault root; package dependency files
+    // outside that root remain usable for declarations and components.
+    await page.fill('#src', '[outside](../outside.not) ![asset](../outside.svg)');
+    await page.waitForFunction(() => (document.querySelector('#diags').textContent.match(/outside Vault root/g) ?? []).length === 2);
+    await page.fill('#src', '[inside](sub/../inside.not) ![remote](https://example.test/image.svg)');
+    await page.waitForFunction(() => document.querySelector('#diags').textContent === '✓ 无诊断');
     await page.fill('#path', 'lib.notc');
     await page.locator('#path').dispatchEvent('change');
     await page.fill('#src', 'fn bad(value: Int = false) -> Content; fn good() -> Content;');

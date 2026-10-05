@@ -96,4 +96,10 @@ Pipeline::analyze(path, source, registry) 接收显式输入，path 用于选择
 
 Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、原始 Analysis、TransformOutput 和完整 RenderResult。正文只处理一次，输出前按配置执行 [IR Transforms](transforms.not)。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
 
+Vault 的内容边界由 Resources::root 确定，与最近配置所在目录及 index 的扫描目录分别处理。本地 link 与 embed 的目标按文档目录解析并规范化，越过 Vault 根时在引用节点产生 semantic 诊断，不补载外部文档；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 `//` 的外部 URL 保留为外部链接，不读取或发布为 Vault 内容。
+
+边界诊断附加到 Vault::analyze / inspect 的 Analysis，普通呈现、调试预览与语言服务共用该结果。纯 Pipeline 不知道 Vault 根，不执行内容边界检查。VaultIndex::from_documents 为显式传入的根执行相同检查，已有诊断不重复添加。
+
+Vault::index 扫描指定目录，并补载 Vault 内实际链接到的正文。检查结果与 backlinks 的路径相对于 Vault 根，扫描子目录不缩小内容边界。package 的清单依赖和组件实现资源可以位于 Vault 外；资源访问接口的根不是整个进程的文件读取沙箱，package 文档不会因安装依赖自动加入正文索引。
+
 notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。

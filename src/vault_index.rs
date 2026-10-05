@@ -50,7 +50,7 @@ fn parse_target(target: &str, file_dir: &Path) -> Target {
             item: item.to_string(),
         };
     }
-    if has_scheme(target) {
+    if has_scheme(target) || target.starts_with("//") {
         return Target::External;
     }
     let (path, item) = match target.split_once('#') {
@@ -84,6 +84,32 @@ pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
         .filter_map(|link| match link.target {
             Target::Path { path, .. } => Some(path),
             _ => None,
+        })
+        .collect()
+}
+
+/// Check local document and embed references against the logical Vault root.
+/// This requires no resource reads; package dependencies are not content references.
+pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
+    let path = normalize(&root.join(path));
+    let file_dir = path.parent().unwrap_or(root);
+    item.descendants()
+        .filter(|node| matches!(node.ctor, Ctor::Link | Ctor::Embed))
+        .filter_map(|node| {
+            let Some(Value::Str(target)) = node.fields.get("target") else {
+                return None;
+            };
+            match parse_target(target, file_dir) {
+                Target::Path { path, .. } if !path.starts_with(root) => Some(Diagnostic::new(
+                    Phase::Semantic,
+                    node.span,
+                    format!(
+                        "local content reference `{target}` is outside Vault root `{}`",
+                        root.display()
+                    ),
+                )),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -123,6 +149,13 @@ impl VaultIndex {
         for (path, analysis) in documents {
             let path = normalize(&root.join(path));
             let (item, mut diagnostics) = analysis.into_parts();
+            // Pure callers may supply Pipeline results; Vault callers already
+            // attached the same checks. Keep one diagnostic per reference.
+            for diagnostic in check_content_paths(&root, &path, &item) {
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(diagnostic);
+                }
+            }
             let index = Index::build(&item, &mut diagnostics);
             let links = collect_links(&item, path.parent().unwrap_or(Path::new("")));
             docs.insert(
@@ -158,6 +191,7 @@ impl VaultIndex {
                             ));
                         }
                     }
+                    Target::Path { path: target, .. } if !target.starts_with(&self.root) => {}
                     Target::Path { path: target, item } => match self.docs.get(target) {
                         None => out.push((
                             path.clone(),
@@ -198,6 +232,9 @@ impl VaultIndex {
     /// All links pointing at `path` (normalized, vault-root-relative).
     pub fn backlinks(&self, path: &Path) -> Vec<(PathBuf, TextRange)> {
         let path = normalize(&self.root.join(path));
+        if !path.starts_with(&self.root) {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for (source, doc) in &self.docs {
             for link in &doc.links {

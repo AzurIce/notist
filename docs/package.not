@@ -118,8 +118,8 @@ to = "typst::math"
 
 | Package | 内容 |
 | --- | --- |
-| [grammar](../packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 |
-| [widgets](../packages/widgets/README.not) | panel、badge 与嵌套内容的组合示例 |
-| [mermaid](../packages/mermaid/README.not) | Mermaid 图形组件 |
-| [katex](../packages/katex/README.not) | LaTeX 数学呈现 |
-| [typst](../packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG |
+| [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 |
+| [widgets](https://github.com/AzurIce/notist/blob/main/packages/widgets/README.not) | panel、badge 与嵌套内容的组合示例 |
+| [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | Mermaid 图形组件 |
+| [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 |
+| [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG |

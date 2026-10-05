@@ -40,6 +40,55 @@ fn mixed_frontends_share_directory_routes_anchors_and_assets() {
 }
 
 #[test]
+fn docs_vault_excludes_repository_content_but_loads_external_packages() {
+    let mut files = MemoryResources::new("/repo/docs");
+    for (path, source) in [
+        ("/repo/README.not", "= Repository"),
+        (
+            "README.not",
+            "= Documentation\n\n#widgets::badge(\"Ready\")",
+        ),
+        ("guide.md", "# Guide"),
+        (
+            "Notist.toml",
+            "[dependencies]\nwidgets={path='../packages/widgets'}",
+        ),
+        (
+            "/repo/packages/widgets/Notist.toml",
+            "[package]\nname='widgets'",
+        ),
+        (
+            "/repo/packages/widgets/lib.notc",
+            "fn badge(label: String) -> InlineContent;",
+        ),
+        (
+            "/repo/packages/widgets/components/badge.js",
+            "export default class extends HTMLElement {}",
+        ),
+        ("/repo/packages/widgets/README.not", "= Widgets"),
+    ] {
+        files.insert(path, source.as_bytes().to_vec());
+    }
+    let mut vault = Vault::new(files.clone());
+    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    assert_eq!(site.pages.len(), 2);
+    assert_eq!(site.pages[0].route.url, "/");
+    assert_eq!(site.pages[0].title, "Documentation");
+    assert!(html(&site, "index.html").contains("<widgets-badge "));
+    assert!(
+        site.files
+            .contains_key(Path::new("_notist/packages/widgets/components/badge.js"))
+    );
+
+    files.insert(
+        "README.not",
+        b"= Documentation\n\n[Widgets](../packages/widgets/README.not)".to_vec(),
+    );
+    let error = build(&mut Vault::new(files), &SiteConfig::default()).unwrap_err();
+    assert!(error.to_string().contains("outside Vault"));
+}
+
+#[test]
 fn titles_do_not_change_routes_and_groups_do_not_create_pages() {
     let site = render(&[
         ("notes/10.md", "# Ten"),

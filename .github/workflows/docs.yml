@@ -1,0 +1,92 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Rust builds
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            packages/grammar/target
+          key: docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}-
+
+      - name: Read wasm-bindgen version
+        id: wasm-bindgen
+        run: |
+          version=$(nix develop -c cargo metadata --locked --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "notist-grammar") | .dependencies[] | select(.name == "wasm-bindgen") | .req | ltrimstr("=")')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache wasm-bindgen CLI
+        id: wasm-bindgen-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/wasm-bindgen
+          key: wasm-bindgen-${{ runner.os }}-${{ runner.arch }}-${{ steps.wasm-bindgen.outputs.version }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+
+      - name: Install matching wasm-bindgen CLI
+        if: steps.wasm-bindgen-cache.outputs.cache-hit != 'true'
+        env:
+          WASM_BINDGEN_VERSION: ${{ steps.wasm-bindgen.outputs.version }}
+        run: nix develop -c cargo install wasm-bindgen-cli --locked --version "$WASM_BINDGEN_VERSION" --root "$RUNNER_TEMP/wasm-bindgen"
+
+      - name: Build Grammar WASM
+        env:
+          NOTIST_WASM_BINDGEN: ${{ runner.temp }}/wasm-bindgen/bin/wasm-bindgen
+        run: nix develop -c just --justfile packages/grammar/justfile build
+
+      - name: Build site
+        run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- build docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: target/site
+
+  deploy:
+    name: Deploy documentation
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Deploy Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

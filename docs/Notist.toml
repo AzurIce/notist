@@ -1,3 +1,8 @@
+[site]
+title = "Notist"
+exclude = ["designs/AGENTS.md"]
+output = "../target/site"
+
 [dev-dependencies]
 grammar = { path = "../packages/grammar" }
 typst = { path = "../packages/typst" }

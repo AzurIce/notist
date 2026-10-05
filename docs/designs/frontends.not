@@ -1,6 +1,6 @@
 = 文档前端
 
-文档前端负责源码解析与 AST lowering，输出共享的未解析 Expr 森林（IR₁）。[Pipeline](pipeline.not) 注册和选择前端，再执行 resolve → shape → materialize；[notist-core](../../crates/notist-core/src/frontend.rs) 定义共同接口及输出类型。
+文档前端负责源码解析与 AST lowering，输出共享的未解析 Expr 森林（IR₁）。[Pipeline](pipeline.not) 注册和选择前端，再执行 resolve → shape → materialize；[notist-core](https://github.com/AzurIce/notist/blob/main/crates/notist-core/src/frontend.rs) 定义共同接口及输出类型。
 
 == 接口与输出
 

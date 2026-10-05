@@ -17,8 +17,8 @@ Vault 根目录的 Notist.toml 可包含站点配置：
 #raw(r#"""
 [site]
 title = "My Book"
-include = ["README.not", "docs/**", "packages/**"]
-exclude = ["docs/drafts/**"]
+include = ["**"]
+exclude = ["drafts/**"]
 output = "target/site"
 theme = "theme"
 """#, block: true, lang: "toml")
@@ -30,6 +30,8 @@ include 默认为所有文档，exclude 默认为空；匹配对象是 Vault 相
 build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/site.json；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
 
 == 路由与导航
+
+以下源路径相对于 Vault 根目录：
 
 | 源文件 | URL | 输出文件 |
 | --- | --- | --- |
@@ -102,3 +104,9 @@ let site = notist_ssg::build(&mut vault, &config)?;
 notist-ssg 通过 Resources 读取逻辑输入，生成拥有全部字节的 Site，不直接写文件或启动服务器。build 对每篇正文执行一次分析，校验源码诊断、路由、显式 id、目标与锚点，按对应环境转换独立输出树，再完成渲染与资源计划。任何错误都不返回部分站点。
 
 CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部 package / 配置资源；搜索、手工导航顺序与增量编译不属于此接口。
+
+== GitHub Pages
+
+仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar package 的 recipe 构建 WASM，再运行 notist build docs，上传 target/site 并部署到 GitHub Pages。docs/ 是 Vault 根目录，配置位于 docs/Notist.toml，output = "../target/site"；docs/README.not 发布到 /。根目录 packages/ 提供声明依赖和组件资源，包文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+
+push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

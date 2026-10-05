@@ -6,7 +6,7 @@
 - [Types & Literals](types.not)：类型、字面量与内容 flavor。
 - [Builtin Content Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
 - [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
-- [Grammar Package](../packages/grammar/README.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
+- [Grammar Package](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
 - [Document Frontends](designs/frontends.not)：Frontend Trait、默认实现、AST lowering、注册与解析产物捕获。
 - [Pipeline](designs/pipeline.not)：crate 职责、共享 IR 转换阶段与 Vault 宿主边界。
 - [Package Model](package.not)：package 的定义、命名空间、使用者环境与自身文档环境。

@@ -1,5 +1,0 @@
-[site]
-title = "Notist"
-include = ["README.not", "docs/**", "packages/**"]
-exclude = ["docs/designs/AGENTS.md"]
-output = "target/site"

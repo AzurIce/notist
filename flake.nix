@@ -41,7 +41,13 @@
               ];
             }
           );
-          src = craneLib.cleanCargoSource ./.;
+          src = pkgs.lib.cleanSourceWith {
+            src = pkgs.lib.cleanSource ./.;
+            filter = path: type:
+              craneLib.filterCargoSources path type
+              || pkgs.lib.hasPrefix "${toString ./.}/crates/notist-ssg/src/theme/" path
+              || path == "${toString ./.}/crates/notist-cli/src/preview.js";
+          };
           commonArgs = {
             inherit src;
             pname = "notist";
@@ -79,6 +85,7 @@
           devShells.default = craneLib.devShell {
             packages = with pkgs; [
               cargo-edit
+              just
               samply
               wasm-bindgen-cli
               miniserve

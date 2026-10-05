@@ -7,6 +7,6 @@ Notist 是基于内容树的文档工具链，支持 .not 与 Markdown，共享�
 - [Package Model](docs/package.not)：内容函数扩展、默认转换与可运行示例。
 
 ```sh
-cargo run -p notist-cli -- build
-cargo run -p notist-cli -- preview
+cargo run -p notist-cli -- build docs
+cargo run -p notist-cli -- preview docs
 ```

@@ -1,13 +1,15 @@
 use notist_core::{
+    builtins,
     builtins::{Accepts, Level},
     definitions::{
         DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule,
         ValueType,
     },
     item::{Ctor, Item, Value},
+    registry::Registry,
 };
 use notist_pipeline::{
-    Pipeline, Registry, analyze_module, builtins,
+    Pipeline, analyze_module,
     transforms::{Replace, TransformPlan},
 };
 use rowan::TextRange;

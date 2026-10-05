@@ -93,3 +93,42 @@ Callout 没有专用 Markup 语法，直接调用：
 #callout(kind: "note")[
 这里可以放段落、列表等块级内容。
 ]
+
+== Notist Markdown
+
+`.notmd` 与 `.nmd` 使用 Markdown 标题、强调、列表等语法，并支持 Notist 注解与内容函数；`.md` / `.markdown` 也使用同一前端。调用的参数及属性使用相同字面量，正文使用 Markdown。
+
+```markdown
+@!(title: "示例", tags: ("markdown", "notist"))
+@(id: "intro")
+# 入门
+
+普通 Markdown，包含 @(role: "highlight")**粗体** 和 #emph[行内调用]。
+
+@(id: "tip")
+#callout(kind: "note")[
+## 提示
+
+- 正文继续按 **Markdown** 解析
+- 也可以调用 #math("x^2") 或已安装包的内容函数
+]
+```
+
+`#emph[行内调用]` 的正文按 Markdown 行内规则解析；`#callout[ ... ]` 两端内侧留有换行，因此按 Markdown 块规则解析。换成 .not 时，调用名称与参数保持一致，正文改用 .not 语法。内容通过调用后的 `[]` 挂载，`#emph([正文])` 这样的 Content 参数目前不支持。
+
+== 按前端处理源码
+
+默认 Pipeline 按扩展名选择前端，并执行共用后端：
+
+```rust
+let pipeline = notist::Pipeline::default();
+let document = pipeline.analyze(
+    "example.nmd",
+    "@(id: \"intro\")\n# Title\n\n#strong[**Markdown**]",
+    notist::builtins::registry(),
+)?;
+```
+
+只安装原生前端时使用 `Pipeline::new().with_frontend(notist::NotistFrontend)`；只安装 Markdown 时使用 `Pipeline::new().with_frontend(notist_md::MarkdownFrontend)`。自定义前端实现 core 的 Frontend Trait，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
+
+需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, registry)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。

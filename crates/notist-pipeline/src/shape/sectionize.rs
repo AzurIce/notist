@@ -1,5 +1,5 @@
-use crate::expr::{Expr, RExpr};
-use crate::item::{Ctor, Value};
+use notist_core::expr::{Expr, RExpr};
+use notist_core::item::{Ctor, Value};
 use rowan::TextRange;
 
 /// Group a block sequence into sections by heading level: a heading starts a

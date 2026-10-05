@@ -17,7 +17,7 @@ syntax Bool -> `true` | `false`;
 syntax NumericValue -> MINUS? NUMBER;
 """#)
 
-数字无科学计数法；负号与 NUMBER 必须紧邻，形成 Neg 节点，不属于 Number token。当前只支持这一个字面量前缀，没有通用一元运算。整数溢出在 Desugar 产生 semantic 诊断。
+数字无科学计数法；负号与 NUMBER 必须紧邻，形成 Neg 节点，不属于 Number token。当前只支持这一个字面量前缀，没有通用一元运算。整数溢出由 notist-lowering 的字面量转换产生 semantic 诊断。
 
 == String
 
@@ -30,14 +30,14 @@ UTF-8，四种形态，产出同一类型：
 
 转义集恰好五个：`\"` `\\` `\n` `\r` `\t`；raw 形态不处理转义。行内形态不跨行。多行形态：开引号后须立即换行（该换行不计入值），收尾去掉一个换行，不做 dedent。
 
-String 由 Code 与 Markup 参数共享的字面量扫描器识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断由对应的字面量 lowering 执行；文档中由结果构造描述。
+String 由 Code、原生 Markup 与 Markdown 扩展参数共享的字面量扫描器识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断由对应的字面量 lowering 执行；文档中由结果构造描述。
 
 == 内容
 
-`[...]` 是内容字面量，flank（两端内侧有无空白）决定 flavor：
+`[...]` 在调用后的 body 槽挂载为 children；`#[...]` 是匿名 group 调用。其正文使用所在前端的语法：.not 使用 Notist Markup，.md / .markdown / .notmd / .nmd 使用 Markdown 及其 Notist 扩展，见 [文档前端](designs/frontends.not)。flank（两端内侧有无空白）决定 flavor：
 
-- `[x]`（两端内侧紧贴）→ InlineContent — inline 序列，inline 文法
-- `[ x ]`（两端内侧均为空白或换行）→ Content — 文档内容（调用森林），全块级文法；不透明：无相等性、不可模式匹配
+- `[x]`（两端内侧未同时留白）→ InlineContent — inline 序列，所在前端的行内文法
+- `[ x ]`（两端内侧均为空白或换行）→ Content — 文档内容（调用森林），所在前端的块级文法；不透明：无相等性、不可模式匹配
 
 ```notation
 flavor(open, close) =
@@ -74,8 +74,8 @@ classification 按上面的局部判别执行。Grouping 必须恰有一个值�
 
 当前 core 的 Dict 与 `.not` 字面量都只支持字符串 key；源码 key 仅解析 IDENT / STR，裸 `true` 作 key 也是字符串。其他 key 类型及其源码写法见 [Draft](draft.not)。
 
-内容字面量可被 parser 保留在参数或集合中，但 Desugar 诊断其位置非法，不将其作为可用的 Value。裸标识符值除 true / false 外产生 semantic 诊断。
+Content 不属于可传入普通参数的 Value。`#f([body])` 与 `#f(children: [body])` 目前不支持；内容用 `#f(args)[body]` 挂载。parser 可保留非法位置的内容语法供诊断和恢复。裸标识符值除 true / false 外产生 semantic 诊断。
 
 == 函数
 
-`.not` 提供内容函数调用；`.notc` 提供无函数体的签名声明，语法见 [Code Syntax](grammar/code.not)。当前没有 Function 值或闭包字面量，函数体与脚本能力以后设计。
+.not 与 Markdown 扩展都提供内容函数调用；`.notc` 提供无函数体的签名声明，语法见 [Code Syntax](grammar/code.not)。当前没有 Function 值或闭包字面量，函数体与脚本能力以后设计。

@@ -35,7 +35,7 @@ name = "widgets"
 
 名称使用与限定调用相同的标识符规则，区分大小写，不能使用保留名 notist。使用者的 dependency 键必须与清单名称一致，当前不支持别名。
 
-调用 `#widgets::panel("Title")[body]` 查找 widgets::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入。声明返回 Content 或 InlineContent 决定内容类别；IR 保留函数身份、字段、children、属性与源码范围。
+原生 .not 与 Markdown 扩展中的调用 `#widgets::panel("Title")[body]` 都查找 widgets::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入，并使用所在文档前端的语法；前端与 AST lowering 的职责见 [文档前端](designs/frontends.not)。声明返回 Content 或 InlineContent 决定内容类别；IR 保留函数身份、字段、children、属性与源码范围。
 
 内置函数属于 notist 命名空间，prelude 提供 `#callout` 等简写；notist 是保留包名。外部组件标签包含注册包名与函数名，例如 widgets-panel 和 mermaid-diagram。
 

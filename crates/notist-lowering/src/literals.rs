@@ -1,14 +1,14 @@
 //! Literal conversion shared by document calls and Code declaration defaults.
 
-use crate::diag::{Diagnostic, Phase};
-use crate::item::{Dict, Value};
+use notist_core::diag::{Diagnostic, Phase};
+use notist_core::item::{Dict, Value};
 use notist_syntax::ast::Entry;
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 use rowan::{NodeOrToken, TextRange};
 
 /// code CST → Value. The four string forms are resolved here (escapes, raw,
 /// multiline framing).
-pub(crate) fn syntax_value(
+pub fn syntax_value(
     element: &NodeOrToken<SyntaxNode, SyntaxToken>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Value> {
@@ -130,7 +130,7 @@ pub(crate) fn syntax_value(
 
 /// A group node's value members: everything except trivia, commas, and the
 /// parens themselves.
-pub(crate) fn value_children(
+pub fn value_children(
     node: &SyntaxNode,
 ) -> impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>> {
     node.children_with_tokens().filter(|el| {
@@ -147,7 +147,7 @@ pub(crate) fn value_children(
     })
 }
 
-pub(crate) fn key_text(token: &SyntaxToken, diags: &mut Vec<Diagnostic>) -> Option<String> {
+pub fn key_text(token: &SyntaxToken, diags: &mut Vec<Diagnostic>) -> Option<String> {
     match token.kind() {
         SyntaxKind::Ident => Some(token.text().to_string()),
         SyntaxKind::Str => unquote(token.text(), token.text_range(), diags),

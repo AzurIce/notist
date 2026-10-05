@@ -23,12 +23,12 @@ pub use notist_core::definitions::{
     ValueConstraint, ValueType,
 };
 pub use notist_core::diag::{Diagnostic, Phase};
+pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
 pub use notist_core::item::{Ctor, Dict, Item, Value};
 pub use notist_core::registry::Registry;
 pub use notist_core::{builtins, diag, dump, expr, index, item, registry};
-pub use notist_pipeline::{
-    Analysis, Frontend, Frontends, Pipeline, UnsupportedFormat, analyze_module,
-};
+pub use notist_pipeline::frontend::Frontends;
+pub use notist_pipeline::{Analysis, NotistFrontend, Pipeline, UnsupportedFormat, analyze_module};
 pub use notist_syntax as syntax;
 
 pub mod cst_json;

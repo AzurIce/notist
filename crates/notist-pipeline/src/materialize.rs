@@ -1,7 +1,7 @@
 use rowan::TextRange;
 
-use crate::expr::{Expr, RExpr};
-use crate::item::{Ctor, Dict, Item};
+use notist_core::expr::{Expr, RExpr};
+use notist_core::item::{Ctor, Dict, Item};
 
 /// M1 materialization: no environments, no computation — resolution,
 /// checking, and normalization happened in `resolve`; shaping in `shape`.
@@ -23,9 +23,9 @@ pub fn materialize(expr: &RExpr) -> Item {
             item.children = children.iter().map(materialize).collect();
             item.attrs = attrs.clone();
             item.level = if crate::shape::reflow::is_block_element(expr) {
-                crate::builtins::Level::Block
+                notist_core::builtins::Level::Block
             } else {
-                crate::builtins::Level::Inline
+                notist_core::builtins::Level::Inline
             };
             item
         }

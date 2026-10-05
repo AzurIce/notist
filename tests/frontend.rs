@@ -30,6 +30,8 @@ fn default_pipeline_produces_renderable_ir_for_both_formats() {
         ("document.not", "= 标题\n\n正文 *强调*\n"),
         ("document.md", "# 标题\n\n正文 **强调**\n"),
         ("document.markdown", "# 标题\n\n正文 **强调**\n"),
+        ("document.notmd", "# 标题\n\n正文 **强调**\n"),
+        ("document.nmd", "# 标题\n\n正文 **强调**\n"),
     ] {
         let document = notist
             .analyze(path, src, notist::builtins::registry())
@@ -52,14 +54,14 @@ fn default_pipeline_produces_renderable_ir_for_both_formats() {
 
 #[test]
 fn pipeline_can_install_only_selected_frontends() {
-    use notist::{Frontend, Pipeline};
+    use notist::{NotistFrontend, Pipeline};
 
     assert!(
         Pipeline::new()
             .analyze("document.not", "正文", notist::builtins::registry())
             .is_err()
     );
-    let notist = Pipeline::new().with_frontend(Frontend::notist());
+    let notist = Pipeline::new().with_frontend(NotistFrontend);
     assert!(
         notist
             .analyze("document.not", "正文", notist::builtins::registry())
@@ -76,26 +78,35 @@ fn pipeline_can_install_only_selected_frontends() {
     );
 }
 
-fn lower_plain_text(
-    src: &str,
-) -> (
-    Vec<notist::expr::Expr>,
-    notist::Dict,
-    Vec<notist::Diagnostic>,
-) {
-    let span = notist::TextRange::new(0.into(), (src.len() as u32).into());
-    let paragraph = notist::expr::Expr::call("paragraph", span)
-        .with_children(vec![notist::expr::Expr::text(src.to_owned(), span)]);
-    (vec![paragraph], notist::Dict::default(), Vec::new())
+struct PlainTextFrontend {
+    extensions: Vec<&'static str>,
+}
+
+impl notist::Frontend for PlainTextFrontend {
+    fn extensions(&self) -> &[&str] {
+        &self.extensions
+    }
+
+    fn compile(&self, src: &str, options: notist::FrontendOptions) -> notist::FrontendOutput {
+        let span = notist::TextRange::new(0.into(), (src.len() as u32).into());
+        let paragraph = notist::expr::Expr::call("paragraph", span)
+            .with_children(vec![notist::expr::Expr::text(src.to_owned(), span)]);
+        notist::FrontendOutput {
+            forest: vec![paragraph],
+            syntax: options
+                .capture_syntax
+                .then(|| Box::new(src.to_owned()) as _),
+            ..Default::default()
+        }
+    }
 }
 
 #[test]
 fn custom_frontend_extends_defaults_and_can_override_an_extension() {
-    use notist::{Ctor, Frontend, Pipeline, Value};
+    use notist::{Ctor, Pipeline, Value};
 
-    let notist = Pipeline::default().with_frontend(Frontend {
-        extensions: &["txt", "md"],
-        lower: lower_plain_text,
+    let notist = Pipeline::default().with_frontend(PlainTextFrontend {
+        extensions: vec!["txt", "md"],
     });
     for path in ["document.txt", "document.md"] {
         let document = notist
@@ -108,6 +119,19 @@ fn custom_frontend_extends_defaults_and_can_override_an_extension() {
             Some(&Value::Str("# literal".into()))
         );
     }
+    let (analysis, inspection) = notist
+        .inspect("document.md", "# literal", notist::builtins::registry())
+        .unwrap();
+    assert!(analysis.diagnostics().is_empty());
+    assert_eq!(
+        inspection
+            .syntax
+            .as_deref()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<String>(),
+        Some(&"# literal".to_owned()),
+    );
     for (path, src) in [
         ("document.not", "= Heading"),
         ("document.markdown", "# Heading"),

@@ -1,6 +1,6 @@
 = HTML Rendering
 
-`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 Markdown 使用同一个 renderer。输入树与源码诊断由 [Pipeline](designs/pipeline.not) 产生，节点契约见 [Builtin](builtin.not)。
+`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Pipeline](designs/pipeline.not) 产生，节点契约见 [Builtin](builtin.not)。
 
 == 使用
 
@@ -9,7 +9,7 @@ let analysis = notist::Pipeline::default().analyze("example.not", source, notist
 let html = notist_html::render(analysis.root());
 ```
 
-仓库中可使用 `cargo run --example html -- document.not` 或 `.md` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
+仓库中可使用 `cargo run --example html -- document.not` 或 `.md` / `.notmd` / `.nmd` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
 
 `render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
 
@@ -76,7 +76,7 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 文本中的 &、小于号和大于号被转义，属性值额外转义单双引号；NUL 替换为 Unicode replacement character。直接处理 IR 已解码的值，不再次解码 Markdown 的字符引用或标点转义。
 
-默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写 `.not` / `.md` 扩展名；资源位置与发布路径由应用决定。
+默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写文档扩展名；资源位置与发布路径由应用决定。
 
 结构映射参照 [HTML table content model](https://html.spec.whatwg.org/multipage/tables.html#the-table-element) 与 [HTML grouping content](https://html.spec.whatwg.org/multipage/grouping-content.html)。
 

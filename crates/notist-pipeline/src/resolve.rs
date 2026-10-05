@@ -1,7 +1,7 @@
-use crate::builtins::{self, Accepts};
-use crate::diag::{Diagnostic, Phase};
-use crate::expr::{BodyFlavor, Expr, RExpr};
-use crate::item::{Ctor, Value};
+use notist_core::builtins::{self, Accepts};
+use notist_core::diag::{Diagnostic, Phase};
+use notist_core::expr::{BodyFlavor, Expr, RExpr};
+use notist_core::item::{Ctor, Value};
 
 /// IR₁ → IR₂: resolve source-level names to constructors and validate each
 /// call against its signature. An unknown name is a type error; the call is
@@ -17,7 +17,7 @@ pub fn resolve(forest: Vec<Expr>, diagnostics: &mut Vec<Diagnostic>) -> Vec<RExp
 
 pub fn resolve_with_registry(
     forest: Vec<Expr>,
-    registry: &crate::registry::Registry,
+    registry: &notist_core::registry::Registry,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<RExpr> {
     forest
@@ -28,7 +28,7 @@ pub fn resolve_with_registry(
 
 fn resolve_expr(
     expr: Expr,
-    registry: &crate::registry::Registry,
+    registry: &notist_core::registry::Registry,
     diags: &mut Vec<Diagnostic>,
 ) -> RExpr {
     match expr {
@@ -65,17 +65,17 @@ fn resolve_expr(
                     Ctor::from_name(&definition.id.name)
                         .expect("the standard registry contains native constructors")
                 }
-                Ok(definition) => Ctor::Extension(crate::item::ExtensionCtor {
+                Ok(definition) => Ctor::Extension(notist_core::item::ExtensionCtor {
                     id: definition.id.clone(),
                     accepts: definition.children,
                     level: definition.returns.level(&fields, body),
                 }),
                 Err(error) => {
                     let message = match error {
-                        crate::registry::LookupError::Unknown => {
+                        notist_core::registry::LookupError::Unknown => {
                             format!("unknown constructor `{name}`")
                         }
-                        crate::registry::LookupError::UnsupportedPath => {
+                        notist_core::registry::LookupError::UnsupportedPath => {
                             format!("module paths are not supported yet: `{name}`")
                         }
                     };

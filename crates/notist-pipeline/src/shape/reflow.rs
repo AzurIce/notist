@@ -1,6 +1,6 @@
-use crate::builtins::Level;
-use crate::expr::{BodyFlavor, Expr, RExpr};
-use crate::item::Ctor;
+use notist_core::builtins::Level;
+use notist_core::expr::{BodyFlavor, Expr, RExpr};
+use notist_core::item::Ctor;
 use rowan::TextRange;
 
 /// Signature-aware restructuring of an `IR₂` forest: paragraphs that contain
@@ -107,7 +107,7 @@ pub(crate) fn is_block_element(expr: &RExpr) -> bool {
     };
     if let Some(definition) = name
         .function_id()
-        .and_then(|id| crate::builtins::registry().get(&id))
+        .and_then(|id| notist_core::builtins::registry().get(&id))
     {
         return definition.returns.level(fields, *body) == Level::Block;
     }

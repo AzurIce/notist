@@ -1,12 +1,12 @@
 = Notist Syntax
 
-本节定义 `.not` 的 Markup 共用语法。`.notc` 的声明文法见 [Code Syntax](code.not)。记法见 [Grammar Notation](notation.not)，字面量见 [Types & Literals](../types.not)，具体构造及其语法糖见 [Builtin Content Functions & Sugar Grammar](../builtin.not)。实现阶段见 [Pipeline](../designs/pipeline.not)。
+本节定义 `.not` 的 Markup 共用语法，以及 Markdown 前端的 Notist 扩展。`.notc` 的声明文法见 [Code Syntax](code.not)。记法见 [Grammar Notation](notation.not)，字面量见 [Types & Literals](../types.not)，具体构造及其语法糖见 [Builtin Content Functions & Sugar Grammar](../builtin.not)。实现阶段见 [Pipeline](../designs/pipeline.not)。
 
 == 模式与输入层级
 
 `.not` 整体使用 Markup 文法，包括 `#name(args)[body]` 和注解。lexer 内部使用调用路径、参数与正文等状态；调用参数及 `@(dict)`、`@!(dict)` 的 payload 与 Code 共享字面量 token 规则，这些状态不构成语言切换。
 
-`parse_document(source)` 产生 Document CST，兼容入口 `parser::parse` 行为相同。`parse_module(source)` 解析单文件 `.notc` 源码并产生 Module CST；两个入口位于同一个 notist-syntax crate，不读取文件或加载依赖。
+`parse_document(source)` 产生 Document CST。`parse_module(source)` 解析单文件 `.notc` 源码并产生 Module CST；两个入口位于同一个 notist-syntax crate，不读取文件或加载依赖。NotistFrontend 组合解析和 AST lowering；前端边界见 [文档前端](../designs/frontends.not)。
 
 `$...$` 是 Markup 中的不透明数学 payload，不启用内部 Math 文法。raw payload 同样不解析内部语言；识别规则分别在 math 与 raw 函数小节。
 
@@ -233,7 +233,17 @@ structural_children(children) {
 
 == Markdown 前端
 
-Markdown 由独立前端解析；builtin 中的 `MD.*` 表示其 AST 模式，通过 ast 规则定义它们到共享内容函数的映射，不定义 Markdown 的源码文法。
+Markdown 由 notist-md 中的 MarkdownFrontend 独立解析；builtin 中的 `MD.*` 表示其 AST 模式，通过 ast 规则定义它们到共享内容函数的映射，不定义 Markdown 的源码文法。
+
+默认 Markdown 前端处理 `.md`、`.markdown`、`.notmd` 与 `.nmd`，共同输出 Expr 并进入相同的 resolve / shape / materialize 管线。`.notmd` 与 `.nmd` 是 Notist Markdown 的长短扩展名。
+
+Markdown 支持 `@(dict)`、`@!(dict)` 和 `#name(args)[body]`，也支持带包路径的调用与匿名 `#[body]`。参数及注解 payload 使用 Notist 字面量规则；调用正文继续使用 Markdown：`[正文]` 是行内槽，`[ 正文 ]` 是块槽，块槽可包含空行、标题、列表、引用和代码块。
+
+Markdown 扩展节点只把注解 payload 与调用头交给原生语法解析及共用 lowering；`[body]` 由 Markdown 前端解析，保留原始源码范围。`#f([body])` 这样的 Content 参数目前不支持，内容通过调用后的 children 槽挂载；类型边界见 [Types](../types.not)。
+
+独占行的 `@(dict)` 挂到下一个块；与 Markdown 行内元素或调用紧邻的注解挂到该元素。`@!(dict)` 只允许出现在文档开头，并挂到文档根节点。标题上的属性按共享 shape 规则转移到 section。悬空注解、非法字面量和未闭合调用产生源码诊断。
+
+`# 标题` 仍是 Markdown 标题，普通 `#tag` 与邮件地址仍是文本；转义、代码和数学 payload 中的注解及调用不执行。扩展语法的参数与属性不会作为 Markdown emphasis 或 link 继续解析。
 
 - 普通文字、链接地址和 embed 字段的标点转义与字符引用只解码一次；raw / math 不解码。
 - `decode_once` 从左到右识别原输入中的标点转义与字符引用，输出不再次参与解码；`decode_optional` 对 none 保留 none，否则调用 decode_once。
@@ -254,6 +264,12 @@ URL autolink、term list、smart quote、symbol shorthand、Typst 的 label / re
 | 正文分派、调用、注解、行内扫描 | `crates/notist-syntax/src/parser.rs` |
 | 表格探测及单元格范围 | `crates/notist-syntax/src/parser/table.rs` |
 | 目标与标题字段提取 | `crates/notist-syntax/src/ast.rs` |
-| 原生前端降糖 | `crates/notist-pipeline/src/desugar.rs` |
+| 文档管线与调试 | `crates/notist-pipeline/src/lib.rs` |
+| 前端注册 | `crates/notist-pipeline/src/frontend.rs` |
+| 原生前端装配 | `crates/notist-pipeline/src/notist.rs` |
+| 前端接口 | `crates/notist-core/src/frontend.rs` |
+| 原生前端降糖 | `crates/notist-lowering/src/document.rs` |
 | Markdown 映射 | `crates/notist-md/src/lib.rs` |
+| 注解、调用参数与字面量 lowering | `crates/notist-lowering/src/lib.rs` / `literals.rs` |
+| Markdown 注解与调用 | `crates/notist-md/src/markup.rs` |
 | Markdown 字段解码 | `crates/notist-md/src/strings.rs` |

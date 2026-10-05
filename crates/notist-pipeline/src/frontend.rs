@@ -2,40 +2,15 @@ use std::path::Path;
 
 use rowan::TextRange;
 
-use crate::diag::Diagnostic;
-use crate::expr::Expr;
-use crate::item::{Dict, Item};
-
-/// A frontend: file extensions it handles and the lowering function that
-/// turns sources into shared Expr IR. Resolution, shaping and materialization
-/// run in the pipeline.
-pub struct Frontend {
-    pub extensions: &'static [&'static str],
-    pub lower: fn(&str) -> (Vec<Expr>, Dict, Vec<Diagnostic>),
-}
-
-impl Frontend {
-    /// The `.not` frontend.
-    pub fn notist() -> Self {
-        Self {
-            extensions: &["not"],
-            lower: crate::desugar::lower_not,
-        }
-    }
-
-    /// The `.md` and `.markdown` frontend.
-    pub fn markdown() -> Self {
-        Self {
-            extensions: &["md", "markdown"],
-            lower: notist_md::lower,
-        }
-    }
-}
+use crate::NotistFrontend;
+use notist_core::diag::Diagnostic;
+use notist_core::frontend::{Frontend, FrontendOptions};
+use notist_core::item::Item;
 
 /// A frontend registry. [`Self::with_defaults`] installs `.not` and Markdown;
 /// register more with [`Self::with`]. Most callers can use [`crate::Pipeline`].
 pub struct Frontends {
-    frontends: Vec<Frontend>,
+    frontends: Vec<Box<dyn Frontend>>,
 }
 
 impl Frontends {
@@ -45,16 +20,16 @@ impl Frontends {
         }
     }
 
-    /// `.not` (notist-syntax + desugar) and `.md`/`.markdown` (rushdown).
+    /// `.not` (notist-syntax + notist-lowering) and Markdown / Notist Markdown (rushdown).
     pub fn with_defaults() -> Self {
         Self::new()
-            .with(Frontend::notist())
-            .with(Frontend::markdown())
+            .with(NotistFrontend)
+            .with(notist_md::MarkdownFrontend)
     }
 
     /// Register a frontend; the last registration wins for overlapping extensions.
-    pub fn with(mut self, frontend: Frontend) -> Self {
-        self.frontends.push(frontend);
+    pub fn with(mut self, frontend: impl Frontend + 'static) -> Self {
+        self.frontends.push(Box::new(frontend));
         self
     }
 
@@ -64,16 +39,17 @@ impl Frontends {
             .is_some_and(|ext| {
                 self.frontends
                     .iter()
-                    .any(|frontend| frontend.extensions.contains(&ext))
+                    .any(|frontend| frontend.extensions().contains(&ext))
             })
     }
 
-    pub(crate) fn get(&self, path: &Path) -> Option<&Frontend> {
+    pub(crate) fn get(&self, path: &Path) -> Option<&dyn Frontend> {
         let ext = path.extension()?.to_str()?;
         self.frontends
             .iter()
             .rev()
-            .find(|frontend| frontend.extensions.contains(&ext))
+            .find(|frontend| frontend.extensions().contains(&ext))
+            .map(|frontend| frontend.as_ref())
     }
 
     /// Lower `src` with the frontend matching `path`'s extension, then run
@@ -89,9 +65,16 @@ impl Frontends {
         registry: &notist_core::registry::Registry,
     ) -> Option<(Item, Vec<Diagnostic>)> {
         let frontend = self.get(path)?;
-        let (forest, module_attrs, mut diagnostics) = (frontend.lower)(src);
+        let output = frontend.compile(src, FrontendOptions::default());
+        let mut diagnostics = output.diagnostics;
         let span = TextRange::new(0.into(), (src.len() as u32).into());
-        let item = crate::process(forest, span, module_attrs, registry, &mut diagnostics);
+        let item = crate::process(
+            output.forest,
+            span,
+            output.module_attrs,
+            registry,
+            &mut diagnostics,
+        );
         Some((item, diagnostics))
     }
 }

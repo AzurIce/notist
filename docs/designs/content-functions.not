@@ -47,7 +47,7 @@ fn foo(arga: String, argb: Int = 1)[children: Content] -> Content;
 
 这里 children 是函数的尾部挂载，不是允许传入 Content 的普通参数。声明以分号结束，第一版没有函数体。Content 返回类型对应块级调用，InlineContent 对应行内调用。
 
-`.not` 是 Markup，内容函数调用及其参数、挂载均属于 Markup 语法。`.notc` 是持续 Code 模式的声明模块；两个入口位于同一个 notist-syntax crate，共享基础词法和字面量，分别产生 Document 与 Module CST / AST。模块定义不进入文档 Expr / Item。
+`.not` 是 Markup，内容函数调用及其参数、挂载均属于 Markup 语法。MarkdownFrontend 同样支持显式内容函数和注解，调用头及字面量使用共用规则，children 正文使用 Markdown；语法归属见 [文档前端](frontends.not)。`.notc` 是持续 Code 模式的声明模块；两个入口位于同一个 notist-syntax crate，共享基础词法和字面量，分别产生 Document 与 Module CST / AST。模块定义不进入文档 Expr / Item。
 
 Resolve 从同一个 Registry 执行名称解析、参数归位、默认值补齐、类型检查和 children 检查。未知函数与已注册的合法扩展需要区分；错误恢复保留原始字段和子内容并产生诊断。
 
@@ -209,9 +209,9 @@ Package 是带有 Notist.toml 清单与 lib.notc 的目录。Code 只有这一�
 
 声明分析将唯一入口的 Module AST 转换为 DefinitionModule，再通过共同校验安装到 Registry。依赖或声明失败不进行部分安装。第一版读取声明即可完成加载；复杂 scripting、模块及执行后端在需要时另行设计。
 
-notist-core 提供定义模型、Registry 与共同校验，不依赖 parser 或 HTML。notist-pipeline 连接前端与 core，负责声明转换和正文管线。notist-html 提供组件入口规则与签名绑定；顶层 Vault 驱动资源取得和环境装配。pipeline 与 renderer 接收显式输入，不进行文件或网络操作。
+notist-core 提供定义模型、Registry、共同校验与 Frontend Trait。notist-lowering 接收原生 Document AST，并提供共用字面量转换；notist-md 实现 MarkdownFrontend。notist-pipeline 提供 NotistFrontend，统一注册前端并执行共享后端，同时通过 analyze_module 完成声明转换。notist-html 提供组件入口规则与签名绑定；顶层 Vault 驱动资源取得和环境装配。pipeline 与 renderer 接收显式输入，不进行文件或网络操作。
 
-默认分析环境装配 core 签名与 .not、Markdown 前端；默认 HTML 环境装配内置 renderer。调用者可以配置前端、追加签名与组件实现。
+默认分析环境装配 core 签名与 .not、.md / .markdown / .notmd / .nmd 前端；默认 HTML 环境装配内置 renderer。调用者可以用 Pipeline::with_frontend 注册实现 Frontend Trait 的具体值，并追加签名与组件实现。前端注册与函数签名注册分别控制源码语法和内容契约。
 
 完整示例的装配顺序：
 

@@ -114,6 +114,12 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
             3,
         ),
         ("doc.md", "$frac(a, b)$ and $sqrt(x)$", 2),
+        (
+            "doc.notmd",
+            "@(id: \"formula\")\n#math(\"sqrt(x)\") $frac(a, b)$",
+            2,
+        ),
+        ("doc.nmd", "#typst::math(\"sqrt(x)\") $frac(a, b)$", 2),
     ] {
         let document = project.path().join(name);
         std::fs::write(&document, source).unwrap();

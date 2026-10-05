@@ -1,33 +1,14 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
-use crate::diag::{Diagnostic, Phase};
-use crate::literals::{key_text, syntax_value, value_children};
+use crate::annotation_dict;
+use notist_core::diag::{Diagnostic, Phase};
 use notist_syntax::ast::{
-    Annotation, CodeCall, Document, Embed, Entry, Heading, Link, List, ListItem, Table, WikiLink,
+    Annotation, CodeCall, Document, Embed, Heading, Link, List, ListItem, Table, WikiLink,
 };
 use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-use crate::expr::{BodyFlavor, Expr};
-use crate::item::{Dict, Value};
-
-/// The `.not` frontend's lowering: parse + desugar, no materialization (that is shared).
-pub fn lower_not(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
-    let parse = notist_syntax::parse_document(src);
-    lower_parsed(&parse)
-}
-
-pub(crate) fn lower_parsed(parse: &notist_syntax::Parse) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
-    let mut diagnostics: Vec<Diagnostic> = parse
-        .diagnostics
-        .iter()
-        .map(|d| Diagnostic::new(Phase::Syntax, d.span, d.message.clone()))
-        .collect();
-    let Some(document) = notist_syntax::ast::Document::cast(parse.syntax()) else {
-        return (Vec::new(), Dict::default(), diagnostics);
-    };
-    let (forest, module_attrs) = desugar(&document, &mut diagnostics);
-    (forest, module_attrs, diagnostics)
-}
+use notist_core::expr::{BodyFlavor, Expr};
+use notist_core::item::{Dict, Value};
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
     tokens
@@ -38,23 +19,23 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
         .to_string()
 }
 
-/// CST → Expr forest: the desugar step. A document is a module body (a
+/// Document AST → Expr forest (IR₁). A document is a module body (a
 /// top-level expression sequence), not a constructor call; the `Doc` root
 /// is introduced by materialize.
 ///
 /// The CST is flat: maximal runs of inline content become `paragraph` exprs
 /// here; blank lines and block nodes are run boundaries. Annotations attach
 /// to the immediately following node; `@!(dict)` become the module's attrs.
-pub fn desugar(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
+pub fn lower_document(document: &Document, diags: &mut Vec<Diagnostic>) -> (Vec<Expr>, Dict) {
     let elements: Vec<_> = document.elements().collect();
-    desugar_blocks(&elements, diags)
+    lower_blocks(&elements, diags)
 }
 
 /// A flat element sequence → Expr forest, shared by the document body and
 /// block-level `[...]` bodies. The returned Dict collects module (`@!`)
 /// attrs; `[...]` bodies ignore it.
 #[allow(unused_assignments)] // seen_content is loop-carried across match arms
-fn desugar_blocks(
+fn lower_blocks(
     elements: &[NodeOrToken<SyntaxNode, SyntaxToken>],
     diags: &mut Vec<Diagnostic>,
 ) -> (Vec<Expr>, Dict) {
@@ -68,7 +49,7 @@ fn desugar_blocks(
         () => {
             if !run.is_empty() {
                 let span = run_span(&run);
-                let children = desugar_inline(run.drain(..), diags);
+                let children = lower_inline(run.drain(..), diags);
                 if !children.is_empty() {
                     let mut expr = Expr::call("paragraph", span).with_children(children);
                     expr.set_attrs(pending.take());
@@ -85,7 +66,7 @@ fn desugar_blocks(
             NodeOrToken::Node(node) => match node.kind() {
                 SyntaxKind::Annotation => {
                     let annotation = Annotation::cast(node.clone()).unwrap();
-                    // 紧邻下一个元素的注解属于行内（进 run，由 desugar_inline
+                    // 紧邻下一个元素的注解属于行内（进 run，由 lower_inline
                     // 挂到紧随的构造）；否则是块级注解（挂到下一个块/段落）
                     let adjacent = elements.get(i + 1).is_some_and(|next| {
                         !matches!(next.kind(), SyntaxKind::Whitespace | SyntaxKind::Newline)
@@ -115,7 +96,7 @@ fn desugar_blocks(
                     seen_content = true;
                     let heading = Heading::cast(node.clone()).unwrap();
                     let level = heading.level() as i64;
-                    let children = desugar_inline(heading.content(), diags);
+                    let children = lower_inline(heading.content(), diags);
                     let mut expr = Expr::call("heading", heading.range())
                         .with_field("level", Value::Int(level))
                         .with_children(children);
@@ -125,21 +106,21 @@ fn desugar_blocks(
                 SyntaxKind::List => {
                     flush_run!();
                     seen_content = true;
-                    let mut expr = desugar_list(&List::cast(node.clone()).unwrap(), diags);
+                    let mut expr = lower_list(&List::cast(node.clone()).unwrap(), diags);
                     expr.set_attrs(pending.take());
                     forest.push(expr);
                 }
                 SyntaxKind::Table => {
                     flush_run!();
                     seen_content = true;
-                    let mut expr = desugar_table(&Table::cast(node.clone()).unwrap(), diags);
+                    let mut expr = lower_table(&Table::cast(node.clone()).unwrap(), diags);
                     expr.set_attrs(pending.take());
                     forest.push(expr);
                 }
                 SyntaxKind::Raw => {
                     flush_run!();
                     seen_content = true;
-                    let mut expr = desugar_raw_block(node);
+                    let mut expr = lower_raw_block(node);
                     expr.set_attrs(pending.take());
                     forest.push(expr);
                 }
@@ -212,7 +193,7 @@ fn run_span(run: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> TextRange {
 /// A fenced raw block: content between the fences; the tag is the rest of
 /// the opening line. (Unclosed fences arrive wrapped in `Error` and are
 /// dropped there.)
-fn desugar_raw_block(node: &SyntaxNode) -> Expr {
+fn lower_raw_block(node: &SyntaxNode) -> Expr {
     let tokens: Vec<_> = node
         .children_with_tokens()
         .filter_map(|e| e.into_token())
@@ -257,40 +238,19 @@ fn desugar_raw_block(node: &SyntaxNode) -> Expr {
     expr
 }
 
-/// The dict carried by an `@(dict)` annotation (stray members diagnosed).
-fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> Dict {
-    let mut dict = Dict::default();
-    if let Some(node) = annotation.payload_dict() {
-        for el in value_children(&node) {
-            // the colon of the empty-dict spelling `(:)` is structural
-            if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
-                diags.push(Diagnostic {
-                    phase: Phase::Semantic,
-                    span: el.text_range(),
-                    message: "annotation entries must be `key: value`".to_string(),
-                });
-            }
-        }
-        if let Some(Value::Dict(d)) = syntax_value(&NodeOrToken::Node(node), diags) {
-            dict = d;
-        }
-    }
-    dict
-}
-
-fn desugar_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
+fn lower_list(list: &List, diags: &mut Vec<Diagnostic>) -> Expr {
     let ordered = list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
     Expr::call("list", list.range())
         .with_field("ordered", Value::Bool(ordered))
         .with_field("start", Value::Int(1))
         .with_children(
             list.items()
-                .map(|item| desugar_list_item(&item, diags))
+                .map(|item| lower_list_item(&item, diags))
                 .collect(),
         )
 }
 
-fn desugar_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
+fn lower_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
     let align = table.alignments();
     let width = align.len();
     let rows = table
@@ -309,7 +269,7 @@ fn desugar_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
                         })
                         .map(|node| node.text_range())
                         .collect();
-                    let mut inline = desugar_inline(cell.content(), diags);
+                    let mut inline = lower_inline(cell.content(), diags);
                     // Pipe escaping belongs to table syntax, including opaque raw/math
                     // payloads, where ordinary markup escapes otherwise stay literal.
                     unescape_table_pipes(&mut inline, &payloads);
@@ -352,106 +312,31 @@ fn unescape_table_pipes(exprs: &mut [Expr], payloads: &[TextRange]) {
             ..
         } = expr
         {
-            if matches!(name.as_str(), "raw" | "math") && payloads.contains(span) {
-                if let Some(Value::Str(text)) = fields.get("text") {
-                    fields.insert("text", Value::Str(text.replace("\\|", "|")));
-                }
+            if matches!(name.as_str(), "raw" | "math")
+                && payloads.contains(span)
+                && let Some(Value::Str(text)) = fields.get("text")
+            {
+                fields.insert("text", Value::Str(text.replace("\\|", "|")));
             }
             unescape_table_pipes(children, payloads);
         }
     }
 }
 
-fn desugar_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
+fn lower_list_item(item: &ListItem, diags: &mut Vec<Diagnostic>) -> Expr {
     let elements: Vec<_> = item.content().collect();
-    let (children, _) = desugar_blocks(&elements, diags);
+    let (children, _) = lower_blocks(&elements, diags);
     Expr::call("item", item.range()).with_children(children)
 }
 
-fn desugar_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
-    let span = call.range();
-    let mut args = Vec::new();
-    let mut fields = Dict::default();
-    let arg_els = call.args();
-    let mut i = 0;
-    while i < arg_els.len() {
-        match &arg_els[i] {
-            NodeOrToken::Node(n) if n.kind() == SyntaxKind::Entry => {
-                let entry = Entry::cast(n.clone()).unwrap();
-                let Some(key_token) = entry.key_token() else {
-                    i += 1;
-                    continue;
-                };
-                let Some(key) = key_text(&key_token, diags) else {
-                    i += 1;
-                    continue;
-                };
-                let Some(value_el) = entry.value() else {
-                    i += 1;
-                    continue;
-                };
-                if value_el.kind() == SyntaxKind::LBracket {
-                    diags.push(Diagnostic {
-                        phase: Phase::Semantic,
-                        span: value_el.text_range(),
-                        message: "content literals as entry values are not supported yet"
-                            .to_string(),
-                    });
-                    i += 1;
-                    continue;
-                }
-                if let Some(value) = syntax_value(&value_el, diags) {
-                    fields.insert(key, value);
-                }
-                i += 1;
-            }
-            NodeOrToken::Token(t) if t.kind() == SyntaxKind::LBracket => {
-                // content is mounted via the body slot, never passed as an argument
-                let open_span = t.text_range();
-                diags.push(Diagnostic {
-                    phase: Phase::Semantic,
-                    span: open_span,
-                    message:
-                        "content is mounted with `[..]` after the call, not passed as an argument"
-                            .to_string(),
-                });
-                let mut depth = 0usize;
-                i += 1;
-                while i < arg_els.len() {
-                    match arg_els[i].kind() {
-                        SyntaxKind::LBracket => depth += 1,
-                        SyntaxKind::RBracket => {
-                            if depth == 0 {
-                                break;
-                            }
-                            depth -= 1;
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                i += 1;
-            }
-            other => {
-                if let Some(value) = syntax_value(other, diags) {
-                    args.push(Expr::Literal(value, span));
-                }
-                i += 1;
-            }
-        }
+fn lower_code_call(call: &CodeCall, diags: &mut Vec<Diagnostic>) -> Vec<Expr> {
+    let mut expr = crate::call_header(call, diags);
+    let (content, flavor) = call_body(call, diags);
+    if let Expr::Call { children, body, .. } = &mut expr {
+        *children = content;
+        *body = flavor;
     }
-    let (children, flavor) = call_body(call, diags);
-    // `#[..]` is the anonymous constructor call: a transparent group node
-    let name = call.name().unwrap_or_else(|| "group".to_string());
-    vec![Expr::Call {
-        name,
-        args,
-        fields,
-        children,
-        body: flavor,
-        attrs: Dict::default(),
-        span,
-    }]
+    vec![expr]
 }
 
 /// Flavor of a bracketed content region, from the declared flanks: both
@@ -472,9 +357,9 @@ fn content_children(
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Expr> {
     if is_block_content(elements) {
-        desugar_blocks(elements, diags).0
+        lower_blocks(elements, diags).0
     } else {
-        desugar_inline(elements.iter().cloned(), diags)
+        lower_inline(elements.iter().cloned(), diags)
     }
 }
 
@@ -539,13 +424,13 @@ impl TextRun {
 
     /// Flush at an inline element: boundary whitespace is content, kept.
     fn flush_at_element(&mut self, items: &mut Vec<Expr>) {
-        if let (Some(s), Some(e)) = (self.start, self.last_end) {
-            if !self.buf.is_empty() {
-                items.push(Expr::text(
-                    std::mem::take(&mut self.buf),
-                    TextRange::new(s, e),
-                ));
-            }
+        if let (Some(s), Some(e)) = (self.start, self.last_end)
+            && !self.buf.is_empty()
+        {
+            items.push(Expr::text(
+                std::mem::take(&mut self.buf),
+                TextRange::new(s, e),
+            ));
         }
         self.reset();
     }
@@ -608,7 +493,7 @@ fn strip_indent(line: &str, indent: usize) -> String {
     )
 }
 
-fn desugar_inline(
+fn lower_inline(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Expr> {
@@ -734,7 +619,7 @@ fn desugar_inline(
                     } else {
                         elements.len()
                     };
-                    let children = desugar_inline(elements[1..end].iter().cloned(), diags);
+                    let children = lower_inline(elements[1..end].iter().cloned(), diags);
                     let mut expr = Expr::call(name, node.text_range()).with_children(children);
                     expr.set_attrs(pending.take());
                     items.push(expr);
@@ -744,7 +629,7 @@ fn desugar_inline(
                     run.flush_at_element(&mut items);
                     let embed = Embed::cast(node.clone()).unwrap();
                     let (target, title) = embed.destination();
-                    let content = desugar_inline(embed.content(), diags);
+                    let content = lower_inline(embed.content(), diags);
                     let mut description = String::new();
                     for expr in &content {
                         append_description(expr, &mut description);
@@ -763,12 +648,12 @@ fn desugar_inline(
                     run.flush_at_element(&mut items);
                     let (target, children) = if node.kind() == SyntaxKind::Link {
                         let link = Link::cast(node.clone()).unwrap();
-                        (link.target(), desugar_inline(link.content(), diags))
+                        (link.target(), lower_inline(link.content(), diags))
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            desugar_inline(link.content(), diags),
+                            lower_inline(link.content(), diags),
                         )
                     };
                     let mut expr = Expr::call("link", node.text_range())
@@ -780,8 +665,7 @@ fn desugar_inline(
                 }
                 SyntaxKind::CodeCall => {
                     run.flush_at_element(&mut items);
-                    let mut exprs =
-                        desugar_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
+                    let mut exprs = lower_code_call(&CodeCall::cast(node.clone()).unwrap(), diags);
                     for expr in &mut exprs {
                         expr.set_attrs(pending.take());
                     }

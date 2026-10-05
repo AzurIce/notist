@@ -1,55 +1,132 @@
-use notist_core::diag::Diagnostic;
+use std::cell::RefCell;
+
+use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::Expr;
+use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput};
 use notist_core::item::{Dict, Value};
 use rowan::TextRange;
 use rushdown::ast::{Arena, KindData, Node, NodeRef, TextQualifier};
 use rushdown::parser::{
-    AnyParagraphTransformer, InlineParser, NoParserOptions, Options, Parser, ParserExtension,
-    gfm_strikethrough, gfm_table, parser_extension,
+    AnyBlockParser, AnyParagraphTransformer, InlineParser, NoParserOptions, Options, Parser,
+    ParserExtension, gfm_strikethrough, gfm_table, parser_extension,
 };
 use rushdown::text::BasicReader;
 
 mod breaks;
+mod markup;
 mod math;
 mod strings;
 
-/// The markdown frontend's lowering: rushdown AST → shared Expr IR.
-pub fn lower(src: &str) -> (Vec<Expr>, Dict, Vec<Diagnostic>) {
-    let (mut arena, mut root) = parser(None).parse(&mut BasicReader::new(src));
-    let positions = breaks::positions(&arena, root, src);
-    if !positions.is_empty() {
-        (arena, root) = parser(Some(breaks::Breaks(positions))).parse(&mut BasicReader::new(src));
-    }
-    let lowerer = Lowerer { src, arena: &arena };
-    let forest = lowerer.children(root);
-    (forest, Dict::default(), Vec::new())
+/// Markdown and Notist Markdown source frontend.
+#[derive(Debug, Default)]
+pub struct MarkdownFrontend;
+
+/// Rushdown's parsed tree, retained only when syntax capture is requested.
+#[derive(Debug)]
+pub struct MarkdownSyntax {
+    pub source: String,
+    pub arena: Arena,
+    pub root: NodeRef,
 }
 
-fn parser(breaks: Option<breaks::Breaks>) -> Parser {
-    Parser::with_extensions(
-        Options::default(),
-        gfm_table()
-            .and(gfm_strikethrough())
-            .and(parser_extension(move |p| {
-                p.add_inline_parser(
-                    || Box::new(math::MathParser) as Box<dyn InlineParser>,
-                    NoParserOptions,
-                    200,
-                );
-                if let Some(breaks) = breaks.clone() {
-                    p.add_paragraph_transformer(
-                        move || AnyParagraphTransformer::Extension(Box::new(breaks.clone())),
-                        NoParserOptions,
-                        300,
-                    );
-                }
-            })),
-    )
+impl Frontend for MarkdownFrontend {
+    fn extensions(&self) -> &[&str] {
+        &["md", "markdown", "notmd", "nmd"]
+    }
+
+    fn compile(&self, source: &str, options: FrontendOptions) -> FrontendOutput {
+        compile_body(source, false, true, options.capture_syntax)
+    }
+}
+
+fn compile_body(
+    src: &str,
+    inline: bool,
+    allow_module: bool,
+    capture_syntax: bool,
+) -> FrontendOutput {
+    let (mut arena, mut root) = parser(None, inline).parse(&mut BasicReader::new(src));
+    let positions = breaks::positions(&arena, root, src);
+    if !positions.is_empty() {
+        (arena, root) =
+            parser(Some(breaks::Breaks(positions)), inline).parse(&mut BasicReader::new(src));
+    }
+    let mut output = lower_parsed(src, &arena, root, allow_module);
+    if capture_syntax {
+        output.syntax = Some(Box::new(MarkdownSyntax {
+            source: src.to_owned(),
+            arena,
+            root,
+        }));
+    }
+    output
+}
+
+fn lower_parsed(src: &str, arena: &Arena, root: NodeRef, allow_module: bool) -> FrontendOutput {
+    let lowerer = Lowerer {
+        src,
+        arena,
+        root,
+        allow_module,
+        diagnostics: RefCell::new(Vec::new()),
+        module_attrs: RefCell::new(Dict::default()),
+    };
+    let forest = lowerer.children(root);
+    FrontendOutput {
+        forest,
+        module_attrs: lowerer.module_attrs.into_inner(),
+        diagnostics: lowerer.diagnostics.into_inner(),
+        syntax: None,
+    }
+}
+
+fn parser(breaks: Option<breaks::Breaks>, inline: bool) -> Parser {
+    let extension = gfm_strikethrough().and(parser_extension(move |p| {
+        p.add_inline_parser(
+            || Box::new(markup::MarkupInlineParser) as Box<dyn InlineParser>,
+            NoParserOptions,
+            150,
+        );
+        if inline {
+            p.add_block_parser(
+                || AnyBlockParser::Extension(Box::new(markup::InlineBodyParser)),
+                NoParserOptions,
+                0,
+            );
+        } else {
+            p.add_block_parser(
+                || AnyBlockParser::Extension(Box::new(markup::MarkupBlockParser)),
+                NoParserOptions,
+                350,
+            );
+        }
+        p.add_inline_parser(
+            || Box::new(math::MathParser) as Box<dyn InlineParser>,
+            NoParserOptions,
+            200,
+        );
+        if let Some(breaks) = breaks.clone() {
+            p.add_paragraph_transformer(
+                move || AnyParagraphTransformer::Extension(Box::new(breaks.clone())),
+                NoParserOptions,
+                300,
+            );
+        }
+    }));
+    if inline {
+        Parser::with_extensions(Options::default(), extension)
+    } else {
+        Parser::with_extensions(Options::default(), extension.and(gfm_table()))
+    }
 }
 
 struct Lowerer<'a> {
     src: &'a str,
     arena: &'a Arena,
+    root: NodeRef,
+    allow_module: bool,
+    diagnostics: RefCell<Vec<Diagnostic>>,
+    module_attrs: RefCell<Dict>,
 }
 
 fn normalize_table_inline(exprs: &mut [Expr]) {
@@ -180,9 +257,69 @@ impl<'a> Lowerer<'a> {
             }
         };
 
+        let mut pending: Option<(Dict, TextRange, bool)> = None;
         let mut child = self.node(node).first_child();
         while let Some(c) = child {
             let n = self.node(c);
+            if let KindData::Extension(data) = n.kind_data()
+                && let Some(markup) = data.as_any().downcast_ref::<markup::Markup>()
+            {
+                flush(&mut out, &mut text_start, &mut text_buf, text_end, false);
+                let lowered = markup.lower(&mut self.diagnostics.borrow_mut());
+                match lowered {
+                    markup::Lowered::Annotation {
+                        attrs,
+                        module,
+                        block,
+                        span,
+                    } => {
+                        if module {
+                            if !self.allow_module || node != self.root || !block {
+                                self.diagnostics.borrow_mut().push(Diagnostic::new(
+                                    Phase::Semantic,
+                                    span,
+                                    "module annotation is only valid at the document top",
+                                ));
+                            } else {
+                                if !out.is_empty() {
+                                    self.diagnostics.borrow_mut().push(Diagnostic::new(
+                                        Phase::Semantic,
+                                        span,
+                                        "module annotation must precede all content",
+                                    ));
+                                }
+                                self.module_attrs.borrow_mut().extend(attrs);
+                            }
+                        } else if let Some((dict, range, inline)) = &mut pending {
+                            dict.extend(attrs);
+                            *range = range.cover(span);
+                            *inline = !block;
+                        } else {
+                            pending = Some((attrs, span, !block));
+                        }
+                    }
+                    markup::Lowered::Calls(exprs) => {
+                        for mut expr in exprs {
+                            self.attach(&mut expr, &mut pending);
+                            out.push(expr);
+                        }
+                        at_line_start = false;
+                    }
+                }
+                child = n.next_sibling();
+                continue;
+            }
+            if pending.as_ref().is_some_and(|(_, _, inline)| *inline)
+                && (matches!(n.kind_data(), KindData::Text(_))
+                    || pending.as_ref().unwrap().1.end() != self.span_of(c).start())
+            {
+                let (_, span, _) = pending.take().unwrap();
+                self.diagnostics.borrow_mut().push(Diagnostic::new(
+                    Phase::Semantic,
+                    span,
+                    "annotation must be immediately followed by an element",
+                ));
+            }
             if let KindData::Text(text) = n.kind_data() {
                 if text_start.is_none() {
                     text_start = n.pos();
@@ -208,13 +345,39 @@ impl<'a> Lowerer<'a> {
                 // Ignore inline HTML tags without breaking the surrounding
                 // text run; raw HTML blocks and their payload are skipped.
                 flush(&mut out, &mut text_start, &mut text_buf, text_end, false);
-                out.push(self.item(c));
+                let mut expr = self.item(c);
+                self.attach(&mut expr, &mut pending);
+                out.push(expr);
                 at_line_start = false;
             }
             child = n.next_sibling();
         }
         flush(&mut out, &mut text_start, &mut text_buf, text_end, true);
+        if let Some((_, span, _)) = pending {
+            self.diagnostics.borrow_mut().push(Diagnostic::new(
+                Phase::Semantic,
+                span,
+                "annotation has no following element",
+            ));
+        }
         out
+    }
+
+    fn attach(&self, expr: &mut Expr, pending: &mut Option<(Dict, TextRange, bool)>) {
+        if let Some((dict, span, inline)) = pending.take() {
+            if inline && span.end() != expr.span().start() {
+                self.diagnostics.borrow_mut().push(Diagnostic::new(
+                    Phase::Semantic,
+                    span,
+                    "annotation must be immediately followed by an element",
+                ));
+            } else if let Expr::Call { attrs, .. } = expr {
+                // Outer annotations precede annotations written on the target.
+                let mut merged = dict;
+                merged.extend(attrs.take());
+                *attrs = merged;
+            }
+        }
     }
 
     fn item(&self, node: NodeRef) -> Expr {

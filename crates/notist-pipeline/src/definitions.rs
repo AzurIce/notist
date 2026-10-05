@@ -8,15 +8,16 @@ use notist_core::definitions::{
 };
 use notist_syntax::ast::{FunctionDecl, Module, TypeRef};
 
-use crate::diag::{Diagnostic, Phase};
-use crate::literals::syntax_value;
+use notist_core::diag::{Diagnostic, Phase};
+use notist_lowering::literals::syntax_value;
 
 /// Analyze one package's `lib.notc` source into a validated definition module.
 /// Any syntax, literal or definition error returns diagnostics instead of a
 /// partially installable module. Use `syntax::parse_module` for recovery ASTs.
 ///
 /// ```
-/// use notist_pipeline::{analyze_module, builtins};
+/// use notist_pipeline::analyze_module;
+/// use notist_core::builtins;
 ///
 /// let module = analyze_module("widgets", "fn badge(label: String) -> InlineContent;").unwrap();
 /// let mut registry = builtins::registry().clone();

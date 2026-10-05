@@ -281,22 +281,21 @@ fn host_failures_and_invalid_utf8_are_not_treated_as_missing_resources() {
 }
 
 static LOWER_CALLS: AtomicUsize = AtomicUsize::new(0);
-fn counted(
-    source: &str,
-) -> (
-    Vec<notist::expr::Expr>,
-    notist::Dict,
-    Vec<notist::Diagnostic>,
-) {
-    LOWER_CALLS.fetch_add(1, Ordering::SeqCst);
-    notist_pipeline::desugar::lower_not(source)
+struct CountingFrontend;
+impl notist::Frontend for CountingFrontend {
+    fn extensions(&self) -> &[&str] {
+        &["not"]
+    }
+
+    fn compile(&self, source: &str, options: notist::FrontendOptions) -> notist::FrontendOutput {
+        LOWER_CALLS.fetch_add(1, Ordering::SeqCst);
+        notist::Frontend::compile(&notist::NotistFrontend, source, options)
+    }
 }
+
 #[test]
 fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
-    let pipeline = notist::Pipeline::default().with_frontend(notist::Frontend {
-        extensions: &["not"],
-        lower: counted,
-    });
+    let pipeline = notist::Pipeline::default().with_frontend(CountingFrontend);
     let mut vault = Vault::new(memory()).with_pipeline(pipeline);
     LOWER_CALLS.store(0, Ordering::SeqCst);
     let output = vault
@@ -308,7 +307,15 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
         .render_output("doc.not", analysis.root(), RenderOptions::default())
         .unwrap();
     assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 2);
-    assert!(inspection.syntax.is_none());
+    assert!(
+        inspection
+            .syntax
+            .as_deref()
+            .unwrap()
+            .as_any()
+            .downcast_ref::<notist_syntax::syntax::SyntaxNode>()
+            .is_some()
+    );
     assert_eq!(analysis, output.analysis);
 }
 

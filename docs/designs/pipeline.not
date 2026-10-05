@@ -4,42 +4,62 @@
 
 源码规则见 [Syntax](../grammar/README.not)，值域与字面量见 [Types](../types.not)，具体构造器契约和降糖见 [Builtin](../builtin.not)。本文定义各阶段的实现职责。
 
-== Crate 与宿主边界
+== Crate 职责
 
-notist-core 定义 Expr、Item、Value、函数签名、Registry、诊断和内容索引；共同声明校验属于这些模型。notist-syntax 提供无损 CST 与 AST 视图；notist-md 只将 Markdown 转成 Expr。
+| Crate | 职责 |
+| --- | --- |
+| notist-core | Expr / Item / Value、Frontend Trait、定义模型、Registry、诊断与索引 |
+| notist-syntax | 原生 .not 与 .notc 的 lexer、无损 CST 和类型化 AST 视图 |
+| notist-lowering | 原生 Document AST → IR₁；共用的注解、调用头和字面量转换 |
+| notist-md | MarkdownFrontend；Markdown 解析、扩展语法与 AST → IR₁ |
+| notist-pipeline | NotistFrontend、前端注册、resolve / shape / materialize、声明转换和输出转换 |
+| notist-html | 最终 Item 树 → HTML；内置 renderer 与组件绑定 |
+| notist | Resources、Environment、Vault、调试输出与宿主适配 |
+| notist-cli | CLI、静态发布与 LSP |
 
-notist-pipeline 依赖 core、syntax 和 md，组织源码到 Item 的转换，并通过 analyze_module 将 .notc 转成 core 的 DefinitionModule。Pipeline::analyze(path, source, registry) 接收显式输入；path 仅用于选择前端，不读文件。Pipeline::inspect 在同一次处理过程中收集调试 CST 和中间 IR；普通 analyze 不生成这份调试结果。
+各前端都输出 notist-core 中的 Expr<String> 森林。notist-lowering 依赖 syntax 与 core；Markdown 使用共用 lowering 处理显式调用头与注解，其正文由 Markdown 自身解析。pipeline 中的 NotistFrontend 组合 syntax 与 lowering，MarkdownFrontend 由 notist-md 提供。具体接口、注册方式和解析产物协议见 [文档前端](frontends.not)。
 
-顶层 notist::Vault 通过 Resources 取得配置、声明和组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 pipeline 与 HTML。一个 Vault 可以包含多个配置环境。notist-html 只依赖 core，不反向依赖 pipeline 或 Vault。
+crate 根的 lib.rs 声明模块、公开自身入口，并组织文档分析、调试结果与共享后端处理。core 的模型及 Frontend 接口从 notist-core 导入，模块与算法按所属 crate 引用。
 
-Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、原始 Analysis、TransformOutput 和完整 RenderResult。正文只处理一次，输出前按配置执行 [IR Transforms](transforms.not)。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
+```text
+.not source ── NotistFrontend ── syntax → Document → lowering ──┐
+                                                               ├─ IR₁
+Markdown source ── MarkdownFrontend ── rushdown AST → lowering ──┘
+                                                                  ↓
+                                                        resolve → IR₂
+                                                                  ↓
+                                                         shape → IR₂′
+                                                                  ↓
+                                                        materialize → Item
+```
 
-notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。
+Pipeline::analyze(path, source, registry) 接收显式输入，path 用于选择已注册前端；Registry 在共享后端参与名称解析和类型检查。每份源码只调用选中的 Frontend::compile 一次。Pipeline::inspect 在同一次处理中请求前端的解析产物，并保留中间 IR。Pipeline 不读取文件或装配 package。
 
-== 转换阶段
+.notc 通过 analyze_module 转成 core 的 DefinitionModule，再进入 Registry；正文前端及 Expr / Item 管线处理文档内容。声明文法见 [Code Syntax](../grammar/code.not)，装配见 [Content Function Extensions](content-functions.not)。
 
-*Lex*
+== 文档转换阶段
+
+*原生 Lex*
 
 - 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
 - trivia（空白、换行、注释）是一等 token，全保留
 
-// 与 Markdown 不同：Markdown 的元素是闭集合，语法层面即可确定 Inline/Block；
-// Notist 的内容函数 `#xxx()` 的级别依赖构造器已注册的签名或调用点 flavor 声明，
-// 因此文档树结构不能在语法层面确定，只能以平铺森林呈现，延迟到 Shape 阶段组装。
+标准 Markdown 元素的基本块 / 行内类别由其语法决定。两个前端中的显式内容函数调用都保留 source-level 名称与 body flavor，具体类别由 Resolve 按 Registry 确定，并由 Shape 组装最终结构。
 
-*Parse*
+*原生 Parse*
 
 - token 流 → CST（rowan 绿树，无损：文本拼接 == 源文件）
 - parser 永不失败：语法错误就近诊断，结构性破坏由 Error 节点包裹
 - parse_document 处理 Markup，parse_module 处理单文件 Code 声明；分别产生 Document 与 Module CST，复用字面量解析。Module 不进入下面的文档 Desugar / Shape 管线；声明文法见 [Code Syntax](../grammar/code.not)
 
-*AST*
+*原生 AST*
 
 - CST 的类型化视图：薄访问器，不产生新信息
+- MarkdownFrontend 解析自己的 rushdown AST；两种解析产物在 frontend 内进入对应 lowering
 
-*Desugar*（产出 IR₁）
+*Lowering / Desugar*（产出 IR₁）
 
-- CST → Expr 森林：markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph` 候选；字面量归一化
+- notist-lowering::lower_document 接收 Document AST，将其转成 Expr 森林；notist-md 将 Markdown AST 转成同一 IR₁。markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph` 候选；字面量归一化
 - text 值的空白按位置处理：行内元素边界的空白是内容（保留），行首/行尾/段落边界的空白丢弃，单换行无空格拼接
 - 值域语义错误在此诊断（裸名非字面量、数字溢出、非法 entry 等）
 
@@ -69,3 +89,11 @@ notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有
 - 节点 = ctor（含规范函数身份）+ level + fields + children + attrs + span
 - 分析只作用于 Content 树：引用解析、渲染
 - CST 服务 tooling；core 节点携带产生它的 surface span
+
+== 宿主与资源
+
+顶层 notist::Vault 通过 Resources 取得配置、声明和组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 pipeline 与 HTML。一个 Vault 可以包含多个配置环境。notist-html 只依赖 core，不反向依赖 pipeline 或 Vault。
+
+Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、原始 Analysis、TransformOutput 和完整 RenderResult。正文只处理一次，输出前按配置执行 [IR Transforms](transforms.not)。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
+
+notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。

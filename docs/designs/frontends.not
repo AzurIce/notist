@@ -1,0 +1,118 @@
+= 文档前端
+
+文档前端负责源码解析与 AST lowering，输出共享的未解析 Expr 森林（IR₁）。[Pipeline](pipeline.not) 注册和选择前端，再执行 resolve → shape → materialize；[notist-core](../../crates/notist-core/src/frontend.rs) 定义共同接口及输出类型。
+
+== 接口与输出
+
+```rust
+pub trait Frontend: Send + Sync {
+    fn extensions(&self) -> &[&str];
+    fn compile(&self, source: &str, options: FrontendOptions) -> FrontendOutput;
+}
+```
+
+extensions 声明可处理的文件扩展名，不包含点号。compile 接收一份源码，组合本前端的 parse → lower；前端可以持有配置和状态，并满足 Send + Sync，供语言服务等宿主使用。
+
+FrontendOutput 的字段为：
+
+| 字段 | 含义 |
+| --- | --- |
+| forest | Vec<Expr<String>>；构造器名称尚未解析的 IR₁ |
+| module_attrs | Dict；由模块注解得到的文档根属性 |
+| diagnostics | Vec<Diagnostic>；源码解析及 lowering 产生的诊断 |
+| syntax | Option<Box<dyn FrontendSyntax>>；按需保留的前端解析产物 |
+
+前端不读取文档文件，不装配 package 或 Registry。构造器名称解析、签名与 children 校验在共享后端进行；语法错误由前端汇入 Syntax 阶段，字面量及注解错误由 lowering 汇入 Semantic 阶段。每份结果都保留原始源码的 UTF-8 字节范围。
+
+== 默认实现与注册
+
+| 前端实现 | 实现位置 | 默认扩展名 |
+| --- | --- | --- |
+| notist_pipeline::NotistFrontend | notist-pipeline | `.not` |
+| notist_md::MarkdownFrontend | notist-md | `.md`、`.markdown`、`.notmd`、`.nmd` |
+
+Pipeline::default 与 notist_pipeline::frontend::Frontends::default 注册两种前端。Pipeline::new 和 Frontends::new 创建空注册表；with_frontend 或 with 接收实现 Trait 的具体值，并以 Trait 对象保存。扩展名重叠时最后注册者优先；每次源码处理只调用选中的前端。
+
+```rust
+use notist_pipeline::{NotistFrontend, Pipeline};
+
+let native = Pipeline::new().with_frontend(NotistFrontend);
+let markdown = Pipeline::new().with_frontend(notist_md::MarkdownFrontend);
+let both = Pipeline::new()
+    .with_frontend(NotistFrontend)
+    .with_frontend(notist_md::MarkdownFrontend);
+```
+
+Frontend 及其输出类型从 notist_core::frontend 导入，Expr、Item、Registry 与诊断也从 notist-core 对应模块导入。notist-pipeline 公开自身的 Pipeline、分析结果、NotistFrontend 与处理入口，前端注册表位于 frontend 模块。
+
+使用 MarkdownFrontend 的调用方需要依赖 notist-md。顶层 notist 也公开 Pipeline、NotistFrontend 及共同的 Frontend 类型，供 Vault 宿主选择和注册前端。扩展名只用于注册器选择实现，同一前端可服务多种扩展名。
+
+== 原生解析与 lowering
+
+NotistFrontend 位于 pipeline，组合以下过程：
+
+```text
+.not source
+  → notist-syntax::parse_document
+  → Document AST
+  → notist-lowering::lower_document
+  → Expr<String> 森林 + 根属性 + 诊断
+```
+
+notist-syntax 提供无损 CST、类型化 AST 视图和解析诊断；notist-lowering 接收 Document AST，负责完整的原生文档 AST → IR₁。Frontend 将解析诊断与 lowering 诊断合并为 FrontendOutput。
+
+lower_document 的输入边界如下：
+
+```rust
+let parsed = notist_syntax::parse_document("@(id: \"intro\")\n= Title");
+let document = notist_syntax::ast::Document::cast(parsed.syntax()).unwrap();
+let mut diagnostics = Vec::new();
+let (forest, module_attrs) =
+    notist_lowering::lower_document(&document, &mut diagnostics);
+```
+
+这里 diagnostics 收集 lowering 诊断；parsed.diagnostics 仍由解析调用者持有。前端承担源码处理的组合，lower_document 只转换传入的 AST。lowering 的共享入口 annotation_dict、call_header 和 literals 使用相同的边界，接收注解、调用及字面量对应的语法表示。
+
+.notc 声明由 parse_module 产生 Module AST，进入 analyze_module → DefinitionModule → Registry 的声明路径，见 [Content Function Extensions](content-functions.not)。该路径复用字面量转换，产物是定义模型。
+
+== Markdown 与显式 Notist 语法
+
+MarkdownFrontend 通过 rushdown 解析 Markdown AST，并将其 lower 成同一种 IR₁。注解与显式调用由 rushdown 扩展解析器识别；它们与标题、列表、强调等 Markdown 节点共同进入 lowering。
+
+注解 payload 和调用头使用 notist-syntax 的解析规则，再复用 notist-lowering 中的属性、调用参数和字面量转换。调用的 [body] 源码由 Markdown 前端按对应 flavor 解析并 lower 为 children；引用、列表等容器移除的源码前缀通过位置映射还原为原始字节范围。
+
+两种正文语法的归属为：
+
+| 所在前端 | `#f(args)[body]` 的 body |
+| --- | --- |
+| NotistFrontend | Notist Markup |
+| MarkdownFrontend | Markdown，包含该前端的 Notist 扩展 |
+
+`[body]` 为行内内容槽；两端内侧均留空白或换行的 `[ body ]` 为块内容槽。`#[body]` 是匿名 group 调用，正文仍使用所在前端的语法。`#f([body])` 这样的 Content 参数目前不支持，内容通过调用后的唯一 children 槽挂载；规则见 [Types](../types.not) 和 [Markdown Syntax](../grammar/README.not)。
+
+参数字符串、代码和数学 payload 保持不透明；其中的调用与注解不会再次执行。Markdown 的普通文字与链接字段仍按其解码规则转换，显式调用的字面量按 Notist 字面量规则转换。
+
+== 解析产物与调试
+
+FrontendOptions::capture_syntax 默认 false，控制解析产物是否随编译结果保留。正常 compile 仍会完成解析和 lowering，返回 IR₁、根属性及诊断；解析树在本次处理结束后释放。选项为 true 时，前端可把已生成的 CST / AST 放入 FrontendOutput.syntax，供工具继续读取。
+
+FrontendSyntax 是 Any + Debug 的不透明解析产物接口，具体 AST 类型由前端决定。现有实现保留：
+
+- NotistFrontend：notist_syntax::syntax::SyntaxNode。
+- MarkdownFrontend：notist_md::MarkdownSyntax，包含 source、rushdown Arena 和 root。
+
+```rust
+use notist_core::frontend::{Frontend, FrontendOptions};
+
+let output = notist_md::MarkdownFrontend.compile(
+    "# Title\n",
+    FrontendOptions { capture_syntax: true },
+);
+let syntax = output.syntax.as_deref().unwrap().as_any()
+    .downcast_ref::<notist_md::MarkdownSyntax>().unwrap();
+assert_eq!(syntax.source, "# Title\n");
+```
+
+Pipeline::analyze 使用默认选项。Pipeline::inspect 请求捕获解析产物，并在同一次处理过程中保存 Inspection.syntax、lowered 与 shaped：分别为前端解析树、IR₁ 和完成 resolve / shape 的 IR₂′。捕获选项影响解析产物的保留，不改变文档语义或诊断。
+
+pipeline 按接口传递解析产物，工具按具体类型消费。当前 cst_json 的 tree / ast 字段对应原生 SyntaxNode；所有前端都可输出共同的 ir1、ir2 与 core 字段。MarkdownSyntax 可由工具直接读取，其捕获并不意味着已有原生 CST JSON 展示协议适用于 Markdown AST。

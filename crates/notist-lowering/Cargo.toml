@@ -1,11 +1,9 @@
 [package]
-name = "notist-pipeline"
+name = "notist-lowering"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-notist-lowering = { path = "../notist-lowering" }
 notist-core = { path = "../notist-core" }
 notist-syntax = { path = "../notist-syntax" }
-notist-md = { path = "../notist-md" }
 rowan = "0.17.0"

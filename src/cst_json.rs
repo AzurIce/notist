@@ -144,7 +144,11 @@ pub fn inspection_json(
 ) -> String {
     let mut out = String::from("{");
     if let Some(inspection) = inspection {
-        if let Some(syntax) = &inspection.syntax {
+        if let Some(syntax) = inspection.syntax.as_deref().and_then(|syntax| {
+            syntax
+                .as_any()
+                .downcast_ref::<notist_syntax::syntax::SyntaxNode>()
+        }) {
             out.push_str("\"tree\":");
             write_element(&mut out, NodeOrToken::Node(syntax.clone()));
             if let Some(document) = ast::Document::cast(syntax.clone()) {

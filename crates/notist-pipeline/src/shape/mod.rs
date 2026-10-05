@@ -1,6 +1,6 @@
-use crate::builtins::Accepts;
-use crate::expr::{BodyFlavor, Expr, RExpr};
-use crate::item::Ctor;
+use notist_core::builtins::Accepts;
+use notist_core::expr::{BodyFlavor, Expr, RExpr};
+use notist_core::item::Ctor;
 
 pub(crate) mod reflow;
 mod sectionize;

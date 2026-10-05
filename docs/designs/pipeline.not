@@ -14,6 +14,7 @@
 | notist-md | MarkdownFrontend；Markdown 解析、扩展语法与 AST → IR₁ |
 | notist-pipeline | NotistFrontend、前端注册、resolve / shape / materialize、声明转换和输出转换 |
 | notist-html | 最终 Item 树 → HTML；内置 renderer 与组件绑定 |
+| notist-ssg | 站点路由、跨页链接校验、主题、页面与资源产物 |
 | notist | Resources、Environment、Vault、调试输出与宿主适配 |
 | notist-cli | CLI、静态发布与 LSP |
 

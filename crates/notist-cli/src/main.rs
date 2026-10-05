@@ -1,7 +1,10 @@
-mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
+#[cfg(not(target_arch = "wasm32"))]
+mod preview;
 mod query;
+#[cfg(not(target_arch = "wasm32"))]
+mod site;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -44,6 +47,20 @@ enum Command {
         #[arg(long, default_value = "target/notist-html")]
         out_dir: PathBuf,
     },
+    /// Publish all selected Vault documents as a static site
+    Build {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    /// Serve the site with file watching and live reload
+    Preview {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8000")]
+        address: String,
+    },
     /// Run the language server over stdio
     #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
     Lsp,
@@ -54,6 +71,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let config = cli.config.as_deref();
     match cli.command {
+        Command::Build { root, out_dir } => site::build(&root, config, out_dir.as_deref()),
+        Command::Preview { root, address } => preview::serve(&root, config, &address),
         Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
             format!(
@@ -145,8 +164,26 @@ fn main() -> ExitCode {
                 emit_source(&file, &src, &output.transformed.diagnostics);
                 return ExitCode::FAILURE;
             }
-            let environment = vault.environment_for(&file).expect("assembled environment");
-            match html::build_rendered_page(output.rendered, environment, &out_dir) {
+            let environment = vault
+                .environment_for(&file)
+                .expect("assembled environment")
+                .clone();
+            let resources = site::Files::new(vault.resources().root());
+            let publication = notist_ssg::page(
+                output.rendered,
+                &environment,
+                &resources,
+                &notist_ssg::SiteConfig {
+                    output: notist::resources::normalize(
+                        &std::env::current_dir().unwrap().join(&out_dir),
+                    ),
+                    ..notist_ssg::SiteConfig::default()
+                },
+            );
+            match publication.and_then(|publication| {
+                site::publish(&publication, &out_dir, vault.resources().root())?;
+                Ok(out_dir.join("index.html"))
+            }) {
                 Ok(result) => {
                     println!("{}", result.display());
                     ExitCode::SUCCESS

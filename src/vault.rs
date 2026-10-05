@@ -92,6 +92,10 @@ impl<R: Resources> Vault<R> {
     pub fn resources(&self) -> &R {
         &self.resources
     }
+    /// Whether the configured document pipeline handles this file format.
+    pub fn supports(&self, path: impl AsRef<Path>) -> bool {
+        self.pipeline.supports(path.as_ref())
+    }
     pub fn with_pipeline(mut self, pipeline: Pipeline) -> Self {
         self.pipeline = pipeline;
         self

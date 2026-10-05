@@ -75,13 +75,13 @@ fn html_command_publishes_used_components_and_relative_assets() {
     assert!(
         output
             .path()
-            .join("packages/widgets/components/panel/style.js")
+            .join("_notist/packages/widgets/components/panel/style.js")
             .is_file()
     );
     assert!(
         output
             .path()
-            .join("packages/widgets/components/badge.js")
+            .join("_notist/packages/widgets/components/badge.js")
             .is_file()
     );
     let registrations = std::fs::read_to_string(output.path().join("components.js")).unwrap();
@@ -90,7 +90,7 @@ fn html_command_publishes_used_components_and_relative_assets() {
     assert!(
         output
             .path()
-            .join("packages/katex/components/math.js")
+            .join("_notist/packages/katex/components/math.js")
             .is_file()
     );
     let html = std::fs::read_to_string(output.path().join("index.html")).unwrap();
@@ -149,7 +149,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
         for filename in ["index.js", "compiler.js"] {
             let relative = format!("components/math/{filename}");
             assert_eq!(
-                std::fs::read(output.join("packages/typst").join(&relative)).unwrap(),
+                std::fs::read(output.join("_notist/packages/typst").join(&relative)).unwrap(),
                 std::fs::read(package.join(&relative)).unwrap()
             );
         }

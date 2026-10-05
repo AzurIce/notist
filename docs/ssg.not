@@ -1,0 +1,104 @@
+= Static Site Generation
+
+SSG 将一个 Vault 中选中的文档发布为静态站点。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、输出转换和 HTML 渲染的职责见 [Pipeline](designs/pipeline.not) 与 [HTML Rendering](html.not)。
+
+== 命令与配置
+
+```sh
+notist build path/to/vault
+notist build path/to/vault --out-dir path/to/site
+notist preview path/to/vault --address 127.0.0.1:8000
+```
+
+Vault 默认为当前目录。build 写入完整站点；preview 在内存中生成相同产物，通过 HTTP 提供页面与资源，并监听输入变化。预览构建失败时保留上一次成功页面，同时显示诊断；修复后自动刷新。首次构建失败时提供等待页面。
+
+Vault 根目录的 Notist.toml 可包含站点配置：
+
+#raw(r#"""
+[site]
+title = "My Book"
+include = ["README.not", "docs/**", "packages/**"]
+exclude = ["docs/drafts/**"]
+output = "target/site"
+theme = "theme"
+"""#, block: true, lang: "toml")
+
+include 默认为所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 默认为 target/site，theme 默认使用内置主题。配置路径相对于 Vault；命令行 --out-dir 相对于当前工作目录。
+
+[site] 只配置站点发现与展示，不合并文档的包环境。每篇文档仍使用最近的 Notist.toml，保留自己的依赖和 transforms / dev-transforms；显式 --config 同时指定站点配置与所有文档的环境。
+
+build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/site.json；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
+
+== 路由与导航
+
+| 源文件 | URL | 输出文件 |
+| --- | --- | --- |
+| README.not | / | index.html |
+| guide/README.md | /guide/ | guide/index.html |
+| guide/start.not | /guide/start/ | guide/start/index.html |
+
+README 的匹配区分大小写。所有已注册文档前端使用相同规则；路径段进行 URL 编码。标题不改变 URL。同一个输出路径出现多个文档时报告冲突，例如 README.not 与 README.md，或 guide.not 与 guide/README.md。
+
+没有 README 的目录只形成导航分组。导航按目录层次与文件名自然排序，目录首页先于其子页面；标题取首个 heading，无 heading 时使用文件名，根首页回退到站点标题。默认主题包含侧栏、面包屑、当前页目录、上一篇 / 下一篇、明暗主题和移动端导航。preview 在缺少根首页时将 / 重定向到第一个实际页面。
+
+== 链接、锚点与资源
+
+link 与 embed 的本地目标相对于源文档解析。指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。远程 URL 保留，URL 安全检查仍由 renderer 执行。
+
+输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
+
+本地正文与资源必须在 Vault 内。排除或未选中的正文不能成为发布链接目标，缺失资源和不存在的锚点产生源码诊断。引用的资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
+
+package 声明依赖及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/packages/；各页面只注册自己使用的组件。同名 package 对应不同资源根时报告冲突。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
+
+== Handlebars 主题
+
+模板引擎使用 Handlebars。自定义主题目录可以覆盖 index.hbs、navigation.hbs，或添加其他 .hbs partial；模板名是相对路径去掉 .hbs。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 site.css 后加载。未覆盖的模板与资源保留默认实现。
+
+```text
+theme/
+├── index.hbs
+├── title.hbs
+└── assets/
+    ├── site.css
+    └── extra.css
+```
+
+模板上下文固定包含以下字段；无目标时 url、previous、next、assets.components 使用 null，数组可以为空：
+
+| 字段 | 内容 |
+| --- | --- |
+| site | title、home（当前页面相对首页 URL） |
+| page | title、url（规范目录 URL）、source（Vault 相对源路径）、html（渲染正文） |
+| navigation | title、url、current、children 组成的递归树 |
+| breadcrumbs | title、url、current、children 组成的祖先序列 |
+| outline | title、id、anchor（编码后的 fragment）、level 组成的标题序列 |
+| previous / next | title、url，或 null |
+| assets | styles（CSS URL 数组）、script（主题脚本 URL）、components（页面注册脚本 URL，或 null） |
+
+```handlebars
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}} · {{site.title}}</title>
+{{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
+</head><body>
+{{> title page}}
+<article>{{{page.html}}}</article>
+{{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
+</body></html>
+```
+
+普通插值转义 HTML，渲染后的 page.html 使用三重花括号。未定义字段与模板语法错误使构建失败。模板上下文属于 Notist；入口名沿用 mdBook 的 index.hbs，mdBook 的主题上下文不直接兼容。
+
+== Library 接口
+
+```rust
+let mut vault = notist::Vault::new(resources);
+let config = notist_ssg::SiteConfig::default();
+let site = notist_ssg::build(&mut vault, &config)?;
+// site.pages 保存来源、路由、标题和 outline；
+// site.files 保存相对输出路径及完整字节，可交给任意发布宿主。
+```
+
+notist-ssg 通过 Resources 读取逻辑输入，生成拥有全部字节的 Site，不直接写文件或启动服务器。build 对每篇正文执行一次分析，校验源码诊断、路由、显式 id、目标与锚点，按对应环境转换独立输出树，再完成渲染与资源计划。任何错误都不返回部分站点。
+
+CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部 package / 配置资源；搜索、手工导航顺序与增量编译不属于此接口。

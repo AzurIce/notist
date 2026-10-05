@@ -1,0 +1,12 @@
+= Notist
+
+Notist 是基于内容树的文档工具链，支持 .not 与 Markdown，共享内容函数、诊断和 HTML 输出。
+
+- [Documentation](docs/README.not)：语法、内置函数、IR、Package 与工具使用。
+- [Static Site Generation](docs/ssg.not)：README 路由、主题与本地预览。
+- [Package Model](docs/package.not)：内容函数扩展、默认转换与可运行示例。
+
+```sh
+cargo run -p notist-cli -- build
+cargo run -p notist-cli -- preview
+```

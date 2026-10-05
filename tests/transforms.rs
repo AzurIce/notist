@@ -2,7 +2,7 @@ use notist::{Ctor, FunctionId, MemoryResources, PreparedInputs, RenderOptions, V
 use std::{collections::BTreeMap, path::Path};
 
 const CONFIG: &str = "[dependencies]\nkatex = { path = '../packages/katex' }\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-const DECLARATION: &str = "fn math(text: String) -> InlineContent;";
+const DECLARATION: &str = "fn math(text: String, block?: Bool) -> Content<block>;";
 
 fn resources(config: &str, declaration: &str, component: bool) -> MemoryResources {
     let mut resources = MemoryResources::new("/repo/docs");
@@ -31,6 +31,7 @@ fn configuration_parses_ordered_rules_and_rejects_unsupported_or_malformed_entri
     );
     let config = notist::environment::parse_config(&source).unwrap();
     assert_eq!(config.dependencies[0].path, Path::new("../packages/katex"));
+    assert!(config.dependencies[0].transforms);
     assert_eq!(config.transforms.len(), 2);
     assert_eq!(config.transforms[0].from, FunctionId::new("notist", "math"));
     assert_eq!(config.transforms[1].from, FunctionId::new("katex", "math"));
@@ -53,6 +54,14 @@ fn configuration_parses_ordered_rules_and_rejects_unsupported_or_malformed_entri
         CONFIG.replace("path = '../packages/katex'", "path = 1"),
         CONFIG.replace("path = '../packages/katex'", "unexpected = true"),
         CONFIG.replace("path = '../packages/katex'", "path = ''"),
+        CONFIG.replace(
+            "path = '../packages/katex'",
+            "path = '../packages/katex', transforms = 'false'",
+        ),
+        CONFIG.replace(
+            "path = '../packages/katex'",
+            "path = '../packages/katex', transforms = 0",
+        ),
         CONFIG.replace("katex =", "notist ="),
         "dependencies = []".to_owned(),
         "transforms = false".to_owned(),
@@ -65,6 +74,32 @@ fn configuration_parses_ordered_rules_and_rejects_unsupported_or_malformed_entri
     }
     // An incomplete TOML header can report an empty span at end of input.
     assert!(notist::environment::parse_config("[dependencies").is_err());
+}
+
+#[test]
+fn dependency_transform_switches_parse_and_are_exposed_to_preview() {
+    let source = "[dependencies]\n\
+                  default = {path = 'default'}\n\
+                  disabled = {path = 'disabled', transforms = false}\n\
+                  enabled = {path = 'enabled', transforms = true}\n\
+                  [dev-dependencies]\n\
+                  demo = {path = 'demo', transforms = false}";
+    let config = notist::environment::parse_config(source).unwrap();
+    assert_eq!(
+        config
+            .dependencies
+            .iter()
+            .map(|dependency| dependency.transforms)
+            .collect::<Vec<_>>(),
+        [true, false, true]
+    );
+    assert!(!config.dev_dependencies[0].transforms);
+    let description: serde_json::Value =
+        serde_json::from_str(&notist::preview::configuration_json(source)).unwrap();
+    assert_eq!(description["dependencies"][0]["transforms"], true);
+    assert_eq!(description["dependencies"][1]["transforms"], false);
+    assert_eq!(description["dependencies"][2]["transforms"], true);
+    assert_eq!(description["dev_dependencies"][0]["transforms"], false);
 }
 
 #[test]
@@ -181,7 +216,8 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
     // This list is deliberately not idempotent: applying it twice changes
     // math to done. Both output entry points must execute it exactly once.
     let config = "[dependencies]\nkatex = {path = '../packages/katex'}\n\n[[transforms]]\nkind = 'replace'\nfrom = 'katex::math'\nto = 'katex::done'\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-    let declaration = format!("{DECLARATION} fn done(text: String) -> InlineContent;");
+    let declaration =
+        format!("{DECLARATION} fn done(text: String, block?: Bool) -> Content<block>;");
     let mut vault = Vault::new(resources(config, &declaration, true));
     let output = vault
         .render_html("doc.not", "$x$", RenderOptions::default())
@@ -207,7 +243,7 @@ fn environment_failures_retain_config_source_and_rule_span() {
         ),
         (
             CONFIG.to_owned(),
-            "fn math(source: String) -> InlineContent;",
+            "fn math(source: String, block?: Bool) -> Content<block>;",
             "parameter",
         ),
         (

@@ -5,7 +5,11 @@ const fonts = "https://cdn.jsdelivr.net/gh/typst/typst-assets@v0.13.1/files/font
 const main = "/notist-math.typ";
 const template = `#set page(width: auto, height: auto, margin: 0pt, fill: none)
 #set text(size: 12pt, font: "New Computer Modern")
-#context [#metadata(here().position().y / 1pt) <notist-baseline>#box(eval(sys.inputs.math, mode: "math"))]`;
+#if sys.inputs.block == "true" {
+  math.equation(block: true, eval(sys.inputs.math, mode: "math"))
+} else {
+  context [#metadata(here().position().y / 1pt) <notist-baseline>#box(eval(sys.inputs.math, mode: "math"))]
+}`;
 
 let engine;
 let queue = Promise.resolve();
@@ -32,7 +36,7 @@ function load() {
   })().catch(error => { engine = undefined; throw error; });
 }
 
-export function compile(source, current) {
+export function compile(source, block, current) {
   // A shared compiler owns one source world. Serialize compilation and export;
   // a rejected formula must not block later formulas in the queue.
   const work = queue.then(async () => {
@@ -40,11 +44,11 @@ export function compile(source, current) {
     const { compiler, snippet } = await load();
     if (!current()) return;
     const output = await compiler.runWithWorld(
-      { mainFilePath: main, inputs: { math: source } },
+      { mainFilePath: main, inputs: { math: source, block: String(block) } },
       async world => {
         // runWithWorld releases the WASM snapshot after this callback returns.
         const result = world.vector({ diagnostics: "full" });
-        if (result.result) {
+        if (result.result && !block) {
           result.baseline = (await world.query({ selector: "<notist-baseline>", field: "value" }))[0];
         }
         return result;

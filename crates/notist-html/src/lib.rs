@@ -113,7 +113,8 @@ impl<'a> Renderer<'a> {
         self
     }
 
-    /// Supply the inner HTML of a math node's `span.notist-math`.
+    /// Supply the inner HTML of inline math's `span.notist-math` or a block
+    /// equation's `div.notist-math`.
     ///
     /// Returning `None` displays escaped formula text. As with the embed
     /// callback, returned HTML is trusted application output.
@@ -297,14 +298,19 @@ impl State<'_, '_> {
                 self.close("span");
             }
             Ctor::Math => {
-                self.open("span", item, "notist-math");
+                let tag = if bool_field(item, "block") {
+                    "div"
+                } else {
+                    "span"
+                };
+                self.open(tag, item, "notist-math");
                 self.output.push('>');
                 if let Some(html) = self.renderer.math.as_ref().and_then(|f| f(item)) {
                     self.output.push_str(&html);
                 } else {
                     self.text(string_field(item, "text").unwrap_or(""));
                 }
-                self.close("span");
+                self.close(tag);
             }
             Ctor::Callout => {
                 let kind = string_field(item, "kind");

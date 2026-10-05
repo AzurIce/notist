@@ -1,12 +1,12 @@
 = KaTeX Math
 
-lib.notc 定义行内数学函数：
+lib.notc 定义数学函数：
 
 ```notc
-fn math(text: String) -> InlineContent;
+fn math(text: String, block?: Bool) -> Content<block>;
 ```
 
-text 是不带外围 `$` 的 LaTeX 数学源码。components/math.js 默认导出 HTMLElement 类，由 HTML host 注册 katex-math；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
+text 是不带外围 `$` 的 LaTeX 数学源码。block 省略或为 false 时是行内内容，true 时是块级内容；Content<block> 在声明中表达这个类别规则。components/math.js 默认导出 HTMLElement 类，由 HTML host 注册 katex-math；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
 
 == 自身配置
 
@@ -24,6 +24,8 @@ to = "katex::math"
 
 README 的根环境自动注册自身。其他项目引入 package 时读取清单、声明与组件，自动使用公开的 transforms；根配置可以显式覆盖对应默认规则。
 
+需要仅通过直接调用使用 KaTeX 时，在依赖项中设置 `katex = { path = "../packages/katex", transforms = false }`。开关默认 true；完整作用域见 [Package Model](https://github.com/AzurIce/notist/blob/main/docs/package.not)。
+
 替换保留公式原文与源码范围，原始 Analysis 仍保存内置身份。`.not` 与 Markdown 的 math 共用同一个替换目标；直接调用 katex::math 不需要替换。规则与 lib API 见 [IR Transforms](../../docs/designs/transforms.not)。
 
 == Example
@@ -32,9 +34,17 @@ Pythagoras: $x^2 + y^2 = z^2$.
 
 Builtin call: #math("E = mc^2"). Direct call: #katex::math(r#"\frac{a}{b}"#).
 
+块级公式使用两端内侧留白的语法糖：
+
+$ \sum_{i=1}^{n} i = \frac{n(n+1)}{2} $
+
+也可以显式传入 block：
+
+#katex::math(r#"\frac{a}{b}"#, block: true)
+
 == 组件行为
 
-模块延迟加载，同一模块实例共享加载任务。组件处理属性更新与重连，过期任务不覆盖新内容；公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
+模块延迟加载，同一模块实例共享加载任务。组件处理 text、block 属性更新与重连，过期任务不覆盖新内容；block 为 true 时使用 KaTeX 的 displayMode。公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
 
 == 构建与预览
 

@@ -3,16 +3,24 @@
 packages/typst/ 提供浏览器端的 Typst 数学呈现。lib.notc 声明：
 
 ```notc
-fn math(text: String) -> InlineContent;
+fn math(text: String, block?: Bool) -> Content<block>;
 ```
 
-组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。它与 notist::math、katex::math 具有相同的调用契约，可直接调用或通过 transforms 替换内置节点。
+组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。block 省略或为 false 时是行内内容，true 时是块级内容；Content<block> 在声明中表达这个类别规则。它与 notist::math、katex::math 具有相同的调用契约，可直接调用或通过 transforms 替换内置节点。
 
 == Example
 
 Fraction: $frac(a, b)$. Root: #math("sqrt(x^2 + y^2)").
 
 Sum: #typst::math("sum_(i=1)^n i = frac(n(n+1), 2)"). Matrix: #typst::math("mat(1, 2; 3, 4)").
+
+块级公式使用两端内侧留白的语法糖：
+
+$ sum_(i=1)^n i = frac(n(n+1), 2) $
+
+也可以显式传入 block：
+
+#typst::math("frac(a, b)", block: true)
 
 == 配置切换
 
@@ -34,17 +42,21 @@ to = "typst::math"
 $frac(a, b)$
 #math("sqrt(x^2 + y^2)")
 #typst::math("sum_(i=1)^n i")
+$ sum_(i=1)^n i $
+#typst::math("frac(a, b)", block: true)
 ```
 
 Markdown 的数学节点也使用同一个替换目标。IR 保留公式原文，不转换数学方言；Typst 使用 `frac(a, b)`、`sqrt(x)` 等写法，[数学语法](https://typst.app/docs/reference/math/) 与 KaTeX 接收的 LaTeX 不同。本页的公式分别展示语法糖、显式内置调用与直接 package 调用，都由本目录配置使用 Typst 呈现。其他项目引入 package 时也读取清单并使用公开的 transforms，开发依赖与开发转换只在根环境生效。
 
+需要仅通过直接调用使用 Typst 时，在依赖项中设置 `typst = { path = "../packages/typst", transforms = false }`。开关默认 true；完整作用域见 [Package Model](https://github.com/AzurIce/notist/blob/main/docs/package.not)。
+
 == 组件实现
 
-components/math/index.js 默认导出 HTMLElement 类；compiler.js 负责延迟加载、共享编译器和串行编译，不手写组件注册。公式通过 sys.inputs 传入固定 Typst 模板，按 math 模式解析，不拼接到模板源码里。
+components/math/index.js 默认导出 HTMLElement 类；components/math/compiler.js 负责延迟加载、共享编译器和串行编译，不手写组件注册。公式与 block 参数通过 sys.inputs 传入固定 Typst 模板，公式按 math 模式解析，不拼接到模板源码里；block 为 true 时使用 Typst 的显示公式排版。
 
 组件使用 [typst.ts](https://github.com/Myriad-Dreamin/typst.ts) 的 0.7.0 浏览器模块、编译器 WASM 与 SVG renderer WASM，及 typst-assets v0.13.1 中的 New Computer Modern 数学与正文字体。固定版本资源从 CDN 加载，首次呈现需要网络；编译器 WASM 约 28 MB。离线分发时需将依赖产物随 package 提供。
 
-SVG 随继承的字号缩放，通过 Typst 元数据取得基线，并包含超出段落边界的公式笔画。公式源码用作 SVG 的无障碍标签。属性更新与重连重新呈现；过期任务不覆盖新内容。公式错误或依赖加载失败时保留原文并显示错误，后续有效公式仍可呈现。
+SVG 随继承的字号缩放，行内公式通过 Typst 元数据取得基线，并包含超出段落边界的公式笔画。块级公式居中显示。公式源码用作 SVG 的无障碍标签。text、block 属性更新与重连重新呈现；过期任务不覆盖新内容。公式错误或依赖加载失败时保留原文并显示错误，后续有效公式仍可呈现。
 
 == 构建与验证
 

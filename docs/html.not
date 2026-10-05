@@ -26,7 +26,7 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 | text | 转义文本；有可映射属性时使用 span |
 | strong / emph / strike | strong / em / del |
 | raw | 行内 code；block 为 true 时 pre 内嵌 code |
-| math | span.notist-math；默认显示转义后的公式文本 |
+| math | 行内 span.notist-math；block 为 true 时 div.notist-math；默认显示转义后的公式文本 |
 | link | a；无 children 时以 target 作为文字 |
 | embed | span.notist-embed；默认包含通用资源链接 |
 | list / item | ul 或 ol / li；有序列表保留 start |
@@ -62,13 +62,13 @@ let renderer = notist_html::Renderer::new()
         None
     })
     .with_math_renderer(|item| {
-        // Some(html) 替换 span.notist-math 内部；None 显示公式文本。
+        // Some(html) 替换 span / div.notist-math 内部；None 显示公式文本。
         None
     });
 let result = renderer.render_with_diagnostics(analysis.root());
 ```
 
-回调接收完整 Item，可以借用应用状态；外层 span 及属性由 renderer 保留。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
+回调接收完整 Item，可以借用应用状态；外层元素及属性由 renderer 保留。数学回调可按 block 字段选择行内或显示公式排版。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
 
 默认 embed 不推断文件类型，同一个 IR 节点可以由应用转换为图片、音视频或其他资源。默认 math 保留公式文本，实际排版通过回调接入。
 

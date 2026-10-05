@@ -199,7 +199,7 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
     let mut module = DefinitionModule::new("notist");
     for &(name, signature) in BUILTINS {
         let returns = match name {
-            "raw" => ReturnRule::BlockIfTrue("block".into()),
+            "raw" | "math" => ReturnRule::BlockIfTrue("block".into()),
             "group" => ReturnRule::Inherit,
             _ => ReturnRule::Fixed(signature.level),
         };
@@ -212,7 +212,10 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
         };
         match name {
             "text" => parameter("text", Ty::String, Mode::Required, false),
-            "math" => parameter("text", Ty::String, Mode::Required, true),
+            "math" => {
+                parameter("text", Ty::String, Mode::Required, true);
+                parameter("block", Ty::Bool, Mode::Optional, false);
+            }
             "raw" => {
                 parameter("text", Ty::String, Mode::Required, true);
                 parameter("block", Ty::Bool, Mode::Optional, false);

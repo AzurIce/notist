@@ -57,7 +57,7 @@ fn lower_function(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<FunctionDef> {
     let name = function.name()?;
-    let returns = content_type(&function.return_type()?, diagnostics)?;
+    let returns = return_rule(&function.return_type()?, diagnostics)?;
     let children = match function.children_decl() {
         Some(mount) => match content_type(&mount.ty()?, diagnostics)? {
             Level::Inline => Accepts::Inline,
@@ -65,11 +65,7 @@ fn lower_function(
         },
         None => Accepts::Nothing,
     };
-    let mut definition = FunctionDef::new(
-        FunctionId::new(package, name.text()),
-        children,
-        ReturnRule::Fixed(returns),
-    );
+    let mut definition = FunctionDef::new(FunctionId::new(package, name.text()), children, returns);
     definition.span = function.range();
     for parameter in function.parameters() {
         let name = parameter.name()?;
@@ -87,6 +83,24 @@ fn lower_function(
         definition.parameters.push(lowered);
     }
     Some(definition)
+}
+
+fn return_rule(ty: &TypeRef, diagnostics: &mut Vec<Diagnostic>) -> Option<ReturnRule> {
+    let arguments: Vec<_> = ty.arguments().collect();
+    if ty.path()?.text() == "Content" && arguments.len() == 1 {
+        let selector = &arguments[0];
+        let name = selector.path()?.text();
+        if selector.arguments().next().is_none() && notist_core::definitions::valid_name(&name) {
+            return Some(ReturnRule::BlockIfTrue(name));
+        }
+        diagnostics.push(Diagnostic::new(
+            Phase::Type,
+            selector.range(),
+            "Content's selector must be a boolean parameter name",
+        ));
+        return None;
+    }
+    content_type(ty, diagnostics).map(ReturnRule::Fixed)
 }
 
 fn content_type(ty: &TypeRef, diagnostics: &mut Vec<Diagnostic>) -> Option<Level> {

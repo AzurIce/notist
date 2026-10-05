@@ -1,7 +1,7 @@
 use notist::{Environment, FunctionId, MemoryResources, RenderOptions, SourceDiagnostic, Vault};
 use std::path::Path;
 
-const MATH: &str = "fn math(text: String) -> InlineContent;";
+const MATH: &str = "fn math(text: String, block?: Bool) -> Content<block>;";
 fn rule(target: &str) -> String {
     format!("\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = '{target}::math'\n")
 }
@@ -35,6 +35,120 @@ fn assert_math(resources: MemoryResources, path: &str, target: &str) {
         output.rendered.used_components[0].id,
         FunctionId::new(target, "math")
     );
+}
+
+#[test]
+fn disabling_default_transforms_keeps_packages_available_for_direct_calls() {
+    let mut resources = project(
+        "[dependencies]\none = {path = 'packages/one', transforms = false}\n\
+         two = {path = 'packages/two'}",
+    );
+    for name in ["one", "two"] {
+        package(&mut resources, name, &rule(name));
+    }
+    let environment = load(&resources).unwrap();
+    assert_eq!(environment.packages().len(), 2);
+    assert!(environment.registry().resolve("one::math").is_ok());
+    let output = Vault::new(resources)
+        .render_html("doc.not", "$x$ #one::math(\"y\")", RenderOptions::default())
+        .unwrap();
+    assert!(output.analysis.diagnostics().is_empty());
+    assert!(output.transformed.diagnostics.is_empty());
+    assert!(output.rendered.diagnostics.is_empty());
+    assert_eq!(
+        output
+            .rendered
+            .used_components
+            .iter()
+            .map(|component| component.id.clone())
+            .collect::<Vec<_>>(),
+        [
+            FunctionId::new("two", "math"),
+            FunctionId::new("one", "math")
+        ]
+    );
+}
+
+#[test]
+fn disabled_dependency_defaults_skip_contract_validation_and_allow_root_rules() {
+    let config = "[dependencies]\nrenderer = {path = 'packages/renderer', transforms = false}";
+    let mut resources = project(config);
+    package(&mut resources, "renderer", &rule("missing"));
+    assert!(load(&resources).unwrap().transforms().is_empty());
+    resources.insert(
+        "Notist.toml",
+        format!("{config}{}", rule("renderer")).into_bytes(),
+    );
+    assert_math(resources.clone(), "doc.not", "renderer");
+    resources.insert(
+        "packages/renderer/lib.notc",
+        b"fn invalid(text: Content) -> InlineContent;".to_vec(),
+    );
+    assert!(load(&resources).is_err());
+}
+
+#[test]
+fn disabled_development_dependency_defaults_keep_explicit_development_rules() {
+    let config = "[dev-dependencies]\nrenderer = {path = 'packages/renderer', transforms = false}";
+    let mut resources = project(config);
+    package(&mut resources, "renderer", &rule("renderer"));
+    assert!(load(&resources).unwrap().transforms().is_empty());
+    resources.insert(
+        "Notist.toml",
+        format!(
+            "{config}{}",
+            rule("renderer").replace("[[transforms]]", "[[dev-transforms]]")
+        )
+        .into_bytes(),
+    );
+    assert_math(resources, "doc.md", "renderer");
+}
+
+#[test]
+fn shared_defaults_are_enabled_by_any_importing_edge_independent_of_first_visit() {
+    for (left, right) in [(false, true), (true, false), (false, false), (true, true)] {
+        let mut resources = project(
+            "[dependencies]\nleft = {path = 'packages/left'}\nright = {path = 'packages/right'}",
+        );
+        package(&mut resources, "shared", &rule("shared"));
+        for (name, transforms) in [("left", left), ("right", right)] {
+            package(
+                &mut resources,
+                name,
+                &format!(
+                    "[dependencies]\nshared = {{path = '../shared', transforms = {transforms}}}"
+                ),
+            );
+        }
+        let environment = load(&resources).unwrap();
+        assert_eq!(environment.packages().len(), 3);
+        if left || right {
+            assert_math(resources, "doc.not", "shared");
+        } else {
+            assert!(environment.transforms().is_empty());
+            let output = Vault::new(resources)
+                .render_html("doc.not", "$x$", RenderOptions::default())
+                .unwrap();
+            assert_eq!(output.transformed.root, *output.analysis.root());
+            assert!(output.rendered.used_components.is_empty());
+        }
+    }
+}
+
+#[test]
+fn disabling_a_package_defaults_preserves_its_dependencies_default_order() {
+    let mut resources =
+        project("[dependencies]\nparent = {path = 'packages/parent', transforms = false}");
+    package(&mut resources, "shared", &rule("shared"));
+    package(
+        &mut resources,
+        "parent",
+        &format!(
+            "[dependencies]\nshared = {{path = '../shared'}}\n{}",
+            rule("parent")
+        ),
+    );
+    assert_math(resources, "doc.not", "shared");
 }
 
 #[test]
@@ -213,7 +327,7 @@ fn invalid_public_defaults_report_the_dependency_manifest_even_with_an_override(
     );
     resources.insert(
         "packages/bad/lib.notc",
-        b"fn math(text: Int) -> InlineContent;".to_vec(),
+        b"fn math(text: Int, block?: Bool) -> Content<block>;".to_vec(),
     );
     let errors = load(&resources).unwrap_err();
     assert!(

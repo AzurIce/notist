@@ -8,12 +8,12 @@ function load() {
 }
 
 export default class Math extends HTMLElement {
-  static observedAttributes = ["notist-text"];
+  static observedAttributes = ["notist-text", "notist-block"];
   #revision = 0;
   constructor() {
     super();
     const root = this.attachShadow({ mode: "open" });
-    root.innerHTML = '<style>:host { display: inline; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>';
+    root.innerHTML = `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>`;
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = stylesheet;
@@ -35,6 +35,7 @@ export default class Math extends HTMLElement {
   async update() {
     const revision = ++this.#revision;
     const source = this.getAttribute("notist-text") ?? "";
+    const block = this.getAttribute("notist-block") === "true";
     const target = this.shadowRoot.querySelector(".formula");
     const message = this.shadowRoot.querySelector(".error");
     target.textContent = source;
@@ -42,7 +43,7 @@ export default class Math extends HTMLElement {
     try {
       const katex = await load();
       if (!this.isConnected || revision !== this.#revision) return;
-      katex.render(source, target, { throwOnError: true, trust: false, output: "htmlAndMathml" });
+      katex.render(source, target, { displayMode: block, throwOnError: true, trust: false, output: "htmlAndMathml" });
     } catch (error) {
       if (!this.isConnected || revision !== this.#revision) return;
       target.textContent = source;

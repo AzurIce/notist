@@ -122,6 +122,9 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
         ),
         ("doc.nmd", "#typst::math(\"sqrt(x)\") $frac(a, b)$", 2),
     ] {
+        let source = format!(
+            "{source}\n\n$ sum_(i=1)^n i $\n\n#typst::math(\"sum_(i=1)^n i\", block: true)"
+        );
         let document = project.path().join(name);
         std::fs::write(&document, source).unwrap();
         let output = project.path().join(format!("{name}-html"));
@@ -139,7 +142,8 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
             String::from_utf8_lossy(&result.stderr)
         );
         let html = std::fs::read_to_string(output.join("index.html")).unwrap();
-        assert_eq!(html.matches("<typst-math ").count(), count);
+        assert_eq!(html.matches("<typst-math ").count(), count + 2);
+        assert_eq!(html.matches("notist-block=\"true\"").count(), 2);
         assert!(html.contains("notist-text=\"frac(a, b)\""));
         assert!(html.contains("notist-text=\"sqrt(x)\""));
         assert!(!html.contains("<notist-math "));

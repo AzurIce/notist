@@ -41,6 +41,25 @@ enum Balanced {
     Unclosed(usize),
 }
 
+/// Shared lookahead for parsing calls and finding table cell boundaries.
+struct CallFrame {
+    named: bool,
+    has_args: bool,
+    body_start: usize,
+    body: Option<Balanced>,
+}
+
+impl CallFrame {
+    /// Only complete calls protect their contents from table separators.
+    fn end(&self) -> Option<usize> {
+        match self.body {
+            Some(Balanced::Closed(close)) if self.named || !self.has_args => Some(close + 1),
+            None if self.named && self.has_args => Some(self.body_start),
+            _ => None,
+        }
+    }
+}
+
 /// Parse a Markup document.
 pub fn parse_document(src: &str) -> Parse {
     Parser::new(src).run()
@@ -275,7 +294,7 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::Tilde) => {
                     self.delimited(SyntaxKind::Tilde, SyntaxKind::Strike, stop)
                 }
-                Some(SyntaxKind::Dollar) => self.math_inline(),
+                Some(SyntaxKind::Dollar) => self.math(),
                 Some(SyntaxKind::Bang) if self.peek(1) == Some(SyntaxKind::LBracket) => {
                     self.md_link(stop, true)
                 }
@@ -380,66 +399,71 @@ impl<'a> Parser<'a> {
         !matches!(prev, SyntaxKind::Whitespace | SyntaxKind::Newline)
     }
 
-    /// Inline math: `$..$`, same flanking rules as paired delimiters, but the
-    /// content is an opaque payload (the math grammar is not parsed). Empty
-    /// or unclosed means the dollars are plain text.
-    fn math_inline(&mut self) {
-        if !self.can_open_at(self.pos) {
+    /// `$x$` is inline math; `$ x $` is a block equation. Matching flanks
+    /// determine the flavor, while the payload stays opaque. Empty or
+    /// unclosed forms remain literal text.
+    fn math(&mut self) {
+        let Some(close) = self.math_close_at(self.pos, true) else {
             self.eat();
             return;
-        }
-        let mut i = self.pos + 1;
-        let close = loop {
-            match self.kind_at(i) {
-                None => break None,
-                Some(SyntaxKind::Newline) if self.line_ends_block_at(i) => break None,
-                Some(SyntaxKind::Dollar) if self.can_close_at(i) => break Some(i),
-                Some(_) => i += 1,
-            }
         };
-        match close {
-            Some(close) if close > self.pos + 1 => {
-                self.builder.start_node(SyntaxKind::Math.into());
-                while self.pos <= close {
-                    self.eat();
-                }
-                self.builder.finish_node();
-            }
-            _ => self.eat(),
+        self.builder.start_node(SyntaxKind::Math.into());
+        while self.pos <= close {
+            self.eat();
         }
+        self.builder.finish_node();
+    }
+
+    fn math_close_at(&self, start: usize, cross_lines: bool) -> Option<usize> {
+        let padded = |i| {
+            matches!(
+                self.kind_at(i),
+                Some(SyntaxKind::Whitespace | SyntaxKind::Newline)
+            )
+        };
+        let block = padded(start + 1);
+        let mut end = start + 1;
+        while let Some(kind) = self.kind_at(end) {
+            if kind == SyntaxKind::Newline && (!cross_lines || self.line_ends_block_at(end)) {
+                break;
+            }
+            if kind == SyntaxKind::Dollar && padded(end - 1) == block {
+                let begin = usize::from(self.lexed.offset(start + 1));
+                let finish = usize::from(self.lexed.offset(end));
+                return (!self.source[begin..finish].trim().is_empty()).then_some(end);
+            }
+            end += 1;
+        }
+        None
     }
 
     /// Inline raw: a backtick run closed by an equal-length run on the same
     /// line. Longer/shorter runs inside are content. Unclosed means it never
     /// was raw: the opening run stays literal text, no diagnostic.
     fn raw_inline(&mut self) {
-        let len = self.lexed.len(self.pos);
-        let mut i = self.pos + 1;
-        let closed = loop {
-            match self.kind_at(i) {
-                None => break false,
-                Some(SyntaxKind::Newline) => break false,
-                Some(SyntaxKind::Backtick) if self.lexed.len(i) == len => break true,
-                Some(_) => i += 1,
-            }
-        };
-        if !closed {
+        let Some(close) = self.raw_inline_close_at(self.pos) else {
             self.eat();
             return;
-        }
+        };
         self.builder.start_node(SyntaxKind::RawInline.into());
-        self.eat();
-        loop {
-            match self.cur() {
-                None => break,
-                Some(SyntaxKind::Backtick) if self.lexed.len(self.pos) == len => {
-                    self.eat();
-                    break;
-                }
-                Some(_) => self.eat(),
-            }
+        while self.pos <= close {
+            self.eat();
         }
         self.builder.finish_node();
+    }
+
+    fn raw_inline_close_at(&self, start: usize) -> Option<usize> {
+        let mut end = start + 1;
+        while let Some(kind) = self.kind_at(end) {
+            if kind == SyntaxKind::Newline {
+                break;
+            }
+            if kind == SyntaxKind::Backtick && self.lexed.len(end) == self.lexed.len(start) {
+                return Some(end);
+            }
+            end += 1;
+        }
+        None
     }
 
     /// Links, both spellings: `[[target]]` / `[[target|text]]` and
@@ -504,26 +528,11 @@ impl<'a> Parser<'a> {
                 }
                 Some(kind @ (SyntaxKind::Backtick | SyntaxKind::Dollar)) => {
                     // Brackets inside opaque inline payloads are not label delimiters.
-                    let mut end = i + 1;
-                    let mut found = None;
-                    if kind == SyntaxKind::Backtick || self.can_open_at(i) {
-                        while let Some(next) = self.kind_at(end) {
-                            if next == SyntaxKind::Newline
-                                && (kind == SyntaxKind::Backtick || self.line_ends_block_at(end))
-                            {
-                                break;
-                            }
-                            if next == kind
-                                && ((kind == SyntaxKind::Backtick
-                                    && self.lexed.len(end) == self.lexed.len(i))
-                                    || (kind == SyntaxKind::Dollar && self.can_close_at(end)))
-                            {
-                                found = Some(end);
-                                break;
-                            }
-                            end += 1;
-                        }
-                    }
+                    let found = if kind == SyntaxKind::Backtick {
+                        self.raw_inline_close_at(i)
+                    } else {
+                        self.math_close_at(i, true)
+                    };
                     i = found.map_or(i + 1, |end| end + 1);
                 }
                 Some(SyntaxKind::LBracket) => {
@@ -620,71 +629,74 @@ impl<'a> Parser<'a> {
     /// anonymous form, producing a transparent group node. Anything else
     /// after `#` (bare `#name`, `#(..)`) is literal text.
     fn code_call(&mut self) {
-        let named = self.peek(1) == Some(SyntaxKind::Ident);
-        let args_at = if named {
-            let Some(end) = self.path_end(self.pos + 1) else {
-                self.eat();
-                return;
-            };
-            end
-        } else {
-            self.pos + 1
+        let Some(frame) = self.code_call_at(self.pos) else {
+            self.eat();
+            return;
         };
-        let has_args = self.kind_at(args_at) == Some(SyntaxKind::LParen);
-        let mut after = args_at;
-        if has_args {
-            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen, false) {
-                Balanced::Closed(end) => after = end + 1,
-                _ => {
-                    self.eat();
-                    return;
-                }
+        let body_close = match frame.body {
+            Some(Balanced::Closed(close)) => Some(close),
+            Some(Balanced::Unclosed(eof)) => {
+                let point = self.lexed.offset(eof);
+                self.diagnostics.push(Diagnostic {
+                    span: TextRange::new(point, point),
+                    message: "unclosed code call body".to_string(),
+                });
+                None
             }
-        }
-        let mut body_close = None;
-        let has_body = if self.kind_at(after) == Some(SyntaxKind::LBracket) {
-            match self.balanced(after, SyntaxKind::LBracket, SyntaxKind::RBracket, true) {
-                Balanced::Closed(close) => {
-                    body_close = Some(close);
-                    true
-                }
-                Balanced::Unclosed(eof) => {
-                    let point = self.lexed.offset(eof);
-                    self.diagnostics.push(Diagnostic {
-                        span: TextRange::new(point, point),
-                        message: "unclosed code call body".to_string(),
-                    });
-                    false
-                }
-                Balanced::BlockEnd => unreachable!("body scans cross blocks"),
-            }
-        } else {
-            false
+            Some(Balanced::BlockEnd) => unreachable!("body scans cross blocks"),
+            None => None,
         };
-        let is_call = (named && (has_args || has_body)) || (!named && !has_args && has_body);
+        let has_body = body_close.is_some();
+        let is_call = (frame.named && (frame.has_args || has_body))
+            || (!frame.named && !frame.has_args && has_body);
         if !is_call {
             self.eat();
             return;
         }
         self.builder.start_node(SyntaxKind::CodeCall.into());
         self.eat();
-        if named {
+        if frame.named {
             self.path();
         }
-        if has_args {
+        if frame.has_args {
             self.eat();
             self.call_args();
             self.eat();
         }
-        if has_body {
-            let close = body_close.unwrap();
-            let block = self.is_block_body(after, close);
+        if let Some(close) = body_close {
+            let block = self.is_block_body(frame.body_start, close);
             if !block {
-                self.diagnose_inline_parbreak(after, close);
+                self.diagnose_inline_parbreak(frame.body_start, close);
             }
             self.bracket_body(block);
         }
         self.builder.finish_node();
+    }
+
+    fn code_call_at(&self, start: usize) -> Option<CallFrame> {
+        let named = self.kind_at(start + 1) == Some(SyntaxKind::Ident);
+        let args_at = if named {
+            self.path_end(start + 1)?
+        } else {
+            start + 1
+        };
+        let has_args = self.kind_at(args_at) == Some(SyntaxKind::LParen);
+        let body_start = if has_args {
+            match self.balanced(args_at, SyntaxKind::LParen, SyntaxKind::RParen, false) {
+                Balanced::Closed(close) => close + 1,
+                _ => return None,
+            }
+        } else {
+            args_at
+        };
+        let body = (self.kind_at(body_start) == Some(SyntaxKind::LBracket))
+            .then(|| self.balanced(body_start, SyntaxKind::LBracket, SyntaxKind::RBracket, true));
+        Some(CallFrame {
+            named,
+            has_args,
+            body_start,
+            body,
+        })
     }
 
     /// Paths are adjacent identifier segments. A trailing separator invalidates

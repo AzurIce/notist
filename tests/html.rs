@@ -67,6 +67,41 @@ fn both_frontends_render_the_same_complete_document() {
 }
 
 #[test]
+fn block_math_renders_outside_paragraphs_and_shares_math_hooks() {
+    let source = "before $x$\n@(id: \"equation\")$ x < y $\nafter";
+    for extension in ["not", "md"] {
+        let root = analyze(extension, source);
+        let result = Renderer::new().render_with_diagnostics(&root);
+        assert!(result.diagnostics.is_empty());
+        assert_eq!(
+            result.html,
+            concat!(
+                "<p>before <span class=\"notist-math\">x</span></p>",
+                "<div class=\"notist-math\" id=\"equation\">x &lt; y</div>",
+                "<p>after</p>"
+            )
+        );
+        let equation = root
+            .find(|n| n.ctor == Ctor::Math && n.level == notist::builtins::Level::Block)
+            .unwrap();
+        let mapped = Renderer::new()
+            .with_source_map()
+            .render_with_diagnostics(&root);
+        assert!(mapped.source_map.iter().any(|mapping| mapping.range.start
+            == usize::from(equation.span.start())
+            && mapping.range.end == usize::from(equation.span.end())));
+        let result = Renderer::new()
+            .with_math_renderer(|item| {
+                (item.fields.get("block") == Some(&Value::Bool(true)))
+                    .then(|| "<math display=\"block\"><mi>x</mi></math>".into())
+            })
+            .render(&root);
+        assert!(result.contains("<div class=\"notist-math\" id=\"equation\"><math display=\"block\"><mi>x</mi></math></div>"));
+        assert!(result.contains("<span class=\"notist-math\">x</span>"));
+    }
+}
+
+#[test]
 fn table_headers_alignment_and_block_cells_are_preserved() {
     let sugar = "| *Name* | Count |\n| :-- | --: |\n| A | 3 |\n";
     let root = analyze("not", sugar);

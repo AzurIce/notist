@@ -33,7 +33,7 @@ lib.notc → Module AST → 定义 ─┘
 - 函数身份与源码绑定名。
 - 参数名、位置参数顺序、Value 类型、必填／可选、默认值，以及必要的值域约束。
 - children 接受的内容类型。
-- 返回内容类型：InlineContent 或 Content；现有 raw 与 group 所需的参数／挂载相关类别规则也通过同一个签名模型表达。
+- 返回内容类型：InlineContent、Content，或通过 Content<block> 按布尔参数选择类别；raw、math 与 group 的类别规则通过同一个签名模型表达。
 
 参数类型覆盖现有 Value。参数继续不包含 Content，内容树由唯一的 children 挂载传递。位置参数按签名归入具名 fields，之后 HTML 不再区分位置与命名参数。
 
@@ -45,7 +45,7 @@ children 的签名表达 None、Inline、普通 Content、透明内容及特定�
 fn foo(arga: String, argb: Int = 1)[children: Content] -> Content;
 ```
 
-这里 children 是函数的尾部挂载，不是允许传入 Content 的普通参数。声明以分号结束，第一版没有函数体。Content 返回类型对应块级调用，InlineContent 对应行内调用。
+这里 children 是函数的尾部挂载，不是允许传入 Content 的普通参数。声明以分号结束，没有函数体。Content 返回类型对应块级调用，InlineContent 对应行内调用。Content<block> 引用声明中的 Bool 参数，true 对应块级，其余合法值对应行内；如 `fn math(text: String, block?: Bool) -> Content<block>;`。
 
 `.not` 是 Markup，内容函数调用及其参数、挂载均属于 Markup 语法。MarkdownFrontend 同样支持显式内容函数和注解，调用头及字面量使用共用规则，children 正文使用 Markdown；语法归属见 [文档前端](frontends.not)。`.notc` 是持续 Code 模式的声明模块；两个入口位于同一个 notist-syntax crate，共享基础词法和字面量，分别产生 Document 与 Module CST / AST。模块定义不进入文档 Expr / Item。
 
@@ -59,7 +59,7 @@ Registry 校验声明中的重复参数、默认值类型、函数名冲突及�
 
 core 的 definitions 模块提供 FunctionId、FunctionDef、DefinitionModule、ParameterDef、ValueType 与 ReturnRule。普通参数的 Required、Optional、Default(Value) 使用互斥的 ParameterMode；Array 支持递归元素类型，Content 不属于 ValueType。
 
-FunctionDef 保存 children 接受规则和返回类别。原生高级定义用 ValueConstraint 表达正整数与允许的数组字符串，ReturnRule 表达固定类别、group 的 flavor 继承与 raw 的 block 参数选择；这些规则没有执行回调，源码声明子集只产生固定类别。
+FunctionDef 保存 children 接受规则和返回类别。原生高级定义用 ValueConstraint 表达正整数与允许的数组字符串，ReturnRule 表达固定类别、group 的 flavor 继承与 raw / math 的 block 参数选择；这些规则没有执行回调。源码声明产生固定类别或引用布尔参数的 BlockIfTrue 规则。
 
 ```rust
 use notist::{analyze_module, builtins, Registry};

@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
     const page = await browser.newPage();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.goto(`${base}/target/packages-demo/`);
+    await page.goto(`${base}${process.env.NOTIST_PACKAGES_DEMO ?? '/target/packages-demo/'}`);
     await page.waitForFunction(() => document.querySelector('mermaid-diagram')?.shadowRoot?.querySelector('svg'));
     await page.waitForFunction(() => [...document.querySelectorAll('katex-math')].length === 3 && [...document.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex')));
     assert.equal(await page.locator('katex-math math').count(), 3);
@@ -16,6 +16,13 @@ const { chromium } = require('playwright');
     const formula = page.locator('katex-math').first();
     await formula.evaluate(node => node.setAttribute('notist-text', String.raw`\frac{1}{2}`));
     await page.waitForFunction(() => document.querySelector('katex-math').shadowRoot.querySelector('annotation')?.textContent === String.raw`\frac{1}{2}`);
+    await formula.evaluate(node => node.setAttribute('notist-block', 'true'));
+    await page.waitForFunction(() => document.querySelector('katex-math').shadowRoot.querySelector('.katex-display'));
+    assert.equal(await formula.locator('math').getAttribute('display'), 'block');
+    assert.equal(await formula.evaluate(node => getComputedStyle(node).display), 'block');
+    await formula.evaluate(node => node.setAttribute('notist-block', 'false'));
+    await page.waitForFunction(() => !document.querySelector('katex-math').shadowRoot.querySelector('.katex-display'));
+    assert.equal(await formula.evaluate(node => getComputedStyle(node).display), 'inline');
     const reconnected = await formula.evaluate(node => {
       const root = node.shadowRoot;
       const parent = node.parentNode;
@@ -56,12 +63,16 @@ const { chromium } = require('playwright');
     // Keep Markdown math on the same configured transform and component path.
     await page.fill('#path', 'math.md');
     await page.locator('#path').dispatchEvent('change');
-    await page.fill('#src', '- $x^2$\n\n$y^2$');
+    await page.fill('#src', '- $x^2$\n\n$ y^2 $');
     await page.waitForFunction(() => document.querySelector('#core').textContent.includes('Math') && !document.querySelector('#core').textContent.includes('widgets::panel'));
     await page.waitForFunction(() => {
       const doc = document.querySelector('#preview').contentDocument;
       return doc && doc.querySelectorAll('katex-math').length === 2 && [...doc.querySelectorAll('katex-math')].every(node => node.shadowRoot?.querySelector('.katex'));
     });
+    const block = page.frameLocator('#preview').locator('katex-math[notist-block="true"]');
+    assert.equal(await block.count(), 1);
+    assert.equal(await block.locator('math').getAttribute('display'), 'block');
+    assert.equal(await block.evaluate(node => node.closest('p')), null);
     // Content paths respect the prepared Vault root; package dependency files
     // outside that root remain usable for declarations and components.
     await page.fill('#src', '[outside](../outside.not) ![asset](../outside.svg)');

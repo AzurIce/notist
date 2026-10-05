@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 pub fn configuration_json(source: &str) -> String {
     match crate::environment::parse_config(source) {
         Ok(config) => {
-            let dependencies = |values: &[crate::environment::Dependency]| values.iter().map(|dependency| json!({"name":dependency.name,"path":dependency.path})).collect::<Vec<_>>();
+            let dependencies = |values: &[crate::environment::Dependency]| values.iter().map(|dependency| json!({"name":dependency.name,"path":dependency.path,"transforms":dependency.transforms})).collect::<Vec<_>>();
             let transforms = |values: &[crate::transforms::Replace]| values.iter().map(|rule|json!({"kind":"replace","from":rule.from.to_string(),"to":rule.to.to_string()})).collect::<Vec<_>>();
             json!({"package":config.package.map(|package|json!({"name":package.name})), "dependencies":dependencies(&config.dependencies), "dev_dependencies":dependencies(&config.dev_dependencies), "transforms":transforms(&config.transforms), "dev_transforms":transforms(&config.dev_transforms)}).to_string()
         }

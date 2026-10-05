@@ -245,7 +245,7 @@ fn default_transforms_publish_shared_component_resources_per_used_page() {
         ),
         (
             "/math/lib.notc",
-            "fn formula(text: String) -> InlineContent;",
+            "fn formula(text: String, block?: Bool) -> Content<block>;",
         ),
         (
             "/math/components/formula/index.js",

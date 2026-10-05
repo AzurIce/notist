@@ -1,4 +1,4 @@
-use rowan::{NodeOrToken, TextRange, TextSize};
+use rowan::{NodeOrToken, TextRange, TextSize, WalkEvent};
 
 use crate::annotation_dict;
 use notist_core::diag::{Diagnostic, Phase};
@@ -260,18 +260,25 @@ fn lower_table(table: &Table, diags: &mut Vec<Diagnostic>) -> Expr {
                 .cells()
                 .take(width)
                 .map(|cell| {
-                    let payloads: Vec<_> = cell
-                        .content()
-                        .filter_map(|el| el.into_node())
-                        .flat_map(|node| node.descendants())
-                        .filter(|node| {
-                            matches!(node.kind(), SyntaxKind::RawInline | SyntaxKind::Math)
-                        })
-                        .map(|node| node.text_range())
-                        .collect();
+                    let mut payloads = Vec::new();
+                    for node in cell.content().filter_map(|el| el.into_node()) {
+                        let mut walk = node.preorder();
+                        while let Some(event) = walk.next() {
+                            if let WalkEvent::Enter(node) = event {
+                                match node.kind() {
+                                    SyntaxKind::CodeCall => walk.skip_subtree(),
+                                    SyntaxKind::RawInline | SyntaxKind::Math => {
+                                        payloads.push(node.text_range());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                     let mut inline = lower_inline(cell.content(), diags);
                     // Pipe escaping belongs to table syntax, including opaque raw/math
-                    // payloads, where ordinary markup escapes otherwise stay literal.
+                    // payloads outside calls. Call bodies use their own markup grammar;
+                    // nested tables lower their own escapes exactly once.
                     unescape_table_pipes(&mut inline, &payloads);
                     let children = if inline.is_empty() {
                         Vec::new()
@@ -584,12 +591,16 @@ fn lower_inline(
                         .iter()
                         .map(|t| t.text())
                         .collect();
+                    let block = matches!(
+                        tokens[1].kind(),
+                        SyntaxKind::Whitespace | SyntaxKind::Newline
+                    );
                     let indent = node
                         .ancestors()
                         .find_map(ListItem::cast)
                         .map_or(0, |item| item.content_indent());
                     let text = text
-                        .split_inclusive('\n')
+                        .split_inclusive(['\r', '\n'])
                         .enumerate()
                         .map(|(i, line)| {
                             if i == 0 {
@@ -599,8 +610,12 @@ fn lower_inline(
                             }
                         })
                         .collect::<String>();
-                    let mut expr =
-                        Expr::call("math", node.text_range()).with_field("text", Value::Str(text));
+                    let text = if block { text.trim().to_owned() } else { text };
+                    let mut expr = Expr::call("math", node.text_range());
+                    if block {
+                        expr = expr.with_field("block", Value::Bool(true));
+                    }
+                    let mut expr = expr.with_field("text", Value::Str(text));
                     expr.set_attrs(pending.take());
                     items.push(expr);
                     after_element = true;

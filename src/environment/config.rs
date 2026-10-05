@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 pub struct Dependency {
     pub name: String,
     pub path: PathBuf,
+    pub transforms: bool,
     pub span: TextRange,
 }
 
@@ -42,6 +43,12 @@ enum TransformConfig {
 #[derive(serde::Deserialize)]
 struct LocalDependency {
     path: String,
+    #[serde(default = "default_transforms")]
+    transforms: bool,
+}
+
+fn default_transforms() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +128,7 @@ fn parse_dependencies(
             dependencies.push(Dependency {
                 name,
                 path: path.into(),
+                transforms: entry.get_ref().transforms,
                 span,
             });
         }

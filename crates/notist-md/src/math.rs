@@ -9,6 +9,7 @@ use rushdown::text::{BlockReader, Reader};
 pub(crate) struct Math {
     pub text: String,
     pub end: usize,
+    pub block: bool,
 }
 
 impl NodeKind for Math {
@@ -43,9 +44,7 @@ impl InlineParser for MathParser {
         _: &mut Context,
     ) -> Option<NodeRef> {
         let (line, _) = reader.peek_line()?;
-        if line.chars().nth(1)?.is_whitespace() {
-            return None;
-        }
+        let block = line.chars().nth(1)?.is_whitespace();
         reader.advance(1);
         let mut text = String::new();
         let mut escaped = false;
@@ -57,12 +56,17 @@ impl InlineParser for MathParser {
                     if text.is_empty() {
                         return None;
                     }
-                    if !text.chars().next_back().unwrap().is_whitespace() {
+                    if text.chars().next_back().unwrap().is_whitespace() == block {
+                        if text.trim().is_empty() {
+                            return None;
+                        }
                         let end = segment.start() + offset + 1;
                         reader.advance(offset + 1);
-                        return Some(
-                            arena.new_node(KindData::Extension(Box::new(Math { text, end }))),
-                        );
+                        return Some(arena.new_node(KindData::Extension(Box::new(Math {
+                            text: if block { text.trim().to_owned() } else { text },
+                            end,
+                            block,
+                        }))));
                     }
                 }
                 text.push(ch);

@@ -301,6 +301,116 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
 }
 
 #[test]
+fn padded_math_is_block_content_and_matches_explicit_calls() {
+    let engine = Pipeline::default();
+    for (sugar, function) in [
+        ("$ x $", "#math(\"x\", block: true)"),
+        ("$ \t x + y \t $", "#math(block: true, text: \"x + y\")"),
+        (
+            "前 $x$ 中 $ x^2 $ 后",
+            "前 #math(\"x\") 中 #math(\"x^2\", block: true) 后",
+        ),
+        (
+            r#"$ *bold* [link](x) #raw("x") \alpha $"#,
+            r##"#math(r#"*bold* [link](x) #raw("x") \alpha"#, block: true)"##,
+        ),
+    ] {
+        let explicit = without_spans(analyze(function));
+        for path in ["test.not", "test.md"] {
+            let doc = engine
+                .analyze(path, sugar, notist::builtins::registry())
+                .unwrap();
+            assert!(doc.diagnostics().is_empty(), "{path}: {sugar:?}");
+            let equation = doc
+                .root()
+                .find(|n| n.ctor == Ctor::Math && n.level == Level::Block)
+                .unwrap();
+            assert_eq!(equation.level, Level::Block);
+            assert_eq!(equation.ctor.accepts(), Some(Accepts::Nothing));
+            assert!(equation.children.is_empty());
+            assert_eq!(
+                without_spans(doc.into_parts().0),
+                explicit,
+                "{path}: {sugar:?}"
+            );
+        }
+    }
+    let root = analyze("前 $x$ 中 $ x^2 $ 后");
+    assert_eq!(
+        root.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
+        [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+    );
+    assert_eq!(root.children[0].children[1].ctor, Ctor::Math);
+}
+
+#[test]
+fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
+    let engine = Pipeline::default();
+    for newline in ["\n", "\r\n", "\r"] {
+        let source = format!("- before{newline}  $ {newline}  x +{newline}    y{newline}  $ after");
+        let root = analyze(&source);
+        let item = root.find(|n| n.ctor == Ctor::ListItem).unwrap();
+        let equation = &item.children[1];
+        assert_eq!(equation.ctor, Ctor::Math);
+        assert_eq!(
+            equation.fields.get("text"),
+            Some(&Value::Str(format!("x +{newline}  y")))
+        );
+        assert_eq!(item.children[0].ctor, Ctor::Paragraph);
+        assert_eq!(item.children[2].ctor, Ctor::Paragraph);
+        assert_eq!(
+            &source[usize::from(equation.span.start())..usize::from(equation.span.end())],
+            format!("$ {newline}  x +{newline}    y{newline}  $")
+        );
+        if newline == "\n" {
+            let md = engine
+                .analyze("test.md", &source, notist::builtins::registry())
+                .unwrap();
+            assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
+            let item = md.root().find(|n| n.ctor == Ctor::ListItem).unwrap();
+            assert_eq!(
+                item.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
+                [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+            );
+            // Markdown paragraphs remove continuation-line leading spaces.
+            assert_eq!(
+                item.children[1].fields.get("text"),
+                Some(&Value::Str("x +\ny".into()))
+            );
+            assert_eq!(item.children[1].span, equation.span);
+        }
+    }
+}
+
+#[test]
+fn empty_mismatched_escaped_or_unclosed_math_remains_literal() {
+    let engine = Pipeline::default();
+    for source in [
+        "$$",
+        "$  $",
+        "$\t$",
+        "$ x$",
+        "$x $",
+        "$ x",
+        "$ \n\nx $",
+        "$ x\n---\ny $",
+        "\\$ x \\$",
+        "`$ x $`",
+    ] {
+        for path in ["test.not", "test.md"] {
+            let doc = engine
+                .analyze(path, source, notist::builtins::registry())
+                .unwrap();
+            assert!(doc.diagnostics().is_empty(), "{path}: {source:?}");
+            assert!(
+                doc.root().find(|n| n.ctor == Ctor::Math).is_none(),
+                "{path}: {source:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
     let engine = Pipeline::default();
     for src in [

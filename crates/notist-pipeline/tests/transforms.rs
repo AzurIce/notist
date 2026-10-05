@@ -30,7 +30,7 @@ fn rule(from: &str, to: &str) -> Replace {
 }
 fn registry() -> Registry {
     let mut registry = builtins::registry().clone();
-    registry.register(analyze_module("maths", "fn first(text: String) -> InlineContent; fn second(text: String) -> InlineContent; fn inline()[children: InlineContent] -> InlineContent; fn block(text: String) -> Content; fn wrong(source: String) -> InlineContent; fn optional(text?: String) -> InlineContent;").unwrap()).unwrap();
+    registry.register(analyze_module("maths", "fn first(text: String, block?: Bool) -> Content<block>; fn second(text: String, block?: Bool) -> Content<block>; fn inline()[children: InlineContent] -> InlineContent; fn block(text: String) -> Content; fn fixed(text: String) -> InlineContent; fn wrong(source: String, block?: Bool) -> Content<block>; fn optional(text?: String, block?: Bool) -> Content<block>;").unwrap()).unwrap();
     registry
 }
 
@@ -133,7 +133,8 @@ fn rejects_unknown_functions_and_incompatible_or_structural_contracts_atomically
         ("notist::math", "maths::block", "levels"),
         ("notist::math", "maths::wrong", "parameter"),
         ("notist::math", "maths::optional", "parameter"),
-        ("notist::strong", "notist::math", "children"),
+        ("notist::strong", "maths::fixed", "children"),
+        ("notist::math", "maths::fixed", "levels"),
         ("notist::heading", "notist::heading", "structural"),
         ("notist::item", "notist::callout", "structural"),
         ("notist::group", "maths::inline", "fixed"),
@@ -221,7 +222,7 @@ fn metadata_children_and_exact_values_survive_extension_replacement() {
 }
 
 #[test]
-fn native_default_contracts_compare_float_bits_and_reject_dynamic_levels() {
+fn native_default_contracts_compare_float_bits() {
     let mut registry = registry();
     let mut module = DefinitionModule::new("native");
     for (name, value) in [
@@ -257,9 +258,78 @@ fn native_default_contracts_compare_float_bits_and_reject_dynamic_levels() {
         matches!(output.root.fields.get("value"), Some(Value::Float(v)) if v.to_bits() == 0x7ff8000000000001)
     );
     assert!(TransformPlan::compile(&[rule("native::a", "native::c")], &registry).is_err());
-    assert!(
-        TransformPlan::compile(&[rule("notist::raw", "notist::raw")], &registry).unwrap_err()[0]
-            .message
-            .contains("fixed")
-    );
+    assert!(TransformPlan::compile(&[rule("notist::raw", "notist::raw")], &registry).is_ok());
+}
+
+#[test]
+fn matching_boolean_content_rules_preserve_inline_and_block_levels() {
+    let registry = registry();
+    let plan = TransformPlan::compile(&[rule("notist::math", "maths::first")], &registry).unwrap();
+    for (path, source) in [
+        (
+            "test.not",
+            "before $x$ $ x $ #math(\"y\", block: false) #math(\"z\", block: true) after",
+        ),
+        (
+            "test.md",
+            "before $x$ $ x $ #math(\"y\", block: false) #math(\"z\", block: true) after",
+        ),
+    ] {
+        let analysis = Pipeline::default()
+            .analyze(path, source, &registry)
+            .unwrap();
+        assert!(
+            analysis.diagnostics().is_empty(),
+            "{:?}",
+            analysis.diagnostics()
+        );
+        let output = plan.apply(analysis.root());
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let before = analysis
+            .root()
+            .descendants()
+            .filter(|n| n.ctor == Ctor::Math)
+            .collect::<Vec<_>>();
+        let after = output
+            .root
+            .descendants()
+            .filter(|n| n.function_id() == Some(FunctionId::new("maths", "first")))
+            .collect::<Vec<_>>();
+        assert_eq!(before.len(), 4);
+        assert_eq!(after.len(), 4);
+        assert_eq!(
+            after.iter().map(|n| n.level).collect::<Vec<_>>(),
+            [Level::Inline, Level::Block, Level::Inline, Level::Block]
+        );
+        for (before, after) in before.iter().zip(after.iter()) {
+            assert_eq!(before.fields, after.fields);
+            assert_eq!(before.span, after.span);
+            assert_eq!(after.ctor.level(), Some(before.level));
+        }
+        let roundtrip = TransformPlan::compile(&[rule("maths::first", "notist::math")], &registry)
+            .unwrap()
+            .apply(&output.root);
+        assert!(roundtrip.diagnostics.is_empty());
+        assert_eq!(roundtrip.root, *analysis.root());
+        let mut invalid = (*after[1]).clone();
+        invalid.level = Level::Inline;
+        let skipped = TransformPlan::compile(&[rule("maths::first", "notist::math")], &registry)
+            .unwrap()
+            .apply(&invalid);
+        assert_eq!(skipped.root, invalid);
+        assert_eq!(skipped.diagnostics.len(), 1);
+    }
+    let mut registry = registry.clone();
+    registry
+        .register(
+            analyze_module(
+                "other",
+                "fn math(text: String, block?: Bool, display?: Bool) -> Content<display>;",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let errors =
+        TransformPlan::compile(&[rule("notist::math", "other::math")], &registry).unwrap_err();
+    assert!(errors[0].message.contains("levels"));
 }

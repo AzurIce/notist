@@ -2,7 +2,7 @@
 
 transforms 在源码分析得到 Item 后生成用于输出的内容树。根配置与 package 默认规则先按作用域合成有序计划，所有输出后端可以消费转换结果；HTML 继续按目标函数身份呈现节点。源码分析管线见 [Pipeline](pipeline.not)，定义与组件见 [Content Function Extensions](content-functions.not)，实际例子见 [Package Model](../package.not)。
 
-package 公开的 transforms 随 dependencies 自动引入；同源同目标去重，不同目标冲突。根 transforms 覆盖相同源身份的默认规则；根 dev-transforms 再覆盖相同源身份的根公开规则。根规则保持声明顺序，开发配置只在根环境生效。完整配置作用域见 [Package Model](../package.not)。
+package 公开的 transforms 随 dependencies 自动引入，依赖项的 transforms 默认为 true；false 关闭该包的默认转换，声明与组件继续装配。共享包的任一引入项启用时，其默认规则生效。同源同目标去重，不同目标冲突。根 transforms 覆盖相同源身份的默认规则；根 dev-transforms 再覆盖相同源身份的根公开规则。根规则保持声明顺序，开发配置只在根环境生效。完整配置作用域见 [Package Model](../package.not)。
 
 == 配置
 
@@ -32,13 +32,15 @@ replace 将匹配的构造器改为目标签名对应的构造器；外部目标
 
 源与目标必须已注册，并满足：
 
-- 返回规则均为相同的固定 Inline 或 Block；动态级别和 Inherit 不支持。
+- 返回规则相同：均为固定 Inline / Block，或均按同一个布尔参数选择 Block / Inline。Inherit 不支持。
 - children 接受契约相同。
 - 参数集合的名称、类型、必填 / 可选 / 默认值规则和值域约束相同。参数排列和位置参数写法不影响已绑定的 fields；声明位置和说明文字不参与比较。
 - 默认值保留完整 Value 语义，浮点数按比特比较，包括负零及 NaN；集合保留元素与字典顺序。
 - 不涉及结构槽或内置 heading、section、list、item、table、row、cell 的结构职责。
 
 replace 不改名或计算参数，不补齐新参数，不改变内容级别，不插入、删除或重排节点。
+
+math 与 raw 按 block 参数选择类别；源码签名用 Content<block> 表达相同规则。转换时按当前字段校验实际类别，目标 ExtensionCtor 保存该节点的实际类别，行内与块级 math 共用一条替换规则。
 
 === 恢复树
 

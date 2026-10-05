@@ -43,7 +43,11 @@ fn source_definitions_preserve_parameter_modes_types_and_defaults() {
 
 #[test]
 fn native_and_source_definitions_share_validation_and_call_binding() {
-    let source = analyze_module("copy", "fn math(text: String) -> InlineContent;").unwrap();
+    let source = analyze_module(
+        "copy",
+        "fn math(text: String, block?: Bool) -> Content<block>;",
+    )
+    .unwrap();
     let mut native = DefinitionModule::new("copy");
     let mut function = builtins::registry().resolve("math").unwrap().clone();
     function.id.package = "copy".into();
@@ -52,12 +56,7 @@ fn native_and_source_definitions_share_validation_and_call_binding() {
     let mut source_registry = builtins::registry().clone();
     native_registry.register(native).unwrap();
     source_registry.register(source).unwrap();
-    for values in [
-        vec![],
-        vec![Value::Str("x".into())],
-        vec![Value::Int(1)],
-        vec![Value::Str("x".into()), Value::Bool(false)],
-    ] {
+    for values in [vec![], vec![Value::Str("x".into())], vec![Value::Int(1)]] {
         let mut native_diags = Vec::new();
         let mut source_diags = Vec::new();
         let native_fields = native_registry.resolve("copy::math").unwrap().bind_fields(
@@ -242,17 +241,19 @@ fn explicit_invalid_values_are_retained_and_optional_values_are_not_inserted() {
 
 #[test]
 fn native_dynamic_and_structural_contracts_are_checked_at_registration() {
-    let raw = builtins::registry().resolve("raw").unwrap();
-    let mut fields = Dict::default();
-    assert_eq!(
-        raw.returns.level(&fields, notist::expr::BodyFlavor::None),
-        Level::Inline
-    );
-    fields.insert("block", Value::Bool(true));
-    assert_eq!(
-        raw.returns.level(&fields, notist::expr::BodyFlavor::None),
-        Level::Block
-    );
+    for name in ["raw", "math"] {
+        let raw = builtins::registry().resolve(name).unwrap();
+        let mut fields = Dict::default();
+        assert_eq!(
+            raw.returns.level(&fields, notist::expr::BodyFlavor::None),
+            Level::Inline
+        );
+        fields.insert("block", Value::Bool(true));
+        assert_eq!(
+            raw.returns.level(&fields, notist::expr::BodyFlavor::None),
+            Level::Block
+        );
+    }
     let mut invalid = DefinitionModule::new("native");
     invalid.functions.push(FunctionDef::new(
         FunctionId::new("native", "bad"),
@@ -280,6 +281,58 @@ fn native_dynamic_and_structural_contracts_are_checked_at_registration() {
             .any(|d| d.message.contains("notist::row"))
     );
     assert!(builtins::registry().clone().register(structural).is_ok());
+}
+
+#[test]
+fn source_boolean_content_rules_match_native_math_and_validate_selectors() {
+    let module = analyze_module(
+        "maths",
+        "fn math(text: String, block?: Bool) -> Content<block>;",
+    )
+    .unwrap();
+    assert_eq!(
+        module.functions[0].returns,
+        builtins::registry().resolve("math").unwrap().returns
+    );
+    let mut registry = builtins::registry().clone();
+    registry.register(module).unwrap();
+    for source in [
+        "#maths::math(\"x\")",
+        "#maths::math(\"x\", block: true)",
+        "#maths::math(\"x\", block: false)",
+    ] {
+        let document = notist::Pipeline::default()
+            .analyze("test.not", source, &registry)
+            .unwrap();
+        assert!(document.diagnostics().is_empty());
+        let math = document
+            .root()
+            .find(|n| n.function_id() == Some(FunctionId::new("maths", "math")))
+            .unwrap();
+        assert_eq!(
+            math.level,
+            if source.contains("true") {
+                Level::Block
+            } else {
+                Level::Inline
+            }
+        );
+    }
+    for source in [
+        "fn math(text: String) -> Content<block>;",
+        "fn math(text: String, block?: String) -> Content<block>;",
+        "fn math(block?: Bool) -> Content<other::block>;",
+        "fn math(block?: Bool) -> Content<Array<block>>;",
+        "fn math(block?: Bool) -> Content<block, block>;",
+        "fn math(block?: Bool) -> InlineContent<block>;",
+        "fn math(block?: Bool)[children: Content<block>] -> Content;",
+    ] {
+        let errors = analyze_module("maths", source).unwrap_err();
+        assert!(
+            errors.iter().all(|error| !error.span.is_empty()),
+            "{source}: {errors:?}"
+        );
+    }
 }
 
 #[test]

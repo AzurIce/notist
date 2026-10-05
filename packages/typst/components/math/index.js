@@ -1,12 +1,12 @@
 import { compile } from "./compiler.js";
 
 export default class TypstMath extends HTMLElement {
-  static observedAttributes = ["notist-text"];
+  static observedAttributes = ["notist-text", "notist-block"];
   #revision = 0;
   constructor() {
     super();
     this.attachShadow({ mode: "open" }).innerHTML =
-      '<style>:host { display: inline; } svg { overflow: visible; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>';
+      `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; text-align: center; margin: 1em 0; } svg { overflow: visible; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>`;
   }
   connectedCallback() { this.update(); }
   disconnectedCallback() { this.#revision++; }
@@ -14,6 +14,7 @@ export default class TypstMath extends HTMLElement {
   async update() {
     const revision = ++this.#revision;
     const source = this.getAttribute("notist-text") ?? "";
+    const block = this.getAttribute("notist-block") === "true";
     const target = this.shadowRoot.querySelector(".formula");
     const message = this.shadowRoot.querySelector(".error");
     const current = () => this.isConnected && revision === this.#revision;
@@ -21,13 +22,13 @@ export default class TypstMath extends HTMLElement {
     message.textContent = "";
     if (!source.trim()) return;
     try {
-      const output = await compile(source, current);
+      const output = await compile(source, block, current);
       if (!current()) return;
       const document = new DOMParser().parseFromString(output.svg, "image/svg+xml");
       const svg = document.documentElement;
       if (svg.localName !== "svg") throw new Error("Typst returned invalid SVG");
       // The formula has one accessible label. The renderer's invisible text
-      // selection overlay would distort the visible bounds of inline math.
+      // selection overlay would distort the visible bounds of math.
       svg.querySelectorAll("foreignObject").forEach(node => node.remove());
       svg.setAttribute("role", "img");
       svg.setAttribute("aria-label", source);
@@ -43,7 +44,7 @@ export default class TypstMath extends HTMLElement {
       svg.setAttribute("viewBox", `${left} ${top} ${width} ${height}`);
       svg.style.width = `${width / 12}em`;
       svg.style.height = `${height / 12}em`;
-      svg.style.verticalAlign = `${(output.baseline - top - height) / 12}em`;
+      if (!block) svg.style.verticalAlign = `${(output.baseline - top - height) / 12}em`;
     } catch (error) {
       if (!current()) return;
       target.textContent = source;

@@ -274,26 +274,28 @@ Error 包装的未闭合 raw 块在 desugar 时跳过。正文保留末尾换行
 === math
 
 ```signature
-math(text: String) -> InlineContent
+math(text: String, block?: Bool) -> InlineContent | Content
+result = Content if block == true else InlineContent
 ```
 
-text 可使用第一个位置参数。
+text 可使用第一个位置参数；block 为可选的具名布尔参数，省略时采用行内类别。`$x$` 对应 math，`$ x $` 对应 block 为 true 的同一个 math；块级节点参与 reflow，切开前后的段落。
 
 #grammar::diagram(r#"""
 syntax Math(ctx) ->
-  @{ can_open(cursor, ctx) }
   open:DOLLAR tail:scan MathTail(ctx)
-  => math(text: strip_continuation_indent(source(tail.payload)));
+  => math(text: math_text(tail), block: tail.block);
 """#)
 
 ```scanner
-scanner MathTail(ctx) -> { end, payload } | Miss {
+scanner MathTail(ctx) -> { end, payload, block } | Miss {
   let begin = cursor
+  let block = kind(begin) in { Whitespace, Newline }
   for p from begin to ctx.limit {
     if kind(p) == Newline and block_end(p, ctx) { return Miss }
-    if kind(p) == Dollar and can_close(p, ctx) {
-      if p == begin { return Miss }
-      return { end: p + 1, payload: tokens[begin..p] }
+    if kind(p) == Dollar and
+       (kind(p - 1) in { Whitespace, Newline }) == block {
+      if trim(source(tokens[begin..p])) == "" { return Miss }
+      return { end: p + 1, payload: tokens[begin..p], block }
     }
   }
   return Miss
@@ -301,7 +303,7 @@ scanner MathTail(ctx) -> { end, payload } | Miss {
 ```
 
 #grammar::diagram(r#"""
-ast MD_Math -> MD.Math(s) => math(text: s);
+ast MD_Math -> MD.Math(s, block) => math(text: s, block: block);
 """#)
 
 ```recover
@@ -312,7 +314,9 @@ recover Math on Miss when kind(rule_start) == Dollar {
 }
 ```
 
-payload 不透明；`strip_continuation_indent` 见 raw 小节。Markdown 同样要求非空、开后与闭前非空白，允许跨软换行；代码内容与转义的美元符号不触发数学解析。
+payload 不透明。开后与闭前都非空白时为行内数学，都为空白时为块级数学；只有一端留白、空 payload 或全为空白的 payload 保留为普通文字。两种形式允许跨软换行，但不跨空行或其他块边界。
+
+math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在 block 为 true 时 trim 首尾布局空白；行内 payload 原样保留。块级语法糖写入 block: true，行内语法糖省略 block。Markdown 使用相同的界定规则，其段落解析会去掉续行的前导空白；代码内容与转义的美元符号不触发数学解析。
 
 === link
 
@@ -357,10 +361,11 @@ scanner LinkFrame(embed; ctx) -> { end, label_close, destination_close } | Miss 
 
 scanner OpaqueClose(p, ctx) -> { close } | Miss {
   要求 kind(p) 为 Backtick 或 Dollar
-  Dollar 还要求 can_open(p, ctx)
+  Dollar：使用 MathTail 的留白匹配、非空 payload 与块边界规则
+          成功则返回对应闭美元符号下标，失败返回 Miss
   从 p + 1 逐 token 扫描至 ctx.limit：
-    Backtick 遇 NL，或 Dollar 遇 NL 且 block_end：返回 Miss
-    同类 Backtick 且 run 等长，或同类 Dollar 且 can_close：返回该下标
+    遇 NL：返回 Miss
+    同类 Backtick 且 run 等长：返回该下标
   返回 Miss
 }
 
@@ -632,9 +637,12 @@ syntax TableRow(ctx) -> frame:scan TableLine(ctx);
 
 ```scanner
 scanner TableLine(ctx) -> { end, cells, has_pipe } | Miss {
-  从 cursor 扫描至 NL 或 ctx.limit，记录每个 Pipe token 的下标
-  任一 token 的 text 包含 NL 或 CR ⇒ Miss
   若 ctx.in_body 且首 token 为 RBracket ⇒ Miss
+  从 cursor 按逻辑行扫描至外层 NL 或 ctx.limit：
+    STR / comment 是不透明 token，内部换行和管道符不参与分割
+    HASH 处完整 CodeCall 的探测成功 ⇒ 越过整个调用，内部 NL / Pipe 不参与分割
+    raw / math payload 中的 HASH 保持字面含义，不探测调用
+    其余 Pipe token 记录下标，并结束当前 raw / math payload 区域
   去掉行首 / 行尾 Whitespace token
   空行 ⇒ Miss
   去掉首 / 尾各一个 Pipe token（存在时）
@@ -650,7 +658,9 @@ ast table_row(frame, header, width) -> ε => row(header: header)[
 ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)];
 """#)
 
-语法糖只在 table 内使用，每个物理行是一行；字面 `|` 使用 `\|`，raw / math 内也适用。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
+原生语法糖按逻辑行解析：只有完整调用外部的 NL 才结束表格行，字符串与注释 token 内部的换行也不结束行。字符串和完整调用内部的管道符由内部语法处理；其他字面 `|` 使用 `\|`，raw / math 内也适用。调用沿用 CodeCall 的边界规则；未闭合的调用不保护管道符或换行。Markdown 表格沿用 GFM 的物理行规则。
+
+需要多段内容、列表或嵌套表格时，用 `#[ ... ]` 包裹单元格内容，两端内侧留白以使用 Content 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
 === cell
 
@@ -673,7 +683,7 @@ ast table_cell(range) -> ε => cell()[
 ast MD_TableCell -> MD.TableCell(body) => cell()[lower(body)];
 """#)
 
-table_inline 在 range.start 解析 TableCell 并 lower；随后递归遍历单元格内容，只对 raw / math payload 中的 `\|` 去掉反斜杠。空区间产生空 cell。
+table_inline 在 range.start 解析 TableCell 并 lower；随后只对调用外部的 raw / math payload 中的 `\|` 去掉反斜杠。调用参数与正文保留自身的转义规则，正文中的嵌套表格自行处理一次表格转义。空区间产生空 cell。
 
 === group
 

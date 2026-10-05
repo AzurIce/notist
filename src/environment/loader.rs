@@ -4,7 +4,7 @@ use crate::resources::Resources;
 use crate::{Diagnostic, FunctionId, Registry, SourceDiagnostic, TextRange};
 use notist_pipeline::transforms::{Replace, TransformPlan};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -72,6 +72,7 @@ struct Graph<'a, R: Resources + ?Sized> {
     visiting: Vec<PathBuf>,
     packages: Vec<Package>,
     defaults: Vec<Rule>,
+    active_transforms: BTreeSet<PathBuf>,
     errors: Vec<SourceDiagnostic>,
 }
 impl<R: Resources + ?Sized> Graph<'_, R> {
@@ -138,6 +139,9 @@ impl<R: Resources + ?Sized> Graph<'_, R> {
                 return;
             }
         }
+        if dependency.transforms {
+            self.active_transforms.insert(path.clone());
+        }
         if !self.manifests.contains_key(&path) {
             self.visit(manifest, false);
         }
@@ -192,6 +196,7 @@ pub(super) fn load(
         visiting: Vec::new(),
         packages: Vec::new(),
         defaults: Vec::new(),
+        active_transforms: BTreeSet::new(),
         errors: Vec::new(),
     };
     graph.visit(root.clone(), true);
@@ -204,7 +209,15 @@ pub(super) fn load(
     };
     let explicit = root.rules(&root.config.transforms);
     let development = root.rules(&root.config.dev_transforms);
-    let rules = compose(&environment.registry, graph.defaults, explicit, development);
+    // Activation belongs to dependency edges; a shared package contributes
+    // defaults when any importing edge enables them. Filter after the whole
+    // graph is loaded so the first visit does not determine the final scope.
+    let defaults = graph
+        .defaults
+        .into_iter()
+        .filter(|rule| graph.active_transforms.contains(&rule.path))
+        .collect();
+    let rules = compose(&environment.registry, defaults, explicit, development);
     match rules {
         Ok(rules) if graph.errors.is_empty() => {
             let mut environment = environment

@@ -482,7 +482,13 @@ impl<'a> Lowerer<'a> {
             KindData::Extension(data) if data.as_any().is::<math::Math>() => {
                 let math = data.as_any().downcast_ref::<math::Math>().unwrap();
                 let span = TextRange::new(span.start(), (math.end as u32).into());
-                Expr::call("math", span).with_field("text", Value::Str(math.text.clone()))
+                let expr = Expr::call("math", span);
+                let expr = if math.block {
+                    expr.with_field("block", Value::Bool(true))
+                } else {
+                    expr
+                };
+                expr.with_field("text", Value::Str(math.text.clone()))
             }
             _ => {
                 // TableHeader / TableBody / LinkReferenceDefinition / 其他：子节点透传

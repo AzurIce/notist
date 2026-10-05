@@ -4,6 +4,7 @@ use notist_core::{
     builtins::{Accepts, Level},
     definitions::{FunctionDef, FunctionId, ParameterMode, ReturnRule},
     diag::{Diagnostic, Phase},
+    expr::BodyFlavor,
     item::{Ctor, ExtensionCtor, Item, Value},
     registry::Registry,
 };
@@ -21,8 +22,7 @@ pub struct Replace {
 #[derive(Debug, Clone)]
 struct BoundReplace {
     source: FunctionDef,
-    target: Ctor,
-    level: Level,
+    target: FunctionDef,
 }
 
 /// A complete, signature-checked plan. Failed compilation never returns a
@@ -61,20 +61,10 @@ impl TransformPlan {
             };
             let result = compatible(source, target);
             match result {
-                Ok(level) => {
-                    let ctor = if target.id.package == "notist" {
-                        Ctor::from_name(&target.id.name).expect("registered builtin")
-                    } else {
-                        Ctor::Extension(ExtensionCtor {
-                            id: target.id.clone(),
-                            accepts: target.children,
-                            level,
-                        })
-                    };
+                Ok(()) => {
                     replacements.push(BoundReplace {
                         source: source.clone(),
-                        target: ctor,
-                        level,
+                        target: target.clone(),
                     });
                 }
                 Err(reason) => diagnostics.push(Diagnostic::new(
@@ -123,15 +113,17 @@ fn structural(definition: &FunctionDef) -> bool {
         ))
 }
 
-fn compatible(source: &FunctionDef, target: &FunctionDef) -> Result<Level, &'static str> {
+fn compatible(source: &FunctionDef, target: &FunctionDef) -> Result<(), &'static str> {
     if structural(source) || structural(target) {
         return Err("structural functions are not supported by replace");
     }
-    let (ReturnRule::Fixed(a), ReturnRule::Fixed(b)) = (&source.returns, &target.returns) else {
-        return Err("replace requires fixed content levels");
-    };
-    if a != b || *a == Level::Inherit {
-        return Err("content levels differ");
+    match (&source.returns, &target.returns) {
+        (ReturnRule::Fixed(a), ReturnRule::Fixed(b)) if a == b && *a != Level::Inherit => {}
+        (ReturnRule::BlockIfTrue(a), ReturnRule::BlockIfTrue(b)) if a == b => {}
+        (ReturnRule::Inherit, _) | (_, ReturnRule::Inherit) => {
+            return Err("replace requires fixed levels or matching boolean content rules");
+        }
+        _ => return Err("content levels differ"),
     }
     if source.children != target.children {
         return Err("children contracts differ");
@@ -149,7 +141,7 @@ fn compatible(source: &FunctionDef, target: &FunctionDef) -> Result<Level, &'sta
     {
         return Err("parameter contracts differ");
     }
-    Ok(*a)
+    Ok(())
 }
 
 fn same_mode(a: &ParameterMode, b: &ParameterMode) -> bool {
@@ -207,16 +199,30 @@ impl BoundReplace {
                 Accepts::Content | Accepts::Any => true,
                 Accepts::Items | Accepts::Rows | Accepts::Cells => false,
             };
+            let level = self.source.returns.level(&item.fields, BodyFlavor::None);
+            let ctor_level = if matches!(item.ctor, Ctor::Extension(_)) {
+                level
+            } else {
+                self.source.returns.base_level()
+            };
             let snapshot_valid = item.ctor.accepts() == Some(self.source.children)
-                && item.ctor.level() == Some(self.level);
+                && item.ctor.level() == Some(ctor_level);
             if errors.is_empty()
                 && defaults_present
                 && known_fields
                 && children_valid
                 && snapshot_valid
-                && item.level == self.level
+                && item.level == level
             {
-                item.ctor = self.target.clone();
+                item.ctor = if self.target.id.package == "notist" {
+                    Ctor::from_name(&self.target.id.name).expect("registered builtin")
+                } else {
+                    Ctor::Extension(ExtensionCtor {
+                        id: self.target.id.clone(),
+                        accepts: self.target.children,
+                        level,
+                    })
+                };
             } else {
                 let reason = errors
                     .first()

@@ -2,7 +2,7 @@
 
 == 基础 Markup 语法
 
-下列示例使用 `.not`；完整规则见 [Syntax](../grammar/README.not) 与 [Builtin](../builtin.not)。
+下列示例使用 `.not`；完整规则见 [Syntax](../grammar/markup.not) 与 [Builtin](../builtin.not)。
 
 `=` 标题，*加粗*，_强调（斜体）_，~删除线~
 

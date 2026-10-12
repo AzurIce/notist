@@ -1,7 +1,6 @@
 = Grammar Notation
 
-基础表达式采用 [Rust Reference 的记法](https://doc.rust-lang.org/reference/notation.html)，补充 Notist 所需的输入层级、捕获、上下文、扫描与恢复契约。这套记法用于表达语法识别、上下文、降糖与错误恢复。Notist 的具体规则见 [Syntax](README.not)、[Types](../types.not) 与 [Builtin](../builtin.not)。
-
+基础表达式采用 [Rust Reference 的记法](https://doc.rust-lang.org/reference/notation.html)，补充 Notist 所需的输入层级、捕获、上下文、扫描与恢复契约。这套记法用于表达语法识别、上下文、降糖与错误恢复。
 == 规则种类
 
 | 规则 | 输入 | 输出 |

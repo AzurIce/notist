@@ -1,15 +1,55 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{page.title}} · {{site.title}}</title>
-<script>try{document.documentElement.dataset.theme=localStorage.getItem('notist-theme')||'auto'}catch(e){}</script>
-{{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
-<script src="{{assets.script}}" defer></script></head>
-<body><a class="skip-link" href="#page-content">Skip to content</a>
-<header><button id="nav-toggle" aria-label="Toggle navigation" aria-controls="site-nav" aria-expanded="false">☰</button><a href="{{site.home}}">{{site.title}}</a><button id="theme-toggle" aria-label="Toggle color theme">◐</button></header>
-<div class="site-layout"><nav id="site-nav" aria-label="Site navigation"><ul>{{> navigation navigation}}</ul></nav>
-<main id="page-content"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>
-<article>{{{page.html}}}</article>
-<nav class="adjacent" aria-label="Page navigation">{{#if previous}}<a rel="prev" href="{{previous.url}}">← {{previous.title}}</a>{{else}}<span></span>{{/if}}{{#if next}}<a rel="next" href="{{next.url}}">{{next.title}} →</a>{{/if}}</nav>
-</main><aside aria-label="On this page"><h2>On this page</h2><ol>{{#each outline}}<li data-level="{{level}}"><a href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol></aside></div>
-{{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
-</body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{{page.title}} · {{site.title}}</title>
+  <script>try{const t=localStorage.getItem('notist-theme');document.documentElement.dataset.theme=t==='light'||t==='dark'?t:'auto'}catch(e){}</script>
+  {{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
+  <script src="{{assets.script}}" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#page-content">Skip to content</a>
+  <div id="reading-progress" class="reading-progress" aria-hidden="true"><span></span></div>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="site-brand" href="{{site.home}}">{{site.title}}</a>
+      <button id="nav-toggle" class="text-button" type="button" aria-label="Open contents" aria-controls="site-nav" aria-expanded="false">Contents</button>
+      <button id="theme-toggle" class="text-button" type="button" aria-label="Toggle color theme" title="Toggle color theme"><span class="theme-label">Theme</span></button>
+    </div>
+  </header>
+  <div id="nav-backdrop" class="nav-backdrop" hidden aria-hidden="true"></div>
+  <div class="site-layout">
+    <nav id="site-nav" class="site-navigation" aria-label="Contents">
+      <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
+      <ul class="navigation-tree">{{> navigation navigation}}</ul>
+    </nav>
+    <main id="page-content" tabindex="-1">
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>
+      {{#if outline}}
+      <details class="mobile-outline">
+        <summary>On this page <span class="outline-state" aria-hidden="true"><span class="outline-show">Show</span><span class="outline-hide">Hide</span></span></summary>
+        <ol class="outline-list">{{#each outline}}<li data-level="{{level}}"><a data-outline-link href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol>
+      </details>
+      {{/if}}
+      <article class="prose">{{{page.html}}}</article>
+      {{#if previous}}
+      <nav class="adjacent" aria-label="Page navigation">
+        <a rel="prev" href="{{previous.url}}" class="adjacent-link previous"><span class="adjacent-label">Previous</span><span class="adjacent-title">{{previous.title}}</span></a>
+        {{#if next}}<a rel="next" href="{{next.url}}" class="adjacent-link next"><span class="adjacent-label">Next</span><span class="adjacent-title">{{next.title}}</span></a>{{/if}}
+      </nav>
+      {{else}}{{#if next}}
+      <nav class="adjacent" aria-label="Page navigation"><a rel="next" href="{{next.url}}" class="adjacent-link next"><span class="adjacent-label">Next</span><span class="adjacent-title">{{next.title}}</span></a></nav>
+      {{/if}}{{/if}}
+    </main>
+    {{#if outline}}
+    <aside class="page-outline" aria-label="On this page">
+      <nav id="page-outline" aria-label="Page outline"><p class="rail-label">On this page</p><ol class="outline-list">{{#each outline}}<li data-level="{{level}}"><a data-outline-link href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol></nav>
+    </aside>
+    {{/if}}
+  </div>
+  <footer class="site-footer"><span>Built with <span class="footer-brand">Notist</span></span><a href="#page-content">Back to top</a></footer>
+  {{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
+</body>
+</html>

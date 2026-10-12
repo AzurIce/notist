@@ -1,6 +1,6 @@
 = Draft
 
-本节收录未定设计，不作为当前语法规范。现行规则见 [Syntax](grammar/README.not)、[Types](types.not)、[Builtin](builtin.not) 与 [Pipeline](designs/pipeline.not)。
+本节收录未定设计，不作为当前语法规范。现行规则见 [Syntax](grammar/markup.not)、[Types](types.not)、[Builtin](builtin.not) 与 [Pipeline](designs/pipeline.not)。
 
 == Script 与函数定义
 

@@ -7,7 +7,7 @@ fn parses_and_draws_actual_documentation_productions() {
             "notation",
             include_str!("../../../docs/grammar/notation.not"),
         ),
-        ("markup", include_str!("../../../docs/grammar/README.not")),
+        ("markup", include_str!("../../../docs/grammar/markup.not")),
         ("code", include_str!("../../../docs/grammar/code.not")),
         ("types", include_str!("../../../docs/types.not")),
         ("builtin", include_str!("../../../docs/builtin.not")),

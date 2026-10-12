@@ -1,0 +1,48 @@
+@!(human: true)
+
+= Designs
+
+notist 类似 typst，设计了一种将 Code 与 Markup 结合的方式：
+
+// TODO: 语法待定，仅作演示
+```notc
+// 定义内容函数
+fn hello-world(text: string) -> InlineContent [
+    Hello #(text)!
+]
+fn children-slot[ children: Content] -> Content [
+    Children Slot：
+
+    #callout[
+        #children
+    ]
+]
+```
+
+```not
+调用内容函数：
+
+#children-slot [
+    Children 插槽 #hello-world("Notist")
+]
+```
+
+但是具有不同的哲学理念和更明确的边界：
+- 使用不同后缀文件分离代码定义与文档定义
+  - `.not`：Markup 文件
+  - `.notc`：Code 文件
+- Markup 文件只能通过 `#foo-content-fn()` 调用内容函数来与 Code 交互
+
+  保证 Markup 对于文档阅读本身具有尽可能低的噪音
+
+== Content 类型与染色
+
+notist 具有完整的类型系统，其中有一类用于表示文档内容的类型：`Content`，`InlineContent`。
+
+前面提到了 Markup 与 Code 之间的边界上只允许通过“内容函数”的调用来产生交互，所有返回文档内容的函数就被称为 _内容函数_。
+
+由于这个边界的存在，其实产生了一个经典的染色问题（就像异步函数一样）：
+- 内容函数只能够在内容函数内调用
+- 调用了内容函数的函数是内容函数
+
+（当然，不考虑调用内容函数却不使用其返回值构造内容并返回的情况）

@@ -88,7 +88,7 @@ MarkdownFrontend 通过 rushdown 解析 Markdown AST，并将其 lower 成同一
 | NotistFrontend | Notist Markup |
 | MarkdownFrontend | Markdown，包含该前端的 Notist 扩展 |
 
-`[body]` 为行内内容槽；两端内侧均留空白或换行的 `[ body ]` 为块内容槽。`#[body]` 是匿名 group 调用，正文仍使用所在前端的语法。`#f([body])` 这样的 Content 参数目前不支持，内容通过调用后的唯一 children 槽挂载；规则见 [Types](../types.not) 和 [Markdown Syntax](../grammar/README.not)。
+`[body]` 为行内内容槽；两端内侧均留空白或换行的 `[ body ]` 为块内容槽。`#[body]` 是匿名 group 调用，正文仍使用所在前端的语法。`#f([body])` 这样的 Content 参数目前不支持，内容通过调用后的唯一 children 槽挂载；规则见 [Types](../types.not) 和 [Markdown Syntax](../grammar/markup.not)。
 
 参数字符串、代码和数学 payload 保持不透明；其中的调用与注解不会再次执行。Markdown 的普通文字与链接字段仍按其解码规则转换，显式调用的字面量按 Notist 字面量规则转换。
 

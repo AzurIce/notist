@@ -29,7 +29,7 @@ fn diagram(source: String, rule?: String, theme: String = "light") -> Content;
 
 source 为统一的匹配与结果构造规则文本。组件始终先展示源码，再展示对应的图；源码仅需维护一份。缺省渲染其中所有产生式，rule 指定只绘制一个。支持 light、dark、rust、coal、navy、ayu 主题。
 
-参数更新会重新绘图，移除并重新挂载也可继续使用。同一浏览器模块实例共享 WASM 初始化；错误包含一基行号、Unicode 字符列号并保留源码。
+源码以 light DOM 中的 pre/code 纯文本展示，可直接复用宿主原生 raw/pre 的主题样式；data-notist-code-block 标记允许宿主渐进增强为普通代码块（如添加复制工具栏），组件自身仅提供可覆盖的主题变量回退样式。参数更新或重新挂载会保留同一源码节点，即使宿主已将其包入带 source slot 的代码块容器；WASM 初始化或绘图失败时源码仍可见。图与错误保留在 Shadow DOM 中，参数更新会重新绘图，同一浏览器模块实例共享 WASM 初始化；错误包含一基行号、Unicode 字符列号。
 
 == 自身配置
 
@@ -161,4 +161,4 @@ tests/browser.cjs 验证静态页、WASM 资源复制、规则跳转、参数更
 
 NOTIST_TEST_URL 可指定 HTTP 地址，NOTIST_CHROMIUM 可指定 Chromium 路径。构建 Web viewer 后，设置 NOTIST_TEST_WEB=1 会一并验证现有预览 iframe 的 package 加载与绘图。
 
-设置 NOTIST_TEST_DOCS=1 会验证所有规范页的源码与图。运行前将 docs/builtin.not、docs/grammar/README.not、docs/grammar/code.not、docs/grammar/notation.not、docs/types.not、packages/grammar/README.not 分别导出到 target/grammar-docs 下的 builtin、markup、code、notation、types、package 目录。
+设置 NOTIST_TEST_DOCS=1 会验证所有规范页的源码与图。运行前将 docs/builtin.not、docs/grammar/markup.not、docs/grammar/code.not、docs/grammar/notation.not、docs/types.not、packages/grammar/README.not 分别导出到 target/grammar-docs 下的 builtin、markup、code、notation、types、package 目录。

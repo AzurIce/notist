@@ -1,2 +1,4 @@
-<li>{{#if url}}<a href="{{url}}"{{#if current}} aria-current="page"{{/if}}>{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}
-{{#if children}}<ul>{{#each children}}{{> navigation this}}{{/each}}</ul>{{/if}}</li>
+<li class="nav-item">
+  {{#if url}}<a href="{{url}}"{{#if current}} aria-current="page"{{/if}}>{{title}}</a>{{else}}<span class="nav-group">{{title}}</span>{{/if}}
+  {{#if children}}<ul class="nav-children">{{#each children}}{{> navigation this}}{{/each}}</ul>{{/if}}
+</li>

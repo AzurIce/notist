@@ -1,106 +1,165 @@
-= 管线
+= 文档管线
 
-源码到 Content 树的完整管线。诊断在各层就近产生；分析作用于最终的 Content 树。
+文档管线把源码转换为共享的 Content 树：前端负责 parse → lower，共享后端负责 resolve → shape → materialize。诊断在负责相应规则的阶段产生，查询、索引和输出消费最终内容树。
 
-源码规则见 [Syntax](../grammar/README.not)，值域与字面量见 [Types](../types.not)，具体构造器契约和降糖见 [Builtin](../builtin.not)。本文定义各阶段的实现职责。
+本文描述数据流与阶段契约。实现归属见 [Crate 架构](crates.not)，前端接口与注册见 [文档前端](frontends.not)；源码规则、值域和构造器契约分别见 [Syntax](../grammar/markup.not)、[Types](../types.not) 与 [Builtin](../builtin.not)。
 
-== Crate 职责
+== 数据流
 
-| Crate | 职责 |
+两种正文前端汇入相同的 IR₁；Registry 在 Resolve 阶段提供函数身份、签名与内容契约。
+
+#mermaid::diagram(r#"""
+%%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart TB
+    subgraph frontends["前端 · parse → lower"]
+        native[".not"]
+        markdown["Markdown"]
+    end
+    native --> ir1(["IR₁ · 未解析 Expr 森林"])
+    markdown --> ir1
+    ir1 --> resolve["Resolve · 解析与校验"]
+    registry["Registry"] -.-> resolve
+    resolve --> ir2(["IR₂ · 已解析 RExpr 森林"])
+    ir2 --> shape["Shape · 定稿结构"]
+    shape --> shaped(["IR₂′ · 结构定稿的 RExpr 森林"])
+    shaped --> materialize["Materialize · 生成 Item"]
+    materialize --> content(["Content 树 · Item"])
+"""#, theme: "neutral")
+
+| 产物 | 表示 | 已确定的信息 |
+| --- | --- | --- |
+| IR₁ | `Vec<Expr<String>>` | 源码名称、参数、children、注解与调用点 body flavor |
+| IR₂ | `Vec<RExpr>`，即 `Vec<Expr<Ctor>>` | 已完成函数解析、参数绑定、契约检查与归一 |
+| IR₂′ | `Vec<RExpr>` | 段落与 section 等结构已定稿 |
+| Content 树 | 以 `Ctor::Doc` 为根的 `Item` | 最终节点级别、字段、属性、children 与源码范围 |
+
+IR₂′ 表示 Shape 后的状态，与 IR₂ 使用同一种 Rust 类型。模块注解随前端结果传递，在 Materialize 时挂到 Doc 根上。
+
+`Pipeline::analyze(path, source, registry)` 接收显式输入，path 的扩展名用于选择前端。每份源码只调用选中的 `Frontend::compile` 一次，再运行共享后端，返回 Analysis。文件与 package 由宿主取得和装配。
+
+== 前端：源码 → IR₁
+
+=== 原生解析
+
+NotistFrontend 组合 notist-syntax 的解析与 notist-lowering 的文档转换：
+
+| 阶段 | 输入 → 输出 | 契约 |
+| --- | --- | --- |
+| Lex | 源码 → token 流 | token 保存 kind 与 span；可从源码切片恢复的文本不重复存储，空白、换行、注释作为 trivia 完整保留 |
+| Parse | token 流 → 无损 CST | 使用 rowan 绿树，文本拼接等于源文件；语法错误就近诊断，结构性破坏由 Error 节点包裹，解析继续产生树 |
+| AST 视图 | CST → Document AST | 以薄访问器提供类型化视图 |
+| Lowering / Desugar | Document AST → IR₁ | 将 Markup 映射为构造器调用，归一字面量，生成段落候选与模块属性 |
+
+MarkdownFrontend 解析自己的 rushdown AST，将正文 lower 到同一种 IR₁；显式调用头、注解与字面量复用原生语法及共用 lowering。调用正文使用所在前端的语法，位置映射还原容器内内容的原始源码范围，详见 [Markdown 与显式 Notist 语法](frontends.not)。
+
+=== 原生 Lowering 的内容规则
+
+行内平坦序列按空行分组成 `paragraph` 候选。标准 Markup 元素的基本类别由语法决定；显式内容函数调用保留源码名称与 body flavor，供 Resolve 确定契约、Shape 整理结构。
+
+text 的空白按位置处理：行内元素边界的空白保留；行首、行尾与段落边界的空白丢弃；单换行按无空格拼接。裸名非字面量、数字溢出和非法 entry 等值域错误在此产生 Semantic 诊断。
+
+== 共享后端：IR₁ → Content 树
+
+=== Resolve：名称、契约与归一
+
+Resolve 将源码名称解析为内置 Ctor，或带规范函数身份与契约的 ExtensionCtor，产出 IR₂。prelude 简写与 notist 限定名引用同一函数；未知名称产生 Type 诊断（`unknown constructor`），调用以 Custom 恢复节点保留。
+
+| 职责 | 处理规则 |
 | --- | --- |
-| notist-core | Expr / Item / Value、Frontend Trait、定义模型、Registry、诊断与索引 |
-| notist-syntax | 原生 .not 与 .notc 的 lexer、无损 CST 和类型化 AST 视图 |
-| notist-lowering | 原生 Document AST → IR₁；共用的注解、调用头和字面量转换 |
-| notist-md | MarkdownFrontend；Markdown 解析、扩展语法与 AST → IR₁ |
-| notist-pipeline | NotistFrontend、前端注册、resolve / shape / materialize、声明转换和输出转换 |
-| notist-html | 最终 Item 树 → HTML；内置 renderer 与组件绑定 |
-| notist-ssg | 站点路由、跨页链接校验、主题、页面与资源产物 |
-| notist | Resources、Environment、Vault、调试输出与宿主适配 |
-| notist-cli | CLI、静态发布与 LSP |
+| 参数绑定 | 使用 FunctionDef 的共同绑定器，将位置参数归位到 fields，检查字段类型、值域与必填字段，物化默认值 |
+| 内容契约 | 逐调用点检查 body flavor；行内内容槽检查实际子节点级别，恢复树保留原始内容和值 |
+| 结构槽 | 按 Builtin 契约检查列表项、表格行与单元格，使用 Syntax 定义的 `structural_children` 视图 |
+| 内容归一 | 将需要块内容的行内挂载提升为单段块，将正文中的字面量作为 text 插入 |
 
-各前端都输出 notist-core 中的 Expr<String> 森林。notist-lowering 依赖 syntax 与 core；Markdown 使用共用 lowering 处理显式调用头与注解，其正文由 Markdown 自身解析。pipeline 中的 NotistFrontend 组合 syntax 与 lowering，MarkdownFrontend 由 notist-md 提供。具体接口、注册方式和解析产物协议见 [文档前端](frontends.not)。
+Resolve 检查候选结构；段落切分与 section 归组由 Shape 完成。函数签名参与分析，具体呈现交给渲染器。
 
-crate 根的 lib.rs 声明模块、公开自身入口，并组织文档分析、调试结果与共享后端处理。core 的模型及 Frontend 接口从 notist-core 导入，模块与算法按所属 crate 引用。
+=== Shape：段落与节结构定稿
 
-```text
-.not source ── NotistFrontend ── syntax → Document → lowering ──┐
-                                                               ├─ IR₁
-Markdown source ── MarkdownFrontend ── rushdown AST → lowering ──┘
-                                                                  ↓
-                                                        resolve → IR₂
-                                                                  ↓
-                                                         shape → IR₂′
-                                                                  ↓
-                                                        materialize → Item
-```
+Shape 对文档体和每个块级 children 挂载递归处理，产出 IR₂′：
 
-Pipeline::analyze(path, source, registry) 接收显式输入，path 用于选择已注册前端；Registry 在共享后端参与名称解析和类型检查。每份源码只调用选中的 Frontend::compile 一次。Pipeline::inspect 在同一次处理中请求前端的解析产物，并保留中间 IR。Pipeline 不读取文件或装配 package。
++ *reflow* 按已确定的内容级别切分 `paragraph` 候选，把块级调用切出，定稿块序列。
++ *递归* 整理其中各节点的内容挂载。
++ *sectionize* 按 heading level 将平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section，section 的 span 覆盖整个节。
 
-.notc 通过 analyze_module 转成 core 的 DefinitionModule，再进入 Registry；正文前端及 Expr / Item 管线处理文档内容。声明文法见 [Code Syntax](../grammar/code.not)，装配见 [Content Function Extensions](content-functions.not)。
+内容级别来自共同定义的 ReturnRule；扩展使用 Resolve 确定的类别，Custom 恢复节点使用调用点 flavor。Shape 根据契约整理结构，不求值内容函数。
 
-== 文档转换阶段
+带 attrs 或 fields 的段落候选拆分时，用透明的块级 group 保存完整范围与元数据，使身份只归属于一个节点。列表的 item 序列、表格的 row / cell 序列只做 reflow 并递归，保持结构轴；每个 item / cell 的普通内容槽照常执行 reflow 与 sectionize。
 
-*原生 Lex*
+=== Materialize：生成 Item
 
-- 源码 → token 流；token = kind + span，可从源码切片恢复的一律不存
-- trivia（空白、换行、注释）是一等 token，全保留
+Materialize 将定稿的 RExpr 森林转换为 Item，保存最终 Block / Inline 类别，并创建携带模块注解的 Doc 根。
 
-标准 Markdown 元素的基本块 / 行内类别由其语法决定。两个前端中的显式内容函数调用都保留 source-level 名称与 body flavor，具体类别由 Resolve 按 Registry 确定，并由 Shape 组装最终结构。
+Content 节点包含 ctor、level、fields、children、attrs 与 span；ctor 保留规范函数身份，span 使用原始源码的 UTF-8 字节范围。解析产物服务于 tooling，内容节点的源码范围用于诊断、查询与渲染 source map。
 
-*原生 Parse*
+== 诊断、恢复与调试
 
-- token 流 → CST（rowan 绿树，无损：文本拼接 == 源文件）
-- parser 永不失败：语法错误就近诊断，结构性破坏由 Error 节点包裹
-- parse_document 处理 Markup，parse_module 处理单文件 Code 声明；分别产生 Document 与 Module CST，复用字面量解析。Module 不进入下面的文档 Desugar / Shape 管线；声明文法见 [Code Syntax](../grammar/code.not)
+Analysis 保存原始 Content 树与源码诊断。已注册前端中的源码错误随恢复树一起返回；没有前端处理该扩展名时，Pipeline 返回 UnsupportedFormat。
 
-*原生 AST*
+| 诊断阶段 | 产生位置 | 典型内容 |
+| --- | --- | --- |
+| Syntax | 前端解析 | 非法语法与结构破坏 |
+| Semantic | Lowering；需要宿主上下文的检查 | 值域错误；本地 link / embed 越过 Vault 内容边界 |
+| Type | Resolve；声明定义校验 | 未知构造器、参数与 children 契约不匹配 |
 
-- CST 的类型化视图：薄访问器，不产生新信息
-- MarkdownFrontend 解析自己的 rushdown AST；两种解析产物在 frontend 内进入对应 lowering
+`Pipeline::inspect` 在同一次源码处理中请求保留前端解析产物与中间 IR，返回 Analysis 和 Inspection：
 
-*Lowering / Desugar*（产出 IR₁）
+| Inspection 字段 | 内容 |
+| --- | --- |
+| syntax | 前端自身的 CST / AST；通过 FrontendSyntax 传递 |
+| lowered | 前端输出的 IR₁ |
+| shaped | 完成 Resolve 与 Shape 的 IR₂′ |
 
-- notist-lowering::lower_document 接收 Document AST，将其转成 Expr 森林；notist-md 将 Markdown AST 转成同一 IR₁。markup 构造映射为构造器调用；行内平坦序列按空行分组成 `paragraph` 候选；字面量归一化
-- text 值的空白按位置处理：行内元素边界的空白是内容（保留），行首/行尾/段落边界的空白丢弃，单换行无空格拼接
-- 值域语义错误在此诊断（裸名非字面量、数字溢出、非法 entry 等）
+正常 analyze 仍完成解析，只在返回时释放解析产物。捕获选项影响保留的数据，文档语义与诊断保持一致；具体解析产物协议见 [解析产物与调试](frontends.not)。
 
-*Resolve*（IR₁ → IR₂）
+== 声明与输出路径
 
-- 名称解析：配置 Registry 的函数定义 → 内置 Ctor 或带规范身份与契约的 ExtensionCtor；prelude 与 notist 限定名引用同一函数。未知名是 type 诊断（`unknown constructor`），调用保留为 Custom 恢复节点
-- 类型检查：已知字段类型 / 值域、必填字段与默认值由 FunctionDef 的共同绑定器处理；逐调用点校验 flavor，行内内容槽检查实际子节点的级别，恢复树保留原始内容和值
-- 结构槽：按 Builtin 中的契约检查构造器；使用 Syntax 定义的 structural_children 视图，不进行段落提升
-- 归一：位置参数归位 fields、inline 挂载提升为单段块、字面量以 text 插入
-- 管线消费签名与输入；内容函数的具体呈现由渲染器实现
+=== 声明：.notc → Registry
 
-*Shape*（IR₂ → IR₂′）
+声明源码由 `parse_module` 生成 Module CST / AST，`analyze_module` 将其转换并校验为 DefinitionModule，随后安装到 Registry。它复用字面量转换，产物为函数定义，供正文 Resolve 使用。
 
-- 候选结构 → 定稿结构。按块序列（文档体与每个块级 children 挂载）递归：
-  1. reflow：签名感知切分——block 级调用从 `paragraph` 候选中切出，块序列定稿
-  2. sectionize：按 heading level 把平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section 上（身份归位），section 的 span 覆盖整个节的范围
-- 内置级别判定依赖共同定义的 ReturnRule，扩展使用 Resolve 确定的类别；恢复节点采用调用点 flavor，不求值
-- 带 attrs 或 fields 的段落候选拆分时，以透明的块级 group 保留整个范围与元数据，不把同一个身份复制到多段
-- 列表项 / 表格行 / 单元格结构槽只做 reflow 并递归，保持结构轴；普通 `item` / `cell` 内容槽照常 reflow 与 sectionize
+文档 `parse_document` 与声明 `parse_module` 分别处理 Markup 和 Code；声明使用独立的定义模型。声明语法见 [Code Syntax](../grammar/code.not)，注册与装配见 [Content Function Extensions](content-functions.not)。
 
-*Materialize*（物化）
+=== 输出：Analysis → 转换树 → HTML
 
-- IR₂′ → Item：薄结构转换 + `Doc` 包装 + 模块注解归位，保存最终 Block / Inline 类别
+Vault 通过 Resources 取得配置、声明与组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 Pipeline、输出转换与 renderer。一个 Vault 可以包含多个配置环境。
 
-*Content 树*
+#mermaid::diagram(r#"""
+%%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart TB
+    resources["Resources"] --> environment["Environment"]
+    environment -.->|Registry| pipeline["Pipeline"]
+    source["path + source"] --> pipeline
+    pipeline --> analysis(["Analysis<br/>原始 Content 树 · Item"])
+    analysis --> transforms["输出转换"]
+    environment -.->|TransformPlan| transforms
+    transforms --> transformed(["TransformOutput<br/>输出 Content 树 · Item"])
+    transformed --> renderer["HTML renderer"]
+    environment -.->|组件绑定| renderer
+    renderer --> rendered(["RenderResult<br/>HTML"])
+"""#, theme: "neutral")
 
-- 节点 = ctor（含规范函数身份）+ level + fields + children + attrs + span
-- 分析只作用于 Content 树：引用解析、渲染
-- CST 服务 tooling；core 节点携带产生它的 surface span
+两图中圆角节点表示数据产物，处理阶段使用矩形节点；实线表示数据流，虚线表示 Registry 或环境提供的处理依据。
 
-== 宿主与资源
+`Vault::analyze` 返回 Analysis。`Vault::render_html` 只处理一次正文，输出前应用配置的 [IR Transforms](transforms.not)，返回 HtmlOutput：来源 path、原始 analysis、transformed 与完整 rendered。查询、语言服务和 VaultIndex 使用原始 Analysis；输出后端消费转换树。
 
-顶层 notist::Vault 通过 Resources 取得配置、声明和组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 pipeline 与 HTML。一个 Vault 可以包含多个配置环境。notist-html 只依赖 core，不反向依赖 pipeline 或 Vault。
+notist-html 只依赖 core，接收最终 Item 树与显式渲染输入。站点路由、跨页链接校验、主题和页面 / 资源发布由 [静态站点生成](../ssg.not) 处理；宿主与输出 crate 的分工见 [Crate 架构](crates.not)。
 
-Vault::analyze 返回最终 Analysis；Vault::render_html 返回 HtmlOutput，包含来源路径、原始 Analysis、TransformOutput 和完整 RenderResult。正文只处理一次，输出前按配置执行 [IR Transforms](transforms.not)。VaultIndex 是从各文档处理结果派生的索引与链接图，由 Vault::index 构建。
+== Vault 内容边界与索引
 
-Vault 的内容边界由 Resources::root 确定，与最近配置所在目录及 index 的扫描目录分别处理。本地 link 与 embed 的目标按文档目录解析并规范化，越过 Vault 根时在引用节点产生 semantic 诊断，不补载外部文档；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 `//` 的外部 URL 保留为外部链接，不读取或发布为 Vault 内容。
+=== 三个目录范围
 
-边界诊断附加到 Vault::analyze / inspect 的 Analysis，普通呈现、调试预览与语言服务共用该结果。纯 Pipeline 不知道 Vault 根，不执行内容边界检查。VaultIndex::from_documents 为显式传入的根执行相同检查，已有诊断不重复添加。
+| 范围 | 确定方式 | 作用 |
+| --- | --- | --- |
+| Vault 内容根 | `Resources::root` | 确定可纳入正文与本地引用的内容边界 |
+| 文档配置目录 | 最近的 Notist.toml，或显式配置 | 选择正文使用的 Environment，解析 package 配置路径 |
+| 索引扫描目录 | `Vault::index` 的扫描输入 | 确定首先扫描哪些文档；随后补载实际链接到的 Vault 内正文 |
 
-Vault::index 扫描指定目录，并补载 Vault 内实际链接到的正文。检查结果与 backlinks 的路径相对于 Vault 根，扫描子目录不缩小内容边界。package 的清单依赖和组件实现资源可以位于 Vault 外；资源访问接口的根不是整个进程的文件读取沙箱，package 文档不会因安装依赖自动加入正文索引。
+扫描子目录不缩小 Vault 内容边界。package 清单依赖和组件实现资源可以位于 Vault 外；Resources 的根表示内容边界，资源访问范围由宿主实现决定。安装 package 不会自动把其文档加入正文索引。
 
-notist-cli 依赖顶层 notist，提供名为 notist 的可执行文件，持有命令行解析、终端诊断、静态页面发布和语言服务适配。LSP 的 stdio 传输与编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留处理管线、查询选择和共享 IR 数据。
+=== 引用检查
+
+本地 link 与 embed 按文档目录解析并规范化。最终目标越过 Vault 根时，在引用节点产生 Semantic 诊断，并停止补载该目标；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 #raw("//") 的外部 URL 保持外部链接，不作为 Vault 正文读取或发布。
+
+边界诊断附加到 `Vault::analyze` / `inspect` 的 Analysis，供普通呈现、调试预览与语言服务共用。纯 Pipeline 接收源码与 Registry；内容边界检查由持有 Vault 根的宿主执行。`VaultIndex::from_documents` 对显式传入的根执行相同检查，已有诊断不重复添加。
+
+`Vault::index` 从各文档处理结果派生 VaultIndex，保存索引、诊断、链接与 backlinks。它扫描指定目录，再补载 Vault 内实际链接到的正文；检查结果和 backlinks 的路径均相对于 Vault 根。

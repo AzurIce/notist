@@ -1,0 +1,390 @@
+= Markup · `.not` & `.md`
+
+原生 `.not` 由 notist-syntax 解析为无损 CST，再由 notist-lowering 转换为 Expr 森林。Markdown 由自己的前端解析，复用 Notist 的调用头、注解与字面量规则；两种前端汇入相同的内容管线。
+
+本文定义原生 Markup 的共用词法、上下文、正文分派、调用与注解，并单独说明 Markdown 扩展。具体元素的语法糖见 [Builtin](../builtin.not)，字面量与内容 flavor 见 [Types](../types.not)，声明文法见 [Code](code.not)，阶段职责见 [Pipeline](../designs/pipeline.not)。
+
+本文中的产生式使用 [Grammar Notation](notation.not)。scanner 是纯探测，返回位置与状态；syntax 规则和 syntax algorithm 负责消费 token、构造 CST 和产生解析诊断。合法产生式与实现的恢复行为分别说明。
+
+== 原生词法
+
+=== 输入与状态
+
+lexer 处理 Unicode 字符，parser 处理 token。token 保存 kind 和 UTF-8 源码范围，文本按范围从原始源码取得。空格、tab、换行与注释作为 trivia 保留在 CST 中；每条解析规则明确决定如何消费它们。
+
+| 词法状态 | 使用位置 | 识别规则 |
+| --- | --- | --- |
+| Markup 正文 | 普通文字与调用 body | Markup 标记、转义、trivia 和 Text |
+| 调用路径 | 紧邻 `#` 的名称及包路径 | Ident 与紧邻的 `::` |
+| 字面量 | 调用参数与注解 payload | Ident、String、Number、集合标点与 trivia |
+
+调用参数和注解的圆括号按深度维护字面量状态；调用 body 使用 Markup 正文规则。lexer 独立产生完整 token 流，parser 将失败的调用入口返回文字时仍使用这份 token 流。
+
+#grammar::diagram(r#"""
+lex Whitespace -> [` ` U+0009]+;
+lex Newline -> (U+000D U+000A) | U+000A | U+000D;
+lex Eq -> `=`+;
+lex Backtick -> U+0060+;
+lex Ident -> first:UnicodeChar @{ alphabetic(first) or first == "_" }
+              (c:UnicodeChar @{ alphanumeric(c) or c in {"_", "-"} })*;
+"""#)
+
+`UnicodeChar` 是一个 Unicode scalar；alphabetic / alphanumeric 使用 Rust 字符的 Unicode 字母 / 字母数字判断。Eq 和 Backtick 描述 Markup 正文中的连续标记；Ident 用于调用路径与字面量状态。Code 复用 Ident，但箭头的优先级见 [Code 词法](code.not)。String 与 Number 见 Types，Escape 见 Builtin 的 text 小节。
+
+`WS`、`NL`、`LINE_COMMENT`、`BLOCK_COMMENT`、`EQ`、`BACKTICK`、`IDENT`、`STR`、`NUMBER`、`TEXT`、`ESCAPE` 分别表示对应 token kind。scanner 中的 CamelCase 名与大写别名表示同一 kind，例如 LBracket 与 LBRACKET。`COLON_COLON` 是整个 `::` token；其他标点别名在相应词法状态下表示单字符 token。连续 `=` 与反引号各组成一个正文 token，`-`、`+`、`*` 逐字符组成 token。
+
+普通正文中的引号、冒号与逗号属于 Text；进入字面量状态后才按 String、Colon、Comma 等规则识别。只有已形成 STR 的字符串才屏蔽其中的括号。
+
+=== 注释
+
+下面的词法 scanner 使用 UTF-8 字节偏移；ASCII 注释标记占两个字节。它们返回扫描结果，由 lexer 据此生成 token。
+
+#raw(r#"""
+lex scanner LineComment(mode) -> { end } | Miss {
+  start = cursor
+  若 source[start..] 不以 "//" 开头，返回 Miss
+  若 mode == Markup 且 start 前一个源码字符为 ":"，返回 Miss
+  end = start 之后首个 LF 的字节位置；没有 LF 时为 source.len
+  若 source[end - 1] == CR，end -= 1
+  返回 { end }
+}
+
+lex scanner BlockComment -> { end, closed } | Miss {
+  若 source[cursor..] 不以 "/*" 开头，返回 Miss
+  p = cursor + 2；depth = 1
+  循环至 source.len：
+    "/*"：depth += 1；p += 2
+    "*/"：depth -= 1；p += 2
+           若 depth == 0，返回 { end: p, closed: true }
+    其他：p 前进一个字节
+  返回 { end: source.len, closed: false }
+}
+"""#, block: true, lang: "scanner")
+
+块注释可以嵌套；未闭合的块注释仍形成 trivia token，parser 消费它时产生 Syntax 诊断。行注释终止于 LF 或文件末尾，终点前紧邻的 CR 留给 Newline；单独的 CR 不终止行注释。
+
+正文中的 #raw("//") 仅在紧随冒号时享有 URL 豁免，因此 `https://example` 可作为普通文字。调用参数、注解 payload 与 Code 的字面量扫描不使用此豁免，URL 参数应写成 String。单独的斜杠属于 Text。
+
+=== 共用 token 规则
+
+#grammar::diagram(r#"""
+syntax Trivia -> WS | NL | LINE_COMMENT | BLOCK_COMMENT;
+syntax TokenKind(k) -> t:ANY @{ t.kind == k };
+syntax End(ctx) -> &NL | @{ limit(cursor, ctx) };
+syntax BlankLine -> WS? NL;
+syntax ItemBody(ctx) -> BlockRun(ctx, Item);
+"""#)
+
+`ANY` 消费一个 token。End 只判断当前位置是否为 NL 或有效区间末尾，不消费输入；EOF 表示有效区间末尾的观察结果，lexer 不额外生成 EOF token。
+
+== 上下文与边界
+
+=== 位置和容器
+
+| 字段 | 含义 | 文档入口值 |
+| --- | --- | --- |
+| limit | 当前 token 区间的右开边界 | 文件 token 数 |
+| `in_body` | 行内分派是否在 RBracket 处停止 | false |
+| `block_indent` | 当前列表正文的最小缩进列 | 0 |
+| `body_start` | 列表项第一行正文的 token 起点 | none |
+
+token 位置与源码字节位置分别使用。`kind(p)` 在 p 达到 limit 时返回 EOF；`column(p)` 根据该 token 的源码起点计算列数，普通 Unicode scalar 计一列，tab 到下一个四列边界。行首判断使用源码中最近的 LF / CR，而非只查找独立的 NL token。
+
+```notation
+limit(p, ctx) = p >= ctx.limit
+body_close(p, ctx) = ctx.in_body and kind(p) == RBracket
+line_start(p) = 最近 LF / CR 之后至 token p 起点的源码仅含空格或 tab
+block_start(p, ctx) =
+  p == ctx.body_start
+  or line_start(p) and (
+    column(p) == 0
+    or ctx.block_indent > 0 and column(p) >= ctx.block_indent
+  )
+can_open(p, ctx) = kind(p + 1) not in {EOF, Whitespace, Newline}
+can_close(p, ctx) = p > 0 and kind(p - 1) not in {EOF, Whitespace, Newline}
+always_true = 恒真谓词
+always_false = 恒假谓词
+```
+
+不同边界承担不同职责：
+
+| 机制 | 设置位置 | 约束范围 |
+| --- | --- | --- |
+| limit | 列表项范围、表格单元格范围 | 同时约束消费和向前探测 |
+| `in_body` | 调用的 `[body]` | 使正文分派在当前 RBracket 处停止 |
+| `block_end` | 行内序列遇到 NL 时 | 判断这次换行是否结束当前块 |
+
+调用 body 设置 `in_body`，继承外层 limit；列表项临时收窄 limit，并设置正文缩进和 `body_start`。表格单元格临时收窄 limit、设置 `in_body`=false，使单元格中的独立 RBracket 可以作为文字。离开容器后恢复外层上下文。
+
+=== 换行是否结束块
+
+```scanner
+predicate block_end(p, ctx) {
+  要求 kind(p) == Newline
+  q = p + 1；跳过从 q 开始的 Whitespace
+  i = 跳过前导空白得到的缩进列数
+  若 kind(q) in {EOF, Newline} 或 i < ctx.block_indent，返回 true
+  若 table_start(q, ctx)，返回 true
+  若非 block_start(q, ctx)，返回 false
+  按 kind(q) 判断：
+    Eq：kind(q + 1) == Whitespace
+    Backtick：当前 run 长度至少 3
+    Minus / Plus：kind(q + 1) == Whitespace，或 Divider 前缀成立
+    At：true
+    其他：false
+}
+```
+
+`table_start` 与 Divider 前缀由 Builtin 的 table / divider 小节定义。`block_end` 是纯判断；At 分支只判断下一行以 At 开始，payload 的合法性留给后续解析。
+
+正常行内序列中的单 NL 是软换行；空行、块起点和显式反斜杠换行结束相应序列。正文空白与换行的降糖见 Builtin 的 paragraph 小节。
+
+== 原生正文分派
+
+=== 块序列
+
+BlockRun 按下列顺序循环分派，每轮先检查 limit 与 `body_close`。Document 在文件末尾结束；Body 和 Item 还会在有效的 RBracket 处结束。已消费的 trivia 保留在所属容器的 CST 中。
+
+```scanner
+syntax algorithm BlockRun(ctx, container) {
+  循环至 limit，或 container != Document 且 body_close(cursor, ctx)：
+    container == Item 且当前为 WS / NL / LINE_COMMENT / BLOCK_COMMENT：消耗一个 token
+    NL：消耗一个 token
+    EQ 且下一 token 为 WS：Heading
+    BACKTICK 且 run 长度至少 3：RawBlock
+    Divider 前缀成立：Divider
+    MINUS / PLUS 且下一 token 为 WS：List
+    table_start(cursor, ctx)：Table
+    WS 且后续仅为 WS，直至 NL 或 EOF：消耗 WS
+    WS 且 block_indent > 0 且 container == Body：消耗 WS
+    LINE_COMMENT / BLOCK_COMMENT：消耗一个 token
+    AT 且 block_annotation(cursor, ctx)：Annotation
+    BACKSLASH NL：ExplicitBreak
+    其他：InlineRun(ctx, block_end, None)
+}
+```
+
+container 为 Document、Body 或 Item；Heading、RawBlock、Divider、List、Table 与 ExplicitBreak 的具体规则见 Builtin。Item 消费正文缩进；Document 保留非空行的前导空白并交给行内分派。
+
+块分派使用当前位置的前缀。Heading、RawBlock、List 的入口没有统一的 `line_start` 检查；Divider、Table 及换行后的块边界判断使用 `block_start`。通常独占行的块标记位于列 0，但不能把“所有块标记必须在源码列 0”作为 parser 的统一条件，例如 `/* comment */= Title` 仍可在文档入口形成 Heading。
+
+=== 行内序列
+
+InlineRun 只在当前位置为 NL 时调用 stop；active 表示包围它的行内结构的闭合约定。
+
+```scanner
+syntax algorithm InlineRun(ctx, stop, active) {
+  循环：
+    limit：停止
+    NL 且 stop(cursor, ctx)：停止
+    NL：消耗一个 token
+    body_close(cursor, ctx)：停止
+    active_closes(active, cursor, ctx)：停止
+    BACKSLASH NL：停止
+    BACKTICK：RawInline
+    STAR / UNDERSCORE / TILDE：Strong / Emph / Strike
+    DOLLAR：Math
+    BANG LBRACKET：Embed
+    LBRACKET LBRACKET：WikiLink
+    LBRACKET：Link
+    HASH：CodeCall
+    AT LPAREN 或 AT BANG LPAREN：Annotation
+    其他：消耗一个原始 token
+}
+```
+
+```notation
+active_closes(None, p, ctx) = false
+active_closes(Flanked(k), p, ctx) = kind(p) == k and can_close(p, ctx)
+active_closes(Single(k), p, ctx) = kind(p) == k
+active_closes(Pair(k), p, ctx) = kind(p) == k and kind(p + 1) == k
+```
+
+函数的返回级别不参与 syntax 分派。名称和签名在 Resolve 确定，段落的块重组在 Shape 完成。未形成语法构造的原始 token 由 text 降糖；普通行内 At 只有紧随合法注解起始前缀时才进入 Annotation。
+
+== 内容函数调用
+
+=== 合法形式
+
+#grammar::diagram(r#"""
+syntax CodeCall(ctx) ->
+  `#` name:Path args:Args(ctx) body:CallBody(ctx)?
+  | `#` name:Path body:CallBody(ctx)
+  | `#` body:CallBody(ctx);
+syntax Path -> segment:IDENT (COLON_COLON segment:IDENT)*;
+syntax Args(ctx) ->
+  LPAREN Trivia* (Argument (Trivia* COMMA Trivia* Argument)* Trivia* COMMA?)?
+  Trivia* RPAREN;
+syntax Argument -> key:ArgKey COLON Trivia* value:Value | value:Value;
+"""#)
+
+Path、Args、CallBody 的边界必须紧邻，路径中的段与 `::` 也必须紧邻。`#name(args)` 和 `#name[body]` 是具名调用，`#[body]` 是匿名 group；裸 `#name` 和匿名 `#(args)` 按文字处理。
+
+Value 和 ArgKey 由 Types 定义。具名参数的冒号紧邻 key，允许参数尾逗号；lowering 保存位置参数和 fields，重复具名 key 后者覆盖，位置参数在 Resolve 按签名绑定。内容通过唯一的调用 body 挂载为 children；参数中出现 `[body]` 可被 parser 保留供诊断，Content 参数的限制见 Types。
+
+CST 将目标保存在 Path 节点，AST 提供路径段与完整名称。parser 保留任意段数；Registry 决定该路径能否解析到函数。CodeCall 是 CST / AST 名称，其源码语法属于 Markup。
+
+=== 平衡探测
+
+Balanced 在当前位置的开括号处探测，仅对指定的一种括号计数。`cross_blocks` 决定是否允许越过 `block_end`；外层 limit 始终有效。
+
+```scanner
+scanner Balanced(open_kind, close_kind, cross_blocks; ctx)
+  -> { end, status, close } | Miss {
+  若 kind(cursor) != open_kind，返回 Miss
+  p = cursor；depth = 0
+  循环至 ctx.limit：
+    若非 cross_blocks 且 kind(p) == Newline 且 block_end(p, ctx)，
+      返回 { end: p, status: BlockEnd, close: none }
+    若 cross_blocks 且 probe OpaqueClose(p, ctx) 成功，
+      p = 该结果的 close + 1；继续
+    若 kind(p) == open_kind，depth += 1
+    若 kind(p) == close_kind：
+      depth -= 1
+      若 depth == 0，返回 { end: p + 1, status: Closed, close: p }
+    p += 1
+  返回 { end: ctx.limit, status: Unclosed, close: none }
+}
+```
+
+| status | 含义 | 调用入口的使用方式 |
+| --- | --- | --- |
+| Closed | 找到配平闭括号 | end 为闭括号之后，close 为闭括号本身 |
+| BlockEnd | Args 探测遇到块边界 | 当前前缀不形成调用 |
+| Unclosed | 到达有效容器末尾 | Args 前缀返回文字；body 前缀产生未闭合诊断 |
+
+这些是纯探测的结果，调用方按 status 决定消费和恢复。STR、注释和 Escape 中的括号没有独立 token，不参与计数；正文里的普通引号本身不会屏蔽括号。
+
+OpaqueClose 导入 Builtin 的 link 小节定义，只跳过完整的行内 raw / math payload。原生 fenced RawBlock 使用自己的块解析规则；外层平衡探测不会把跨行 fence 当成同一种不透明片段。
+
+=== 入口、body 与恢复
+
+调用入口依次完成以下探测：
+
++ 在 `#` 后探测完整 Path；路径最后的 `::` 缺少名称段时，前缀失败。
++ 若紧邻 LPAREN，以 `cross_blocks`=false 探测 Args；仅 Closed 继续。
++ 若紧邻 LBRACKET，以 `cross_blocks`=true 探测 body，并保留状态。
++ 具名调用有完整 Args 或完整 body 时形成 CodeCall；匿名调用只有完整 body 时形成 CodeCall。
+
+CallBody 的解析流程为：
+
+```scanner
+syntax algorithm CallBody(ctx) {
+  open = cursor
+  frame = probe Balanced(LBracket, RBracket, true; ctx)
+  若 frame == Miss 或 frame.status != Closed，返回 Miss
+  根据 Types 的 flank 规则确定 body flavor
+  若 flavor 为行内，检查 open + 1 至 frame.close 内的换行
+  消耗 LBRACKET，临时设置 ctx.in_body=true，继承 ctx.limit
+  块 flavor：BlockRun(ctx, Body)
+  行内 flavor：InlineRun(ctx, always_false, Single(RBracket))
+  恢复外层 in_body，在正文停止的位置消费收尾 token
+}
+```
+
+flavor 来自括号两端内侧的空白，与内容函数的返回类型分别确定。行内 body 的换行若使 `block_end` 成立，parser 产生 Syntax 诊断（`inline content cannot contain a blank line`），并继续以行内规则解析；该检查还会命中标题等块起点。
+
+frame.close 用于判断 flavor 和检查换行；它不通过 within 设置正文的新 limit。正文停止条件来自 `in_body`、active、显式反斜杠换行及外层容器，收尾消费发生在实际停止位置。
+
+| 前缀情况 | 实际解析与恢复 |
+| --- | --- |
+| 裸名称、非法路径或 Args 未闭合 | 入口消费一个原始 HASH，随后继续外层正文分派；调用入口本身不补充诊断 |
+| 具名 Args 已闭合，但 body 未闭合 | 在有效容器末尾产生未闭合 body 诊断，保留仅含 Args 的 CodeCall，余下 token 继续正文分派 |
+| 仅 body 的调用未闭合 | 产生同一诊断，入口消费原始 HASH，随后继续正文分派 |
+| Args 缺少或重复逗号 | parser 仍可消费字面量序列；这是容错行为，合法形式以 Args 产生式为准 |
+| Args 中无法识别为字面量的 token | 消费该 token 并产生 Syntax 诊断，继续参数解析 |
+
+失败入口返回的是首 token，余下范围仍可能形成其他语法构造。解析消费继续保留原始源码，trivia 自身的诊断也照常产生。
+
+== 注解
+
+#grammar::diagram(r#"""
+syntax Annotation(ctx) -> AT module:BANG? payload:Dict;
+"""#)
+
+`@(dict)` 挂到后续节点，`@!(dict)` 挂到模块，空注解为 `@(:)`。合法 payload 为完整 Dict；Dict 的成员与值由 Types 定义。
+
+块路径与行内路径通过以下纯判断区分：
+
+```scanner
+predicate block_annotation(p, ctx) {
+  q = p + 1；若 kind(q) == Bang，q += 1
+  若 kind(q) != LParen，返回 true
+  result = 从 q probe Balanced(LParen, RParen, false; ctx)
+  若 result == Miss 或 result.status != Closed，返回 true
+  返回 kind(result.end) in {EOF, Whitespace, Newline}
+}
+```
+
+探测失败仍进入块注解路径，让实际字面量解析产生诊断。`block_annotation` 只选择分派路径，payload 的合法性由 Annotation 检查。
+
+| 检查 | 负责阶段 |
+| --- | --- |
+| 缺少 payload、payload 不是 Dict、集合未闭合 | 原生 parser 的 Syntax 诊断；保留 Annotation 与字面量恢复结构 |
+| Dict 中游离成员或非法值 | Lowering 的 Semantic 诊断 |
+| 行内注解未紧邻一个行内构造、注解悬空 | Lowering 的 Semantic 诊断 |
+| 模块注解出现在内容之后 | Lowering 的 Semantic 诊断 |
+| heading 属性归到它开启的 section | 共享 Shape |
+
+块级注解挂到下一个块；行内注解挂到紧邻的构造。模块注解归入文档根属性，Materialize 将其保存到 Doc。属性挂载的共同规则见 Builtin 和 Pipeline。
+
+== 降糖与结构检查
+
+`lower` 按 Builtin 的结果构造将行内结构映射为 Expr 序列；`blocks` 对块序列做相应转换并组织 paragraph 候选。普通正文的注释不产生 text，CST 仍保存它们。字面量、注解、参数和 children 的检查分别由 Lowering 与 Resolve 承担，段落和 section 重组由 Shape 承担。
+
+`structural_children` 表示结构槽校验所见的叶子视图：
+
+```shape
+structural_children(children) {
+  按原顺序访问每个 node：
+    若 ctor(node) == text、attrs 为空，且 text 字段为纯空白 String：跳过
+    若 ctor(node) == group，或 ctor(node) == paragraph 且 body flavor == None：
+      递归访问 node.children
+    否则：将 node 交给 builtin 的 require 检查构造器
+}
+```
+
+该视图供列表项、表格行和单元格的签名检查使用。Resolve 清理可忽略的空白及无属性、无字段的空包装，保留其他 group / paragraph 包装和元数据；校验时递归查看其中的结构节点。最终段落拆分见 Pipeline 的 Shape 规则。
+
+== Markdown 前端
+
+=== 解析边界
+
+MarkdownFrontend 独立解析 `.md`、`.markdown`、`.notmd` 与 `.nmd`，使用 rushdown AST 并输出共享 Expr。Builtin 中的 `MD.*` 表示 AST 模式，描述到内容函数的映射。前端接口、注册和源码位置映射见 [文档前端](../designs/frontends.not)。
+
+| 部分 | 解析归属 |
+| --- | --- |
+| 标题、段落、列表、引用、链接、表格与代码 | Markdown 前端 |
+| Notist 调用路径、参数与注解 payload | 原生语法与共用 lowering |
+| 调用的 `[body]` | Markdown 前端；按 flavor 选择行内或块规则 |
+| 名称、签名、段落定稿与 section | 共享 Resolve / Shape / Materialize |
+
+Markdown 扩展支持 `@(dict)`、`@!(dict)`、`#name(args)[body]`、包限定调用与匿名 `#[body]`。`[正文]` 是行内槽；两端内侧均留白的 `[ 正文 ]` 是块槽，可以包含空行、标题、列表、引用和代码块。位置映射将移除容器前缀后的局部位置还原为原始源码范围。
+
+=== 调用与注解的探测
+
+Markdown 扩展扫描调用头时用原生 lexer 屏蔽 String / 注释中的圆括号；扫描 body 时按 Markdown 的转义、反引号代码片段、代码围栏与行内数学片段屏蔽方括号。它使用 Markdown 容器提供的源码范围，原生 Balanced / BlockRun 的 token 上下文只用于原生 Markup。
+
+独占行的注解挂到下一个块；紧邻行内元素或调用的注解挂到该元素。模块注解仅允许位于文档开头；标题属性通过共享 Shape 归到 section。扩展节点未闭合时保留原始文字并产生 Syntax 诊断，非法字面量与属性挂载产生对应的源码诊断。
+
+`# 标题` 仍为 Markdown 标题，普通 `#tag` 和邮件地址仍为文字。参数与属性字符串保持不透明；代码、数学 payload 和转义中的注解 / 调用不执行。
+
+=== 文字与输出
+
++ 普通文字、链接地址与 embed 字段的标点转义和字符引用只解码一次；raw / math 不解码。
++ `decode_once` 从左到右读取原输入，输出不再参与解码；`decode_optional` 对 none 保留 none，否则调用 `decode_once`。
++ 单换行、双空格换行、空行与显式分段的共享行为见 Builtin 的 paragraph；列表编号和 lazy continuation 见 list / item。
++ 行内 HTML 标签忽略并保留周围普通文字，HTML 块整体跳过。
+
+== 实现定位
+
+| 规则 | 实现位置 |
+| --- | --- |
+| 词法状态、注释、标记和字面量 token | `crates/notist-syntax/src/lexer.rs` |
+| 上下文、正文分派、调用探测与注解 | `crates/notist-syntax/src/parser.rs` |
+| 表格行与单元格边界 | `crates/notist-syntax/src/parser/table.rs` |
+| 原生文档 lowering | `crates/notist-lowering/src/document.rs` |
+| 共用注解与调用头 lowering | `crates/notist-lowering/src/lib.rs` |
+| Markdown 扩展扫描与位置映射 | `crates/notist-md/src/markup.rs` |
+| Markdown 文字解码与段落分段 | `crates/notist-md/src/strings.rs`、`breaks.rs` |
+| 结构槽的清理与校验 | `crates/notist-pipeline/src/resolve.rs` |

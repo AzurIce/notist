@@ -1,14 +1,15 @@
 = Notist Documentation
 
 - [Cook Book](cookbook/README.not)：从示例开始编写文档。
-- [Markup Syntax](grammar/README.not)：.not 的词法、调用、注解与通用解析规则，以及 Markdown 扩展语法。
+- [Markup Syntax](grammar/markup.not)：.not 的词法、调用、注解与通用解析规则，以及 Markdown 扩展语法。
 - [Code Syntax](grammar/code.not)：.notc 的签名声明、类型引用、CST / AST 与错误恢复。
 - [Types & Literals](types.not)：类型、字面量与内容 flavor。
 - [Builtin Content Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
 - [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
-- [Grammar Package](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
+- [Grammar Package](https://github.com/AzurIce/notist/blob/main/packages/grammar/markup.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
+- [Crate Architecture](designs/crates.not)：各 crate 的职责、依赖方向与 API / 宿主边界。
 - [Document Frontends](designs/frontends.not)：Frontend Trait、默认实现、AST lowering、注册与解析产物捕获。
-- [Pipeline](designs/pipeline.not)：crate 职责、共享 IR 转换阶段与 Vault 宿主边界。
+- [Pipeline](designs/pipeline.not)：源码到 Content 树的数据流、阶段契约、诊断与调试，以及 Vault 输出和内容边界。
 - [Package Model](package.not)：package 的定义、命名空间、使用者环境与自身文档环境。
 - [Vault 组件示例](components/README.not)：在 Vault 根声明并使用 panel、badge，组合其他 package 的图形与数学组件。
 - [Content Function Extensions](designs/content-functions.not)：内置与外部函数的统一定义、.notc 声明和 package 装配、HTML 组件协议与 host 接口。

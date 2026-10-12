@@ -1,6 +1,6 @@
 == Builtin Content Functions & Sugar Grammar
 
-记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/README.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
+记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/markup.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
 
 签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。其他具名字段保留，多余位置参数产生诊断。实现对应关系见 Syntax。
 

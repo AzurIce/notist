@@ -209,7 +209,7 @@ Package 是带有 Notist.toml 清单与 lib.notc 的目录。Code 只有这一�
 
 声明分析将唯一入口的 Module AST 转换为 DefinitionModule，再通过共同校验安装到 Registry。依赖或声明失败不进行部分安装。第一版读取声明即可完成加载；复杂 scripting、模块及执行后端在需要时另行设计。
 
-notist-core 提供定义模型、Registry、共同校验与 Frontend Trait。notist-lowering 接收原生 Document AST，并提供共用字面量转换；notist-md 实现 MarkdownFrontend。notist-pipeline 提供 NotistFrontend，统一注册前端并执行共享后端，同时通过 analyze_module 完成声明转换。notist-html 提供组件入口规则与签名绑定；顶层 Vault 驱动资源取得和环境装配。pipeline 与 renderer 接收显式输入，不进行文件或网络操作。
+Vault 驱动资源取得和环境装配；`analyze_module` 转换声明，Pipeline 分析正文，renderer 消费内容树。各 crate 的实现归属与依赖边界见 [Crate 架构](crates.not)。
 
 默认分析环境装配 core 签名与 .not、.md / .markdown / .notmd / .nmd 前端；默认 HTML 环境装配内置 renderer。调用者可以用 Pipeline::with_frontend 注册实现 Frontend Trait 的具体值，并追加签名与组件实现。前端注册与函数签名注册分别控制源码语法和内容契约。
 

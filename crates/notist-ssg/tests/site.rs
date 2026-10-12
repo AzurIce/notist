@@ -16,6 +16,152 @@ fn html(site: &Site, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
 }
 
+// Inspect opening tags without depending on attribute order or complete HTML snapshots.
+fn tag_with<'a>(output: &'a str, name: &str, attribute: &str) -> Option<&'a str> {
+    output.split('<').find_map(|part| {
+        let tag = part.split('>').next()?;
+        (tag.starts_with(&format!("{name} ")) && tag.contains(attribute)).then_some(tag)
+    })
+}
+
+#[test]
+fn default_theme_renders_semantic_shell_for_both_frontends() {
+    for (source, content) in [
+        (
+            "README.not",
+            "= Native title\n\n== Topic\n\nNative body\n\n```rust\nlet value = 1;\n```",
+        ),
+        (
+            "README.md",
+            "# Markdown title\n\n## Topic\n\nMarkdown body\n\n```rust\nlet value = 1;\n```",
+        ),
+    ] {
+        let site = render(&[(source, content), ("next.md", "# Next")]);
+        let output = html(&site, "index.html");
+        assert!(tag_with(&output, "header", "class=\"site-header\"").is_some());
+        assert!(tag_with(&output, "main", "id=\"page-content\"").is_some());
+        let navigation = tag_with(&output, "nav", "id=\"site-nav\"").unwrap();
+        assert!(navigation.contains("aria-label=\"Contents\""));
+        assert!(tag_with(&output, "aside", "class=\"page-outline\"").is_some());
+        assert!(tag_with(&output, "nav", "id=\"page-outline\"").is_some());
+        assert!(tag_with(&output, "nav", "class=\"breadcrumbs\"").is_some());
+        assert!(tag_with(&output, "footer", "class=\"site-footer\"").is_some());
+        let toggle = tag_with(&output, "button", "id=\"nav-toggle\"").unwrap();
+        assert!(toggle.contains("aria-controls=\"site-nav\""));
+        assert!(toggle.contains("aria-expanded=\"false\""));
+        assert!(tag_with(&output, "button", "id=\"nav-close\"").is_some());
+        let theme_toggle = tag_with(&output, "button", "id=\"theme-toggle\"").unwrap();
+        assert!(theme_toggle.contains("aria-label=\""));
+        assert!(output.contains(">Contents</button>"));
+        assert!(output.contains(">Close</button>"));
+        assert!(output.contains("class=\"theme-label\">Theme</span>"));
+        assert!(!output.contains("<svg"));
+        assert!(!output.contains("site-mark"));
+        assert!(!output.contains(['←', '→', '↑']));
+        let backdrop = output
+            .split('<')
+            .find(|tag| tag.contains("id=\"nav-backdrop\""))
+            .unwrap();
+        assert!(backdrop.split('>').next().unwrap().contains("hidden"));
+        let progress = output
+            .split('<')
+            .find(|tag| tag.contains("id=\"reading-progress\""))
+            .unwrap();
+        assert!(
+            progress
+                .split('>')
+                .next()
+                .unwrap()
+                .contains("aria-hidden=\"true\"")
+        );
+        assert!(
+            tag_with(&output, "a", "rel=\"next\"")
+                .unwrap()
+                .contains("href=\"next/\"")
+        );
+        assert!(output.contains("href=\"#topic\""));
+        let article = output
+            .split("<article")
+            .nth(1)
+            .unwrap()
+            .split("</article>")
+            .next()
+            .unwrap();
+        assert_eq!(article.matches("<h1").count(), 1, "{article}");
+        assert!(article.contains("body</p>"));
+        assert!(article.contains("<pre>"));
+        // Copy controls are a browser enhancement, not part of page.html.
+        assert!(!article.contains("<button"));
+    }
+}
+
+#[test]
+fn default_theme_escapes_titles_and_encodes_explicit_outline_ids() {
+    let site = render(&[
+        (
+            "README.md",
+            "# \\<Home\\> & title\n\n[Native](%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3.not)",
+        ),
+        (
+            "中文 文档.not",
+            "@(id: \"中文 &?#/\")\n= Native & title\n\nNative body",
+        ),
+    ]);
+    let home = html(&site, "index.html");
+    assert!(home.contains("&lt;Home&gt; &amp; title"));
+    assert!(!home.contains("<Home>"));
+    assert!(home.contains("href=\"%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3/\""));
+    let native = html(&site, "中文 文档/index.html");
+    assert_eq!(
+        site.pages
+            .iter()
+            .find(|page| page.title == "Native & title")
+            .unwrap()
+            .headings[0]
+            .id,
+        "中文 &?#/"
+    );
+    assert!(native.contains("id=\"中文 &amp;?#/\""));
+    let outline = native
+        .split("id=\"page-outline\"")
+        .nth(1)
+        .unwrap()
+        .split("</nav>")
+        .next()
+        .unwrap();
+    assert!(
+        outline.contains("href=\"#%E4%B8%AD%E6%96%87%20&amp;%3F%23%2F\""),
+        "{outline}"
+    );
+    assert!(outline.contains("Native &amp; title"));
+    assert!(!native.contains("Native & title"));
+    assert!(
+        tag_with(&native, "a", "rel=\"prev\"")
+            .unwrap()
+            .contains("href=\"../\"")
+    );
+}
+
+#[test]
+fn default_theme_omits_outline_and_adjacency_for_headingless_single_pages() {
+    for source in ["README.not", "README.md"] {
+        let site = render(&[(source, "Only body text.")]);
+        assert!(site.pages[0].headings.is_empty());
+        let output = html(&site, "index.html");
+        assert!(output.contains("<p>Only body text.</p>"));
+        assert!(tag_with(&output, "aside", "class=\"page-outline\"").is_none());
+        assert!(tag_with(&output, "nav", "id=\"page-outline\"").is_none());
+        assert!(tag_with(&output, "nav", "class=\"adjacent\"").is_none());
+        assert!(tag_with(&output, "a", "rel=\"prev\"").is_none());
+        assert!(tag_with(&output, "a", "rel=\"next\"").is_none());
+        assert!(
+            !output.contains("<h1"),
+            "the fallback title must not become a body heading"
+        );
+        assert!(!output.contains("src=\"./components.js\""));
+    }
+}
+
 #[test]
 fn mixed_frontends_share_directory_routes_anchors_and_assets() {
     let site = render(&[
@@ -107,7 +253,18 @@ fn titles_do_not_change_routes_and_groups_do_not_create_pages() {
         "/%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3/"
     );
     let page = html(&site, "notes/2/index.html");
-    assert!(page.contains("<span>notes</span>"));
+    let navigation = page
+        .split("id=\"site-nav\"")
+        .nth(1)
+        .unwrap()
+        .split("</nav>")
+        .next()
+        .unwrap();
+    assert!(navigation.contains(">notes</"), "{navigation}");
+    assert!(
+        !navigation.contains("href=\"../\""),
+        "a directory group must not link to a synthetic page"
+    );
     assert!(page.contains("rel=\"next\" href=\"../10/\""));
 }
 
@@ -257,6 +414,7 @@ fn default_transforms_publish_shared_component_resources_per_used_page() {
         ),
         ("README.not", "= Home\n\n$x$"),
         ("other.md", "# Other\n\n$y$"),
+        ("guide/deep/README.not", "= Nested\n\n$z$"),
         ("plain.md", "# Plain"),
     ]);
     assert!(html(&site, "index.html").contains("<math-formula "));
@@ -269,6 +427,14 @@ fn default_transforms_publish_shared_component_resources_per_used_page() {
     let registration =
         String::from_utf8(site.files[Path::new("other/components.js")].clone()).unwrap();
     assert!(registration.contains("../_notist/packages/math/components/formula/index.js"));
+    let nested = html(&site, "guide/deep/index.html");
+    assert!(nested.contains("href=\"../../_notist/theme/site.css\""));
+    assert!(nested.contains("src=\"../../_notist/theme/site.js\""));
+    assert!(nested.contains("src=\"./components.js\""));
+    let nested_registration = html(&site, "guide/deep/components.js");
+    assert!(
+        nested_registration.contains("../../_notist/packages/math/components/formula/index.js")
+    );
 }
 
 #[test]

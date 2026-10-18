@@ -5,6 +5,7 @@ use rowan::TextRange;
 fn span(from: u32, to: u32) -> notist_core::item::Item {
     let mut item = Item::new(Ctor::Text, Default::default());
     item.span = TextRange::new(from.into(), to.into());
+    item.origin = None;
     item
 }
 
@@ -16,7 +17,7 @@ fn mapping_is_optional_reserved_and_attached_to_real_output() {
         .insert("data-notist-node", Value::Str("fake".into()));
     let mut paragraph = Item::new(Ctor::Paragraph, text.span).with_children(vec![text]);
     paragraph.attrs.insert("id", Value::Str("user-id".into()));
-    let root = Item::new(Ctor::Group, paragraph.span).with_children(vec![paragraph]);
+    let root = Item::new(Ctor::Node, paragraph.span).with_children(vec![paragraph]);
     let default = Renderer::new().render_with_diagnostics(&root);
     assert_eq!(default.html, "<p id=\"user-id\">abc</p>");
     assert!(default.source_map.is_empty());
@@ -40,7 +41,7 @@ fn structural_groups_are_flattened_and_empty_generated_cells_are_unmapped() {
     let mut row = span(1, 5);
     row.ctor = Ctor::TableRow;
     row.children = vec![Item::new(Ctor::TableCell, Default::default())];
-    let group = Item::new(Ctor::Group, row.span).with_children(vec![row]);
+    let group = Item::new(Ctor::Node, row.span).with_children(vec![row]);
     let table = Item::new(Ctor::Table, group.span).with_children(vec![group]);
     let result = Renderer::new()
         .with_source_map()

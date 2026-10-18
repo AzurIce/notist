@@ -21,7 +21,7 @@
 | 内容 IR | 合法调用保留稳定函数身份、字段、children、attrs 与解析后的内容类别 |
 | package | 带有 lib.notc 的目录；第一阶段只有这个 Code 模块 |
 | 项目配置 | `Notist.toml` 通过 dependencies 引入本地 package，依赖键确定当前环境的包名 |
-| 名称解析 | 内置 prelude 支持 #callout；外部函数使用 #package::foo，保留包作用域 |
+| 名称解析 | 内置 prelude 支持 `#callout`；外部函数使用 `#package::foo`，保留包作用域 |
 | 组件约定 | components/<函数名>.js 或 components/<函数名>/index.js 默认导出组件类，host 生成注册入口，无映射配置 |
 | HTML | 统一目标注册，生成组件元素并记录实际使用的组件资源 |
 | 工具 | CLI、LSP、预览工具使用同一个配置环境；lib 提供显式装配 API |

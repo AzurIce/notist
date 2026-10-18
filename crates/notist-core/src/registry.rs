@@ -25,6 +25,15 @@ impl Registry {
         self.install(module, false)
     }
 
+    /// Atomically replace one package, validating the new public definitions.
+    pub fn replace(&mut self, module: DefinitionModule) -> Result<(), Vec<Diagnostic>> {
+        let mut updated = self.clone();
+        updated.packages.remove(&module.package);
+        updated.register(module)?;
+        *self = updated;
+        Ok(())
+    }
+
     pub(crate) fn install(
         &mut self,
         module: DefinitionModule,

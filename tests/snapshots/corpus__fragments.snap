@@ -1,0 +1,160 @@
+---
+source: tests/corpus.rs
+expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
+---
+Document@0..484
+  LineComment@0..81 "// 内容片段：软 ..."
+  Newline@81..82 "\n"
+  Newline@82..83 "\n"
+  LineComment@83..150 "// 混合 Inline / Bl ..."
+  Newline@150..151 "\n"
+  Text@151..157 "前文"
+  Whitespace@157..158 " "
+  CodeCall@158..172
+    Hash@158..159 "#"
+    Path@159..166
+      Ident@159..166 "callout"
+    LBracket@166..167 "["
+    Text@167..171 "body"
+    RBracket@171..172 "]"
+  Whitespace@172..173 " "
+  Text@173..179 "后文"
+  Newline@179..180 "\n"
+  Newline@180..181 "\n"
+  LineComment@181..230 "// 多个 Block 调用 ..."
+  Newline@230..231 "\n"
+  CodeCall@231..241
+    Hash@231..232 "#"
+    Path@232..239
+      Ident@232..239 "divider"
+    LParen@239..240 "("
+    RParen@240..241 ")"
+  Newline@241..242 "\n"
+  CodeCall@242..252
+    Hash@242..243 "#"
+    Path@243..250
+      Ident@243..250 "divider"
+    LParen@250..251 "("
+    RParen@251..252 ")"
+  Newline@252..253 "\n"
+  Newline@253..254 "\n"
+  LineComment@254..293 "// 用空行明确区 ..."
+  Newline@293..294 "\n"
+  Text@294..300 "前文"
+  Newline@300..301 "\n"
+  Newline@301..302 "\n"
+  CodeCall@302..318
+    Hash@302..303 "#"
+    Path@303..310
+      Ident@303..310 "callout"
+    LBracket@310..311 "["
+    Whitespace@311..312 " "
+    Text@312..316 "body"
+    Whitespace@316..317 " "
+    RBracket@317..318 "]"
+  Newline@318..319 "\n"
+  Newline@319..320 "\n"
+  Text@320..326 "后文"
+  Newline@326..327 "\n"
+  Newline@327..328 "\n"
+  LineComment@328..373 "// 行内调用跨软 ..."
+  Newline@373..374 "\n"
+  CodeCall@374..382
+    Hash@374..375 "#"
+    Path@375..379
+      Ident@375..379 "emph"
+    LBracket@379..380 "["
+    Text@380..381 "a"
+    RBracket@381..382 "]"
+  Newline@382..383 "\n"
+  CodeCall@383..393
+    Hash@383..384 "#"
+    Path@384..390
+      Ident@384..390 "strong"
+    LBracket@390..391 "["
+    Text@391..392 "b"
+    RBracket@392..393 "]"
+  Newline@393..394 "\n"
+  Newline@394..395 "\n"
+  LineComment@395..446 "// 透明节点的输 ..."
+  Newline@446..447 "\n"
+  Text@447..450 "前"
+  Whitespace@450..451 " "
+  CodeCall@451..461
+    Hash@451..452 "#"
+    Path@452..456
+      Ident@452..456 "node"
+    LBracket@456..457 "["
+    Whitespace@457..458 " "
+    Text@458..459 "x"
+    Whitespace@459..460 " "
+    RBracket@460..461 "]"
+  Whitespace@461..462 " "
+  Text@462..465 "后"
+  Newline@465..466 "\n"
+  Newline@466..467 "\n"
+  Text@467..470 "前"
+  Whitespace@470..471 " "
+  CodeCall@471..479
+    Hash@471..472 "#"
+    Path@472..476
+      Ident@472..476 "node"
+    LBracket@476..477 "["
+    Text@477..478 "x"
+    RBracket@478..479 "]"
+  Whitespace@479..480 " "
+  Text@480..483 "后"
+  Newline@483..484 "\n"
+
+=== core ===
+error[type] @151..179: a content fragment must be all inline or a single block expression; separate blocks with a blank line
+error[type] @231..252: a content fragment must be all inline or a single block expression; separate blocks with a blank line
+error[type] @447..465: a content fragment must be all inline or a single block expression; separate blocks with a blank line
+(doc @0..484
+  (paragraph @151..179
+    (text @151..158 :text "前文 ")
+    (callout @158..172
+      (text @167..171 :text "body")
+    )
+    (text @172..179 :text " 后文")
+  )
+  (paragraph @231..252
+    (divider @231..241)
+    (divider @242..252)
+  )
+  (paragraph @294..300
+    (text @294..300 :text "前文")
+  )
+  (callout @302..318
+    (paragraph @312..316
+      (text @312..316 :text "body")
+    )
+  )
+  (paragraph @320..326
+    (text @320..326 :text "后文")
+  )
+  (paragraph @374..393
+    (emph @374..382
+      (text @380..381 :text "a")
+    )
+    (strong @383..393
+      (text @391..392 :text "b")
+    )
+  )
+  (paragraph @447..465
+    (text @447..451 :text "前 ")
+    (node @451..461
+      (paragraph @458..459
+        (text @458..459 :text "x")
+      )
+    )
+    (text @461..465 :text " 后")
+  )
+  (paragraph @467..483
+    (text @467..471 :text "前 ")
+    (node @471..479
+      (text @477..478 :text "x")
+    )
+    (text @479..483 :text " 后")
+  )
+)

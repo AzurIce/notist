@@ -26,7 +26,7 @@ pub fn describe_prepared(inputs: &str) -> String {
         Err(error) => return error.to_string(),
     };
     match vault.environment_for("document.not") {
-        Ok(environment) => json!({"functions": environment.registry().functions().filter(|definition| definition.id.package != "notist").map(|definition| json!({"package":definition.id.package,"root":environment.packages()[&definition.id.package].root,"name":definition.id.name,"entries":notist_html::components::component_entries(&definition.id.name)})).collect::<Vec<_>>(), "diagnostics":[]}).to_string(),
+        Ok(environment) => json!({"functions": environment.context().registry().functions().filter(|definition| definition.id.package != "notist" && !definition.code).map(|definition| json!({"package":definition.id.package,"root":environment.packages()[&definition.id.package].root,"name":definition.id.name,"entries":notist_html::components::component_entries(&definition.id.name)})).collect::<Vec<_>>(), "diagnostics":[]}).to_string(),
         Err(error) => error_json(error).to_string(),
     }
 }
@@ -40,7 +40,7 @@ pub fn render_prepared(path: &str, src: &str, inputs_json: &str) -> String {
     match vault.render_html(path, src, RenderOptions::default()) {
         Ok(output) => {
             let mut data = json!({"diagnostics":output.analysis.diagnostics().iter().map(|error|diagnostic_json(path,"analysis",error)).collect::<Vec<_>>()});
-            append_transforms(&mut data, path, &output.transformed);
+            append_evaluation(&mut data, path, &output.evaluation);
             append_render(&mut data, path, output.rendered);
             data.to_string()
         }
@@ -49,16 +49,20 @@ pub fn render_prepared(path: &str, src: &str, inputs_json: &str) -> String {
 }
 
 pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
-    if path.ends_with(".notc") {
-        let mut data: Value =
-            serde_json::from_str(&crate::cst_json::analyze_module_json("package", src)).unwrap();
-        annotate_analysis(&mut data, path);
-        return data.to_string();
-    }
     let mut vault = match prepare(inputs) {
         Ok(vault) => vault,
         Err(error) => return error.to_string(),
     };
+    if path.ends_with(".notc") {
+        let analysis = match vault.analyze_code(path, src) {
+            Ok(analysis) => analysis,
+            Err(error) => return error_json(error).to_string(),
+        };
+        let mut data: Value =
+            serde_json::from_str(&crate::cst_json::module_json(src, &analysis)).unwrap();
+        annotate_analysis(&mut data, path);
+        return data.to_string();
+    }
     let (analysis, inspection) = match vault.inspect(path, src) {
         Ok(result) => result,
         Err(error) => return error_json(error).to_string(),
@@ -69,11 +73,11 @@ pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
     ))
     .unwrap();
     annotate_analysis(&mut data, path);
-    match vault.render_output(path, analysis.root(), RenderOptions::default()) {
+    match vault.render_output(path, &analysis, RenderOptions::default()) {
         Ok(output) => {
-            append_transforms(&mut data, path, &output.transformed);
+            append_evaluation(&mut data, path, &output.evaluation);
             // Debug consumers can compare the original and output identities.
-            data["transformed"] = crate::json::item(&output.transformed.root);
+            data["evaluated"] = crate::json::item(&output.evaluation.root);
             append_render(&mut data, path, output.rendered);
         }
         Err(error) => return error_json(error).to_string(),
@@ -82,21 +86,24 @@ pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
 }
 fn annotate_analysis(data: &mut Value, path: &str) {
     for diagnostic in data["diagnostics"].as_array_mut().unwrap() {
-        diagnostic["path"] = json!(path);
+        diagnostic["path"] = diagnostic["source"]
+            .as_str()
+            .map(|s| json!(s))
+            .unwrap_or_else(|| json!(path));
         diagnostic["origin"] = json!("analysis");
     }
 }
-fn append_transforms(data: &mut Value, path: &str, output: &crate::transforms::TransformOutput) {
+fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Evaluation) {
     data["diagnostics"].as_array_mut().unwrap().extend(
         output
             .diagnostics
             .iter()
-            .map(|error| diagnostic_json(path, "transform", error)),
+            .map(|error| diagnostic_json(path, "evaluate", error)),
     );
 }
 fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult) {
     data["html"] = json!(result.html);
-    data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind)})).collect::<Vec<_>>());
+    data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":mapping.origin.as_ref().map(|o|&o.source),"expansion":mapping.origin.as_ref().map(|o|o.expansion.iter().map(|e|json!({"source":e.source,"start":e.start,"end":e.end})).collect::<Vec<_>>())})).collect::<Vec<_>>());
     data["used_components"] = json!(result.used_components.iter().map(|component| json!({"package":component.id.package,"name":component.id.name,"tag":component.tag,"module":component.module.url(),"resource":component.module.resource()})).collect::<Vec<_>>());
     data["diagnostics"].as_array_mut().unwrap().extend(
         result
@@ -114,5 +121,5 @@ pub(crate) fn error_json(error: VaultError) -> Value {
     }
 }
 fn diagnostic_json(path: &str, origin: &str, error: &crate::Diagnostic) -> Value {
-    json!({"path":path,"origin":origin,"start":u32::from(error.span.start()),"end":u32::from(error.span.end()),"phase":error.phase.to_string(),"message":error.message})
+    json!({"source":error.source,"path":error.source.as_deref().unwrap_or(path),"origin":origin,"start":u32::from(error.span.start()),"end":u32::from(error.span.end()),"phase":error.phase.to_string(),"message":error.message})
 }

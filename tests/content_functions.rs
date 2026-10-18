@@ -2,7 +2,7 @@ use notist::builtins::{Accepts, Level};
 use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(src: &str) -> Item {
-    let parse = notist::syntax::parser::parse_document(src);
+    let parse = notist::syntax::markup::parse_document(src);
     assert!(
         parse.diagnostics.is_empty(),
         "{src:?}: {:?}",
@@ -10,7 +10,7 @@ fn analyze(src: &str) -> Item {
     );
     assert_eq!(parse.syntax().to_string(), src, "CST must stay lossless");
     let document = Pipeline::default()
-        .analyze("test.not", src, notist::builtins::registry())
+        .analyze("test.not", src, &notist::Context::default())
         .unwrap();
     assert!(
         document.diagnostics().is_empty(),
@@ -73,7 +73,7 @@ fn strike_delimiters_remain_literal_when_escaped_unpaired_or_in_payloads() {
 
 #[test]
 fn divider_splits_blocks_without_blank_lines_and_carries_attrs() {
-    let src = "前文\n@(id: \"break\")\n--- \t\r\n后文\n#divider()\n";
+    let src = "前文\n@(id: \"break\")\n--- \t\r\n后文\n\n#divider()\n";
     let root = analyze(src);
     let ctors: Vec<_> = root.children.iter().map(|node| &node.ctor).collect();
     assert_eq!(
@@ -133,12 +133,12 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
 
 #[test]
 fn callout_mounts_are_shaped_recursively() {
-    let root = analyze("#callout(kind: \"note\")[\n= 小节\n前文\n---\n~后文~\n]");
+    let root = analyze("#callout(kind: \"note\")[ \n= 小节\n前文\n---\n~后文~\n ]");
     let callout = &root.children[0];
     assert_eq!(callout.ctor, Ctor::Callout);
     assert_eq!(callout.fields.get("kind"), Some(&Value::Str("note".into())));
     assert_eq!(callout.ctor.level(), Some(Level::Block));
-    assert_eq!(callout.ctor.accepts(), Some(Accepts::Content));
+    assert_eq!(callout.ctor.accepts(), Some(Accepts::Any));
     let section = &callout.children[0];
     assert_eq!(section.ctor, Ctor::Section);
     assert_eq!(
@@ -156,7 +156,7 @@ fn callout_mounts_are_shaped_recursively() {
     );
     assert!(section.find(|node| node.ctor == Ctor::Strike).is_some());
 
-    let root = analyze("前 #callout[提示] 后");
+    let root = analyze("前\n\n#callout[ 提示 ]\n\n后");
     assert_eq!(
         root.children
             .iter()
@@ -174,7 +174,7 @@ fn new_functions_report_invalid_children_mounts() {
         ("#strike[ padded ]", "`strike` takes inline content"),
     ] {
         let document = Pipeline::default()
-            .analyze("test.not", src, notist::builtins::registry())
+            .analyze("test.not", src, &notist::Context::default())
             .unwrap();
         assert!(
             document
@@ -188,6 +188,9 @@ fn new_functions_report_invalid_children_mounts() {
 
 fn without_spans(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
+    item.origin = None;
+    // Compare semantic structure independently of source-bound computation metadata.
+    item.pending = None;
     item.children = item.children.into_iter().map(without_spans).collect();
     item
 }
@@ -198,15 +201,15 @@ fn markdown_and_notist_produce_the_same_callout_strike_and_divider_ir() {
     let not = engine
         .analyze(
             "test.not",
-            "#callout(kind: \"quote\")[~删除~]\n\n---\n",
-            notist::builtins::registry(),
+            "#callout(kind: \"quote\")[ ~删除~ ]\n\n---\n",
+            &notist::Context::default(),
         )
         .unwrap();
     let md = engine
         .analyze(
             "test.md",
             "> ~~删除~~\n\n---\n",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(not.diagnostics().is_empty());
@@ -221,7 +224,7 @@ fn markdown_and_notist_produce_the_same_callout_strike_and_divider_ir() {
 fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
     let src = "alpha <em>beta</em> gamma\n\n<div>\nskipped\n</div>\n\nomega\n\n`<span>`\n";
     let doc = Pipeline::default()
-        .analyze("test.md", src, notist::builtins::registry())
+        .analyze("test.md", src, &notist::Context::default())
         .unwrap();
     assert!(doc.diagnostics().is_empty(), "{:?}", doc.diagnostics());
     assert_eq!(text_of(doc.root()), "alpha beta gammaomega");
@@ -240,7 +243,7 @@ fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
         .analyze(
             "test.md",
             "<div>\nskipped\n</div>\n",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(doc.diagnostics().is_empty());
@@ -257,10 +260,10 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
         "$x\\$y$",
     ] {
         let not = engine
-            .analyze("test.not", src, notist::builtins::registry())
+            .analyze("test.not", src, &notist::Context::default())
             .unwrap();
         let md = engine
-            .analyze("test.md", src, notist::builtins::registry())
+            .analyze("test.md", src, &notist::Context::default())
             .unwrap();
         assert!(not.diagnostics().is_empty(), "{src:?}");
         assert!(md.diagnostics().is_empty(), "{src:?}");
@@ -273,7 +276,7 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
 
     let src = "前 $x$ 后";
     let md = engine
-        .analyze("test.md", src, notist::builtins::registry())
+        .analyze("test.md", src, &notist::Context::default())
         .unwrap();
     let math = md.root().find(|node| node.ctor == Ctor::Math).unwrap();
     assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
@@ -287,7 +290,7 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
         .analyze(
             "test.md",
             "**粗 $x$** [链接 $y$](target)\n\n> $z$\n\n- $w$",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(md.diagnostics().is_empty());
@@ -304,21 +307,21 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
 fn padded_math_is_block_content_and_matches_explicit_calls() {
     let engine = Pipeline::default();
     for (sugar, function) in [
-        ("$ x $", "#math(\"x\", block: true)"),
-        ("$ \t x + y \t $", "#math(block: true, text: \"x + y\")"),
+        ("$ x $", "#math<BlockContent>(\"x\")"),
+        ("$ \t x + y \t $", "#math<BlockContent>(text: \"x + y\")"),
         (
-            "前 $x$ 中 $ x^2 $ 后",
-            "前 #math(\"x\") 中 #math(\"x^2\", block: true) 后",
+            "前 $x$ 中\n\n$ x^2 $\n\n后",
+            "前 #math(\"x\") 中\n\n#math<BlockContent>(\"x^2\")\n\n后",
         ),
         (
             r#"$ *bold* [link](x) #raw("x") \alpha $"#,
-            r##"#math(r#"*bold* [link](x) #raw("x") \alpha"#, block: true)"##,
+            r##"#math<BlockContent>(r#"*bold* [link](x) #raw("x") \alpha"#)"##,
         ),
     ] {
         let explicit = without_spans(analyze(function));
         for path in ["test.not", "test.md"] {
             let doc = engine
-                .analyze(path, sugar, notist::builtins::registry())
+                .analyze(path, sugar, &notist::Context::default())
                 .unwrap();
             assert!(doc.diagnostics().is_empty(), "{path}: {sugar:?}");
             let equation = doc
@@ -335,7 +338,7 @@ fn padded_math_is_block_content_and_matches_explicit_calls() {
             );
         }
     }
-    let root = analyze("前 $x$ 中 $ x^2 $ 后");
+    let root = analyze("前 $x$ 中\n\n$ x^2 $\n\n后");
     assert_eq!(
         root.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
         [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
@@ -347,7 +350,9 @@ fn padded_math_is_block_content_and_matches_explicit_calls() {
 fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
     let engine = Pipeline::default();
     for newline in ["\n", "\r\n", "\r"] {
-        let source = format!("- before{newline}  $ {newline}  x +{newline}    y{newline}  $ after");
+        let source = format!(
+            "- before{newline}{newline}  $ {newline}  x +{newline}    y{newline}  ${newline}{newline}  after"
+        );
         let root = analyze(&source);
         let item = root.find(|n| n.ctor == Ctor::ListItem).unwrap();
         let equation = &item.children[1];
@@ -364,7 +369,7 @@ fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
         );
         if newline == "\n" {
             let md = engine
-                .analyze("test.md", &source, notist::builtins::registry())
+                .analyze("test.md", &source, &notist::Context::default())
                 .unwrap();
             assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
             let item = md.root().find(|n| n.ctor == Ctor::ListItem).unwrap();
@@ -396,10 +401,12 @@ fn block_math_owns_blank_lines_block_markers_and_brackets_within_containers() {
         .join(newline);
         let formula = format!("${newline}{payload}{newline}$");
         for source in [
-            format!("before {formula} after"),
-            format!("#callout[{newline}before {formula} after{newline}]{newline}{newline}outside"),
+            format!("before{newline}{newline}{formula}{newline}{newline}after"),
             format!(
-                "- before{newline}  {} after{newline}- next",
+                "#callout[ {newline}before{newline}{newline}{formula}{newline}{newline}after{newline} ]{newline}{newline}outside"
+            ),
+            format!(
+                "- before{newline}{newline}  {}{newline}{newline}  after{newline}- next",
                 formula.replace(newline, &format!("{newline}  "))
             ),
         ] {
@@ -437,7 +444,7 @@ fn inline_math_keeps_block_boundaries_and_block_math_keeps_list_item_limits() {
         let root = analyze(source);
         assert!(root.find(|n| n.ctor == Ctor::Math).is_none(), "{source}");
     }
-    let root = analyze("- before $ unclosed\n- next $ x $ after\n\noutside");
+    let root = analyze("- before $ unclosed\n- $ x $\n\noutside");
     let list = &root.children[0];
     assert_eq!(list.children.len(), 2);
     assert!(list.children[0].find(|n| n.ctor == Ctor::Math).is_none());
@@ -467,7 +474,7 @@ fn empty_mismatched_escaped_or_unclosed_math_remains_literal() {
     ] {
         for path in ["test.not", "test.md"] {
             let doc = engine
-                .analyze(path, source, notist::builtins::registry())
+                .analyze(path, source, &notist::Context::default())
                 .unwrap();
             assert!(doc.diagnostics().is_empty(), "{path}: {source:?}");
             assert!(
@@ -496,7 +503,7 @@ fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
         "[label](https://example.com/$target$)",
     ] {
         let md = engine
-            .analyze("test.md", src, notist::builtins::registry())
+            .analyze("test.md", src, &notist::Context::default())
             .unwrap();
         assert!(md.diagnostics().is_empty(), "{src:?}");
         assert!(
@@ -526,10 +533,10 @@ fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
         ("*甲\n乙*", "**甲\n乙**"),
     ] {
         let not = engine
-            .analyze("test.not", not_src, notist::builtins::registry())
+            .analyze("test.not", not_src, &notist::Context::default())
             .unwrap();
         let md = engine
-            .analyze("test.md", md_src, notist::builtins::registry())
+            .analyze("test.md", md_src, &notist::Context::default())
             .unwrap();
         assert!(not.diagnostics().is_empty());
         assert!(md.diagnostics().is_empty());
@@ -540,17 +547,13 @@ fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
         );
     }
     let md = engine
-        .analyze("test.md", "甲\\\n乙\n\n丙", notist::builtins::registry())
+        .analyze("test.md", "甲\\\n乙\n\n丙", &notist::Context::default())
         .unwrap();
     assert_eq!(text_of(md.root()), "甲乙丙");
     assert_eq!(md.root().children.len(), 3);
 
     let md = engine
-        .analyze(
-            "test.md",
-            "```\n甲\n乙\n```\n",
-            notist::builtins::registry(),
-        )
+        .analyze("test.md", "```\n甲\n乙\n```\n", &notist::Context::default())
         .unwrap();
     let raw = md.root().find(|n| n.ctor == Ctor::RawInline).unwrap();
     assert_eq!(raw.fields.get("text"), Some(&Value::Str("甲\n乙\n".into())));
@@ -574,7 +577,7 @@ fn notist_embed_sugar_matches_function_and_markdown() {
             .analyze(
                 "test.md",
                 &format!("![资源]({target} \"说明\")"),
-                notist::builtins::registry(),
+                &notist::Context::default(),
             )
             .unwrap();
         assert_eq!(without_spans(sugar.clone()), without_spans(function));
@@ -667,14 +670,14 @@ fn malformed_or_escaped_embeds_remain_literal_and_lossless() {
 fn explicit_breaks_preserve_containers_and_opaque_payloads() {
     let engine = Pipeline::default();
     let md = engine
-        .analyze("test.md", "> 甲\\\n> 乙\n", notist::builtins::registry())
+        .analyze("test.md", "> 甲\\\n> 乙\n", &notist::Context::default())
         .unwrap();
     let quote = md.root().find(|node| node.ctor == Ctor::Callout).unwrap();
     assert_eq!(quote.children.len(), 2);
     assert_eq!(text_of(&quote.children[0]), "甲");
     assert_eq!(text_of(&quote.children[1]), "乙");
     let md = engine
-        .analyze("test.md", "- 甲\\\n  乙\n", notist::builtins::registry())
+        .analyze("test.md", "- 甲\\\n  乙\n", &notist::Context::default())
         .unwrap();
     assert_eq!(
         md.root()
@@ -691,7 +694,7 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
         "甲\\\\\n乙",
     ] {
         let md = engine
-            .analyze("test.md", src, notist::builtins::registry())
+            .analyze("test.md", src, &notist::Context::default())
             .unwrap();
         assert_eq!(md.root().children.len(), 1, "{src:?}");
     }
@@ -700,7 +703,7 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
             .analyze(
                 &format!("test.{extension}"),
                 src,
-                notist::builtins::registry(),
+                &notist::Context::default(),
             )
             .unwrap();
         assert_eq!(root.root().children.len(), 2);
@@ -725,7 +728,7 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
         let md_src = format!("![资源]({target} \"说明\")");
         let not = analyze(&not_src);
         let md = engine
-            .analyze("test.md", &md_src, notist::builtins::registry())
+            .analyze("test.md", &md_src, &notist::Context::default())
             .unwrap();
         assert!(
             md.diagnostics().is_empty(),
@@ -762,7 +765,7 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
     let md = engine
         .analyze(
             "test.md",
-            "![前 **粗** _斜_ `code` [链接](somewhere) $x$ 后](asset)\n\n![引用][resource]\n\n[resource]: clip.mp4 \"说明\"\n\n![](empty)\n", notist::builtins::registry())
+            "![前 **粗** _斜_ `code` [链接](somewhere) $x$ 后](asset)\n\n![引用][resource]\n\n[resource]: clip.mp4 \"说明\"\n\n![](empty)\n", &notist::Context::default())
         .unwrap();
     assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
     let embeds: Vec<_> = md
@@ -798,7 +801,7 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
         .analyze(
             "test.md",
             "[![描述](asset)](destination)",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(md.diagnostics().is_empty());
@@ -828,7 +831,7 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
         ),
     ] {
         let doc = engine
-            .analyze("test.not", src, notist::builtins::registry())
+            .analyze("test.not", src, &notist::Context::default())
             .unwrap();
         assert!(
             doc.diagnostics()
@@ -842,7 +845,7 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
 #[test]
 fn markdown_embed_decodes_fields_once_and_keeps_code_payload_literal() {
     let doc = Pipeline::default()
-        .analyze("test.md", r#"![A &amp; B &#20013; \*literal\* \&amp; &#38;amp; `&amp;` $\alpha$](asset\(1\)?a=1&amp;b=2 "A &quot;title&quot;")"#, notist::builtins::registry())
+        .analyze("test.md", r#"![A &amp; B &#20013; \*literal\* \&amp; &#38;amp; `&amp;` $\alpha$](asset\(1\)?a=1&amp;b=2 "A &quot;title&quot;")"#, &notist::Context::default())
         .unwrap();
     assert!(doc.diagnostics().is_empty());
     let embed = doc.root().find(|n| n.ctor == Ctor::Embed).unwrap();

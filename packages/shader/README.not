@@ -5,7 +5,7 @@
 == 调用
 
 ```notc
-fn canvas(source: String, width: Int = 960, height: Int = 540, paused: Bool = false) -> Content;
+fn canvas(source: String, width: Int = 960, height: Int = 540, paused: Bool = false) -> BlockContent;
 ```
 
 source 定义 `fn mainImage(fragCoord: vec2f) -> vec4f`，返回 RGBA 颜色。fragCoord 是画布像素坐标，原点位于左下角；像素中心从 0.5 开始。宿主自动添加 vertex / fragment 入口、全屏三角形与 uniform 声明。

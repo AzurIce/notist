@@ -1,13 +1,13 @@
 use notist::{Ctor, Environment, FunctionId, Package, Pipeline, Value, builtins::Level};
 fn environment() -> Environment {
-    Environment::from_packages([Package { name: "widgets".into(), root: "virtual/widgets".into(), source: "fn panel(title: String = \"Panel\")[children: Content] -> Content; fn badge(label: String)[children: InlineContent] -> InlineContent; fn leaf(value?: Int) -> Content;".into() }]).unwrap()
+    Environment::from_packages([Package { name: "widgets".into(), root: "virtual/widgets".into(), source: "fn panel(title: String = \"Panel\")[children: BlockContent] -> BlockContent; fn badge(label: String)[children: InlineContent] -> InlineContent; fn leaf(value?: Int) -> BlockContent;".into() }]).unwrap()
 }
 #[test]
-fn extensions_reflow_traverse_query_and_debug_with_resolved_identity() {
+fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
     let project = environment();
-    let src = "before #widgets::badge(\"yes\")[inside] #widgets::panel()[\nbody #widgets::badge(\"nested\")\n] after";
+    let src = "before #widgets::badge(\"yes\")[inside]\n\n#widgets::panel()[\nbody #widgets::badge(\"nested\")\n]\n\nafter";
     let analysis = notist::Pipeline::default()
-        .analyze("test.not", src, project.registry())
+        .analyze("test.not", src, project.context())
         .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
@@ -37,7 +37,7 @@ fn extensions_reflow_traverse_query_and_debug_with_resolved_identity() {
     assert_eq!(json["fields"]["title"], "Panel");
     assert!(!json["children"].as_array().unwrap().is_empty());
     let debug: serde_json::Value = serde_json::from_str(
-        &notist::cst_json::analyze_json_with_registry(src, project.registry()),
+        &notist::cst_json::analyze_json_with_context(src, project.context()),
     )
     .unwrap();
     assert!(debug["diagnostics"].as_array().unwrap().is_empty());
@@ -55,7 +55,7 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
         ("#widgets::sub::f()", "not supported"),
     ] {
         let result = notist::Pipeline::default()
-            .analyze("test.not", source, project.registry())
+            .analyze("test.not", source, project.context())
             .unwrap();
         assert!(
             result
@@ -67,7 +67,7 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
         );
     }
     let result = notist::Pipeline::default()
-        .analyze("test.not", "#widgets::badge(1)", project.registry())
+        .analyze("test.not", "#widgets::badge(1)", project.context())
         .unwrap();
     assert!(
         result
@@ -86,7 +86,7 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
             .analyze(
                 "test.not",
                 "#widgets::badge(\"x\")",
-                notist::builtins::registry()
+                &notist::Context::default()
             )
             .unwrap()
             .diagnostics()
@@ -101,7 +101,7 @@ fn serialized_extensions_need_no_package_to_restore_category_and_children() {
         .analyze(
             "test.not",
             "#widgets::panel()[content]",
-            environment().registry(),
+            environment().context(),
         )
         .unwrap()
         .into_parts()
@@ -150,12 +150,24 @@ fn loader_uses_manifest_names_nearest_config_and_editor_sources_atomically() {
         .cloned()
         .unwrap();
     assert_eq!(project.config_path(), Some(config.as_path()));
-    assert!(project.registry().resolve("actual::badge").is_ok());
-    assert!(project.registry().resolve("alias::badge").is_err());
+    assert!(
+        project
+            .context()
+            .registry()
+            .resolve("actual::badge")
+            .is_ok()
+    );
+    assert!(
+        project
+            .context()
+            .registry()
+            .resolve("alias::badge")
+            .is_err()
+    );
     let mut overlays = std::collections::BTreeMap::new();
     overlays.insert(
         module.clone(),
-        "fn badge(count: Unknown) -> Content;".into(),
+        "fn badge(count: Unknown) -> BlockContent;".into(),
     );
     let errors = Environment::load_from(
         &notist::OverlayResources::new(&notist::FsResources::new(root), &overlays),
@@ -175,6 +187,7 @@ fn loader_uses_manifest_names_nearest_config_and_editor_sources_atomically() {
             .with_config(&config)
             .environment_for("nested/deep/test.not")
             .unwrap()
+            .context()
             .registry()
             .resolve("actual::badge")
             .is_ok()
@@ -191,7 +204,7 @@ fn loader_uses_manifest_names_nearest_config_and_editor_sources_atomically() {
         Environment::from_packages([Package {
             name: "notist".into(),
             root: root.into(),
-            source: "fn x() -> Content;".into()
+            source: "fn x() -> BlockContent;".into()
         }])
         .is_err()
     );
@@ -214,7 +227,7 @@ fn namespaced_identity_is_case_sensitive_and_same_local_names_stay_separate() {
     .unwrap();
     let source = "#one::A() #one::a() #two::a()";
     let result = notist::Pipeline::default()
-        .analyze("test.not", source, project.registry())
+        .analyze("test.not", source, project.context())
         .unwrap();
     assert!(result.diagnostics().is_empty());
     for identity in ["one::A", "one::a", "two::a"] {
@@ -266,4 +279,39 @@ fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
         serde_json::to_string(&Value::Float(1.5)).unwrap(),
         "{\"Float\":1.5}"
     );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn serialized_items_retain_pending_calls_and_checked_expressions() {
+    use notist::evaluation::{ExprKind, PendingEvaluation};
+    let context = notist::Context::default()
+        .with_module(
+            notist::analyze_module(
+                "demo",
+                "fn greet(name: String) -> InlineContent { [#text(text: name)] }",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let analysis = notist::Pipeline::default()
+        .analyze("doc.not", "#demo::greet(\"world\")", &context)
+        .unwrap();
+    let restored: notist::Item =
+        serde_json::from_value(serde_json::to_value(analysis.root()).unwrap()).unwrap();
+    let original = analysis
+        .root()
+        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
+        .unwrap();
+    let call = restored
+        .find(|i| i.function_id() == original.function_id())
+        .unwrap();
+    assert_eq!(call.pending, original.pending);
+    let Some(PendingEvaluation::Call(call)) = call.pending.as_deref() else {
+        panic!("expected pending call")
+    };
+    assert!(matches!(&call.arguments[0].1.kind, ExprKind::Constant(_)));
+    let json = notist::json::item(original);
+    assert_eq!(json["pending"]["kind"], "call");
+    assert_eq!(json["pending"]["arguments"][0]["name"], "name");
 }

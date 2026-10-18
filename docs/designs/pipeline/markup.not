@@ -1,0 +1,142 @@
+= Markup 管线
+
+Markup 管线将标记源码转换为 Item 语义树，依次经过 Lower → Resolve → Shape → attach → Materialize。前端负责语法差异，共享后端负责名称与内容契约检查、结构定稿、注解挂载和节点生成。
+
+本文聚焦源码到 Item 的处理。Pipeline 显式接收 Context，实例检查器按调用确定公开输入 C 与输出 O；它不执行内容实现。Context 的宿主装配见 [文档管线](../pipeline.not)，Code 规则见 [Code 类型与函数系统](../code-types.not)。
+
+@(id: "数据流")
+== 数据流
+
+各标记语言前端输出共同的 IR₁，共享后端接收调用方提供的 Context，最终产生 Item 森林。文档入口为森林附加 Doc 根，形成文档树。
+
+#mermaid::diagram(r#"""
+%%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart TB
+    context(["Context<br/>名称绑定 / 函数签名 / 内容契约"])
+    markup(["Markup 源码"]) --> lower
+
+    subgraph content_pipeline["共享内容森林管线"]
+        lower["Lower · 各前端解析"] --> ir1(["IR₁ · 未解析 Expr 森林"])
+        lower --> annotations(["Annotation side list"])
+        ir1 --> resolve["Resolve · 解析与校验"]
+        resolve --> ir2(["IR₂ · 已解析 RExpr 森林"])
+        ir2 --> shape["Shape · 定稿结构"]
+        shape --> shaped(["IR₂′ · 结构定稿的 RExpr 森林"])
+        shaped --> attach["attach · 按源码位置挂载"]
+        annotations -.-> attach
+        attach --> materialize["Materialize · 生成 Item"]
+    end
+    materialize --> forest(["Item 森林"])
+    context -.-> resolve
+"""#, theme: "neutral")
+
+圆角节点表示数据，矩形节点表示处理阶段；实线表示数据流，虚线表示调用方提供的环境与契约。
+
+| 阶段对象 | 表示 | 已确定的信息 |
+| --- | --- | --- |
+| IR₁ | 未解析 Expr 森林 | Literal / Ref / Call、Fragment 语法分组、表达式实参、children 与 body flavor；节点注解作为并列的 side list |
+| IR₂ | 已解析 RExpr 森林 | 函数与实例身份、参数绑定、已检查的待求值信息、具体内容类别、已校验的片段与段落、公开结构契约及诊断 |
+| IR₂′ | 结构定稿的 RExpr 森林 | section 与各内容槽的递归结构 |
+| Item | 语义节点森林 | 调用身份、类别、字段、输入 children、待求值调用与插值、注解与来源；文档根为 Doc |
+
+IR₂′ 标记 Shape 后的状态，与 IR₂ 共用 RExpr 表示。Materialize 只转换节点表示，不再决定段落与节的归属。
+
+Expr 与 RExpr 使用独立表示：前者保留名称引用及调用表达式，后者保存已解析的内容节点与绑定字段。节点注解是并列于森林的 side list，Shape 不感知它；模块注解随根属性传递。两者均不产生内容节点。具体字段与检查范围见 [文档前端](../frontends.not)。
+
+== Lower：源码 → IR₁
+
+=== 内容前端
+
+各前端负责 parse → lower，输出相同的未解析 Expr 森林。原生前端的内部过程为：
+
+| 过程 | 输入 → 输出 | 契约 |
+| --- | --- | --- |
+| Lex | 源码 → token 流 | token 保存 kind 与 span，空白、换行与注释作为 trivia 保留 |
+| Parse | token 流 → 无损 CST | 源码文本可完整恢复；语法错误就近诊断，解析继续产生恢复树 |
+| AST 视图 | CST → Document AST | 以薄访问器提供类型化视图 |
+| Lowering / Desugar | AST → IR₁ | 将 Markup 映射为调用，转换数据字面量，记录 Fragment 边界与注解 side list |
+
+NotistFrontend 与 MarkdownFrontend 分别位于 pipeline::frontend::markup 和 pipeline::frontend::markdown：前者组合 notist-syntax::markup 的原生正文解析与 AST lowering，后者解析自己的 rushdown AST，两者将正文 lower 到同一种 IR₁。显式调用头、注解与数据字面量复用 notist-syntax::code 的语法入口和 pipeline::lowering 的共同转换，位置映射保留原始源码的 UTF-8 字节范围。前端接口、注册与语法归属见 [文档前端](../frontends.not)。
+
+Code 内容字面量通过注入的 ContentParser 委托给所选前端，由前端确定完整范围并生成自己的语法树；内容 lowering 消费该树生成同样的 Expr 森林。Code 语法树仅保存字面量框架与关联范围，不要求前端复用 Rowan。解析接口属于 syntax，lowering 接口与内置前端实现属于 pipeline。
+
+前端只接收源码与解析选项，不读取文档文件或装配函数定义。文档宿主按扩展名选择前端；没有前端接受该格式时，不进入后续阶段。
+
+=== 降糖与注解
+
+标准 Markup 元素映射为使用 notist:: 限定名的内置内容调用，避免被 Code 模块中的同名函数截获；显式调用保留源码名称、实参、children 和 body flavor，具体类别由 Resolve 确定。普通实参使用 Markup 数据字面量语法，Lower 完成字面量转换及合法性检查。
+
+Lower 在块内容中以空行、显式分段和块语法边界划分 Fragment；单个源码换行属于同一片段。Fragment 只记录语法分组，不是 paragraph 调用，不预判调用的返回类别。标题、列表、表格等显式块语法保留自身边界。text 在行内元素之间保留空白，在行首、行尾与片段边界丢弃空白；单换行按无空格拼接。注释不生成内容节点。
+
+节点注解不进入内容树：Lower 产出 `Annotation { dict, span, kind }` side list，与森林一起传递到 Shape 之后。模块注解独立传递，留待文档入口挂载到 Doc。Lower 不为注解建立额外的内容函数边界，也不决定它最终落在哪个节点上。
+
+== Resolve：名称与内容契约
+
+Context 由调用方提供，包含函数签名、函数体及公开内容契约；词法绑定和调用实例属于检查会话。函数定义与实例检查结果由 Code 侧或原生绑定提供；Markup 据此检查调用，不展开或执行函数实现。
+
+Resolve 将源码名称绑定到具体函数，递归检查实参与 children，产出 IR₂：
+
+| 职责 | 处理规则 |
+| --- | --- |
+| 名称绑定 | prelude 简写与限定名引用同一规范函数身份，保留调用点与定义来源 |
+| 参数绑定 | 将实参归入具名参数，检查类型、值域、必填字段与默认值规则 |
+| 调用实例 | 通过 Context 取得具体签名、实例关联及检查结果；编译期绑定来自显式实参、输入静态类型或声明默认值 |
+| 内容契约 | 分别检查输入 C 与返回 O；children 满足 C，调用的对外类别来自 O，不隐式提升 InlineContent 为 BlockContent |
+| 内容片段 | 全 Inline 生成一个 Paragraph；单个 Block 表达式直接保留；混合类别或多个 Block 表达式报错，要求空行或显式分段 |
+| 结构槽 | 按公开角色与透明契约检查列表项、表格行和 cell；结构轴不生成段落，私有实现不参与证明 |
+
+Resolve 消除 Fragment 语法分组。单个 Block 表达式可以表示整个 BlockContent 森林，不限制最终 Item 数量。显式 paragraph 调用只接受 InlineContent，按普通调用检查并保留身份。通过检查的调用具有唯一确定的内容类别和公开结构信息，作为 Shape 的输入。C 与 O 可以不同；父节点按子调用的 O 检查挂载，子调用自己的输入仍按 C 检查。
+
+已确定契约的失败调用保留其类别、身份、来源和诊断，其他独立内容继续检查。名称或类别尚未确定时，按调用点保留恢复结构，不从失败实现推断类别。
+
+== Shape：节与内容槽结构定稿
+
+Shape 读取 Resolve 确定的 Inline / Block 类别、输入契约及公开结构信息，定稿内容结构，产出 IR₂′：
+
++ *递归* 整理各节点的内容槽，遵守其公开挂载契约。
++ *sectionize* 根据公开标题身份与 level 归组 section，span 覆盖整个节。
+
+参与结构定稿的信息必须在该阶段可用。内容函数的输入按公开契约整理，其实现返回的具体子树无需已知；Shape 不执行函数实现，也不通过私有实现识别标题或结构角色。
+
+Shape 不拆分或合并 Resolve 已校验的片段，不处理注解，也不因注解创建透明节点。列表的 item 序列和表格的 row / cell 序列保持结构轴，只递归处理其内容；普通块内容槽各自执行 sectionize。
+
+== 注解挂载
+
+Shape 完成后、Materialize 之前，attach 按源码位置把每个节点注解挂到最终树：
+
+| kind | 目标 |
+| --- | --- |
+| Block | 同一 block sequence 内，span 之后第一个 Block Item |
+| Inline | 同一 inline sequence 内，span 紧邻的下一个内容元素 |
+
+- 多个连续行内注解合并后挂到同一个元素；块级注解依次处理，落在同一个目标时合并。
+- 块级注解只落在第一个 block，不把后续兄弟包进范围；需要范围标注时使用显式 `#node[ ... ]`。
+- 挂载不创建节点，也不改变树结构；找不到目标时产生 Semantic 诊断。
+- 标题前的注解因此自然落在其开启的 Section 上；不需要 sectionize 转移 attrs。
+
+attach 在 Materialize 与 Evaluate 之前执行，后续阶段只读取已经设置在 RExpr / Item 上的 attrs。
+
+== Materialize：IR₂′ → Item
+
+Materialize 将定稿的 RExpr 森林转换为 Item，保留函数与实例身份、Block / Inline 类别、字段、输入 children、已挂载的 attrs 与源码范围，并将已检查的待求值信息复制到 Item.pending；阶段结果携带已有诊断。节点对外类别保持 O，children 保留按 C 检查的输入内容。
+
+共享入口返回 Item 森林。文档入口创建 Doc 根并挂载模块属性，形成完整的 Item 树；宿主调用内容区域入口时只取得森林。
+
+该阶段不执行内容函数，也不重新划分段落、section 或内容槽。输出的语义树可直接用于默认查看、查询、诊断、索引与语言服务。内容实现的后续求值属于 Code 侧处理，见 [对 Item 与 Shape 的契约](../code-types.not#对-item-与-shape-的契约)。
+
+== 诊断、恢复与调试
+
+诊断由能够判定规则的阶段产生，保留原始 UTF-8 字节范围与调用来源：
+
+| 阶段 | 负责的诊断与恢复 |
+| --- | --- |
+| 前端解析 | 语法错误；保留解析产物与恢复结构 |
+| Lower | 数据字面量、注解 payload 及源码降糖的语义错误 |
+| Resolve | 名称、参数与内容契约错误；接收 Context 返回的实例诊断，保留可确定的调用身份与类别 |
+| Shape | 结构定稿；不产生挂载诊断 |
+| Shape 之后 attach | 注解无目标、行内注解不紧邻内容元素、块级注解落入 inline 内容 |
+| Materialize | 只转换，保留已有诊断 |
+
+恢复结构不作为调用合法的证明，局部失败不阻止独立内容完成处理。宿主可把 Vault 内容边界等上下文检查附加到同一分析结果。
+
+inspect 在同一次源码处理中按需保留前端解析产物、IR₁ 与 IR₂′；正常分析可释放这些中间结果。捕获只影响结果保留，不改变语义，也不重复解析源码。现行捕获接口见 [解析产物与调试](../frontends.not#解析产物与调试)。

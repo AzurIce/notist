@@ -1,0 +1,15 @@
+= Code functions
+
+#code-demo::decorate[Inline content]
+
+#code-demo::panel[Inline input becomes an explicit paragraph.]
+
+#code-demo::decorate[
+= A block forest
+
+Existing paragraphs and sections remain intact.
+]
+
+#code-demo::label("A runtime argument")
+
+#code-demo::label("Hidden content", visible: false)

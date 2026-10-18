@@ -2,7 +2,7 @@
 source: tests/corpus.rs
 expression: "format!(\"{cst}\\n=== core ===\\n{core}\")"
 ---
-Document@0..605
+Document@0..626
   CodeCall@0..39
     Hash@0..1 "#"
     Path@1..8
@@ -48,18 +48,16 @@ Document@0..605
   RParen@108..109 ")"
   Newline@109..110 "\n"
   Newline@110..111 "\n"
-  CodeCall@111..131
+  CodeCall@111..112
     Hash@111..112 "#"
-    Path@112..114
-      Ident@112..114 "fn"
-    LParen@114..115 "("
-    Ident@115..121 "嵌套"
-    Whitespace@121..122 " "
-    Group@122..130
-      LParen@122..123 "("
-      Ident@123..129 "深度"
-      RParen@129..130 ")"
-    RParen@130..131 ")"
+  Ident@112..114 "fn"
+  LParen@114..115 "("
+  Ident@115..121 "嵌套"
+  Whitespace@121..122 " "
+  LParen@122..123 "("
+  Ident@123..129 "深度"
+  RParen@129..130 ")"
+  RParen@130..131 ")"
   Newline@131..132 "\n"
   Newline@132..133 "\n"
   Text@133..136 "裸"
@@ -69,234 +67,243 @@ Document@0..605
   Text@139..151 "只是字符"
   Newline@151..152 "\n"
   Newline@152..153 "\n"
-  CodeCall@153..178
+  CodeCall@153..187
     Hash@153..154 "#"
-    LBracket@154..155 "["
-    Text@155..161 "匿名"
-    Whitespace@161..162 " "
-    Strong@162..170
-      Star@162..163 "*"
-      Text@163..169 "内容"
-      Star@169..170 "*"
+    Path@154..158
+      Ident@154..158 "node"
+    LBracket@158..159 "["
+    Text@159..165 "显式"
+    Whitespace@165..166 " "
+    Text@166..170 "node"
     Whitespace@170..171 " "
-    Text@171..177 "拼接"
-    RBracket@177..178 "]"
-  Newline@178..179 "\n"
-  Newline@179..180 "\n"
-  CodeCall@180..203
-    Hash@180..181 "#"
-    Path@181..187
-      Ident@181..187 "strong"
-    LBracket@187..188 "["
-    Text@188..194 "空行"
-    Newline@194..195 "\n"
-    Newline@195..196 "\n"
-    Text@196..202 "粉碎"
-    RBracket@202..203 "]"
-  Newline@203..204 "\n"
-  Newline@204..205 "\n"
-  Hash@205..206 "#"
-  Ident@206..209 "foo"
-  LBracket@209..210 "["
-  Text@210..219 "未闭合"
-  Newline@219..220 "\n"
-  CodeCall@220..303
-    Hash@220..221 "#"
-    Path@221..225
-      Ident@221..225 "note"
-    LParen@225..226 "("
-    Entry@226..238
-      Ident@226..230 "kind"
-      Colon@230..231 ":"
-      Whitespace@231..232 " "
-      Str@232..238 "\"demo\""
-    RParen@238..239 ")"
-    LBracket@239..240 "["
-    Newline@240..241 "\n"
-    Text@241..244 "块"
-    Whitespace@244..245 " "
-    Text@245..249 "body"
-    Whitespace@249..250 " "
-    Text@250..259 "第一段"
-    Newline@259..260 "\n"
-    Newline@260..261 "\n"
-    List@261..290
-      ListItem@261..275
-        Minus@261..262 "-"
-        Whitespace@262..263 " "
-        Text@263..275 "列表项甲"
-      Newline@275..276 "\n"
-      ListItem@276..290
-        Minus@276..277 "-"
-        Whitespace@277..278 " "
-        Text@278..290 "列表项乙"
-    Newline@290..291 "\n"
-    Newline@291..292 "\n"
-    Text@292..301 "第二段"
-    Newline@301..302 "\n"
-    RBracket@302..303 "]"
-  Newline@303..304 "\n"
-  Newline@304..305 "\n"
-  CodeCall@305..317
-    Hash@305..306 "#"
-    Path@306..312
-      Ident@306..312 "strong"
-    LBracket@312..313 "["
-    Whitespace@313..314 " "
-    Text@314..315 "x"
-    Whitespace@315..316 " "
-    RBracket@316..317 "]"
-  Newline@317..318 "\n"
-  Text@318..321 "块"
-  Whitespace@321..322 " "
-  Text@322..326 "body"
-  Whitespace@326..327 " "
-  Text@327..333 "喂给"
-  Whitespace@333..334 " "
-  Text@334..340 "inline"
-  Whitespace@340..341 " "
-  Text@341..350 "构造器"
-  Newline@350..351 "\n"
-  Newline@351..352 "\n"
-  CodeCall@352..363
-    Hash@352..353 "#"
-    Path@353..357
-      Ident@353..357 "list"
-    LBracket@357..358 "["
-    Text@358..362 "body"
-    RBracket@362..363 "]"
-  Newline@363..364 "\n"
-  Text@364..370 "inline"
-  Whitespace@370..371 " "
-  Text@371..375 "body"
-  Whitespace@375..376 " "
-  Text@376..391 "提升为段落"
-  Newline@391..392 "\n"
-  Newline@392..393 "\n"
-  CodeCall@393..410
-    Hash@393..394 "#"
-    Path@394..398
-      Ident@394..398 "demo"
-    LParen@398..399 "("
-    LBracket@399..400 "["
-    Ident@400..401 "x"
-    RBracket@401..402 "]"
-    Comma@402..403 ","
-    Whitespace@403..404 " "
-    LBracket@404..405 "["
-    Whitespace@405..406 " "
-    Ident@406..407 "y"
-    Whitespace@407..408 " "
-    RBracket@408..409 "]"
-    RParen@409..410 ")"
-  Newline@410..411 "\n"
-  Text@411..438 "参数位置内容字 ..."
-  Newline@438..439 "\n"
-  Newline@439..440 "\n"
-  CodeCall@440..467
-    Hash@440..441 "#"
-    LBracket@441..442 "["
-    Newline@442..443 "\n"
-    Text@443..455 "块级匿名"
-    Newline@455..456 "\n"
-    Newline@456..457 "\n"
-    List@457..465
-      ListItem@457..465
-        Minus@457..458 "-"
-        Whitespace@458..459 " "
-        Text@459..465 "列表"
-    Newline@465..466 "\n"
-    RBracket@466..467 "]"
-  Newline@467..468 "\n"
-  Newline@468..469 "\n"
-  CodeCall@469..476
-    Hash@469..470 "#"
-    Path@470..473
-      Ident@470..473 "raw"
-    LBracket@473..474 "["
-    Text@474..475 "x"
-    RBracket@475..476 "]"
-  Newline@476..477 "\n"
-  Text@477..486 "不接受"
-  Whitespace@486..487 " "
-  Text@487..495 "children"
-  Newline@495..496 "\n"
-  Newline@496..497 "\n"
-  CodeCall@497..506
-    Hash@497..498 "#"
-    Path@498..499
-      Ident@498..499 "f"
-    LParen@499..500 "("
-    Group@500..505
-      LParen@500..501 "("
-      Str@501..504 "\"x\""
-      RParen@504..505 ")"
-    RParen@505..506 ")"
-  Newline@506..507 "\n"
-  Text@507..515 "grouping"
-  Whitespace@515..516 " "
-  Text@516..528 "透明求值"
-  Newline@528..529 "\n"
-  Newline@529..530 "\n"
-  CodeCall@530..542
-    Hash@530..531 "#"
-    Path@531..532
-      Ident@531..532 "f"
-    LParen@532..533 "("
-    Array@533..541
-      LParen@533..534 "("
-      Number@534..535 "1"
-      Comma@535..536 ","
-      Whitespace@536..537 " "
-      Group@537..540
-        LParen@537..538 "("
-        Number@538..539 "2"
-        RParen@539..540 ")"
-      RParen@540..541 ")"
-    RParen@541..542 ")"
-  Newline@542..543 "\n"
-  Text@543..555 "数组里的"
-  Whitespace@555..556 " "
-  Text@556..564 "grouping"
-  Newline@564..565 "\n"
-  Newline@565..566 "\n"
-  CodeCall@566..576
-    Hash@566..567 "#"
-    Path@567..568
-      Ident@567..568 "f"
-    LParen@568..569 "("
-    Array@569..575
-      LParen@569..570 "("
-      Str@570..573 "\"x\""
-      Comma@573..574 ","
-      RParen@574..575 ")"
-    RParen@575..576 ")"
-  Newline@576..577 "\n"
-  Text@577..604 "单元素数组要尾 ..."
-  Newline@604..605 "\n"
+    Strong@171..179
+      Star@171..172 "*"
+      Text@172..178 "内容"
+      Star@178..179 "*"
+    Whitespace@179..180 " "
+    Text@180..186 "拼接"
+    RBracket@186..187 "]"
+  Newline@187..188 "\n"
+  Newline@188..189 "\n"
+  CodeCall@189..212
+    Hash@189..190 "#"
+    Path@190..196
+      Ident@190..196 "strong"
+    LBracket@196..197 "["
+    Text@197..203 "空行"
+    Newline@203..204 "\n"
+    Newline@204..205 "\n"
+    Text@205..211 "粉碎"
+    RBracket@211..212 "]"
+  Newline@212..213 "\n"
+  Newline@213..214 "\n"
+  CodeCall@214..218
+    Hash@214..215 "#"
+    Path@215..218
+      Ident@215..218 "foo"
+  LBracket@218..219 "["
+  Text@219..228 "未闭合"
+  Newline@228..229 "\n"
+  CodeCall@229..312
+    Hash@229..230 "#"
+    Path@230..234
+      Ident@230..234 "note"
+    LParen@234..235 "("
+    Entry@235..247
+      Ident@235..239 "kind"
+      Colon@239..240 ":"
+      Whitespace@240..241 " "
+      Str@241..247 "\"demo\""
+    RParen@247..248 ")"
+    LBracket@248..249 "["
+    Newline@249..250 "\n"
+    Text@250..253 "块"
+    Whitespace@253..254 " "
+    Text@254..258 "body"
+    Whitespace@258..259 " "
+    Text@259..268 "第一段"
+    Newline@268..269 "\n"
+    Newline@269..270 "\n"
+    List@270..299
+      ListItem@270..284
+        Minus@270..271 "-"
+        Whitespace@271..272 " "
+        Text@272..284 "列表项甲"
+      Newline@284..285 "\n"
+      ListItem@285..299
+        Minus@285..286 "-"
+        Whitespace@286..287 " "
+        Text@287..299 "列表项乙"
+    Newline@299..300 "\n"
+    Newline@300..301 "\n"
+    Text@301..310 "第二段"
+    Newline@310..311 "\n"
+    RBracket@311..312 "]"
+  Newline@312..313 "\n"
+  Newline@313..314 "\n"
+  CodeCall@314..326
+    Hash@314..315 "#"
+    Path@315..321
+      Ident@315..321 "strong"
+    LBracket@321..322 "["
+    Whitespace@322..323 " "
+    Text@323..324 "x"
+    Whitespace@324..325 " "
+    RBracket@325..326 "]"
+  Newline@326..327 "\n"
+  Text@327..330 "块"
+  Whitespace@330..331 " "
+  Text@331..335 "body"
+  Whitespace@335..336 " "
+  Text@336..342 "喂给"
+  Whitespace@342..343 " "
+  Text@343..349 "inline"
+  Whitespace@349..350 " "
+  Text@350..359 "构造器"
+  Newline@359..360 "\n"
+  Newline@360..361 "\n"
+  CodeCall@361..372
+    Hash@361..362 "#"
+    Path@362..366
+      Ident@362..366 "list"
+    LBracket@366..367 "["
+    Text@367..371 "body"
+    RBracket@371..372 "]"
+  Newline@372..373 "\n"
+  Text@373..391 "结构槽只接受"
+  Whitespace@391..392 " "
+  Text@392..396 "item"
+  Whitespace@396..397 " "
+  Text@397..403 "角色"
+  Newline@403..404 "\n"
+  Newline@404..405 "\n"
+  CodeCall@405..422
+    Hash@405..406 "#"
+    Path@406..410
+      Ident@406..410 "demo"
+    LParen@410..411 "("
+    ContentLiteral@411..414
+      LBracket@411..412 "["
+      ContentText@412..413 "x"
+      RBracket@413..414 "]"
+    Comma@414..415 ","
+    Whitespace@415..416 " "
+    ContentLiteral@416..421
+      LBracket@416..417 "["
+      ContentText@417..420 " y "
+      RBracket@420..421 "]"
+    RParen@421..422 ")"
+  Newline@422..423 "\n"
+  Text@423..450 "参数位置内容字 ..."
+  Newline@450..451 "\n"
+  Newline@451..452 "\n"
+  CodeCall@452..488
+    Hash@452..453 "#"
+    Path@453..457
+      Ident@453..457 "node"
+    LBracket@457..458 "["
+    Newline@458..459 "\n"
+    Text@459..471 "块级显式"
+    Whitespace@471..472 " "
+    Text@472..476 "node"
+    Newline@476..477 "\n"
+    Newline@477..478 "\n"
+    List@478..486
+      ListItem@478..486
+        Minus@478..479 "-"
+        Whitespace@479..480 " "
+        Text@480..486 "列表"
+    Newline@486..487 "\n"
+    RBracket@487..488 "]"
+  Newline@488..489 "\n"
+  Newline@489..490 "\n"
+  CodeCall@490..497
+    Hash@490..491 "#"
+    Path@491..494
+      Ident@491..494 "raw"
+    LBracket@494..495 "["
+    Text@495..496 "x"
+    RBracket@496..497 "]"
+  Newline@497..498 "\n"
+  Text@498..507 "不接受"
+  Whitespace@507..508 " "
+  Text@508..516 "children"
+  Newline@516..517 "\n"
+  Newline@517..518 "\n"
+  CodeCall@518..527
+    Hash@518..519 "#"
+    Path@519..520
+      Ident@519..520 "f"
+    LParen@520..521 "("
+    Group@521..526
+      LParen@521..522 "("
+      Str@522..525 "\"x\""
+      RParen@525..526 ")"
+    RParen@526..527 ")"
+  Newline@527..528 "\n"
+  Text@528..536 "grouping"
+  Whitespace@536..537 " "
+  Text@537..549 "透明求值"
+  Newline@549..550 "\n"
+  Newline@550..551 "\n"
+  CodeCall@551..563
+    Hash@551..552 "#"
+    Path@552..553
+      Ident@552..553 "f"
+    LParen@553..554 "("
+    Array@554..562
+      LParen@554..555 "("
+      Number@555..556 "1"
+      Comma@556..557 ","
+      Whitespace@557..558 " "
+      Group@558..561
+        LParen@558..559 "("
+        Number@559..560 "2"
+        RParen@560..561 ")"
+      RParen@561..562 ")"
+    RParen@562..563 ")"
+  Newline@563..564 "\n"
+  Text@564..576 "数组里的"
+  Whitespace@576..577 " "
+  Text@577..585 "grouping"
+  Newline@585..586 "\n"
+  Newline@586..587 "\n"
+  CodeCall@587..597
+    Hash@587..588 "#"
+    Path@588..589
+      Ident@588..589 "f"
+    LParen@589..590 "("
+    Array@590..596
+      LParen@590..591 "("
+      Str@591..594 "\"x\""
+      Comma@594..595 ","
+      RParen@595..596 ")"
+    RParen@596..597 ")"
+  Newline@597..598 "\n"
+  Text@598..625 "单元素数组要尾 ..."
+  Newline@625..626 "\n"
 
 === core ===
-error[syntax] @194..194: inline content cannot contain a blank line
-error[syntax] @605..605: unclosed code call body
-error[semantic] @115..121: bare names are not literals
-error[semantic] @123..129: bare names are not literals
-error[semantic] @399..400: content is mounted with `[..]` after the call, not passed as an argument
-error[semantic] @404..405: content is mounted with `[..]` after the call, not passed as an argument
-error[type] @111..131: unknown constructor `fn`
-error[type] @220..303: unknown constructor `note`
-error[type] @305..317: `strong` takes inline content; write the body as `[..]` without inner padding
-error[type] @358..362: `list` takes only item children
-error[type] @393..410: unknown constructor `demo`
-error[type] @469..476: `raw` requires `text`
-error[type] @469..476: `raw` takes no children
-error[type] @497..506: unknown constructor `f`
-error[type] @530..542: unknown constructor `f`
-error[type] @566..576: unknown constructor `f`
-(doc @0..605
+error[syntax] @203..203: inline content cannot contain a blank line
+error[syntax] @626..626: unclosed code call body
+error[syntax] @422..422: unclosed call arguments
+error[type] @111..112: unbound reference `<anonymous>`
+error[type] @214..218: unbound reference `foo`
+error[type] @229..312: unknown constructor or function `note`
+error[type] @214..312: a content fragment must be all inline or a single block expression; separate blocks with a blank line
+error[type] @314..326: expected InlineContent, found BlockContent
+error[type] @314..326: `strong` takes inline content; block children are not allowed
+error[type] @367..371: `list` takes only item children
+error[type] @361..403: a content fragment must be all inline or a single block expression; separate blocks with a blank line
+error[type] @405..422: unknown constructor or function `demo`
+error[type] @490..497: `raw` requires `text`
+error[type] @490..497: `raw` takes no children
+error[type] @518..527: unknown constructor or function `f`
+error[type] @551..563: unknown constructor or function `f`
+error[type] @587..597: unknown constructor or function `f`
+(doc @0..626
   (callout @0..39 :kind "warning"
-    (paragraph @0..39
-      (text @26..38 :text "注意内容")
-    )
+    (text @26..38 :text "注意内容")
   )
   (paragraph @41..80
     (link @41..80 :target "https://example.com"
@@ -312,95 +319,97 @@ error[type] @566..576: unknown constructor `f`
     (text @104..109 :text "#(42)")
   )
   (paragraph @111..131
-    (fn @111..131)
+    (interpolation @111..112)
+    (text @112..131 :text "fn(嵌套 (深度))")
   )
   (paragraph @133..151
     (text @133..151 :text "裸 # 只是字符")
   )
-  (paragraph @153..178
-    (group @153..178
-      (text @155..162 :text "匿名 ")
-      (strong @162..170
-        (text @163..169 :text "内容")
+  (paragraph @153..187
+    (node @153..187
+      (text @159..171 :text "显式 node ")
+      (strong @171..179
+        (text @172..178 :text "内容")
       )
-      (text @170..177 :text " 拼接")
+      (text @179..186 :text " 拼接")
     )
   )
-  (paragraph @180..203
-    (strong @180..203
-      (text @188..194 :text "空行")
-      (text @196..202 :text "粉碎")
+  (paragraph @189..212
+    (strong @189..212
+      (text @197..203 :text "空行")
+      (text @205..211 :text "粉碎")
     )
   )
-  (paragraph @205..219
-    (text @205..219 :text "#foo[未闭合")
-  )
-  (note @220..303 :kind "demo"
-    (paragraph @241..259
-      (text @241..259 :text "块 body 第一段")
-    )
-    (list @261..290 :ordered false :start 1
-      (listitem @261..275
-        (paragraph @263..275
-          (text @263..275 :text "列表项甲")
+  (paragraph @214..312
+    (interpolation @214..218)
+    (text @218..228 :text "[未闭合")
+    (note @229..312
+      (paragraph @250..268
+        (text @250..268 :text "块 body 第一段")
+      )
+      (list @270..299 :ordered false :start 1
+        (listitem @270..284
+          (paragraph @272..284
+            (text @272..284 :text "列表项甲")
+          )
+        )
+        (listitem @285..299
+          (paragraph @287..299
+            (text @287..299 :text "列表项乙")
+          )
         )
       )
-      (listitem @276..290
-        (paragraph @278..290
-          (text @278..290 :text "列表项乙")
-        )
+      (paragraph @301..310
+        (text @301..310 :text "第二段")
       )
     )
-    (paragraph @292..301
-      (text @292..301 :text "第二段")
-    )
   )
-  (paragraph @305..350
-    (strong @305..317
-      (paragraph @314..315
-        (text @314..315 :text "x")
+  (paragraph @314..359
+    (strong @314..326
+      (paragraph @323..324
+        (text @323..324 :text "x")
       )
     )
-    (text @318..350 :text "块 body 喂给 inline 构造器")
+    (text @327..359 :text "块 body 喂给 inline 构造器")
   )
-  (list @352..363 :ordered false :start 1
-    (text @358..362 :text "body")
-  )
-  (paragraph @364..391
-    (text @364..391 :text "inline body 提升为段落")
-  )
-  (paragraph @393..438
-    (demo @393..410)
-    (text @411..438 :text "参数位置内容字面量")
-  )
-  (group @440..467
-    (paragraph @443..455
-      (text @443..455 :text "块级匿名")
+  (paragraph @361..403
+    (list @361..372 :ordered false :start 1
+      (text @367..371 :text "body")
     )
-    (list @457..465 :ordered false :start 1
-      (listitem @457..465
-        (paragraph @459..465
-          (text @459..465 :text "列表")
+    (text @373..403 :text "结构槽只接受 item 角色")
+  )
+  (paragraph @405..450
+    (demo @405..422)
+    (text @423..450 :text "参数位置内容字面量")
+  )
+  (node @452..488
+    (paragraph @459..476
+      (text @459..476 :text "块级显式 node")
+    )
+    (list @478..486 :ordered false :start 1
+      (listitem @478..486
+        (paragraph @480..486
+          (text @480..486 :text "列表")
         )
       )
     )
   )
-  (paragraph @469..495
-    (rawinline @469..476
-      (text @474..475 :text "x")
+  (paragraph @490..516
+    (rawinline @490..497
+      (text @495..496 :text "x")
     )
-    (text @477..495 :text "不接受 children")
+    (text @498..516 :text "不接受 children")
   )
-  (paragraph @497..528
-    (f @497..506 :args ("x"))
-    (text @507..528 :text "grouping 透明求值")
+  (paragraph @518..549
+    (f @518..527)
+    (text @528..549 :text "grouping 透明求值")
   )
-  (paragraph @530..564
-    (f @530..542 :args ((1, 2)))
-    (text @543..564 :text "数组里的 grouping")
+  (paragraph @551..585
+    (f @551..563)
+    (text @564..585 :text "数组里的 grouping")
   )
-  (paragraph @566..604
-    (f @566..576 :args (("x")))
-    (text @577..604 :text "单元素数组要尾逗号")
+  (paragraph @587..625
+    (f @587..597)
+    (text @598..625 :text "单元素数组要尾逗号")
   )
 )

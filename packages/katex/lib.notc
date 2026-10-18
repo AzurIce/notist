@@ -1,1 +1,1 @@
-fn math(text: String, block?: Bool) -> Content<block>;
+fn math<C: Type = InlineContent>(text: String) -> C;

@@ -4,8 +4,8 @@
 pub enum Accepts {
     /// Only inline content (hugging `[..]`).
     Inline,
-    /// Any content (an inline mount is promoted to a one-paragraph block).
-    Content,
+    /// A block content forest; no category conversion is performed.
+    Block,
     /// Unconstrained.
     Any,
     /// A structural sequence of table rows, without paragraph promotion.
@@ -26,7 +26,7 @@ pub enum Level {
     Block,
     /// An inline element; flows inside paragraphs.
     Inline,
-    /// Transparent: inherits the flavor of its children (`group`).
+    /// Transparent: inherits the flavor of its children (`node`).
     Inherit,
 }
 
@@ -63,14 +63,14 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
     (
         "item",
         CtorSignature {
-            accepts: Accepts::Content,
+            accepts: Accepts::Block,
             level: Level::Block,
         },
     ),
     (
         "callout",
         CtorSignature {
-            accepts: Accepts::Content,
+            accepts: Accepts::Block,
             level: Level::Block,
         },
     ),
@@ -98,7 +98,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
     (
         "cell",
         CtorSignature {
-            accepts: Accepts::Content,
+            accepts: Accepts::Block,
             level: Level::Block,
         },
     ),
@@ -159,7 +159,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
         },
     ),
     (
-        "group",
+        "node",
         CtorSignature {
             accepts: Accepts::Any,
             level: Level::Inherit,
@@ -168,7 +168,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
     (
         "section",
         CtorSignature {
-            accepts: Accepts::Content,
+            accepts: Accepts::Block,
             level: Level::Block,
         },
     ),
@@ -179,7 +179,7 @@ pub fn builtin_signature(name: &str) -> Option<CtorSignature> {
     let definition = registry().resolve(name).ok()?;
     Some(CtorSignature {
         accepts: definition.children,
-        level: definition.returns.base_level(),
+        level: definition.returns.level().unwrap_or(Level::Inherit),
     })
 }
 
@@ -191,20 +191,48 @@ pub fn builtin_ctors() -> impl Iterator<Item = &'static str> {
 /// Native definitions use the same model and validation as source declarations.
 pub fn definitions() -> crate::definitions::DefinitionModule {
     use crate::definitions::{
-        DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode as Mode, ReturnRule,
-        ValueConstraint, ValueType as Ty,
+        ComptimeParameter, DefinitionModule, FunctionDef, FunctionId, ParameterDef,
+        ParameterMode as Mode, Type as Ty, ValueConstraint,
     };
     use crate::item::Value;
 
     let mut module = DefinitionModule::new("notist");
     for &(name, signature) in BUILTINS {
         let returns = match name {
-            "raw" | "math" => ReturnRule::BlockIfTrue("block".into()),
-            "group" => ReturnRule::Inherit,
-            _ => ReturnRule::Fixed(signature.level),
+            "raw" | "math" => Ty::Parameter("C".into()),
+            "node" => Ty::Parameter("C".into()),
+            _ => {
+                if signature.level == Level::Block {
+                    Ty::BlockContent
+                } else {
+                    Ty::InlineContent
+                }
+            }
         };
         let mut function =
             FunctionDef::new(FunctionId::new("notist", name), signature.accepts, returns);
+        if matches!(
+            name,
+            "raw" | "math" | "node" | "callout" | "item" | "cell" | "section"
+        ) {
+            function.comptime.push(ComptimeParameter {
+                name: "C".into(),
+                constraint: ValueConstraint::Any,
+                ty: Ty::Type,
+                default: Some(crate::definitions::ComptimeValue::Type(
+                    if matches!(name, "raw" | "math" | "node") {
+                        Ty::InlineContent
+                    } else {
+                        Ty::BlockContent
+                    },
+                )),
+                span: rowan::TextRange::empty(0.into()),
+            });
+            if !matches!(name, "raw" | "math") {
+                function.children_type = Some(Ty::Parameter("C".into()));
+                function.children = Accepts::Any;
+            }
+        }
         let mut parameter = |name: &str, ty, mode, positional| {
             let mut parameter = ParameterDef::new(name, ty, mode);
             parameter.positional = positional;
@@ -214,11 +242,9 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
             "text" => parameter("text", Ty::String, Mode::Required, false),
             "math" => {
                 parameter("text", Ty::String, Mode::Required, true);
-                parameter("block", Ty::Bool, Mode::Optional, false);
             }
             "raw" => {
                 parameter("text", Ty::String, Mode::Required, true);
-                parameter("block", Ty::Bool, Mode::Optional, false);
                 parameter("lang", Ty::String, Mode::Optional, false);
             }
             "link" | "embed" => {
@@ -229,9 +255,13 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
                 parameter("title", Ty::String, Mode::Optional, false);
             }
             "heading" => {
-                parameter("level", Ty::Int, Mode::Default(Value::Int(1)), false);
-                function.parameters[0].constraint = ValueConstraint::PositiveInt;
-                function.parameters[0].expectation = Some("positive integer".into());
+                function.comptime.push(ComptimeParameter {
+                    name: "level".into(),
+                    constraint: ValueConstraint::PositiveInt,
+                    ty: Ty::Int,
+                    default: Some(crate::definitions::ComptimeValue::Data(Value::Int(1))),
+                    span: rowan::TextRange::empty(0.into()),
+                });
             }
             "list" => {
                 parameter(

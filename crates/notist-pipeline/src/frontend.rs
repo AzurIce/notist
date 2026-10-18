@@ -1,16 +1,25 @@
+pub mod markdown;
+pub mod markup;
+
 use std::path::Path;
 
 use rowan::TextRange;
 
-use crate::NotistFrontend;
+use self::markup::NotistFrontend;
+use crate::Context;
+use crate::lowering::content::ContentLowering;
 use notist_core::diag::Diagnostic;
 use notist_core::frontend::{Frontend, FrontendOptions};
 use notist_core::item::Item;
 
+/// Combines source compilation and content-literal handling for registration.
+pub trait PipelineFrontend: Frontend + ContentLowering {}
+impl<T: Frontend + ContentLowering> PipelineFrontend for T {}
+
 /// A frontend registry. [`Self::with_defaults`] installs `.not` and Markdown;
 /// register more with [`Self::with`]. Most callers can use [`crate::Pipeline`].
 pub struct Frontends {
-    frontends: Vec<Box<dyn Frontend>>,
+    frontends: Vec<Box<dyn PipelineFrontend>>,
 }
 
 impl Frontends {
@@ -20,15 +29,15 @@ impl Frontends {
         }
     }
 
-    /// `.not` (notist-syntax + notist-lowering) and Markdown / Notist Markdown (rushdown).
+    /// Native Markup and Markdown / Notist Markdown.
     pub fn with_defaults() -> Self {
         Self::new()
             .with(NotistFrontend)
-            .with(notist_md::MarkdownFrontend)
+            .with(markdown::MarkdownFrontend)
     }
 
     /// Register a frontend; the last registration wins for overlapping extensions.
-    pub fn with(mut self, frontend: impl Frontend + 'static) -> Self {
+    pub fn with(mut self, frontend: impl PipelineFrontend + 'static) -> Self {
         self.frontends.push(Box::new(frontend));
         self
     }
@@ -43,7 +52,7 @@ impl Frontends {
             })
     }
 
-    pub(crate) fn get(&self, path: &Path) -> Option<&dyn Frontend> {
+    pub(crate) fn get(&self, path: &Path) -> Option<&dyn PipelineFrontend> {
         let ext = path.extension()?.to_str()?;
         self.frontends
             .iter()
@@ -54,15 +63,11 @@ impl Frontends {
 
     /// Lower `src` with the frontend matching `path`'s extension, then run
     /// the shared backend (resolve → shape → materialize).
-    pub fn analyze(&self, path: &Path, src: &str) -> Option<(Item, Vec<Diagnostic>)> {
-        self.analyze_with_registry(path, src, notist_core::builtins::registry())
-    }
-
-    pub fn analyze_with_registry(
+    pub fn analyze(
         &self,
         path: &Path,
         src: &str,
-        registry: &notist_core::registry::Registry,
+        context: &Context,
     ) -> Option<(Item, Vec<Diagnostic>)> {
         let frontend = self.get(path)?;
         let output = frontend.compile(src, FrontendOptions::default());
@@ -70,9 +75,10 @@ impl Frontends {
         let span = TextRange::new(0.into(), (src.len() as u32).into());
         let item = crate::process(
             output.forest,
+            output.annotations,
             span,
             output.module_attrs,
-            registry,
+            context,
             &mut diagnostics,
         );
         Some((item, diagnostics))

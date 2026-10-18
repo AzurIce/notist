@@ -3,9 +3,12 @@ use crate::environment::{discover_config_in, issue};
 use crate::resources::{FsResources, ResourceError, ResourceKind, Resources};
 use crate::{Analysis, Environment, Pipeline, SourceDiagnostic, UnsupportedFormat};
 use notist_html::{HtmlRegistry, ModuleLocator, RenderResult, Renderer};
-use notist_pipeline::transforms::TransformOutput;
+use notist_pipeline::Evaluation;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+mod code;
+pub use code::CodeAnalysis;
 
 #[derive(Debug)]
 pub enum VaultError {
@@ -52,20 +55,20 @@ impl Default for RenderOptions {
     }
 }
 
-/// Analysis, transform and render diagnostics refer to this document source. Package/config
+/// Analysis, evaluation and render diagnostics refer to this document source. Package/config
 /// failures instead return source-bearing VaultError::Environment entries.
 #[derive(Debug)]
 pub struct HtmlOutput {
     pub path: PathBuf,
     pub analysis: Analysis,
-    pub transformed: TransformOutput,
+    pub evaluation: Evaluation,
     pub rendered: RenderResult,
 }
 
-/// Rendering of an existing analysis tree, with the transformed output tree.
+/// Rendering of an existing analysis tree, with the evaluated representation tree.
 #[derive(Debug)]
 pub struct ItemOutput {
-    pub transformed: TransformOutput,
+    pub evaluation: Evaluation,
     pub rendered: RenderResult,
 }
 
@@ -122,6 +125,19 @@ impl<R: Resources> Vault<R> {
             .collect();
         self
     }
+    /// Select the environment for `path` and ensure it is assembled and cached.
+    ///
+    /// An explicit Vault config takes precedence; otherwise discover the nearest
+    /// ancestor `Notist.toml`. Return its resolved path as the `environments` map
+    /// key, or `None` for the default environment shared by unconfigured documents.
+    ///
+    /// Reuse an existing entry, including one supplied by `with_environment`.
+    /// On a cache miss, the host loader assembles a Context from package
+    /// declarations and configured transform rules, or uses Context::default().
+    /// The Environment retains that Context alongside package resource metadata.
+    /// Assembly errors propagate without caching a partial environment.
+    /// Environments remain cached for this Vault's resource view; create a new
+    /// Vault when configuration or package inputs change.
     fn ensure_environment(&mut self, path: &Path) -> Result<Option<PathBuf>, VaultError> {
         let key = match &self.config {
             Some(config) => Some(config.clone()),
@@ -150,7 +166,7 @@ impl<R: Resources> Vault<R> {
         let key = self.ensure_environment(path)?;
         let mut analysis =
             self.pipeline
-                .analyze(path, source, self.environments[&key].registry())?;
+                .analyze(path, source, self.environments[&key].context())?;
         analysis.extend_diagnostics(crate::vault_index::check_content_paths(
             self.resources.root(),
             path,
@@ -167,7 +183,7 @@ impl<R: Resources> Vault<R> {
         let key = self.ensure_environment(path)?;
         let (mut analysis, inspection) =
             self.pipeline
-                .inspect(path, source, self.environments[&key].registry())?;
+                .inspect(path, source, self.environments[&key].context())?;
         analysis.extend_diagnostics(crate::vault_index::check_content_paths(
             self.resources.root(),
             path,
@@ -193,42 +209,46 @@ impl<R: Resources> Vault<R> {
         let path = path.as_ref();
         let analysis = self.analyze(path, source)?;
         let ItemOutput {
-            transformed,
+            evaluation,
             rendered,
-        } = self.render_output(path, analysis.root(), options)?;
+        } = self.render_output(path, &analysis, options)?;
         Ok(HtmlOutput {
             path: self.resources.resolve(path),
             analysis,
-            transformed,
+            evaluation,
             rendered,
         })
     }
-    /// Apply this document's configured plan without invoking a backend.
-    pub fn transform(
+    /// Evaluate with this document's immutable Context. Transform mappings
+    /// select implementations while retaining the original semantic identity.
+    pub fn evaluate(
         &mut self,
         path: impl AsRef<Path>,
-        item: &crate::Item,
-    ) -> Result<TransformOutput, VaultError> {
-        Ok(self.environment_for(path)?.transforms().apply(item))
+        analysis: &Analysis,
+    ) -> Result<Evaluation, VaultError> {
+        let key = self.ensure_environment(path.as_ref())?;
+        Ok(self
+            .pipeline
+            .evaluate(analysis, self.environments[&key].context()))
     }
 
-    /// Transform an analysis tree once and render the result. Callers with an
-    /// already transformed tree can pass it directly to notist_html::Renderer.
+    /// Evaluate an analysis once and render the result. Callers with an
+    /// already evaluated tree can pass it directly to notist_html::Renderer.
     pub fn render_output(
         &mut self,
         path: impl AsRef<Path>,
-        item: &crate::Item,
+        analysis: &Analysis,
         options: RenderOptions,
     ) -> Result<ItemOutput, VaultError> {
         let path = path.as_ref();
-        let transformed = self.transform(path, item)?;
+        let evaluation = self.evaluate(path, analysis)?;
         let mut renderer = Renderer::new().with_registry(self.html_registry(path)?);
         if options.source_map {
             renderer = renderer.with_source_map();
         }
-        let rendered = renderer.render_with_diagnostics(&transformed.root);
+        let rendered = renderer.render_with_diagnostics(&evaluation.root);
         Ok(ItemOutput {
-            transformed,
+            evaluation,
             rendered,
         })
     }
@@ -298,9 +318,15 @@ pub(crate) fn bind_html(
     let mut bindings = BTreeMap::new();
     let mut errors = Vec::new();
     for definition in environment
+        .context()
         .registry()
         .functions()
-        .filter(|definition| definition.id.package != "notist")
+        .filter(|definition| {
+            definition.id.package != "notist"
+                && !definition.code
+                && (definition.returns.level().is_some()
+                    || matches!(definition.returns, crate::Type::Parameter(_)))
+        })
     {
         let package = &environment.packages()[&definition.id.package];
         let result = (|| -> Result<Option<ModuleLocator>, String> {
@@ -333,13 +359,18 @@ pub(crate) fn bind_html(
             )),
         }
     }
-    match HtmlRegistry::from_bindings(environment.registry(), &bindings) {
+    match HtmlRegistry::from_bindings(environment.context().registry(), &bindings) {
         Ok(registry) if errors.is_empty() => Ok(registry),
         Ok(_) => Err(errors),
         Err(binding_errors) => {
             for error in binding_errors {
                 let package = &environment.packages()[&error.id.package];
-                let span = environment.registry().get(&error.id).unwrap().span;
+                let span = environment
+                    .context()
+                    .registry()
+                    .get(&error.id)
+                    .unwrap()
+                    .span;
                 errors.push(issue(
                     &package.root.join("lib.notc"),
                     &package.source,

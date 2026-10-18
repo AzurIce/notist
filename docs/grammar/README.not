@@ -4,4 +4,4 @@
 - [Code · .notc](code.not)：内容函数签名声明、类型引用与恢复。
 - [Grammar Notation](notation.not)：产生式、捕获、上下文、scanner 与结果构造的记法。
 
-字面量见 [Types & Literals](../types.not)，具体内容元素的语法糖见 [Builtin](../builtin.not)，转换阶段见 [Pipeline](../designs/pipeline.not)。
+字面量见 [Types & Literals](../types.not)，具体内容元素的语法糖见 [Builtin](../builtin.not)，转换阶段见 [Markup 管线](../designs/pipeline/markup.not)。

@@ -1,2 +1,2 @@
-fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+fn panel(title: String = "Panel", expanded: Bool = true)[children: BlockContent] -> BlockContent;
 fn badge(label: String, count: Int = 1) -> InlineContent;

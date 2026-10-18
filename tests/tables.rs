@@ -1,11 +1,11 @@
 use notist::builtins::{Accepts, Level};
-use notist::syntax::ast::{Table, TableAlignment};
-use notist::syntax::syntax::SyntaxKind;
+use notist::syntax::markup::ast::{Table, TableAlignment};
+use notist::syntax::tree::SyntaxKind;
 use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(path: &str, src: &str) -> Item {
     if path.ends_with(".not") {
-        let parse = notist::syntax::parser::parse_document(src);
+        let parse = notist::syntax::markup::parse_document(src);
         assert_eq!(parse.syntax().to_string(), src, "{src:?}");
         assert!(
             parse.diagnostics.is_empty(),
@@ -14,7 +14,7 @@ fn analyze(path: &str, src: &str) -> Item {
         );
     }
     let analysis = Pipeline::default()
-        .analyze(path, src, notist::builtins::registry())
+        .analyze(path, src, &notist::Context::default())
         .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
@@ -26,6 +26,9 @@ fn analyze(path: &str, src: &str) -> Item {
 
 fn normalized(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
+    item.origin = None;
+    // Compare semantic structure independently of source-bound computation metadata.
+    item.pending = None;
     item.children = item.children.into_iter().map(normalized).collect();
     item
 }
@@ -47,7 +50,7 @@ fn text(item: &Item) -> String {
 fn notist_markdown_and_content_functions_share_the_same_table_ir() {
     let not = "| 名称 | 数量 |\n| :--- | ---: |\n| *苹果* | $3$ |\n";
     let md = "| 名称 | 数量 |\n| :--- | ---: |\n| **苹果** | $3$ |\n";
-    let calls = "#table(align: (\"left\", \"right\"))[\n#row(header: true)[\n#cell[名称]\n#cell[数量]\n]\n#row(header: false)[\n#cell[*苹果*]\n#cell[$3$]\n]\n]";
+    let calls = "#table(align: (\"left\", \"right\"))[\n#row(header: true)[\n#cell[ 名称 ]\n#cell[ 数量 ]\n]\n#row(header: false)[\n#cell[ *苹果* ]\n#cell[ $3$ ]\n]\n]";
     let not = analyze("test.not", not);
     assert_eq!(normalized(not.clone()), normalized(analyze("test.md", md)));
     assert_eq!(
@@ -61,7 +64,7 @@ fn notist_markdown_and_content_functions_share_the_same_table_ir() {
     assert_eq!(table.children[0].ctor.accepts(), Some(Accepts::Cells));
     assert_eq!(
         table.children[0].children[0].ctor.accepts(),
-        Some(Accepts::Content)
+        Some(Accepts::Any)
     );
     assert_eq!(
         table.children[0].fields.get("header"),
@@ -93,7 +96,7 @@ fn notist_markdown_and_content_functions_share_the_same_table_ir() {
 #[test]
 fn table_ast_exposes_rows_cells_header_and_all_alignments_losslessly() {
     let src = "| a | b | c | d |\r\n| --- | :--- | :---: | ---: |\r\n| 1 | 2 | 3 | 4 |";
-    let parse = notist::syntax::parser::parse_document(src);
+    let parse = notist::syntax::markup::parse_document(src);
     assert!(parse.diagnostics.is_empty());
     assert_eq!(parse.syntax().to_string(), src);
     let table = Table::cast(parse.syntax().children().next().unwrap()).unwrap();
@@ -203,10 +206,10 @@ fn table_pipes_are_escaped_in_markup_and_owned_by_opaque_payloads() {
 }
 
 #[test]
-fn block_math_splits_cell_content_and_preserves_frontend_pipe_rules() {
+fn standalone_block_math_in_cells_preserves_frontend_pipe_rules() {
     let source = r#"| formula | tail |
 | --- | --- |
-| before $ x|y $ after | end |
+| $ x|y $ | end |
 "#;
     for (path, source) in [
         ("test.not", source.to_owned()),
@@ -216,10 +219,10 @@ fn block_math_splits_cell_content_and_preserves_frontend_pipe_rules() {
         let cell = &root.children[0].children[1].children[0];
         assert_eq!(
             cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-            [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+            [&Ctor::Math]
         );
         assert_eq!(
-            cell.children[1].fields.get("text"),
+            cell.children[0].fields.get("text"),
             Some(&Value::Str("x|y".into()))
         );
         assert_eq!(text(&root.children[0].children[1].children[1]), "end");
@@ -228,9 +231,12 @@ fn block_math_splits_cell_content_and_preserves_frontend_pipe_rules() {
         "test.not",
         r##"| formula |
 | --- |
-| #[
+| #node[
 $ x|y $
-] #math(r#"a\|b"#, block: true) |
+
+
+#math<BlockContent>(r#"a\|b"#)
+] |
 "##,
     );
     let equations = root
@@ -260,7 +266,7 @@ fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
         let formula = format!("${newline}{payload}{newline}$");
         let source = format!(
             "| package | content |{newline}| --- | --- |{newline}\
-             | [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 {formula} |{newline}\
+             | [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | {formula} |{newline}\
              | after | following |{newline}{newline}outside"
         );
         let root = analyze("test.not", &source);
@@ -271,9 +277,9 @@ fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
         let cell = &table.children[1].children[1];
         assert_eq!(
             cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-            [&Ctor::Paragraph, &Ctor::Math]
+            [&Ctor::Math]
         );
-        let math = &cell.children[1];
+        let math = &cell.children[0];
         assert_eq!(math.level, Level::Block);
         assert_eq!(math.fields.get("text"), Some(&Value::Str(payload)));
         assert_eq!(
@@ -299,7 +305,7 @@ fn math_in_headers_and_cells_owns_blank_lines_pipes_and_markup_tokens() {
 \| remains escaped"#;
     let source = format!(
         "| $\n{payload}\n$ | $a|b$ |\n| --- | --- |\n\
-         | before $\n{payload}\n$ after | end |\n| next | row |"
+         | $\n{payload}\n$ | end |\n| next | row |"
     );
     let root = analyze("test.not", &source);
     let table = &root.children[0];
@@ -326,10 +332,8 @@ fn math_in_headers_and_cells_owns_blank_lines_pipes_and_markup_tokens() {
     let cell = &table.children[1].children[0];
     assert_eq!(
         cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-        [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+        [&Ctor::Math]
     );
-    assert_eq!(text(&cell.children[0]).trim(), "before");
-    assert_eq!(text(&cell.children[2]).trim(), "after");
     assert!(table.find(|n| n.ctor == Ctor::Strong).is_none());
     assert_eq!(text(&table.children[2]), "nextrow");
 }
@@ -418,18 +422,18 @@ fn mermaid_diagram_source_stays_in_one_table_cell_and_renders_as_a_component() {
     .unwrap();
     let src = r##"| Package | 内容 |
 | --- | --- |
-| [mermaid](packages/mermaid/README.not) | Mermaid 图形组件 #mermaid::diagram(r#"""
+| [mermaid](packages/mermaid/README.not) | #mermaid::diagram(r#"""
 stateDiagram-v2
     [*] --> s1
     s1 --> [*]
 """#) |
 | after | following |
 "##;
-    let parse = notist::syntax::parser::parse_document(src);
+    let parse = notist::syntax::markup::parse_document(src);
     assert_eq!(parse.syntax().to_string(), src);
     assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     let analysis = Pipeline::default()
-        .analyze("test.not", src, environment.registry())
+        .analyze("test.not", src, environment.context())
         .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
@@ -454,7 +458,7 @@ stateDiagram-v2
     let mut html_registry = notist_html::HtmlRegistry::default();
     html_registry
         .bind_component(
-            environment.registry().get(&id).unwrap(),
+            environment.context().registry().get(&id).unwrap(),
             "/components/mermaid/diagram.js",
         )
         .unwrap();
@@ -472,9 +476,9 @@ fn complete_calls_protect_pipes_and_wrap_headers_and_arguments() {
                #embed(\n  \"asset.svg\",\n  title: \"a|b\",\n) | #strong[one | #emph[two]]\n\
                after | plain";
     let calls = "#table(align: (\"none\", \"none\"))[\n\
-                 #row(header: true)[#cell[#strong[name\ncontinued]] #cell[value]]\n\
-                 #row(header: false)[#cell[#embed(\"asset.svg\", title: \"a|b\")] #cell[#strong[one | #emph[two]]]]\n\
-                 #row(header: false)[#cell[after] #cell[plain]]\n]";
+                 #row(header: true)[#cell[ #strong[name\ncontinued] ] #cell[ value ]]\n\
+                 #row(header: false)[#cell[ #embed(\"asset.svg\", title: \"a|b\") ] #cell[ #strong[one | #emph[two]] ]]\n\
+                 #row(header: false)[#cell[ after ] #cell[ plain ]]\n]";
     let root = analyze("test.not", src);
     assert_eq!(
         normalized(root.clone()),
@@ -491,15 +495,15 @@ fn complete_calls_protect_pipes_and_wrap_headers_and_arguments() {
 
 #[test]
 fn grouped_cells_accept_paragraphs_lists_and_nested_pipe_tables() {
-    let body = "#[\nfirst | still inside\n\nsecond\n\n- one\n- two\n\n\
+    let body = "#node[\nfirst | still inside\n\nsecond\n\n- one\n- two\n\n\
                 | inner | value |\n| --- | --- |\n| x | y |\n]";
     let src =
         format!("| name | body |\n| --- | --- |\n| rich | {body} |\n| after | end |\n\noutside");
     let calls = format!(
         "#table(align: (\"none\", \"none\"))[\n\
-         #row(header: true)[#cell[name] #cell[body]]\n\
-         #row(header: false)[\n#cell[rich]\n#cell[\n{body}\n]\n]\n\
-         #row(header: false)[#cell[after] #cell[end]]\n]\n\noutside"
+         #row(header: true)[#cell[ name ] #cell[ body ]]\n\
+         #row(header: false)[\n#cell[ rich ]\n#cell[ \n{body}\n ]\n]\n\
+         #row(header: false)[#cell[ after ] #cell[ end ]]\n]\n\noutside"
     );
     let root = analyze("test.not", &src);
     assert_eq!(
@@ -533,7 +537,7 @@ fn grouped_cells_accept_paragraphs_lists_and_nested_pipe_tables() {
 #[test]
 fn calls_and_nested_tables_keep_opaque_payloads_unchanged() {
     let body = concat!(
-        "#[\n",
+        "#node[\n",
         r"`raw|literal\|escaped` $math|literal\|escaped$",
         "\n\n| value |\n| --- |\n",
         r"| `nested\\\|pipe` |",
@@ -542,8 +546,8 @@ fn calls_and_nested_tables_keep_opaque_payloads_unchanged() {
     let src = format!("| value |\n| --- |\n| {body} |");
     let calls = format!(
         "#table(align: (\"none\",))[\n\
-         #row(header: true)[#cell[value]]\n\
-         #row(header: false)[\n#cell[\n{body}\n]\n]\n]"
+         #row(header: true)[#cell[ value ]]\n\
+         #row(header: false)[\n#cell[ \n{body}\n ]\n]\n]"
     );
     let root = analyze("test.not", &src);
     assert_eq!(
@@ -568,7 +572,7 @@ fn calls_and_nested_tables_keep_opaque_payloads_unchanged() {
 #[test]
 fn logical_rows_work_inside_call_bodies_and_list_items() {
     let table =
-        "| name | body |\n| --- | --- |\n| rich | #[\nfirst\n\nsecond\n] |\n| after | end |";
+        "| name | body |\n| --- | --- |\n| rich | #node[\nfirst\n\nsecond\n] |\n| after | end |";
     let indented = table
         .lines()
         .map(|line| format!("  {line}"))
@@ -607,7 +611,7 @@ fn opaque_payloads_own_literal_calls_and_pipes() {
         let payload = r"#strong[one | two]\|escaped";
         let src =
             format!("| a | b |\n| --- | --- |\n| {open}{payload}{close} | next |\n| next | row |");
-        let parse = notist::syntax::parser::parse_document(&src);
+        let parse = notist::syntax::markup::parse_document(&src);
         assert_eq!(parse.syntax().to_string(), src);
         let table = Table::cast(parse.syntax().children().next().unwrap()).unwrap();
         let rows: Vec<_> = table.rows().collect();
@@ -639,7 +643,7 @@ fn opaque_payloads_own_literal_calls_and_pipes() {
 fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
     for body in [
         "#call[x",
-        "#[x",
+        "#node[x",
         "#call(\"x\")[body",
         "#call(",
         "#pkg::",
@@ -653,7 +657,7 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
         "$ unclosed",
     ] {
         let src = format!("| a | b |\n| --- | --- |\n| {body} | tail |\n| next | row |");
-        let parse = notist::syntax::parser::parse_document(&src);
+        let parse = notist::syntax::markup::parse_document(&src);
         assert_eq!(parse.syntax().to_string(), src);
         let table = Table::cast(parse.syntax().children().next().unwrap()).unwrap();
         assert_eq!(table.rows().count(), 3, "{src}");
@@ -716,7 +720,7 @@ fn tables_split_surrounding_paragraphs_and_work_in_block_bodies_with_attrs() {
 fn explicit_cells_accept_block_content_and_inline_structural_mounts_recurse() {
     let root = analyze(
         "test.not",
-        "#table[\n#row[\n@(id: \"cell\")#cell[\n= Inside\nfirst\n\nsecond\n]\n]\n]",
+        "#table[\n#row[\n@(id: \"cell\")#cell[ \n= Inside\nfirst\n\nsecond\n ]\n]\n]",
     );
     let cell = &root.children[0].children[0].children[0];
     assert_eq!(cell.ctor, Ctor::TableCell);
@@ -725,7 +729,7 @@ fn explicit_cells_accept_block_content_and_inline_structural_mounts_recurse() {
     assert_eq!(cell.children[0].children.len(), 3);
     let inline = analyze(
         "test.not",
-        "#table[#row[#cell[first #callout[hint] second]]]",
+        "#table[#row[#cell[ first\n\n#callout[hint]\n\nsecond ]]]",
     );
     assert_eq!(
         inline.children[0].children[0].children[0]
@@ -762,12 +766,12 @@ fn malformed_table_markers_remain_prose_and_wrong_structural_children_diagnose()
     for (src, message) in [
         ("#table[text]", "`table` takes only row children"),
         ("#table[#paragraph[]]", "`table` takes only row children"),
-        ("#table[#cell[x]]", "`table` takes only row children"),
+        ("#table[#cell[ x ]]", "`table` takes only row children"),
         ("#row[text]", "`row` takes only cell children"),
         ("#row[#row[]]", "`row` takes only cell children"),
     ] {
         let analysis = Pipeline::default()
-            .analyze("test.not", src, notist::builtins::registry())
+            .analyze("test.not", src, &notist::Context::default())
             .unwrap();
         assert!(
             analysis
@@ -796,7 +800,7 @@ fn malformed_inline_content_in_cells_keeps_the_cst_lossless() {
         "[[wiki|text]]",
     ] {
         let src = format!("| a | b |\n| --- | --- |\n| {cell} | next |\n");
-        let parse = notist::syntax::parser::parse_document(&src);
+        let parse = notist::syntax::markup::parse_document(&src);
         assert_eq!(parse.syntax().to_string(), src);
         assert!(
             parse
@@ -804,5 +808,39 @@ fn malformed_inline_content_in_cells_keeps_the_cst_lossless() {
                 .descendants()
                 .any(|n| n.kind() == SyntaxKind::Table)
         );
+    }
+}
+
+#[test]
+fn failed_structural_calls_stay_visible_and_keep_valid_html_containers() {
+    for (source, wrapper) in [
+        ("#table[ #row(header: 3)[ #cell[x] ] ]", "<tr><td><div"),
+        ("#table[ #row[ #cell(bogus: true)[x] ] ]", "<td><div"),
+        (
+            "#table[ #node(bogus: true)[ #row[ #cell[x] ] ] ]",
+            "<tr><td><div",
+        ),
+        ("#list[ #item(bogus: true)[x] ]", "<li><div"),
+    ] {
+        let p = notist::Pipeline::default();
+        let c = notist::Context::default();
+        let a = p
+            .analyze("doc.not", &format!("{source}\n\ngood"), &c)
+            .unwrap();
+        let e = p.evaluate(&a, &c);
+        let rendered = notist_html::Renderer::new().render_with_diagnostics(&e.root);
+        assert!(
+            rendered.diagnostics.is_empty(),
+            "{source}: {:?}",
+            rendered.diagnostics
+        );
+        assert_eq!(
+            rendered.html.matches("role=\"alert\"").count(),
+            1,
+            "{}",
+            rendered.html
+        );
+        assert!(rendered.html.contains(wrapper), "{}", rendered.html);
+        assert!(rendered.html.contains("good"));
     }
 }

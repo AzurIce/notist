@@ -10,7 +10,7 @@
 //! # Ok::<(), notist::VaultError>(())
 //! ```
 //!
-//! [`Pipeline`] accepts explicit source and Registry inputs. [`Vault`] combines
+//! [`Pipeline`] accepts explicit source and Context inputs. [`Vault`] combines
 //! resource access, declaration environments and rendering; [`PreparedInputs`]
 //! transports host inputs to a Worker. Output crates consume core [`Item`].
 //! The `notist-cli` crate provides the executable, static-page publication and
@@ -18,17 +18,23 @@
 
 pub use rowan::{TextRange, TextSize};
 
+pub use notist_core::annotation::{Annotation, AnnotationKind};
 pub use notist_core::definitions::{
-    DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule,
-    ValueConstraint, ValueType,
+    ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionInstance,
+    ParameterDef, ParameterMode, Type, ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, Phase};
 pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
-pub use notist_core::item::{Ctor, Dict, Item, Value};
+pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;
-pub use notist_core::{builtins, diag, dump, expr, index, item, registry};
-pub use notist_pipeline::frontend::Frontends;
-pub use notist_pipeline::{Analysis, NotistFrontend, Pipeline, UnsupportedFormat, analyze_module};
+pub use notist_core::{annotation, builtins, diag, dump, evaluation, expr, index, item, registry};
+pub use notist_pipeline::frontend::{
+    Frontends, PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
+};
+pub use notist_pipeline::{
+    Analysis, CodeModule, CodeProgram, ContentLowering, Context, Evaluation, Limits, Lowered,
+    LoweredContent, Pipeline, UnsupportedFormat, analyze_module,
+};
 pub use notist_syntax as syntax;
 
 pub mod cst_json;
@@ -44,7 +50,7 @@ pub mod vault;
 pub mod vault_index;
 pub use environment::{Environment, Package, SourceDiagnostic};
 pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
-pub use vault::{HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError};
+pub use vault::{CodeAnalysis, HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError};
 pub use vault_index::VaultIndex;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

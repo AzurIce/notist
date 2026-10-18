@@ -2,7 +2,7 @@ use notist::{Ctor, FunctionId, MemoryResources, PreparedInputs, RenderOptions, V
 use std::{collections::BTreeMap, path::Path};
 
 const CONFIG: &str = "[dependencies]\nkatex = { path = '../packages/katex' }\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-const DECLARATION: &str = "fn math(text: String, block?: Bool) -> Content<block>;";
+const DECLARATION: &str = "fn math<C: Type = InlineContent>(text: String) -> C;";
 
 fn resources(config: &str, declaration: &str, component: bool) -> MemoryResources {
     let mut resources = MemoryResources::new("/repo/docs");
@@ -151,7 +151,7 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
             .render_html(path, source, RenderOptions::default())
             .unwrap();
         assert!(output.analysis.diagnostics().is_empty());
-        assert!(output.transformed.diagnostics.is_empty());
+        assert!(output.evaluation.diagnostics.is_empty());
         assert!(output.rendered.diagnostics.is_empty());
         assert_eq!(
             output
@@ -164,10 +164,13 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
         );
         assert_eq!(
             output
-                .transformed
+                .evaluation
                 .root
                 .descendants()
-                .filter(|node| node.function_id() == Some(FunctionId::new("katex", "math")))
+                .filter(|node| node
+                    .target
+                    .as_ref()
+                    .is_some_and(|i| i.function == FunctionId::new("katex", "math")))
                 .count(),
             2
         );
@@ -197,9 +200,9 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
         }
         let inspected = vault.inspect(path, source).unwrap().0;
         let debug = vault
-            .render_output(path, inspected.root(), RenderOptions::default())
+            .render_output(path, &inspected, RenderOptions::default())
             .unwrap();
-        assert_eq!(debug.transformed, output.transformed);
+        assert_eq!(debug.evaluation, output.evaluation);
         assert_eq!(debug.rendered.html, output.rendered.html);
         assert_eq!(vault.analyze(path, source).unwrap(), output.analysis);
     }
@@ -211,13 +214,15 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
     let output = vault
         .render_html("doc.not", "$x$", RenderOptions::default())
         .unwrap();
-    assert_eq!(output.transformed.root, *output.analysis.root());
+    assert_eq!(
+        notist::dump::dump(&output.evaluation.root),
+        notist::dump::dump(output.analysis.root())
+    );
     assert!(output.rendered.used_components.is_empty());
     // This list is deliberately not idempotent: applying it twice changes
     // math to done. Both output entry points must execute it exactly once.
     let config = "[dependencies]\nkatex = {path = '../packages/katex'}\n\n[[transforms]]\nkind = 'replace'\nfrom = 'katex::math'\nto = 'katex::done'\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-    let declaration =
-        format!("{DECLARATION} fn done(text: String, block?: Bool) -> Content<block>;");
+    let declaration = format!("{DECLARATION} fn done<C: Type = InlineContent>(text: String) -> C;");
     let mut vault = Vault::new(resources(config, &declaration, true));
     let output = vault
         .render_html("doc.not", "$x$", RenderOptions::default())
@@ -228,9 +233,9 @@ fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
     );
     let inspected = vault.inspect("doc.not", "$x$").unwrap().0;
     let debug = vault
-        .render_output("doc.not", inspected.root(), RenderOptions::default())
+        .render_output("doc.not", &inspected, RenderOptions::default())
         .unwrap();
-    assert_eq!(debug.transformed, output.transformed);
+    assert_eq!(debug.evaluation, output.evaluation);
 }
 
 #[test]
@@ -243,13 +248,13 @@ fn environment_failures_retain_config_source_and_rule_span() {
         ),
         (
             CONFIG.to_owned(),
-            "fn math(source: String, block?: Bool) -> Content<block>;",
+            "fn math<C: Type = InlineContent>(source: String) -> C;",
             "parameter",
         ),
         (
             CONFIG.to_owned(),
-            "fn math(text: String) -> Content;",
-            "levels",
+            "fn math(text: String) -> BlockContent;",
+            "comptime",
         ),
     ] {
         let mut vault = Vault::new(resources(&config, declaration, false));
@@ -279,8 +284,8 @@ fn missing_components_do_not_invalidate_transforms_and_no_config_keeps_defaults(
     let mut vault = Vault::new(resources(CONFIG, DECLARATION, false));
     let analysis = vault.analyze("doc.not", "$x$").unwrap();
     assert!(analysis.diagnostics().is_empty());
-    let transformed = vault.transform("doc.not", analysis.root()).unwrap();
-    assert!(transformed.diagnostics.is_empty());
+    let evaluation = vault.evaluate("doc.not", &analysis).unwrap();
+    assert!(evaluation.diagnostics.is_empty());
     let rendered = vault
         .render_html("doc.not", "$x$", RenderOptions::default())
         .unwrap();
@@ -293,7 +298,10 @@ fn missing_components_do_not_invalidate_transforms_and_no_config_keeps_defaults(
     let output = empty
         .render_html("doc.not", "$x$", RenderOptions::default())
         .unwrap();
-    assert_eq!(output.transformed.root, *output.analysis.root());
+    assert_eq!(
+        notist::dump::dump(&output.evaluation.root),
+        notist::dump::dump(output.analysis.root())
+    );
     assert!(output.rendered.html.contains("notist-math"));
     assert!(output.rendered.used_components.is_empty());
 }
@@ -345,7 +353,7 @@ fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins
             .as_array()
             .unwrap()
             .iter()
-            .any(|error| error["origin"] == "transform" && error["path"] == "doc.not")
+            .any(|error| error["origin"] == "evaluate" && error["path"] == "doc.not")
     );
     assert!(
         render["diagnostics"]
@@ -355,6 +363,6 @@ fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins
             .any(|error| error["origin"] == "analysis")
     );
     assert_eq!(render["used_components"][0]["package"], "katex");
-    assert!(debug["transformed"].to_string().contains("katex::math"));
+    assert!(debug["evaluated"].to_string().contains("katex::math"));
     assert!(debug["core"].to_string().contains("notist::math"));
 }

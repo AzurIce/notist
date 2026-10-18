@@ -1,7 +1,10 @@
 //! Vault-scoped static site planning and rendering. IO is supplied by Resources;
 //! the result is an owned publication artifact, not a filesystem mutation.
 use notist::resources::{ResourceError, ResourceKind};
-use notist::{Ctor, Diagnostic, Item, Phase, Resources, SourceDiagnostic, TextRange, Value, Vault};
+use notist::{
+    Ctor, Diagnostic, EvaluationState, Item, Phase, Resources, SourceDiagnostic, TextRange, Value,
+    Vault,
+};
 use notist_html::Renderer;
 use serde::Serialize;
 use std::{
@@ -84,32 +87,63 @@ pub struct Page {
 pub struct Site {
     pub files: BTreeMap<PathBuf, Vec<u8>>,
     pub pages: Vec<Page>,
+    pub diagnostics: Vec<SourceDiagnostic>,
 }
 struct Prepared {
     route: Route,
     source: String,
     root: Item,
     outline: Outline,
+    sources: BTreeMap<String, String>,
 }
 
-fn diagnostic(
-    path: &Path,
-    source: &str,
-    span: TextRange,
+fn content_diagnostic(
+    page: &Prepared,
+    node: &Item,
     message: impl Into<String>,
 ) -> SourceDiagnostic {
+    let span = node.origin.as_ref().map_or(node.span, |origin| {
+        TextRange::new(origin.start.into(), origin.end.into())
+    });
+    let mut diagnostic = Diagnostic::new(Phase::Semantic, span, message);
+    diagnostic.source = node.origin.as_ref().map(|origin| origin.source.clone());
+    locate(&page.route.source, &page.source, diagnostic, &page.sources)
+}
+
+fn locate(
+    path: &Path,
+    source: &str,
+    diagnostic: Diagnostic,
+    sources: &BTreeMap<String, String>,
+) -> SourceDiagnostic {
+    let origin = diagnostic
+        .source
+        .as_ref()
+        .and_then(|s| sources.get_key_value(s));
     SourceDiagnostic {
-        path: path.into(),
-        source: source.into(),
-        diagnostic: Diagnostic::new(Phase::Semantic, span, message),
+        path: origin
+            .map(|(p, _)| PathBuf::from(p))
+            .unwrap_or_else(|| path.into()),
+        source: origin
+            .map(|(_, s)| s.clone())
+            .unwrap_or_else(|| source.into()),
+        diagnostic,
     }
 }
-fn append(errors: &mut Vec<SourceDiagnostic>, path: &Path, source: &str, values: &[Diagnostic]) {
-    errors.extend(values.iter().cloned().map(|value| SourceDiagnostic {
-        path: path.into(),
-        source: source.into(),
-        diagnostic: value,
-    }));
+
+fn append(
+    errors: &mut Vec<SourceDiagnostic>,
+    path: &Path,
+    source: &str,
+    values: &[Diagnostic],
+    sources: &BTreeMap<String, String>,
+) {
+    errors.extend(
+        values
+            .iter()
+            .cloned()
+            .map(|d| locate(path, source, d, sources)),
+    );
 }
 
 fn discover<R: Resources>(vault: &Vault<R>, config: &SiteConfig) -> Result<Vec<PathBuf>, Error> {
@@ -178,6 +212,20 @@ fn discover<R: Resources>(vault: &Vault<R>, config: &SiteConfig) -> Result<Vec<P
 /// Analyze each selected document once, validate routes/references, then render
 /// transformed trees with one shared outline and resource publication plan.
 pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<Site, Error> {
+    build_inner(vault, config, false)
+}
+
+/// Render recoverable Code failures as error nodes while retaining strict
+/// routing, resource, configuration and publication checks.
+pub fn preview<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<Site, Error> {
+    build_inner(vault, config, true)
+}
+
+fn build_inner<R: Resources>(
+    vault: &mut Vault<R>,
+    config: &SiteConfig,
+    recover: bool,
+) -> Result<Site, Error> {
     let sources = discover(vault, config)?;
     if sources.is_empty() {
         return Err(Error::Message("site contains no selected documents".into()));
@@ -185,22 +233,36 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
     let root = vault.resources().root().to_path_buf();
     let routes = Routes::new(&root, sources).map_err(Error::Message)?;
     let mut errors = vec![];
+    let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
         let source = vault.resources().source(&route.source)?;
         let analysis = vault.analyze(&route.source, &source)?;
-        append(&mut errors, &route.source, &source, analysis.diagnostics());
-        let mut index_errors = vec![];
-        let _index = notist::index::Index::build(analysis.root(), &mut index_errors);
-        append(&mut errors, &route.source, &source, &index_errors);
-        let transformed = vault.transform(&route.source, analysis.root())?;
         append(
             &mut errors,
             &route.source,
             &source,
-            &transformed.diagnostics,
+            analysis.diagnostics(),
+            analysis.sources(),
         );
-        let mut content = transformed.root;
+        let mut index_errors = vec![];
+        let _index = notist::index::Index::build(analysis.root(), &mut index_errors);
+        append(
+            &mut errors,
+            &route.source,
+            &source,
+            &index_errors,
+            analysis.sources(),
+        );
+        let evaluation = vault.evaluate(&route.source, &analysis)?;
+        append(
+            &mut errors,
+            &route.source,
+            &source,
+            &evaluation.diagnostics,
+            analysis.sources(),
+        );
+        let mut content = evaluation.root;
         let fallback = if route.url == "/" {
             config.title.as_str()
         } else {
@@ -212,7 +274,14 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
             source,
             root: content,
             outline,
+            sources: analysis.sources().clone(),
         });
+    }
+    if recover {
+        let (local, fatal): (Vec<_>, Vec<_>) =
+            errors.into_iter().partition(|e| e.diagnostic.recovered);
+        recovered = local;
+        errors = fatal;
     }
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
@@ -234,32 +303,25 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
     let layout = Layout::new(&config.title, &pages);
     for page in &prepared {
         let mut resolved = BTreeMap::new();
-        for node in page
-            .root
-            .descendants()
-            .filter(|node| matches!(node.ctor, Ctor::Link | Ctor::Embed))
-        {
+        for node in page.root.descendants().filter(|node| {
+            matches!(node.ctor, Ctor::Link | Ctor::Embed)
+                && !matches!(node.evaluation, Some(EvaluationState::Error(_)))
+        }) {
             let Some(Value::Str(value)) = node.fields.get("target") else {
                 continue;
             };
             match routes::target(&page.route.source, value) {
                 Ok(routes::Target::External) => {}
-                Err(message) => errors.push(diagnostic(
-                    &page.route.source,
-                    &page.source,
-                    node.span,
-                    message,
-                )),
+                Err(message) => errors.push(content_diagnostic(page, node, message)),
                 Ok(routes::Target::Local {
                     path,
                     query,
                     fragment,
                 }) => {
                     if !path.starts_with(&root) {
-                        errors.push(diagnostic(
-                            &page.route.source,
-                            &page.source,
-                            node.span,
+                        errors.push(content_diagnostic(
+                            page,
+                            node,
                             format!(
                                 "local content reference `{value}` is outside Vault root `{}`",
                                 root.display()
@@ -272,10 +334,9 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
                             && !anchor.is_empty()
                             && !ids[&path].contains(anchor)
                         {
-                            errors.push(diagnostic(
-                                &page.route.source,
-                                &page.source,
-                                node.span,
+                            errors.push(content_diagnostic(
+                                page,
+                                node,
                                 format!("missing anchor `#{anchor}` in `{}`", path.display()),
                             ));
                         }
@@ -289,10 +350,9 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
                             )
                         }
                     } else if vault.supports(&path) {
-                        errors.push(diagnostic(
-                            &page.route.source,
-                            &page.source,
-                            node.span,
+                        errors.push(content_diagnostic(
+                            page,
+                            node,
                             format!(
                                 "document `{}` is not published by this site",
                                 path.display()
@@ -301,20 +361,18 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
                         continue;
                     } else {
                         if vault.resources().kind(&path)? != Some(ResourceKind::File) {
-                            errors.push(diagnostic(
-                                &page.route.source,
-                                &page.source,
-                                node.span,
+                            errors.push(content_diagnostic(
+                                page,
+                                node,
                                 format!("missing local resource `{value}`"),
                             ));
                             continue;
                         }
                         let destination = path.strip_prefix(&root).unwrap();
                         if destination.starts_with("_notist") {
-                            errors.push(diagnostic(
-                                &page.route.source,
-                                &page.source,
-                                node.span,
+                            errors.push(content_diagnostic(
+                                page,
+                                node,
                                 "_notist is reserved for generated resources",
                             ));
                             continue;
@@ -344,6 +402,7 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
             &page.route.source,
             &page.source,
             &rendered.diagnostics,
+            &page.sources,
         );
         let environment = vault.environment_for(&page.route.source)?.clone();
         let component_file = page.route.output.parent().unwrap().join("components.js");
@@ -376,7 +435,9 @@ pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
     }
-    finish(assets, layout.ordered_pages(pages))
+    let mut site = finish(assets, layout.ordered_pages(pages))?;
+    site.diagnostics = recovered;
+    Ok(site)
 }
 
 /// Publish a previously rendered single document through the same resource
@@ -426,5 +487,6 @@ fn finish(mut assets: Assets, pages: Vec<Page>) -> Result<Site, Error> {
     Ok(Site {
         files: assets.files,
         pages,
+        diagnostics: Vec::new(),
     })
 }

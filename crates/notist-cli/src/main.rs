@@ -27,6 +27,9 @@ struct Cli {
     /// Use this project configuration instead of searching parent directories
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    /// Inspect the representation tree after Code evaluation and transforms
+    #[arg(long, global = true)]
+    eval: bool,
 }
 
 #[derive(Subcommand)]
@@ -70,6 +73,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let config = cli.config.as_deref();
+    let evaluate = cli.eval;
     match cli.command {
         Command::Build { root, out_dir } => site::build(&root, config, out_dir.as_deref()),
         Command::Preview { root, address } => preview::serve(&root, config, &address),
@@ -78,16 +82,25 @@ fn main() -> ExitCode {
             format!(
                 "{:#?}",
                 if is_module(&file) {
-                    notist::syntax::parse_module(src)
+                    notist::syntax::code::parse_module(
+                        src,
+                        &notist::syntax::markup::MarkupContentParser,
+                    )
                 } else {
-                    notist::syntax::parse_document(src)
+                    notist::syntax::markup::parse_document(src)
                 }
                 .syntax()
             )
         }),
-        Command::Core { file } if is_module(&file) => print_with(&file, |src| {
-            format!("{:#?}\n", notist::analyze_module("package", src))
-        }),
+        Command::Core { file } if is_module(&file) => {
+            let vault = match load_vault(&file, config) {
+                Ok(vault) => vault,
+                Err(code) => return code,
+            };
+            print_with(&file, |src| {
+                format!("{:#?}\n", vault.analyze_code(&file, src))
+            })
+        }
         Command::Core { file } => {
             let mut vault = match load_vault(&file, config) {
                 Ok(vault) => vault,
@@ -107,17 +120,51 @@ fn main() -> ExitCode {
                         d.message
                     ));
                 }
-                out.push_str(&notist::dump::dump(document.root()));
+                if evaluate {
+                    match vault.evaluate(&file, &document) {
+                        Ok(e) => {
+                            for d in e.diagnostics {
+                                out.push_str(&format!("error[{}]: {}\n", d.phase, d.message));
+                            }
+                            out.push_str(&notist::dump::dump(&e.root));
+                        }
+                        Err(e) => out.push_str(&e.to_string()),
+                    }
+                } else {
+                    out.push_str(&notist::dump::dump(document.root()));
+                }
                 out
             })
         }
-        Command::Json { file } if is_module(&file) => print_with(&file, |src| {
-            notist::cst_json::analyze_module_json("package", src)
-        }),
+        Command::Json { file } if is_module(&file) => {
+            let vault = match load_vault(&file, config) {
+                Ok(vault) => vault,
+                Err(code) => return code,
+            };
+            print_with(&file, |src| match vault.analyze_code(&file, src) {
+                Ok(analysis) => notist::cst_json::module_json(src, &analysis),
+                Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
+            })
+        }
         Command::Json { file } => match load_vault(&file, config) {
             Ok(mut vault) => print_with(&file, |src| match vault.inspect(&file, src) {
                 Ok((analysis, inspection)) => {
-                    notist::cst_json::inspection_json(&analysis, Some(&inspection))
+                    let text = notist::cst_json::inspection_json(&analysis, Some(&inspection));
+                    if evaluate {
+                        let mut data: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        match vault.evaluate(&file, &analysis) {
+                            Ok(e) => {
+                                data["core"] = notist::json::item(&e.root);
+                                data["evaluation_diagnostics"] = serde_json::json!(
+                                    e.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+                                );
+                            }
+                            Err(e) => data["error"] = e.to_string().into(),
+                        };
+                        data.to_string()
+                    } else {
+                        text
+                    }
                 }
                 Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
             }),
@@ -133,8 +180,20 @@ fn main() -> ExitCode {
                     eprintln!("unsupported file extension: {}", file.display());
                     return ExitCode::FAILURE;
                 };
-                let matches = notist::query::select(document.root(), &selector);
-                println!("{}", query::render_json(&src, &matches));
+                let evaluation = if evaluate {
+                    match vault.evaluate(&file, &document) {
+                        Ok(e) => Some(e),
+                        Err(e) => {
+                            eprintln!("{e}");
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let root = evaluation.as_ref().map_or(document.root(), |e| &e.root);
+                let matches = notist::query::select(root, &selector);
+                println!("{}", query::render_json(document.sources(), &matches));
                 ExitCode::SUCCESS
             }
             Err(code) => code,
@@ -160,8 +219,8 @@ fn main() -> ExitCode {
                 emit_source(&file, &src, output.analysis.diagnostics());
                 return ExitCode::FAILURE;
             }
-            if !output.transformed.diagnostics.is_empty() {
-                emit_source(&file, &src, &output.transformed.diagnostics);
+            if !output.evaluation.diagnostics.is_empty() {
+                emit_source(&file, &src, &output.evaluation.diagnostics);
                 return ExitCode::FAILURE;
             }
             let environment = vault
@@ -235,10 +294,16 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         Err(code) => return code,
     };
     if is_module(file) {
-        let diagnostics = notist::analyze_module("package", &src)
-            .err()
-            .unwrap_or_default();
-        emit_source(file, &src, &diagnostics);
+        let vault = match load_vault(file, config) {
+            Ok(vault) => vault,
+            Err(code) => return code,
+        };
+        let analysis = match vault.analyze_code(file, &src) {
+            Ok(analysis) => analysis,
+            Err(error) => return emit_vault_error(error),
+        };
+        let diagnostics = analysis.diagnostics;
+        emit_diagnostics(file, &src, &diagnostics, &analysis.sources);
         return if diagnostics.is_empty() {
             ExitCode::SUCCESS
         } else {
@@ -253,25 +318,14 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         eprintln!("unsupported file extension: {}", file.display());
         return ExitCode::FAILURE;
     };
+    let sources = document.sources().clone();
     let (item, mut diagnostics) = document.into_parts();
     // id/tag 约定是 .not 的注解语义，只在该前端下检查
     if file.extension().is_some_and(|ext| ext == "not") {
         let index = notist::index::Index::build(&item, &mut diagnostics);
         notist::vault_index::check_doc_links(&item, &index, &mut diagnostics);
     }
-    let files = SimpleFile::new(file.display().to_string(), &src);
-    let writer = StandardStream::stderr(ColorChoice::Auto);
-    let config = Config::default();
-    for d in &diagnostics {
-        let range = usize::from(d.span.start())..usize::from(d.span.end());
-        let diagnostic = Diagnostic::error()
-            .with_code(d.phase.to_string())
-            .with_message(&d.message)
-            .with_labels(vec![Label::primary((), range)]);
-        if term::emit(&mut writer.lock(), &config, &files, &diagnostic).is_err() {
-            return ExitCode::FAILURE;
-        }
-    }
+    emit_diagnostics(file, &src, &diagnostics, &sources);
     if diagnostics.is_empty() {
         ExitCode::SUCCESS
     } else {
@@ -302,8 +356,17 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = Config::default();
     for (path, d) in &diagnostics {
-        let id = *ids.entry(path.clone()).or_insert_with(|| {
-            let full = vault_root.join(path);
+        let diagnostic_path = d
+            .source
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.clone());
+        let id = *ids.entry(diagnostic_path).or_insert_with(|| {
+            let full = d
+                .source
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| vault_root.join(path));
             let src = std::fs::read_to_string(&full).unwrap_or_default();
             files.add(full.display().to_string(), src)
         });
@@ -337,7 +400,9 @@ fn load_vault(file: &Path, config: Option<&Path>) -> Result<notist::Vault, ExitC
     if let Some(config) = config {
         vault = vault.with_config(config);
     }
-    vault.environment_for(file).map_err(emit_vault_error)?;
+    if !is_module(file) {
+        vault.environment_for(file).map_err(emit_vault_error)?;
+    }
     Ok(vault)
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -365,5 +430,24 @@ fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
                 usize::from(error.span.start())..usize::from(error.span.end()),
             )]);
         let _ = term::emit(&mut writer.lock(), &Config::default(), &files, &diagnostic);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_diagnostics(
+    path: &Path,
+    source: &str,
+    diagnostics: &[notist::Diagnostic],
+    sources: &std::collections::BTreeMap<String, String>,
+) {
+    for diagnostic in diagnostics {
+        let path = diagnostic.source.as_deref().map(Path::new).unwrap_or(path);
+        let source = diagnostic
+            .source
+            .as_ref()
+            .and_then(|s| sources.get(s))
+            .map(String::as_str)
+            .unwrap_or(source);
+        emit_source(path, source, std::slice::from_ref(diagnostic));
     }
 }

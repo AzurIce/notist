@@ -1,175 +1,274 @@
-//! Code declaration analysis: syntax views → shared core definitions.
-//! No filesystem, dependency loading or plugin execution occurs here.
-
-use notist_core::builtins::{Accepts, Level};
-use notist_core::definitions::{
-    DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule, ValueType,
-    validate_module,
+//! Package registration lowers bodies without executing them. Each concrete
+//! instance is checked later, with known comptime arguments and unknown inputs.
+use crate::lowering::{code::expression, content::ContentLowering, literals::syntax_value};
+use notist_core::{
+    builtins::Accepts,
+    definitions::{
+        ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, ParameterDef,
+        ParameterMode, Type, validate_module,
+    },
+    diag::{Diagnostic, Phase},
+    expr::Expr,
 };
-use notist_syntax::ast::{FunctionDecl, Module, TypeRef};
+use notist_syntax::code::ast::{FunctionDecl, Module, Parameter, TypeRef};
+use std::collections::BTreeMap;
 
-use notist_core::diag::{Diagnostic, Phase};
-use notist_lowering::literals::syntax_value;
-
-/// Analyze one package's `lib.notc` source into a validated definition module.
-/// Any syntax, literal or definition error returns diagnostics instead of a
-/// partially installable module. Use `syntax::parse_module` for recovery ASTs.
-///
-/// ```
-/// use notist_pipeline::analyze_module;
-/// use notist_core::builtins;
-///
-/// let module = analyze_module("widgets", "fn badge(label: String) -> InlineContent;").unwrap();
-/// let mut registry = builtins::registry().clone();
-/// registry.register(module).unwrap();
-/// assert_eq!(registry.resolve("widgets::badge").unwrap().id.name, "badge");
-/// assert!(registry.resolve("badge").is_err()); // external functions stay qualified
-/// ```
-pub fn analyze_module(package: &str, source: &str) -> Result<DefinitionModule, Vec<Diagnostic>> {
-    let parsed = notist_syntax::parse_module(source);
-    let mut diagnostics: Vec<_> = parsed
-        .diagnostics
-        .iter()
-        .map(|diagnostic| Diagnostic::new(Phase::Syntax, diagnostic.span, &diagnostic.message))
-        .collect();
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CodeProgram {
+    pub(crate) bodies: BTreeMap<FunctionId, CodeBody>,
+    pub(crate) sources: BTreeMap<String, String>,
+    pub(crate) modules: BTreeMap<String, String>,
+}
+impl CodeProgram {
+    pub fn sources(&self) -> &BTreeMap<String, String> {
+        &self.sources
     }
-    let ast = Module::cast(parsed.syntax()).expect("parse_module produces a Module");
-    let mut module = DefinitionModule::new(package);
-    module.span = ast.range();
+    pub fn source_path(&self, package: &str) -> Option<&str> {
+        self.modules.get(package).map(String::as_str)
+    }
+    pub fn package_for_source(&self, path: &str) -> Option<&str> {
+        self.modules
+            .iter()
+            .find_map(|(package, source)| (source == path).then_some(package.as_str()))
+    }
+}
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CodeBody {
+    pub expression: Option<Expr>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub source: String,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeModule {
+    pub definitions: DefinitionModule,
+    pub program: CodeProgram,
+}
+
+impl CodeModule {
+    pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.program
+            .bodies
+            .values()
+            .flat_map(|b| b.diagnostics.iter())
+    }
+}
+
+/// Compile an in-memory native-Markup Code module. Body diagnostics are kept
+/// with the implementation, so unrelated functions remain available.
+pub fn analyze_module(package: &str, source: &str) -> Result<CodeModule, Vec<Diagnostic>> {
+    compile_module(
+        package,
+        &format!("{package}/lib.notc"),
+        source,
+        &crate::frontend::markup::NotistFrontend,
+    )
+}
+
+pub(crate) fn compile_module(
+    package: &str,
+    path: &str,
+    source: &str,
+    frontend: &dyn ContentLowering,
+) -> Result<CodeModule, Vec<Diagnostic>> {
+    let parsed = notist_syntax::code::parse_module(source, frontend);
+    let ast = Module::cast(parsed.syntax()).unwrap();
+    let mut diagnostics = Vec::new();
+    let mut definitions = DefinitionModule::new(package);
+    definitions.span = ast.range();
+    let mut program = CodeProgram::default();
+    program.sources.insert(path.into(), source.into());
+    program.modules.insert(package.into(), path.into());
+    let mut assigned = vec![false; parsed.diagnostics.len()];
     for function in ast.functions() {
+        let body = function.body();
+        let body_range = body.as_ref().map(|n| n.text_range());
+        let mut body_diags = Vec::new();
+        for (i, d) in parsed.diagnostics.iter().enumerate() {
+            if assigned[i] {
+                continue;
+            }
+            let mut diagnostic = Diagnostic::new(Phase::Syntax, d.span, &d.message);
+            diagnostic.source = Some(path.into());
+            if body_range.is_some_and(|r| r.contains_inclusive(d.span.start())) {
+                body_diags.push(diagnostic);
+                assigned[i] = true;
+            } else if function.range().contains_range(d.span) {
+                diagnostics.push(diagnostic);
+                assigned[i] = true;
+            }
+        }
         if let Some(definition) = lower_function(package, &function, &mut diagnostics) {
-            module.functions.push(definition);
+            let expr = body.and_then(|n| {
+                expression(
+                    rowan::NodeOrToken::Node(n),
+                    Some(&parsed),
+                    Some(frontend),
+                    &mut body_diags,
+                )
+            });
+            for d in &mut body_diags {
+                d.source = Some(path.into());
+            }
+            if definition.code {
+                program.bodies.insert(
+                    definition.id.clone(),
+                    CodeBody {
+                        expression: expr,
+                        diagnostics: body_diags,
+                        source: path.into(),
+                    },
+                );
+            }
+            definitions.functions.push(definition);
         }
     }
-    diagnostics.extend(validate_module(&module));
+    for (i, d) in parsed.diagnostics.iter().enumerate() {
+        if !assigned[i] {
+            diagnostics.push(Diagnostic::new(Phase::Syntax, d.span, &d.message));
+        }
+    }
+    diagnostics.extend(validate_module(&definitions));
     if diagnostics.is_empty() {
-        Ok(module)
+        Ok(CodeModule {
+            definitions,
+            program,
+        })
     } else {
         Err(diagnostics)
     }
 }
 
+fn lower_type(
+    t: &TypeRef,
+    params: &[ComptimeParameter],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    let name = t.path()?.text();
+    let args: Vec<_> = t.arguments().collect();
+    if name == "Array" && args.len() <= 1 {
+        return Some(Type::Array(match args.first() {
+            Some(t) => Some(Box::new(lower_type(t, params, diags)?)),
+            None => None,
+        }));
+    }
+    if !args.is_empty() {
+        diags.push(Diagnostic::new(
+            Phase::Type,
+            t.range(),
+            "type constructors only support Array<T>",
+        ));
+        return None;
+    }
+    Some(match name.as_str() {
+        "Type" => Type::Type,
+        "Unit" => Type::Unit,
+        "Bool" => Type::Bool,
+        "Int" => Type::Int,
+        "Float" => Type::Float,
+        "String" => Type::String,
+        "Dict" => Type::Dict,
+        "InlineContent" => Type::InlineContent,
+        "BlockContent" => Type::BlockContent,
+        _ if params.iter().any(|p| p.name == name && p.ty == Type::Type) => Type::Parameter(name),
+        _ => {
+            diags.push(Diagnostic::new(
+                Phase::Type,
+                t.range(),
+                format!("unknown type `{name}`"),
+            ));
+            return None;
+        }
+    })
+}
+fn ct_default(p: &Parameter, ty: &Type, diags: &mut Vec<Diagnostic>) -> Option<ComptimeValue> {
+    let el = p.default_value()?.value()?;
+    if *ty == Type::Type {
+        let name = el.to_string();
+        let ty = match name.as_str() {
+            "Type" => Type::Type,
+            "InlineContent" => Type::InlineContent,
+            "BlockContent" => Type::BlockContent,
+            "Bool" => Type::Bool,
+            "Int" => Type::Int,
+            "Float" => Type::Float,
+            "String" => Type::String,
+            "Dict" => Type::Dict,
+            "Unit" => Type::Unit,
+            _ => {
+                diags.push(Diagnostic::new(
+                    Phase::Type,
+                    el.text_range(),
+                    "expected a type default",
+                ));
+                return None;
+            }
+        };
+        Some(ComptimeValue::Type(ty))
+    } else {
+        syntax_value(&el, diags).map(ComptimeValue::Data)
+    }
+}
 fn lower_function(
     package: &str,
-    function: &FunctionDecl,
-    diagnostics: &mut Vec<Diagnostic>,
+    f: &FunctionDecl,
+    diags: &mut Vec<Diagnostic>,
 ) -> Option<FunctionDef> {
-    let name = function.name()?;
-    let returns = return_rule(&function.return_type()?, diagnostics)?;
-    let children = match function.children_decl() {
-        Some(mount) => match content_type(&mount.ty()?, diagnostics)? {
-            Level::Inline => Accepts::Inline,
-            _ => Accepts::Content,
-        },
-        None => Accepts::Nothing,
+    let mut comptime = Vec::new();
+    for p in f.comptime_parameters() {
+        let ty = lower_type(&p.ty()?, &comptime, diags)?;
+        let default = ct_default(&p, &ty, diags);
+        comptime.push(ComptimeParameter {
+            constraint: Default::default(),
+            name: p.name()?.text().into(),
+            ty,
+            default,
+            span: p.range(),
+        });
+    }
+    let returns = lower_type(&f.return_type()?, &comptime, diags)?;
+    let children_type = match f.children_decl() {
+        Some(c) => Some(lower_type(&c.ty()?, &comptime, diags)?),
+        None => None,
     };
-    let mut definition = FunctionDef::new(FunctionId::new(package, name.text()), children, returns);
-    definition.span = function.range();
-    for parameter in function.parameters() {
-        let name = parameter.name()?;
-        let ty = value_type(&parameter.ty()?, diagnostics)?;
-        let mode = if let Some(default) = parameter.default_value() {
-            let value = default.value()?;
-            ParameterMode::Default(syntax_value(&value, diagnostics)?)
-        } else if parameter.is_optional() {
+    let accepts = match children_type.as_ref() {
+        None => Accepts::Nothing,
+        Some(Type::InlineContent) => Accepts::Inline,
+        Some(Type::BlockContent) => Accepts::Block,
+        Some(Type::Parameter(_)) => Accepts::Any,
+        _ => {
+            diags.push(Diagnostic::new(
+                Phase::Type,
+                f.range(),
+                "children must have a content type",
+            ));
+            return None;
+        }
+    };
+    let mut definition =
+        FunctionDef::new(FunctionId::new(package, f.name()?.text()), accepts, returns);
+    definition.comptime = comptime;
+    definition.children_type = children_type;
+    definition.span = f.range();
+    definition.code = f.body().is_some();
+    for p in f.parameters() {
+        let ty = lower_type(&p.ty()?, &definition.comptime, diags)?;
+        let mode = if let Some(default) = p.default_value() {
+            ParameterMode::Default(syntax_value(&default.value()?, diags)?)
+        } else if p.is_optional() {
+            if definition.code {
+                diags.push(Diagnostic::new(
+                    Phase::Type,
+                    p.range(),
+                    "Code parameters require a value or a concrete default",
+                ));
+            }
             ParameterMode::Optional
         } else {
             ParameterMode::Required
         };
-        let mut lowered = ParameterDef::new(name.text(), ty, mode);
-        lowered.span = parameter.range();
-        definition.parameters.push(lowered);
+        let mut param = ParameterDef::new(p.name()?.text(), ty, mode);
+        param.span = p.range();
+        definition.parameters.push(param);
     }
     Some(definition)
-}
-
-fn return_rule(ty: &TypeRef, diagnostics: &mut Vec<Diagnostic>) -> Option<ReturnRule> {
-    let arguments: Vec<_> = ty.arguments().collect();
-    if ty.path()?.text() == "Content" && arguments.len() == 1 {
-        let selector = &arguments[0];
-        let name = selector.path()?.text();
-        if selector.arguments().next().is_none() && notist_core::definitions::valid_name(&name) {
-            return Some(ReturnRule::BlockIfTrue(name));
-        }
-        diagnostics.push(Diagnostic::new(
-            Phase::Type,
-            selector.range(),
-            "Content's selector must be a boolean parameter name",
-        ));
-        return None;
-    }
-    content_type(ty, diagnostics).map(ReturnRule::Fixed)
-}
-
-fn content_type(ty: &TypeRef, diagnostics: &mut Vec<Diagnostic>) -> Option<Level> {
-    let name = ty.path()?.text();
-    if ty.arguments().next().is_none() {
-        match name.as_str() {
-            "Content" => return Some(Level::Block),
-            "InlineContent" => return Some(Level::Inline),
-            _ => {}
-        }
-    }
-    diagnostics.push(Diagnostic::new(
-        Phase::Type,
-        ty.range(),
-        "expected Content or InlineContent",
-    ));
-    None
-}
-
-fn value_type(ty: &TypeRef, diagnostics: &mut Vec<Diagnostic>) -> Option<ValueType> {
-    let name = ty.path()?.text();
-    let arguments: Vec<_> = ty.arguments().collect();
-    let basic = match name.as_str() {
-        "Unit" => ValueType::Unit,
-        "Bool" => ValueType::Bool,
-        "Int" => ValueType::Int,
-        "Float" => ValueType::Float,
-        "String" => ValueType::String,
-        "Dict" => ValueType::Dict,
-        "Array" if arguments.len() <= 1 => {
-            let element = match arguments.first() {
-                Some(argument) => Some(Box::new(value_type(argument, diagnostics)?)),
-                None => None,
-            };
-            return Some(ValueType::Array(element));
-        }
-        "Array" => {
-            diagnostics.push(Diagnostic::new(
-                Phase::Type,
-                ty.range(),
-                "Array takes at most one element type",
-            ));
-            return None;
-        }
-        "Content" | "InlineContent" => {
-            diagnostics.push(Diagnostic::new(
-                Phase::Type,
-                ty.range(),
-                "content is mounted as children, not passed as a value parameter",
-            ));
-            return None;
-        }
-        _ => {
-            diagnostics.push(Diagnostic::new(
-                Phase::Type,
-                ty.range(),
-                format!("unknown value type `{name}`"),
-            ));
-            return None;
-        }
-    };
-    if !arguments.is_empty() {
-        diagnostics.push(Diagnostic::new(
-            Phase::Type,
-            ty.range(),
-            format!("`{name}` takes no type arguments"),
-        ));
-        None
-    } else {
-        Some(basic)
-    }
 }

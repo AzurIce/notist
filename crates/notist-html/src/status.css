@@ -1,0 +1,82 @@
+/* Status is document metadata; these styles work without JavaScript. */
+[data-status="draft"] {
+  --status-color: var(--accent, #3d6655);
+  --status-label: "Draft · 草案";
+  --status-border: dashed;
+  --status-decoration: dashed;
+}
+[data-status="staged"] {
+  --status-color: var(--staged-color, light-dark(#326f91, #92bdd7));
+  --status-label: "Staged · 待实现";
+  --status-border: solid;
+  --status-decoration: dotted;
+}
+[data-status="outdate"] {
+  --status-color: var(--outdate-color, light-dark(#b54a45, #eaa29b));
+  --status-label: "Outdate · 已过时";
+  --status-border: solid;
+  --status-decoration: wavy;
+}
+
+:is([data-status="draft"], [data-status="staged"], [data-status="outdate"]) {
+  text-decoration-line: underline;
+  text-decoration-style: var(--status-decoration);
+  text-decoration-color: color-mix(in srgb, var(--status-color) 65%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: .16em;
+}
+
+:is([data-status="draft"], [data-status="staged"], [data-status="outdate"]):is(div, section, article, aside, p, blockquote, pre, ul, ol, li, dl, dt, dd, figure, figcaption, table, h1, h2, h3, h4, h5, h6) {
+  box-sizing: border-box;
+  min-width: 0;
+  margin-block: 1.25em;
+  padding: 1em;
+  border: 1px var(--status-border) color-mix(in srgb, var(--status-color) 32%, transparent);
+  border-radius: 8px;
+  background: var(--status-background, color-mix(in srgb, var(--status-color) 3%, var(--surface, Canvas)));
+  text-decoration: none;
+}
+:is([data-status="draft"], [data-status="staged"], [data-status="outdate"]):is(div, section, article, aside, p, blockquote, pre, ul, ol, li, dl, dt, dd, figure, figcaption, table, h1, h2, h3, h4, h5, h6)::before {
+  content: var(--status-label);
+  display: block;
+  margin-block-end: .75em;
+  color: var(--status-color);
+  font-family: var(--font-ui, inherit);
+  font-size: .75rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+}
+:is([data-status="draft"], [data-status="staged"], [data-status="outdate"]):is(div, section, article, aside, blockquote, li, figure) > :first-child {
+  margin-block-start: 0;
+}
+:is([data-status="draft"], [data-status="staged"], [data-status="outdate"]):is(div, section, article, aside, blockquote, li, figure) > :last-child {
+  margin-block-end: 0;
+}
+
+/* A cell's inset frame keeps adjacent frames and table rules separate. */
+:is(td, th):is([data-status="draft"], [data-status="staged"], [data-status="outdate"]) {
+  position: relative;
+  isolation: isolate;
+  padding: 12px 16px;
+  text-decoration: none;
+}
+:is(td, th):is([data-status="draft"], [data-status="staged"], [data-status="outdate"])::before {
+  content: "";
+  position: absolute;
+  inset: 4px 6px;
+  z-index: -1;
+  pointer-events: none;
+  border: 1px var(--status-border) color-mix(in srgb, var(--status-color) 32%, transparent);
+  border-radius: 5px;
+  background: var(--status-background, color-mix(in srgb, var(--status-color) 3%, var(--surface, Canvas)));
+}
+
+@media print {
+  :is([data-status="draft"], [data-status="staged"], [data-status="outdate"]) {
+    --status-border: solid;
+    --status-background: transparent;
+  }
+  :is(td, th):is([data-status="draft"], [data-status="staged"], [data-status="outdate"])::before {
+    background: transparent;
+  }
+}

@@ -74,9 +74,31 @@ fn value(value: &Value) -> serde_json::Value {
     }
 }
 
+fn instance_json(i: Option<&notist_core::definitions::FunctionInstance>) -> serde_json::Value {
+    i.map(|i|serde_json::json!({"function":i.function.to_string(),"comptime":i.arguments.iter().map(|v|match v{notist_core::definitions::ComptimeValue::Type(t)=>serde_json::json!({"type":t.to_string()}),notist_core::definitions::ComptimeValue::Data(v)=>notist_html::components::value_json(v)}).collect::<Vec<_>>()})).unwrap_or_default()
+}
+
 fn metadata(item: &Item) -> serde_json::Value {
     serde_json::json!({
+        "pending": item.pending.as_deref().map(|pending| match pending {
+            notist_core::evaluation::PendingEvaluation::Call(call) => serde_json::json!({
+                "kind": "call",
+                "arguments": call.arguments.iter().map(|(name, expr)| serde_json::json!({
+                    "name": name, "type": expr.ty.as_ref().map(ToString::to_string),
+                    "source": expr.source, "start": u32::from(expr.span.start()), "end": u32::from(expr.span.end()),
+                })).collect::<Vec<_>>(),
+            }),
+            notist_core::evaluation::PendingEvaluation::Splice(expr) => serde_json::json!({
+                "kind": "splice", "type": expr.ty.as_ref().map(ToString::to_string),
+                "reference": match &expr.kind { notist_core::evaluation::ExprKind::Input(name) => Some(name), _ => None },
+            }),
+            notist_core::evaluation::PendingEvaluation::Failure { message, .. } => serde_json::json!({"kind":"failure", "message":message}),
+        }),
         "function": item.ctor.function_id().map(|id| id.to_string()),
+        "instance":instance_json(item.instance.as_ref()),
+        "target":instance_json(item.target.as_ref()),
+        "evaluation":match &item.evaluation {None=>serde_json::Value::Null,Some(notist_core::item::EvaluationState::Native)=>"native".into(),Some(notist_core::item::EvaluationState::Expanded)=>"expanded".into(),Some(notist_core::item::EvaluationState::Error(m))=>serde_json::json!({"error":m})},
+        "origin":item.origin.as_ref().map(|o|serde_json::json!({"source":o.source,"start":o.start,"end":o.end,"expansion":o.expansion.iter().map(|x|serde_json::json!({"source":x.source,"start":x.start,"end":x.end})).collect::<Vec<_>>()})),
         "level": if item.level == crate::builtins::Level::Block { "block" } else { "inline" },
         "fields": value(&Value::Dict(item.fields.clone())),
         "typed_fields": notist_html::components::value_json(&Value::Dict(item.fields.clone())),

@@ -1,67 +1,93 @@
 = Crate 架构
 
-workspace 围绕共享内容模型组织：前端产生 Expr 森林，管线生成 Item 树，输出后端消费 Item，宿主装配资源与环境。本文定义实现职责与依赖边界；处理阶段和数据流见 [文档管线](pipeline.not)。
+workspace 围绕共享内容模型组织：前端产生 Expr 森林，管线生成 Item 树，输出后端消费 Item，宿主装配资源与环境。本文描述当前实现的职责与依赖边界；Markup 的处理阶段和目标契约见 [Markup 管线](pipeline/markup.not)。
 
-== 职责一览
+== 职责与依赖
 
-| Crate | 职责 |
-| --- | --- |
-| `notist-core` | Expr / Item / Value、Frontend Trait、定义模型、Registry、共同校验、诊断与单文档索引 |
-| `notist-syntax` | .not 与 .notc 的 lexer、无损 CST、类型化 AST 视图和解析诊断 |
-| `notist-lowering` | 原生 Document AST → IR₁，以及共用的注解、调用头与字面量转换 |
-| `notist-md` | MarkdownFrontend、Markdown 解析与扩展语法、Markdown AST → IR₁ |
-| `notist-pipeline` | NotistFrontend、前端注册与选择、resolve / shape / materialize、声明转换与输出 transforms |
-| `notist-html` | Item 树 → HTML、内置 renderer、组件绑定与渲染结果 |
-| `notist` | Resources、Environment、Vault、VaultIndex、查询与调试输出、内存 / Worker 宿主适配 |
-| `notist-ssg` | 站点路由、跨页链接校验、主题、页面与资源产物 |
-| `notist-cli` | 命令行解析、终端诊断、静态站点构建与预览、LSP |
-
-== 依赖方向
-
-箭头由使用者指向依赖。图中展示主要依赖方向，完整的直接依赖声明见各 crate 的 Cargo.toml。
+箭头由使用者指向依赖。图中展示 workspace 内部的直接依赖；第三方库见各 crate 的 Cargo.toml。
 
 #mermaid::diagram(r#"""
 %%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
 flowchart TB
     cli["notist-cli"] --> ssg["notist-ssg"]
     cli --> host["notist · 资源与环境"]
+    cli --> html["notist-html"]
     ssg --> host
-    ssg --> html["notist-html"]
+    ssg --> html
     host --> pipeline["notist-pipeline"]
     host --> html
-    pipeline --> markdown["notist-md"]
-    pipeline --> lowering["notist-lowering"]
-    pipeline --> core["notist-core"]
-    markdown --> lowering
-    markdown --> core
-    lowering --> syntax["notist-syntax"]
-    lowering --> core
+    host --> core["notist-core"]
+    host --> syntax["notist-syntax"]
+    pipeline --> core
+    pipeline --> syntax
     html --> core
+    grammar["notist-grammar · 铁路图"]
 """#, theme: "neutral")
 
-syntax 与 core 分别提供语法表示和共享语义模型。lowering 依赖二者；Markdown 正文由自身解析，共用 lowering 处理显式调用头、注解与字面量。pipeline 组合原生 syntax / lowering，并注册 MarkdownFrontend，共享后端消费两种前端的相同输出。
-
-HTML 只依赖 core，可以直接呈现显式传入的 Item。资源环境在顶层 notist 组装，站点与 CLI 在其上提供发布和交互入口。
+- `notist-core`：提供 Expr、RExpr、Item、Value、已检查表达式与待求值信息、函数定义、Registry、前端接口与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
+- `notist-syntax`：提供原生 Markup 与 Code 的词法、解析和 AST，共享 Rowan 基础，并定义内容字面量的 ContentParser 委托接口；不生成 IR，不依赖语义模型或具体前端。
+- `notist-pipeline`：依赖 core 与 syntax，提供 Context（Registry、CodeProgram 与 TransformPlan）、共用 lowering、ContentLowering 接口、resolve / shape / attach / materialize、Code lowering、具体实例检查及 Evaluate。frontend::markup 组合原生解析与正文 lowering，frontend::markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
+- `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
+- `notist`：依赖 core、syntax、pipeline 与 html，负责配置和 .notc 的资源加载，将 Context 与配置、包资源信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口。
+- `notist-ssg`：依赖 notist 与 html，在 Vault 之上处理站点路由、主题、跨页链接和发布产物。
+- `notist-cli`：依赖 notist、html 与 ssg，提供终端命令、构建、预览与 LSP 入口。
+- `notist-grammar`：位于 packages/grammar，独立解析文法记法并生成 SVG 铁路图，不依赖其他 workspace crate。
 
 == 接口与实现边界
 
+=== 语法模块
+
+notist-syntax 按语法域组织：
+
+```text
+src/
+  markup/       原生 Markup AST、lexer、parser、MarkupContentParser
+  code/         Code AST、lexer、parser 与语法片段入口
+  tree.rs       共同的 SyntaxKind、Lang、SyntaxNode、SyntaxToken
+  parse.rs      共同的 Parse 与 Diagnostic，从 crate 根导出
+  lexed.rs      源码与 token 范围存储
+  content.rs    内容字面量的解析接口与不透明前端语法产物
+```
+
+markup::parse_document 与 code::parse_module 分别产生 Document 和 Module 根。两套类型化 AST 共用 SyntaxKind 与 Rowan 节点类型，解析时分别构造树。tree.rs 定义共同表示，不保存一棵全局树；AST 访问器是 CST 的视图，不复制底层树。
+
+Markup 将 Code 调用头和注解片段接入自身 CST。Code 的 ContentLiteral 保留括号与不透明正文，具体前端的内容树另存于 Parse.contents。树的关联与坐标规则见 [文档前端](frontends.not)。语法层不依赖语义模型或管线。
+
+=== 管线内置前端
+
+notist-pipeline 将前端实现与共用转换按职责组织：
+
+```text
+src/
+  context.rs           Registry、CodeProgram 与 TransformPlan
+  definitions.rs       CodeModule 与函数体的装配
+  code/                具体实例检查、Item 参数绑定与子树替换求值器
+  attach.rs            Shape 之后按源码位置挂载节点注解
+  frontend.rs          前端注册与选择
+  frontend/markup/     原生文档与内容 lowering、NotistFrontend
+  frontend/markdown/   Markdown 解析、扩展语法与 lowering、MarkdownFrontend
+  lowering/            共用注解、调用头、数据字面量转换与内容 lowering 接口
+```
+
+原生语法定义留在 syntax；Markdown 的 rushdown 适配与两种前端的 IR 生成由 pipeline 提供。Code 声明转换也复用 lowering 中的数据字面量转换。
+
 === 模型与算法
 
-Expr、Item、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。syntax 提供解析与 AST 视图，lowering 接收 AST 并转换，pipeline 负责前端调度与文档结构算法。
+Expr、Item、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。core::evaluation 定义 TypedExpr、Invocation 与 PendingEvaluation，Item 与 RExpr 直接携带待求值信息；这些类型只描述 IR，检查与执行算法位于 pipeline。syntax 提供 Markup 与 Code 的解析和 AST 视图；pipeline 负责语法到 IR 的转换、前端调度与文档结构算法。
 
-crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在 crate 引用模块与算法。顶层 notist 公开供宿主使用的 Pipeline、NotistFrontend、Frontend 和共享模型，同时组织查询、调试输出、资源与后端处理。
+crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在 crate 引用模块与算法。Context 从 notist-pipeline 导出；顶层 notist 公开供宿主使用的 Context、Pipeline、NotistFrontend、MarkdownFrontend、Frontend、syntax 模块和共享模型，同时组织查询、调试输出、资源与后端处理。
 
 前端接口、默认实现与注册规则见 [文档前端](frontends.not)。
 
 === 纯处理入口
 
-Pipeline 接收 path、source 与 Registry；前端接收源码，输出 Expr 森林。`analyze_module` 接收包名与 .notc 源码，产出 DefinitionModule。TransformPlan 接收显式规则与 Registry，作用于已分析的 Item。renderer 接收 Item 与渲染配置。
+Pipeline::analyze / inspect、Frontends::analyze 与共享后端 process / resolve 均显式接收 Context。前端的 Parse / Lower 只接收源码与语法选项，输出 Expr 森林与并列的节点注解；Context 从 Resolve 开始提供函数定义，注解在 Shape 之后挂载。`analyze_module` 接收包名与 .notc 源码，产出 CodeModule。Context 的 TransformPlan 在 Evaluate 中选择执行目标，分析入口保留原始调用身份。renderer 接收 Item 与渲染配置。
 
-这些入口在传入数据上完成解析、校验、转换和呈现。文件读取、package 发现、配置合成与组件资源取得由 Resources / Environment / Vault 组织，规则见 [Package Model](../package.not)、[Content Function Extensions](content-functions.not) 与 [IR Transforms](transforms.not)。
+这些入口在传入数据上完成解析、校验、转换和呈现。文件读取、package 发现、配置合成与组件资源取得由 Resources / Environment / Vault 组织，规则见 [Package Model](../package.not)、[BlockContent Function Extensions](content-functions.not) 与 [IR Transforms](transforms.not)。
 
 === 宿主与发布
 
-Resources 表达宿主的资源输入视图，Environment 保存已装配的声明、组件与转换计划，Vault 按文档环境组合分析和输出。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境。本地和浏览器宿主共用管线与内容模型。
+Resources 表达宿主的资源输入视图。Environment 负责 Context 的宿主装配并保留配置路径与包资源信息，通过 context() 只读提供 Context；Vault 选择并缓存 Environment，将其中的 Context 传给分析和输出阶段。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境。本地和浏览器宿主共用管线与内容模型。
 
 notist-ssg 接收 Vault 与站点配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 

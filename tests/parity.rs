@@ -2,14 +2,14 @@ use notist::{Ctor, Item, Pipeline, TextRange, Value};
 
 fn analyze(extension: &str, src: &str) -> Item {
     if extension == "not" {
-        let parse = notist::syntax::parser::parse_document(src);
+        let parse = notist::syntax::markup::parse_document(src);
         assert_eq!(parse.syntax().to_string(), src, "lossless CST: {src:?}");
     }
     let document = Pipeline::default()
         .analyze(
             format!("test.{extension}"),
             src,
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(
@@ -22,6 +22,9 @@ fn analyze(extension: &str, src: &str) -> Item {
 
 fn normalize(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
+    item.origin = None;
+    // Compare semantic structure independently of source-bound computation metadata.
+    item.pending = None;
     item.children = item.children.into_iter().map(normalize).collect();
     item
 }
@@ -96,16 +99,16 @@ fn lists_share_block_content_across_sugar_functions_and_frontends() {
     let sugar = analyze("not", "- first\n\n  second\n- next");
     let explicit = analyze(
         "not",
-        "#list(ordered: false, start: 1)[\n#item[\nfirst\n\nsecond\n]\n#item[next]\n]",
+        "#list(ordered: false, start: 1)[\n#item[ \nfirst\n\nsecond\n ]\n#item[ next ]\n]",
     );
     assert_eq!(normalize(sugar), normalize(explicit));
     equal(
-        "#list(ordered: true, start: 3)[#item[first] #item[second]]",
+        "#list(ordered: true, start: 3)[#item[ first ] #item[ second ]]",
         "3. first\n4. second\n",
     );
     assert_eq!(
         normalize(analyze("not", "- ")),
-        normalize(analyze("not", "#list[#item[]]"))
+        normalize(analyze("not", "#list[#item[ ]]"))
     );
 }
 
@@ -223,28 +226,28 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
         ("#list[text]", "only item children"),
         ("#list[#paragraph[text]]", "only item children"),
         (
-            "#strong[before #callout[note] after]",
+            "#strong[before\n\n#callout[note]\n\nafter]",
             "block children are not allowed",
         ),
         (
-            "#link(\"asset\")[#[#callout[note]]]",
+            "#link(\"asset\")[#node[ #callout[note] ]]",
             "block children are not allowed",
         ),
-        ("#heading(level: \"bad\")[heading]", "positive integer"),
-        ("#heading(level: 0)[heading]", "positive integer"),
+        ("#heading<level: \"bad\">[heading]", "comptime"),
+        ("#heading<level: 0>[heading]", "positive integer"),
         ("#link(target: 42)[label]", "must be string"),
         ("#embed()", "requires `target`"),
         ("#raw()", "requires `text`"),
-        ("#list(ordered: \"yes\")[#item[x]]", "must be boolean"),
-        ("#list(start: \"three\")[#item[x]]", "must be integer"),
+        ("#list(ordered: \"yes\")[#item[ x ]]", "must be boolean"),
+        ("#list(start: \"three\")[#item[ x ]]", "must be integer"),
         (
-            "#table(align: (\"bad\",))[#row[#cell[x]]]",
+            "#table(align: (\"bad\",))[#row[#cell[ x ]]]",
             "alignment array",
         ),
-        ("#table[#row(header: 1)[#cell[x]]]", "must be boolean"),
+        ("#table[#row(header: 1)[#cell[ x ]]]", "must be boolean"),
     ] {
         let document = Pipeline::default()
-            .analyze("test.not", src, notist::builtins::registry())
+            .analyze("test.not", src, &notist::Context::default())
             .unwrap();
         assert!(
             document
@@ -259,7 +262,7 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
         .analyze(
             "test.not",
             "#link(target: 42)[label]",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert_eq!(
@@ -274,27 +277,16 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
 }
 
 #[test]
-fn reflow_keeps_one_identity_for_an_annotated_split_range() {
-    let src = "@(id: \"keep\", tags: (\"range\",))\nbefore #callout[note] after";
+fn block_annotation_attaches_to_the_first_hard_delimited_fragment() {
+    let src = "@(id: \"keep\", tags: (\"range\",))\nbefore\n\n#callout[note]\n\nafter";
     let root = analyze("not", src);
     let matches = notist::query::select(&root, "id:keep");
     assert_eq!(matches.len(), 1);
-    let group = matches[0];
-    assert_eq!(group.ctor, Ctor::Group);
+    let target = matches[0];
+    assert_eq!(target.ctor, Ctor::Paragraph);
     assert_eq!(
-        group
-            .children
-            .iter()
-            .map(|node| &node.ctor)
-            .collect::<Vec<_>>(),
-        [&Ctor::Paragraph, &Ctor::Callout, &Ctor::Paragraph]
-    );
-    assert_eq!(
-        &src[usize::from(group.span.start())..usize::from(group.span.end())],
-        "before #callout[note] after"
+        &src[usize::from(target.span.start())..usize::from(target.span.end())],
+        "before"
     );
     assert_eq!(notist::query::select(&root, "tag:range").len(), 1);
-    for child in &group.children {
-        assert!(child.span.start() >= group.span.start() && child.span.end() <= group.span.end());
-    }
 }

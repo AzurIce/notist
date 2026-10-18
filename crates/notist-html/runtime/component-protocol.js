@@ -1,4 +1,4 @@
-// Notist component protocol v1. Integers use BigInt; ordered dictionaries use Map.
+// Notist component protocol v2. Integers use BigInt; ordered dictionaries use Map.
 export function encodeName(name) {
   let encoded = Array.from(name, c => /[a-z0-9-]/.test(c) ? c : `u${c.codePointAt(0).toString(16)}x`).join("");
   if (!/^[a-z]/.test(encoded)) encoded = "x" + encoded;
@@ -21,7 +21,7 @@ export function decodeValue(value) {
   }
 }
 export function readParameter(element, name, type) {
-  if (element.getAttribute("notist-protocol") !== "1") throw new Error("Unsupported Notist component protocol");
+  if (element.getAttribute("notist-protocol") !== "2") throw new Error("Unsupported Notist component protocol");
   const value = element.getAttribute("notist-" + encodeName(name));
   if (value === null) return undefined;
   switch (type) {

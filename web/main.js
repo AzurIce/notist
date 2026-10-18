@@ -28,7 +28,7 @@ const SAMPLE = [
   "- 列表 *甲*",
   "- 列表乙",
   "",
-  "#list[",
+  "#node[",
   "块 body 第一段",
   "",
   "- 块内列表",
@@ -218,7 +218,8 @@ function render() {
   renderDiags(data.diagnostics ?? []);
   const components = JSON.stringify(data.used_components ?? []).replace(/</g, "\\u003c");
   const protocol = new URL("./component-protocol.js", import.meta.url).href;
-  previewEl.srcdoc = `<!doctype html><meta charset="utf-8"><body>${data.html ?? ""}<script type="module">import {registerComponents} from ${JSON.stringify(protocol)}; registerComponents(${components}).catch(error => { const message = document.createElement("pre"); message.textContent = error.message; document.body.append(message); });<\/script>`;
+  const statusStyles = new URL("./pkg/status.css", import.meta.url).href;
+  previewEl.srcdoc = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="${statusStyles}"><body>${data.html ?? ""}<script type="module">import {registerComponents} from ${JSON.stringify(protocol)}; registerComponents(${components}).catch(error => { const message = document.createElement("pre"); message.textContent = error.message; document.body.append(message); });<\/script>`;
 }
 
 function renderDiags(diags) {

@@ -2,6 +2,7 @@
 use std::any::Any;
 use std::fmt::Debug;
 
+use crate::annotation::Annotation;
 use crate::diag::Diagnostic;
 use crate::expr::Expr;
 use crate::item::Dict;
@@ -24,10 +25,13 @@ impl<T: Any + Debug> FrontendSyntax for T {
     }
 }
 
-/// Unresolved document expressions, root attributes and frontend diagnostics.
+/// Unresolved document expressions, node annotations, root attributes and
+/// frontend diagnostics.
 #[derive(Debug, Default)]
 pub struct FrontendOutput {
     pub forest: Vec<Expr>,
+    /// Node annotations in source order; attached after shaping.
+    pub annotations: Vec<Annotation>,
     pub module_attrs: Dict,
     pub diagnostics: Vec<Diagnostic>,
     pub syntax: Option<Box<dyn FrontendSyntax>>,

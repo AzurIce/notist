@@ -42,19 +42,22 @@ pub enum Ctor {
     /// A thematic break separating content, with no children.
     Divider,
     /// Transparent identity node: renders as its children; carries attrs
-    /// and structure without adding semantics. Produced by `#[..]`.
-    Group,
+    /// and structure without adding semantics. Produced by explicit `#node`.
+    Node,
     /// A document section: produced by `sectionize`, the identity carrier of
-    /// its range — attrs are transferred from the heading that opens it (a
-    /// heading opens exactly one section), and the span covers the whole
-    /// extent. The heading stays the first child. The source spelling
-    /// `#section[..]` resolves to the same constructor.
+    /// its range; the span covers the whole extent and the heading stays the
+    /// first child. An annotation written before the heading attaches to the
+    /// section after shaping. The source spelling `#section[..]` resolves to
+    /// the same constructor.
     Section,
+    /// A typed content-value interpolation. Evaluation splices its forest into
+    /// the parent and removes this placeholder without creating a call boundary.
+    Interpolation,
     /// A legitimate registered function, distinct from unknown-name recovery.
     Extension(ExtensionCtor),
-    /// Recovery representation of a call to an unknown name — always
-    /// accompanied by an `unknown constructor` diagnostic, never a
-    /// legitimate constructor.
+    /// Recovery representation of an unresolved name or unsupported
+    /// expression, accompanied by a type diagnostic. Not a registered
+    /// constructor.
     Custom(String),
 }
 
@@ -63,7 +66,7 @@ impl Ctor {
     /// constructors have none).
     pub(crate) fn source_name(&self) -> Option<&'static str> {
         Some(match self {
-            Ctor::Doc | Ctor::Custom(_) | Ctor::Extension(_) => return None,
+            Ctor::Doc | Ctor::Interpolation | Ctor::Custom(_) | Ctor::Extension(_) => return None,
             Ctor::Paragraph => "paragraph",
             Ctor::Heading => "heading",
             Ctor::Text => "text",
@@ -81,7 +84,7 @@ impl Ctor {
             Ctor::ListItem => "item",
             Ctor::Callout => "callout",
             Ctor::Divider => "divider",
-            Ctor::Group => "group",
+            Ctor::Node => "node",
             Ctor::Section => "section",
         })
     }
@@ -106,7 +109,7 @@ impl Ctor {
             "item" => Ctor::ListItem,
             "callout" => Ctor::Callout,
             "divider" => Ctor::Divider,
-            "group" => Ctor::Group,
+            "node" => Ctor::Node,
             "section" => Ctor::Section,
             _ => return None,
         })
@@ -156,8 +159,9 @@ impl Ctor {
             Ctor::ListItem => "ListItem",
             Ctor::Callout => "Callout",
             Ctor::Divider => "Divider",
-            Ctor::Group => "Group",
+            Ctor::Node => "Node",
             Ctor::Section => "Section",
+            Ctor::Interpolation => "Interpolation",
             Ctor::Custom(name) => name,
             Ctor::Extension(_) => unreachable!(),
         })
@@ -302,10 +306,45 @@ impl std::fmt::Display for Value {
     }
 }
 
+/// Source locations remain meaningful across Code definition expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Origin {
+    pub source: String,
+    pub start: u32,
+    pub end: u32,
+    pub expansion: Vec<SourceLocation>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SourceLocation {
+    pub source: String,
+    pub start: u32,
+    pub end: u32,
+}
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum EvaluationState {
+    Native,
+    Expanded,
+    Error(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct Item {
     pub ctor: Ctor,
+    /// Checked call, forest interpolation or failure, evaluated in place.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub pending: Option<Box<crate::evaluation::PendingEvaluation>>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub instance: Option<crate::definitions::FunctionInstance>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub target: Option<crate::definitions::FunctionInstance>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub evaluation: Option<EvaluationState>,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub origin: Option<Origin>,
     /// Resolved content category. Document analysis always stores Block or Inline.
     pub level: builtins::Level,
     pub fields: Dict,
@@ -336,6 +375,11 @@ impl Item {
                     builtins::Level::Inline
                 }),
             ctor,
+            pending: None,
+            instance: None,
+            target: None,
+            evaluation: None,
+            origin: None,
             fields: Dict::default(),
             children: Vec::new(),
             attrs: Dict::default(),
@@ -364,7 +408,7 @@ impl Item {
         self.level = match &self.ctor {
             Ctor::Extension(function) => function.level,
             Ctor::Doc => Level::Block,
-            Ctor::Group | Ctor::Custom(_) => {
+            Ctor::Node | Ctor::Interpolation | Ctor::Custom(_) => {
                 if self
                     .children
                     .iter()
@@ -379,11 +423,7 @@ impl Item {
                 .ctor
                 .source_name()
                 .and_then(|name| builtins::registry().resolve(name).ok())
-                .map(|definition| {
-                    definition
-                        .returns
-                        .level(&self.fields, crate::expr::BodyFlavor::None)
-                })
+                .map(|definition| definition.returns.level().unwrap_or(Level::Inline))
                 .unwrap_or(Level::Inline),
         };
     }
@@ -413,13 +453,28 @@ impl<'de> serde::Deserialize<'de> for Item {
         struct StoredItem {
             ctor: Ctor,
             #[serde(default)]
+            pending: Option<Box<crate::evaluation::PendingEvaluation>>,
+            #[serde(default)]
             level: Option<builtins::Level>,
             fields: Dict,
             children: Vec<Item>,
             attrs: Dict,
+            #[serde(default)]
+            instance: Option<crate::definitions::FunctionInstance>,
+            #[serde(default)]
+            target: Option<crate::definitions::FunctionInstance>,
+            #[serde(default)]
+            evaluation: Option<EvaluationState>,
+            #[serde(default)]
+            origin: Option<Origin>,
         }
         let stored = StoredItem::deserialize(deserializer)?;
         let mut item = Item::new(stored.ctor, empty_span());
+        item.pending = stored.pending;
+        item.instance = stored.instance;
+        item.target = stored.target;
+        item.evaluation = stored.evaluation;
+        item.origin = stored.origin;
         item.fields = stored.fields;
         item.children = stored.children;
         item.attrs = stored.attrs;
@@ -428,5 +483,15 @@ impl<'de> serde::Deserialize<'de> for Item {
             item.level = level;
         }
         Ok(item)
+    }
+}
+
+impl FromIterator<(String, Value)> for Dict {
+    fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
+        let mut d = Self::default();
+        for (k, v) in iter {
+            d.insert(k, v);
+        }
+        d
     }
 }

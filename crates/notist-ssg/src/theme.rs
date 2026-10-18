@@ -36,6 +36,10 @@ impl Theme {
                 PathBuf::from("site.js"),
                 include_bytes!("theme/site.js").to_vec(),
             ),
+            (
+                PathBuf::from("status.css"),
+                notist_html::STATUS_CSS.as_bytes().to_vec(),
+            ),
         ]);
         if let Some(path) = &config.theme {
             let root = resources.resolve(path);
@@ -92,7 +96,14 @@ impl Theme {
             }
             assets.generated(destination, bytes)?;
         }
-        styles.sort_by_key(|path| (path != Path::new("_notist/theme/site.css"), path.clone()));
+        styles.sort_by_key(|path| {
+            let priority = match path.to_str() {
+                Some("_notist/theme/site.css") => 0,
+                Some("_notist/theme/status.css") => 1,
+                _ => 2,
+            };
+            (priority, path.clone())
+        });
         let mut environment = Handlebars::new();
         environment.set_strict_mode(true);
         for (name, source) in templates {

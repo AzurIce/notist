@@ -15,7 +15,7 @@
 //! and attributes; returning `None` selects the default rendering.
 
 use notist_core::diag::{Diagnostic, Phase};
-use notist_core::item::{Ctor, Item, Value};
+use notist_core::item::{Ctor, EvaluationState, Item, Value};
 
 mod attributes;
 pub mod components;
@@ -25,6 +25,9 @@ pub use components::{BindingError, Component, HtmlRegistry, ModuleLocator, Targe
 
 pub use escape::{escape_attribute, escape_text};
 pub use url::is_safe_url;
+
+/// Optional CSS for draft, staged and outdate status annotations.
+pub const STATUS_CSS: &str = include_str!("status.css");
 
 type Hook<'a> = Box<dyn Fn(&Item) -> Option<String> + 'a>;
 type UrlResolver<'a> = Box<dyn Fn(&Item, &str) -> Option<String> + 'a>;
@@ -50,6 +53,7 @@ pub struct SourceMapping {
     pub node_id: usize,
     pub range: std::ops::Range<usize>,
     pub kind: SourceMappingKind,
+    pub origin: Option<notist_core::item::Origin>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +159,26 @@ struct State<'r, 'a> {
 
 impl State<'_, '_> {
     fn node(&mut self, item: &Item) {
-        if let Some(id) = item.ctor.function_id()
+        use notist_core::item::EvaluationState;
+        if let Some(EvaluationState::Error(message)) = &item.evaluation {
+            let tag = if is_block(item) { "div" } else { "span" };
+            self.open(tag, item, "notist-error");
+            self.attr("role", "alert");
+            self.output.push('>');
+            self.text(message);
+            self.close(tag);
+            return;
+        }
+        if item.evaluation == Some(EvaluationState::Expanded) {
+            self.transparent(item, if is_block(item) { "div" } else { "span" });
+            return;
+        }
+
+        if let Some(id) = item
+            .target
+            .as_ref()
+            .map(|i| i.function.clone())
+            .or_else(|| item.ctor.function_id())
             && let Some(target) = self.renderer.registry.get(&id)
         {
             match target {
@@ -167,6 +190,16 @@ impl State<'_, '_> {
                     self.native(item, ctor);
                     return;
                 }
+            }
+        }
+        if let Some(target) = &item.target {
+            if target.function.package != "notist" {
+                self.diagnostic(
+                    item,
+                    format!("no HTML implementation for `{}`", target.function),
+                );
+                self.transparent(item, if is_block(item) { "div" } else { "span" });
+                return;
             }
         }
         self.native(item, &item.ctor);
@@ -181,10 +214,50 @@ impl State<'_, '_> {
             self.used_components.push(component.clone());
         }
         self.open(&component.tag, item, "");
-        self.attr("notist-protocol", "1");
+        self.attr("notist-protocol", "2");
+        self.attr(
+            "notist-content",
+            if is_block(item) { "block" } else { "inline" },
+        );
+        if let Some(instance) = item.target.as_ref().or(item.instance.as_ref()) {
+            for (parameter, value) in component
+                .definition
+                .comptime
+                .iter()
+                .zip(&instance.arguments)
+            {
+                let encoded = match value {
+                    notist_core::definitions::ComptimeValue::Type(t) => format!("{t}"),
+                    notist_core::definitions::ComptimeValue::Data(v) => {
+                        components::encode_parameter(v)
+                    }
+                };
+                self.attr(
+                    &format!(
+                        "notist-comptime-{}",
+                        components::encode_name(&parameter.name)
+                    ),
+                    &encoded,
+                );
+            }
+        }
+        let bindings = item
+            .target
+            .as_ref()
+            .or(item.instance.as_ref())
+            .map(|instance| {
+                component
+                    .definition
+                    .comptime
+                    .iter()
+                    .zip(&instance.arguments)
+                    .map(|(p, v)| (p.name.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         for parameter in &component.definition.parameters {
             if let Some(value) = item.fields.get(&parameter.name) {
-                if parameter.ty.accepts(value) {
+                if parameter.ty.substitute(&bindings).accepts(value) {
                     self.attr(
                         &components::parameter_attribute(&parameter.name),
                         &components::encode_parameter(value),
@@ -205,7 +278,7 @@ impl State<'_, '_> {
     fn native(&mut self, item: &Item, ctor: &Ctor) {
         match ctor {
             Ctor::Doc => self.transparent(item, "div"),
-            Ctor::Group => self.transparent(item, if is_block(item) { "div" } else { "span" }),
+            Ctor::Node => self.transparent(item, if is_block(item) { "div" } else { "span" }),
             Ctor::Text => {
                 if attributes::has_html_attrs(&item.attrs)
                     || (self.renderer.source_map && !item.span.is_empty())
@@ -254,7 +327,7 @@ impl State<'_, '_> {
                 self.output.push('>');
             }
             Ctor::RawInline => {
-                let block = bool_field(item, "block");
+                let block = is_block(item);
                 let class = string_field(item, "lang")
                     .and_then(|s| s.split_whitespace().next())
                     .map(|lang| format!("language-{lang}"))
@@ -298,11 +371,7 @@ impl State<'_, '_> {
                 self.close("span");
             }
             Ctor::Math => {
-                let tag = if bool_field(item, "block") {
-                    "div"
-                } else {
-                    "span"
-                };
+                let tag = if is_block(item) { "div" } else { "span" };
                 self.open(tag, item, "notist-math");
                 self.output.push('>');
                 if let Some(html) = self.renderer.math.as_ref().and_then(|f| f(item)) {
@@ -333,7 +402,7 @@ impl State<'_, '_> {
                 }
                 self.output.push('>');
                 for child in self.structural(&item.children, &Ctor::ListItem, "list") {
-                    if child.ctor == Ctor::ListItem {
+                    if child.ctor == Ctor::ListItem && !is_error(child) {
                         self.node(child);
                     } else {
                         self.output.push_str("<li>");
@@ -356,6 +425,14 @@ impl State<'_, '_> {
                     if is_block(item) { "div" } else { "span" },
                     item,
                     "notist-extension",
+                );
+            }
+            Ctor::Interpolation => {
+                self.diagnostic(item, "content interpolation requires evaluation".into());
+                self.container(
+                    if is_block(item) { "div" } else { "span" },
+                    item,
+                    "notist-pending",
                 );
             }
             Ctor::Custom(name) => {
@@ -396,6 +473,7 @@ impl State<'_, '_> {
             };
             self.source_map.push(SourceMapping {
                 node_id,
+                origin: item.origin.clone(),
                 range: usize::from(item.span.start())..usize::from(item.span.end()),
                 kind,
             });
@@ -489,7 +567,9 @@ impl State<'_, '_> {
         let rows = self.structural(&item.children, &Ctor::TableRow, "table");
         let headers = rows
             .iter()
-            .take_while(|row| row.ctor == Ctor::TableRow && bool_field(row, "header"))
+            .take_while(|row| {
+                row.ctor == Ctor::TableRow && !is_error(row) && bool_field(row, "header")
+            })
             .count();
         self.open("table", item, "");
         self.output.push('>');
@@ -503,7 +583,7 @@ impl State<'_, '_> {
         if headers < rows.len() {
             self.output.push_str("<tbody>");
             for row in &rows[headers..] {
-                if row.ctor == Ctor::TableRow {
+                if row.ctor == Ctor::TableRow && !is_error(row) {
                     self.row(row, align);
                 } else {
                     self.output.push_str("<tr><td>");
@@ -525,7 +605,7 @@ impl State<'_, '_> {
             .into_iter()
             .enumerate()
         {
-            if child.ctor == Ctor::TableCell {
+            if child.ctor == Ctor::TableCell && !is_error(child) {
                 self.cell(child, header, align.get(column));
             } else {
                 self.output.push_str("<td>");
@@ -560,9 +640,11 @@ impl State<'_, '_> {
     ) -> Vec<&'n Item> {
         let mut result = Vec::new();
         for child in children {
-            if child.ctor == Ctor::Group {
+            if is_error(child) {
+                result.push(child);
+            } else if child.ctor == Ctor::Node {
                 if attributes::has_html_attrs(&child.attrs) {
-                    self.diagnostic(child, format!("group attributes omitted inside `{parent}`: HTML has no wrapper for this structural sequence"));
+                    self.diagnostic(child, format!("node attributes omitted inside `{parent}`: HTML has no wrapper for this structural sequence"));
                 }
                 result.extend(self.structural(&child.children, expected, parent));
             } else {
@@ -582,8 +664,9 @@ impl State<'_, '_> {
     }
 
     fn diagnostic(&mut self, item: &Item, message: String) {
-        self.diagnostics
-            .push(Diagnostic::new(Phase::Semantic, item.span, message));
+        let mut d = Diagnostic::new(Phase::Semantic, item.span, message);
+        d.source = item.origin.as_ref().map(|o| o.source.clone());
+        self.diagnostics.push(d);
     }
 }
 
@@ -607,6 +690,10 @@ fn bool_field(item: &Item, key: &str) -> bool {
 
 fn is_block(item: &Item) -> bool {
     item.level == notist_core::builtins::Level::Block
+}
+
+fn is_error(item: &Item) -> bool {
+    matches!(item.evaluation, Some(EvaluationState::Error(_)))
 }
 
 fn has_block_content(item: &Item) -> bool {

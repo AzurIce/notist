@@ -14,7 +14,7 @@ test("collection protocol retains integer precision, float bits and dictionary o
   assert.deepEqual(decoded.get("values"), [null, false, ""]);
 });
 test("missing, empty and false scalar parameters remain distinct", () => {
-  const fields = new Map([["notist-protocol", "1"], ["notist-label", ""], ["notist-open", "false"], ["notist-count", "-9223372036854775808"], ["notist-ratio", "Infinity"]]);
+  const fields = new Map([["notist-protocol", "2"], ["notist-label", ""], ["notist-open", "false"], ["notist-count", "-9223372036854775808"], ["notist-ratio", "Infinity"]]);
   const element = { getAttribute: name => fields.get(name) ?? null };
   assert.equal(readParameter(element, "label", "String"), "");
   assert.equal(readParameter(element, "open", "Bool"), false);

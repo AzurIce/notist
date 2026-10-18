@@ -1,14 +1,16 @@
 use notist_core::frontend::{Frontend, FrontendOptions};
 
 fn analyze(src: &str) -> (notist_core::item::Item, Vec<notist_core::diag::Diagnostic>) {
-    let output = notist_md::MarkdownFrontend.compile(src, FrontendOptions::default());
+    let output = notist_pipeline::frontend::markdown::MarkdownFrontend
+        .compile(src, FrontendOptions::default());
     let (forest, attrs, mut diags) = (output.forest, output.module_attrs, output.diagnostics);
     let span = rowan::TextRange::new(0.into(), (src.len() as u32).into());
     let item = notist_pipeline::process(
         forest,
+        output.annotations,
         span,
         attrs,
-        notist_core::builtins::registry(),
+        &notist_pipeline::Context::default(),
         &mut diags,
     );
     (item, diags)
@@ -112,7 +114,7 @@ fn markdown_calls_lower_markdown_bodies_and_share_literal_arguments() {
 
 #[test]
 fn markdown_extensions_preserve_opaque_and_escaped_text() {
-    let src = "# Heading\n\n`@(id: \"code\") #strong[x]` $a_{#strong[x]}$ \\#strong[x] \\@(id: \"escaped\") #tag mail@example.com\n\n```\n@!(id: \"raw\")\n#missing[]\n```\n";
+    let src = "# Heading\n\n`@(id: \"code\") #strong[x]` $a_{#strong[x]}$ \\#strong[x] \\@(id: \"escaped\") \\#tag mail@example.com\n\n```\n@!(id: \"raw\")\n#missing[]\n```\n";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(root.descendants().all(|n| n.attrs.is_empty()));
@@ -135,7 +137,10 @@ fn markdown_extension_diagnostics_cover_invalid_annotations_and_calls() {
             "text @(id: \"x\") plain",
             "annotation must be immediately followed by an element",
         ),
-        ("@(id: \"dangling\")", "annotation has no following element"),
+        (
+            "@(id: \"dangling\")",
+            "block annotation has no following block",
+        ),
         ("#missing[x]", "unknown"),
         ("#callout[\ntext", "unclosed Notist annotation or call"),
         (
@@ -203,13 +208,13 @@ fn markdown_call_boundaries_keep_inline_markers_and_trailing_text() {
 #[test]
 fn markdown_nested_calls_anonymous_groups_and_multiline_payloads() {
     use notist_core::item::{Ctor, Value};
-    let src = "@!(\n title: \"标题\",\n meta: (nested: (1, true, -2)),\n)\n@(id: \"group\")\n#[\n#notist::callout(kind: \"note\")[\n@(id: \"inner\")\n正文 #strong[一 #emph[二] `]` $x_{]}$]\n]\n]\n";
+    let src = "@!(\n title: \"标题\",\n meta: (nested: (1, true, -2)),\n)\n@(id: \"group\")\n#node[\n#notist::callout(kind: \"note\")[\n@(id: \"inner\")\n正文 #strong[一 #emph[二] `]` $x_{]}$]\n]\n]\n";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert_eq!(root.attrs.get("title"), Some(&Value::Str("标题".into())));
     assert!(
         root.find(
-            |n| n.ctor == Ctor::Group && n.attrs.get("id") == Some(&Value::Str("group".into()))
+            |n| n.ctor == Ctor::Node && n.attrs.get("id") == Some(&Value::Str("group".into()))
         )
         .is_some()
     );
@@ -282,14 +287,22 @@ fn malformed_markdown_extensions_recover_for_every_truncated_prefix() {
 #[test]
 fn markdown_call_arguments_with_unicode_bodies_keep_valid_source_ranges() {
     let src = "#link(\"target\")[中文]";
-    let output = notist_md::MarkdownFrontend.compile(src, FrontendOptions::default());
+    let output = notist_pipeline::frontend::markdown::MarkdownFrontend
+        .compile(src, FrontendOptions::default());
     let (forest, diagnostics) = (output.forest, output.diagnostics);
     assert!(diagnostics.is_empty());
     fn check(expr: &notist_core::expr::Expr, src: &str) {
         assert!(src.is_char_boundary(usize::from(expr.span().start())));
         assert!(src.is_char_boundary(usize::from(expr.span().end())));
-        if let notist_core::expr::Expr::Call { args, children, .. } = expr {
-            for child in args.iter().chain(children) {
+        if let notist_core::expr::Expr::Call {
+            callee,
+            args,
+            children,
+            ..
+        } = expr
+        {
+            check(callee, src);
+            for child in args.iter().map(|arg| arg.value()).chain(children) {
                 check(child, src);
             }
         }
@@ -304,7 +317,7 @@ fn markdown_call_arguments_with_unicode_bodies_keep_valid_source_ranges() {
 #[test]
 fn markdown_frontend_captures_its_own_parse_tree_for_inspection() {
     let src = "@(id: \"intro\")\n# 标题\n\n#strong[正文]";
-    let frontend = notist_md::MarkdownFrontend;
+    let frontend = notist_pipeline::frontend::markdown::MarkdownFrontend;
     assert!(
         frontend
             .compile(src, FrontendOptions::default())
@@ -313,19 +326,19 @@ fn markdown_frontend_captures_its_own_parse_tree_for_inspection() {
     );
     let pipeline = notist_pipeline::Pipeline::default();
     let (analysis, inspection) = pipeline
-        .inspect("document.nmd", src, notist_core::builtins::registry())
+        .inspect("document.nmd", src, &notist_pipeline::Context::default())
         .unwrap();
     let syntax = inspection
         .syntax
         .as_deref()
         .unwrap()
         .as_any()
-        .downcast_ref::<notist_md::MarkdownSyntax>()
+        .downcast_ref::<notist_pipeline::frontend::markdown::MarkdownSyntax>()
         .unwrap();
     assert_eq!(syntax.source, src);
     assert!(syntax.arena.get(syntax.root).is_some());
     let ordinary = pipeline
-        .analyze("document.nmd", src, notist_core::builtins::registry())
+        .analyze("document.nmd", src, &notist_pipeline::Context::default())
         .unwrap();
     assert_eq!(analysis, ordinary);
 }

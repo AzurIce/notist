@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for diagnostic in analysis
         .diagnostics()
         .iter()
-        .chain(&output.transformed.diagnostics)
+        .chain(&output.evaluation.diagnostics)
         .chain(&rendered.diagnostics)
     {
         eprintln!(

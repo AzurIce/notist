@@ -1,11 +1,12 @@
 = HTML Rendering
 
-`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Pipeline](designs/pipeline.not) 产生，节点契约见 [Builtin](builtin.not)。
+`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Markup 管线](designs/pipeline/markup.not) 产生，节点契约见 [Builtin](builtin.not)。
 
 == 使用
 
 ```rust
-let analysis = notist::Pipeline::default().analyze("example.not", source, notist::builtins::registry())?;
+let context = notist::Context::default();
+let analysis = notist::Pipeline::default().analyze("example.not", source, &context)?;
 let html = notist_html::render(analysis.root());
 ```
 
@@ -25,15 +26,15 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 | section | section；heading 仍是其第一个 child |
 | text | 转义文本；有可映射属性时使用 span |
 | strong / emph / strike | strong / em / del |
-| raw | 行内 code；block 为 true 时 pre 内嵌 code |
-| math | 行内 span.notist-math；block 为 true 时 div.notist-math；默认显示转义后的公式文本 |
+| raw | 行内 code；类别为 Block 时 pre 内嵌 code |
+| math | 行内 span.notist-math；类别为 Block 时 div.notist-math；默认显示转义后的公式文本 |
 | link | a；无 children 时以 target 作为文字 |
 | embed | span.notist-embed；默认包含通用资源链接 |
 | list / item | ul 或 ol / li；有序列表保留 start |
 | callout | kind 为 quote 时 blockquote；其他为 div.notist-callout |
 | divider | hr |
 | table / row / cell | table / tr / td 或 th；表格上下文决定 cell 的映射 |
-| group | children；有可映射属性时按内容使用 span 或 div |
+| node | children；有可映射属性时按内容使用 span 或 div |
 | Extension | 按 HtmlRegistry 的规范函数身份生成组件；缺少目标时保留 children 并诊断 |
 | Custom | 保留 children 的恢复容器，并产生渲染诊断 |
 
@@ -41,16 +42,27 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 
 raw 的 lang 字段取首个空白分隔片段生成 language-* 类，正文原样转义，不裁掉末尾换行。HTML 片段不附带样式表、代码高亮或公式引擎。
 
+@(id: "属性")
 == 属性
 
 - id、title、lang、dir：字符串值映射为同名 HTML 属性。
 - class：字符串或字符串数组，与 renderer 自带的 class 合并。
 - tags：字符串数组，映射为 data-notist-tags。
-- data-* 与 aria-*：合法的小写字母、数字、短横线属性名，接受字符串、布尔、整数和有限浮点值。
+- data-* 与 aria-*：保留同名 HTML 属性。
+- 其他自定义属性统一映射到 data-*，例如 status 映射为 data-status，human 映射为 data-human。显式 data-* 优先于映射到同名属性的普通注解。
 
-data-notist-* 与 aria-level 留给 renderer。其他 attrs 继续作为 IR 元数据，不直接复制到 HTML；例如事件属性、style 和 URL 字段不作为 attrs 输出。所有输出的属性值均转义。link / embed 的显式 title 字段在 attrs 没有字符串 title 时输出。
+可输出的属性名由小写 ASCII 字母、数字、短横线、下划线、点与冒号组成。data-notist-* 与 aria-level 留给 renderer；映射后占用 data-notist-* 的普通名称同样保留。不能映射的名称仍保存在 Item.attrs 中。
 
-普通 group 无可映射属性时透明展开；有属性时生成一个包装元素保留身份。在 list、table、row 的结构槽中，group 展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处 group 的可映射属性不输出，并产生诊断；child 的属性照常保留。
+自定义属性的字符串与标量使用文本编码，Unit 为 null；数组与字典沿用 [组件参数编码](designs/content-functions.not#参数编码) 的 typed JSON v1 编码。所有输出值均经过 HTML 转义。onclick、style、href 等自定义注解分别输出为 data-onclick、data-style、data-href，不成为事件、样式或链接。link / embed 的显式 title 字段在 attrs 没有字符串 title 时输出。
+
+普通 node 无可映射属性时透明展开；有属性时生成一个包装元素保留身份。在 list、table、row 的结构槽中，node 展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处 node 的可映射属性不输出，并产生诊断；child 的属性照常保留。
+
+@(id: "内容状态")
+=== 内容状态
+
+status 是字符串注解，约定 draft（方案讨论中）、staged（方案确定、等待实现）与 outdate（已被取代）三种值。它挂载已有节点，不新增函数身份，不改变内容类别与 Shape；标注任意范围时使用带注解的 `#node[ ... ]`。
+
+共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html::STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
 
 == 资源与数学扩展
 
@@ -86,9 +98,11 @@ Renderer::with_url_resolver 接收完整 Item 与原目标字符串，返回 Som
 
 HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, ModuleLocator) 将同一语义签名绑定到约定标签，Renderer::with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
 
-组件的命名、notist-protocol="1" 参数协议及目标冲突规则见 [Content Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
+组件的命名、notist-protocol="2" 参数协议及目标冲突规则见 [BlockContent Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
 
-Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回原始正文分析、transformed 输出树及完整渲染结果。配置的 [IR Transforms](designs/transforms.not) 在渲染前执行；renderer 本身只消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
+组件字段使用执行目标实例的编译期实参替换签名中的类型参数后检查。错误 Item 优先呈现为错误占位；列表、表格等结构位置保留合法的外围 HTML 容器。
+
+Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回原始正文分析、evaluation 表示树及完整渲染结果。配置的 [IR Transforms](designs/transforms.not) 在渲染前执行；renderer 本身只消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
 
 notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板与资源计划由 notist-ssg 处理，CLI 负责文件系统发布；组件资源位于 _notist/packages/。多页面路由、链接改写、主题和预览见 [Static Site Generation](ssg.not)。内存与浏览器宿主消费 Vault::render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 

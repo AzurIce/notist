@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         RenderOptions::default(),
     )?;
     assert!(output.analysis.diagnostics().is_empty());
-    assert!(output.transformed.diagnostics.is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
     assert!(output.rendered.diagnostics.is_empty());
     println!("{}", output.rendered.html);
     for component in &output.rendered.used_components {

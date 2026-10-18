@@ -199,8 +199,8 @@ ast 的输入是已有节点，圆括号中的字段模式绑定其字段；`_` 
 结果部分不使用前瞻、捕获声明、guard、提交、scan / probe、within 等输入操作。构造条件只影响输出，不能把已成功消费的输入变为 Miss。图分别展示匹配轨道与结果结构，并将节点构造和计算加以标注；计算块保留源码而不求值。
 
 #grammar::diagram(r#"""
-syntax ParagraphRun(ctx) -> body:InlineRun(ctx, block_end, None)
-  => { if lower(body) != [] then paragraph()[lower(body)] else [] };
+syntax ContentFragment(ctx) -> body:InlineRun(ctx, block_end, None)
+  => { if lower(body) != [] then Fragment(lower(body)) else [] };
 """#)
 
 实现中的 Desugar 仍可以在解析以后执行；统一规则描述其对应关系，不要求在 parser 中执行内容函数。签名检查属于 Resolve；按标题形成 section 属于 Shape，分别使用签名约束和 shape 算法。

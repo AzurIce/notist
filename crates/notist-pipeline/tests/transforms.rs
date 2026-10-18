@@ -1,335 +1,222 @@
 use notist_core::{
-    builtins,
-    builtins::{Accepts, Level},
-    definitions::{
-        DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, ReturnRule,
-        ValueType,
-    },
-    item::{Ctor, Item, Value},
-    registry::Registry,
+    builtins::Accepts,
+    definitions::{DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, Type},
+    item::{Ctor, Value},
 };
 use notist_pipeline::{
-    Pipeline, analyze_module,
+    Context, Pipeline, analyze_module,
     transforms::{Replace, TransformPlan},
 };
-use rowan::TextRange;
-
-fn span() -> TextRange {
-    TextRange::new(2.into(), 8.into())
-}
-fn rule(from: &str, to: &str) -> Replace {
-    let id = |name: &str| {
-        let (package, function) = name.split_once("::").unwrap();
-        FunctionId::new(package, function)
+fn rule(a: &str, b: &str) -> Replace {
+    let id = |s: &str| {
+        let (p, n) = s.split_once("::").unwrap();
+        FunctionId::new(p, n)
     };
     Replace {
-        from: id(from),
-        to: id(to),
-        span: span(),
+        from: id(a),
+        to: id(b),
+        span: Default::default(),
     }
 }
-fn registry() -> Registry {
-    let mut registry = builtins::registry().clone();
-    registry.register(analyze_module("maths", "fn first(text: String, block?: Bool) -> Content<block>; fn second(text: String, block?: Bool) -> Content<block>; fn inline()[children: InlineContent] -> InlineContent; fn block(text: String) -> Content; fn fixed(text: String) -> InlineContent; fn wrong(source: String, block?: Bool) -> Content<block>; fn optional(text?: String, block?: Bool) -> Content<block>;").unwrap()).unwrap();
-    registry
+fn context() -> Context {
+    Context::default().with_module(analyze_module("maths","fn first<C: Type = InlineContent>(text: String) -> C; fn second<K: Type = InlineContent>(text: String) -> K; fn wrong(source: String) -> BlockContent;").unwrap()).unwrap()
 }
-
 #[test]
-fn both_frontends_keep_analysis_identity_and_transform_nested_math() {
-    let registry = registry();
-    let plan = TransformPlan::compile(&[rule("notist::math", "maths::first")], &registry).unwrap();
-    for (path, source) in [
-        ("demo.not", "#callout[$x$ #math(\"y\")]"),
-        ("demo.md", "- $x$\n\n| Heading |\n| --- |\n| $y$ |"),
-    ] {
-        let analysis = Pipeline::default()
-            .analyze(path, source, &registry)
-            .unwrap();
-        assert!(
-            analysis.diagnostics().is_empty(),
-            "{:?}",
-            analysis.diagnostics()
-        );
-        let before: Vec<_> = analysis
+fn both_frontends_preserve_identity_and_select_native_targets() {
+    let c = context()
+        .with_transforms(&[rule("notist::math", "maths::first")])
+        .unwrap();
+    let p = Pipeline::default();
+    for path in ["test.not", "test.md"] {
+        let a = p.analyze(path, "before $x$\n\n$ y $\n\nafter", &c).unwrap();
+        assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
+        let e = p.evaluate(&a, &c);
+        assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+        let before: Vec<_> = a
             .root()
             .descendants()
-            .filter(|node| node.ctor == Ctor::Math)
-            .cloned()
+            .filter(|i| i.ctor == Ctor::Math)
             .collect();
-        assert_eq!(before.len(), 2);
-        let output = plan.apply(analysis.root());
-        assert!(output.diagnostics.is_empty());
-        let after: Vec<_> = output
+        let after: Vec<_> = e
             .root
             .descendants()
-            .filter(|node| node.function_id() == Some(FunctionId::new("maths", "first")))
+            .filter(|i| i.ctor == Ctor::Math)
             .collect();
-        assert_eq!(after.len(), before.len());
-        for (before, after) in before.iter().zip(after) {
-            assert_eq!(before.fields, after.fields);
-            assert_eq!(before.span, after.span);
-            assert_eq!(before.level, after.level);
-            assert_eq!(before.attrs, after.attrs);
-            assert_eq!(before.children, after.children);
+        assert_eq!(after.len(), 2);
+        for (a, b) in before.into_iter().zip(after) {
+            assert_eq!(a.function_id(), b.function_id());
+            assert_eq!(a.fields, b.fields);
+            assert_eq!(a.level, b.level);
+            assert_eq!(a.span, b.span);
+            assert_eq!(
+                b.target.as_ref().unwrap().function,
+                FunctionId::new("maths", "first")
+            );
         }
-        assert_eq!(
-            analysis
-                .root()
-                .descendants()
-                .filter(|node| node.ctor == Ctor::Math)
-                .count(),
-            2
-        );
     }
 }
-
 #[test]
-fn ordered_rules_run_once_each_and_can_target_builtins() {
-    let registry = registry();
-    let analysis = Pipeline::default()
-        .analyze("demo.not", "$x$", &registry)
-        .unwrap();
+fn rules_run_once_in_order_and_generic_names_are_normalized() {
+    let c = context();
     let rules = [
         rule("notist::math", "maths::first"),
         rule("maths::first", "maths::second"),
+        rule("maths::second", "notist::math"),
     ];
-    let output = TransformPlan::compile(&rules, &registry)
-        .unwrap()
-        .apply(analysis.root());
-    assert!(
-        output
-            .root
-            .find(|node| node.function_id() == Some(FunctionId::new("maths", "second")))
-            .is_some()
-    );
-    let reversed = TransformPlan::compile(&[rules[1].clone(), rules[0].clone()], &registry)
-        .unwrap()
-        .apply(analysis.root());
-    assert!(
-        reversed
-            .root
-            .find(|node| node.function_id() == Some(FunctionId::new("maths", "first")))
-            .is_some()
-    );
-    let roundtrip = TransformPlan::compile(
-        &[rules[0].clone(), rule("maths::first", "notist::math")],
-        &registry,
-    )
-    .unwrap()
-    .apply(analysis.root());
-    assert_eq!(roundtrip.root, *analysis.root());
-    let same = TransformPlan::compile(&[rule("notist::math", "notist::math")], &registry)
-        .unwrap()
-        .apply(analysis.root());
-    assert_eq!(same.root, *analysis.root());
-}
-
-#[test]
-fn rejects_unknown_functions_and_incompatible_or_structural_contracts_atomically() {
-    let registry = registry();
-    for (from, to, reason) in [
-        ("notist::math", "maths::missing", "unknown"),
-        ("maths::missing", "notist::math", "unknown"),
-        ("notist::math", "maths::block", "levels"),
-        ("notist::math", "maths::wrong", "parameter"),
-        ("notist::math", "maths::optional", "parameter"),
-        ("notist::strong", "maths::fixed", "children"),
-        ("notist::math", "maths::fixed", "levels"),
-        ("notist::heading", "notist::heading", "structural"),
-        ("notist::item", "notist::callout", "structural"),
-        ("notist::group", "maths::inline", "fixed"),
-    ] {
-        let errors = TransformPlan::compile(
-            &[rule("notist::math", "maths::first"), rule(from, to)],
-            &registry,
-        )
-        .unwrap_err();
-        assert!(
-            errors.iter().any(|error| error.message.contains(reason)),
-            "{errors:?}"
-        );
-        assert!(errors.iter().all(|error| error.span == span()));
-    }
-}
-
-#[test]
-fn recovery_nodes_are_preserved_while_valid_descendants_still_transform() {
-    let registry = registry();
-    let plan = TransformPlan::compile(&[rule("notist::math", "maths::first")], &registry).unwrap();
-    let good = Item::new(Ctor::Math, span()).with_field("text", Value::Str("x".into()));
-    let mut bad = Item::new(Ctor::Math, TextRange::new(0.into(), 10.into()))
-        .with_field("text", Value::Bool(false))
-        .with_children(vec![good]);
-    bad.attrs.insert("id", Value::Str("original".into()));
-    let original = bad.clone();
-    let output = plan.apply(&bad);
-    assert_eq!(bad, original);
-    assert_eq!(output.root.ctor, Ctor::Math);
-    assert_eq!(output.root.fields, bad.fields);
-    assert_eq!(output.root.attrs, bad.attrs);
-    assert_eq!(output.diagnostics.len(), 1);
-    assert_eq!(output.diagnostics[0].span, bad.span);
+    let plan = TransformPlan::compile(&rules, c.registry()).unwrap();
     assert_eq!(
-        output.root.children[0].function_id(),
-        Some(FunctionId::new("maths", "first"))
+        plan.target(&FunctionId::new("notist", "math")),
+        FunctionId::new("notist", "math")
     );
-    for bad in [
-        Item::new(Ctor::Math, span()),
-        Item::new(Ctor::Math, span())
-            .with_field("text", Value::Str("x".into()))
-            .with_field("extra", Value::Int(3)),
-        Item::new(Ctor::Math, span())
-            .with_field("text", Value::Str("x".into()))
-            .with_children(vec![Item::text("child".into(), span())]),
+    let plan = TransformPlan::compile(&rules[..2], c.registry()).unwrap();
+    assert_eq!(
+        plan.target(&FunctionId::new("notist", "math")),
+        FunctionId::new("maths", "second")
+    );
+    let plan = TransformPlan::compile(&[rules[1].clone(), rules[0].clone()], c.registry()).unwrap();
+    assert_eq!(
+        plan.target(&FunctionId::new("notist", "math")),
+        FunctionId::new("maths", "first")
+    );
+}
+#[test]
+fn incompatible_contracts_and_roles_are_rejected() {
+    let c = context();
+    for r in [
+        rule("notist::math", "maths::wrong"),
+        rule("notist::item", "notist::callout"),
+        rule("notist::strong", "notist::emph"),
+        rule("notist::math", "maths::missing"),
     ] {
-        let output = plan.apply(&bad);
-        assert_eq!(output.root, bad);
-        assert_eq!(output.diagnostics.len(), 1);
+        let result = TransformPlan::compile(&[r.clone()], c.registry());
+        if r.from.name == "strong" {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 }
-
 #[test]
-fn metadata_children_and_exact_values_survive_extension_replacement() {
-    let mut registry = registry();
-    registry.register(analyze_module("values", "fn first(count: Int, ratio: Float, data: Dict)[children: Content] -> Content; fn second(data: Dict, ratio: Float, count: Int)[children: Content] -> Content;").unwrap()).unwrap();
-    let source =
-        "#values::first(9223372036854775807, -0.0, (\"last\": (false, 0.1), \"first\": 7))[child]";
-    let analysis = Pipeline::default()
-        .analyze("values.not", source, &registry)
-        .unwrap();
+fn transform_can_execute_code_without_changing_semantic_call() {
+    let c=Context::default().with_module(analyze_module("demo","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_transforms(&[rule("notist::emph","demo::loud")]).unwrap();
+    let p = Pipeline::default();
+    let a = p.analyze("doc.not", "_hello_", &c).unwrap();
+    let e = p.evaluate(&a, &c);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+    let emph = e.root.find(|i| i.ctor == Ctor::Emph).unwrap();
+    assert_eq!(emph.function_id(), Some(FunctionId::new("notist", "emph")));
     assert!(
-        analysis.diagnostics().is_empty(),
-        "{:?}",
-        analysis.diagnostics()
-    );
-    let mut root = analysis.root().clone();
-    root.children[0]
-        .attrs
-        .insert("id", Value::Str("example".into()));
-    let output = TransformPlan::compile(&[rule("values::first", "values::second")], &registry)
-        .unwrap()
-        .apply(&root);
-    assert!(output.diagnostics.is_empty());
-    let before = &root.children[0];
-    let after = &output.root.children[0];
-    assert_eq!(before.fields, after.fields);
-    assert_eq!(before.children, after.children);
-    assert_eq!(before.attrs, after.attrs);
-    assert_eq!(before.span, after.span);
-    assert!(
-        matches!(after.fields.get("ratio"), Some(Value::Float(value)) if value.to_bits() == (-0.0_f64).to_bits())
+        emph.descendants()
+            .any(|i| i.fields.get("text") == Some(&Value::Str("!".into())))
     );
 }
-
 #[test]
-fn native_default_contracts_compare_float_bits() {
-    let mut registry = registry();
-    let mut module = DefinitionModule::new("native");
-    for (name, value) in [
-        ("a", f64::from_bits(0x7ff8000000000001)),
-        ("b", f64::from_bits(0x7ff8000000000001)),
-        ("c", f64::from_bits(0x7ff8000000000002)),
+fn defaults_compare_exact_float_bits_and_parameter_binding_order() {
+    let mut r = notist_core::builtins::registry().clone();
+    let mut m = DefinitionModule::new("native");
+    for (name, bits) in [
+        ("a", 0x7ff8000000000001),
+        ("b", 0x7ff8000000000001),
+        ("c", 0x7ff8000000000002),
     ] {
-        let mut definition = FunctionDef::new(
+        let mut f = FunctionDef::new(
             FunctionId::new("native", name),
             Accepts::Nothing,
-            ReturnRule::Fixed(Level::Inline),
+            Type::InlineContent,
         );
-        definition.parameters.push(ParameterDef::new(
-            "value",
-            ValueType::Float,
-            ParameterMode::Default(Value::Float(value)),
+        f.parameters.push(ParameterDef::new(
+            "n",
+            Type::Float,
+            ParameterMode::Default(Value::Float(f64::from_bits(bits))),
         ));
-        module.functions.push(definition);
+        m.functions.push(f);
     }
-    registry.register(module).unwrap();
-    let plan = TransformPlan::compile(&[rule("native::a", "native::b")], &registry).unwrap();
-    let ctor = Ctor::Extension(notist_core::item::ExtensionCtor {
-        id: FunctionId::new("native", "a"),
-        accepts: Accepts::Nothing,
-        level: Level::Inline,
-    });
-    let unnormalized = Item::new(ctor.clone(), span());
-    assert_eq!(plan.apply(&unnormalized).diagnostics.len(), 1);
-    let input = unnormalized.with_field("value", Value::Float(f64::from_bits(0x7ff8000000000001)));
-    let output = plan.apply(&input);
-    assert!(output.diagnostics.is_empty());
-    assert!(
-        matches!(output.root.fields.get("value"), Some(Value::Float(v)) if v.to_bits() == 0x7ff8000000000001)
-    );
-    assert!(TransformPlan::compile(&[rule("native::a", "native::c")], &registry).is_err());
-    assert!(TransformPlan::compile(&[rule("notist::raw", "notist::raw")], &registry).is_ok());
+    r.register(m).unwrap();
+    assert!(TransformPlan::compile(&[rule("native::a", "native::b")], &r).is_ok());
+    assert!(TransformPlan::compile(&[rule("native::a", "native::c")], &r).is_err());
 }
 
 #[test]
-fn matching_boolean_content_rules_preserve_inline_and_block_levels() {
-    let registry = registry();
-    let plan = TransformPlan::compile(&[rule("notist::math", "maths::first")], &registry).unwrap();
-    for (path, source) in [
-        (
-            "test.not",
-            "before $x$ $ x $ #math(\"y\", block: false) #math(\"z\", block: true) after",
-        ),
-        (
-            "test.md",
-            "before $x$ $ x $ #math(\"y\", block: false) #math(\"z\", block: true) after",
-        ),
-    ] {
-        let analysis = Pipeline::default()
-            .analyze(path, source, &registry)
-            .unwrap();
-        assert!(
-            analysis.diagnostics().is_empty(),
-            "{:?}",
-            analysis.diagnostics()
-        );
-        let output = plan.apply(analysis.root());
-        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-        let before = analysis
-            .root()
-            .descendants()
-            .filter(|n| n.ctor == Ctor::Math)
-            .collect::<Vec<_>>();
-        let after = output
-            .root
-            .descendants()
-            .filter(|n| n.function_id() == Some(FunctionId::new("maths", "first")))
-            .collect::<Vec<_>>();
-        assert_eq!(before.len(), 4);
-        assert_eq!(after.len(), 4);
-        assert_eq!(
-            after.iter().map(|n| n.level).collect::<Vec<_>>(),
-            [Level::Inline, Level::Block, Level::Inline, Level::Block]
-        );
-        for (before, after) in before.iter().zip(after.iter()) {
-            assert_eq!(before.fields, after.fields);
-            assert_eq!(before.span, after.span);
-            assert_eq!(after.ctor.level(), Some(before.level));
-        }
-        let roundtrip = TransformPlan::compile(&[rule("maths::first", "notist::math")], &registry)
-            .unwrap()
-            .apply(&output.root);
-        assert!(roundtrip.diagnostics.is_empty());
-        assert_eq!(roundtrip.root, *analysis.root());
-        let mut invalid = (*after[1]).clone();
-        invalid.level = Level::Inline;
-        let skipped = TransformPlan::compile(&[rule("maths::first", "notist::math")], &registry)
-            .unwrap()
-            .apply(&invalid);
-        assert_eq!(skipped.root, invalid);
-        assert_eq!(skipped.diagnostics.len(), 1);
-    }
-    let mut registry = registry.clone();
-    registry
-        .register(
+fn generated_paragraphs_participate_in_function_mapping() {
+    let c = Context::default()
+        .with_module(
             analyze_module(
-                "other",
-                "fn math(text: String, block?: Bool, display?: Bool) -> Content<display>;",
+                "demo",
+                "fn paragraph()[children: InlineContent] -> BlockContent { divider() }",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .with_transforms(&[rule("notist::paragraph", "demo::paragraph")])
+        .unwrap();
+    let p = Pipeline::default();
+    let a = p.analyze("doc.not", "ordinary text", &c).unwrap();
+    let e = p.evaluate(&a, &c);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+    assert_eq!(
+        e.root.children[0].function_id(),
+        Some(FunctionId::new("notist", "paragraph"))
+    );
+    assert_eq!(
+        e.root.children[0].target.as_ref().unwrap().function,
+        FunctionId::new("demo", "paragraph")
+    );
+}
+
+#[test]
+fn output_mapping_cannot_change_compile_time_source_analysis() {
+    let base=Context::default().with_module(analyze_module("demo","fn original() -> Int { 1 } fn target() -> Int { 2 } fn show() -> BlockContent { heading<level: original()>()[title] }").unwrap()).unwrap();
+    let mapped = base
+        .clone()
+        .with_transforms(&[rule("demo::original", "demo::target")])
+        .unwrap();
+    let p = Pipeline::default();
+    let a = p.analyze("doc.not", "#demo::show()", &base).unwrap();
+    let b = p.analyze("doc.not", "#demo::show()", &mapped).unwrap();
+    assert_eq!(a, b);
+    assert!(b.diagnostics().is_empty(), "{:?}", b.diagnostics());
+    let e = p.evaluate(&b, &mapped);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+    assert_eq!(
+        e.root
+            .find(|i| i.ctor == Ctor::Heading)
+            .unwrap()
+            .fields
+            .get("level"),
+        Some(&Value::Int(1))
+    );
+}
+
+#[test]
+fn transparent_node_contract_cannot_be_replaced_by_an_opaque_code_function() {
+    let c = Context::default()
+        .with_module(
+            analyze_module(
+                "demo",
+                r#"
+        fn replacement<C: Type = InlineContent>[children: C] -> C {
+            if C == InlineContent { [replacement] } else { [ replacement ] }
+        }
+    "#,
             )
             .unwrap(),
         )
         .unwrap();
-    let errors =
-        TransformPlan::compile(&[rule("notist::math", "other::math")], &registry).unwrap_err();
-    assert!(errors[0].message.contains("levels"));
+    for (from, to) in [
+        ("notist::node", "demo::replacement"),
+        ("demo::replacement", "notist::node"),
+    ] {
+        let errors = TransformPlan::compile(&[rule(from, to)], c.registry()).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("structural roles differ"))
+        );
+    }
+    let p = Pipeline::default();
+    let a = p
+        .analyze("doc.not", "#list[ #node[ #item[x] ] ]", &c)
+        .unwrap();
+    assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
+    assert!(p.evaluate(&a, &c).diagnostics.is_empty());
 }

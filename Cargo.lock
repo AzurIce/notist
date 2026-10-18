@@ -848,34 +848,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "notist-lowering"
-version = "0.1.0"
-dependencies = [
- "notist-core",
- "notist-syntax",
- "rowan",
-]
-
-[[package]]
-name = "notist-md"
-version = "0.1.0"
-dependencies = [
- "notist-core",
- "notist-lowering",
- "notist-syntax",
- "rowan",
- "rushdown",
-]
-
-[[package]]
 name = "notist-pipeline"
 version = "0.1.0"
 dependencies = [
  "notist-core",
- "notist-lowering",
- "notist-md",
  "notist-syntax",
  "rowan",
+ "rushdown",
 ]
 
 [[package]]

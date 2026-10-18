@@ -93,8 +93,11 @@ impl LanguageServer for Backend {
                 return Ok(None);
             };
             let lines = LineIndex::new(src);
-            let parse = notist::syntax::parse_module(src);
-            let module = notist::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let parse = notist::syntax::code::parse_module(
+                src,
+                &notist::syntax::markup::MarkupContentParser,
+            );
+            let module = notist::syntax::code::ast::Module::cast(parse.syntax()).unwrap();
             let symbols = module
                 .functions()
                 .filter_map(|function| {
@@ -135,8 +138,11 @@ impl LanguageServer for Backend {
             };
             let lines = LineIndex::new(src);
             let offset = lines.offset(src, position);
-            let parse = notist::syntax::parse_module(src);
-            let module = notist::syntax::ast::Module::cast(parse.syntax()).unwrap();
+            let parse = notist::syntax::code::parse_module(
+                src,
+                &notist::syntax::markup::MarkupContentParser,
+            );
+            let module = notist::syntax::code::ast::Module::cast(parse.syntax()).unwrap();
             let target = module
                 .functions()
                 .find(|function| function.range().contains((offset as u32).into()));
@@ -155,7 +161,7 @@ impl LanguageServer for Backend {
         let offset = lines.offset(&src, position);
         if let Some(name) = call_path_at(uri, &src, offset)
             && let Ok(project) = self.project(uri).await
-            && let Ok(definition) = project.registry().resolve(&name)
+            && let Ok(definition) = project.context().registry().resolve(&name)
         {
             return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -183,7 +189,10 @@ impl LanguageServer for Backend {
                                     ))
                                     .collect::<Vec<_>>()
                                     .join(", "),
-                                definition.returns.base_level()
+                                definition
+                                    .returns
+                                    .level()
+                                    .unwrap_or(notist::builtins::Level::Inherit)
                             )
                         }),
                 }),
@@ -217,13 +226,20 @@ impl LanguageServer for Backend {
             let Some(project) = self.project(&uri).await.ok() else {
                 return Ok(None);
             };
-            let Ok(definition) = project.registry().resolve(&name) else {
+            let Ok(definition) = project.context().registry().resolve(&name) else {
                 return Ok(None);
             };
             let Some(package) = project.packages().get(&definition.id.package) else {
                 return Ok(None);
             };
-            let Ok(uri) = Url::from_file_path(package.root.join("lib.notc")) else {
+            let Ok(uri) = Url::from_file_path(
+                project
+                    .context()
+                    .program()
+                    .source_path(&definition.id.package)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| package.root.join("lib.notc")),
+            ) else {
                 return Ok(None);
             };
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
@@ -333,32 +349,55 @@ impl Backend {
         for uri in self.reported.lock().await.iter() {
             published.entry(uri.clone()).or_default();
         }
+        let mut sources: std::collections::BTreeMap<String, String> = documents
+            .iter()
+            .filter_map(|(uri, source)| {
+                Some((
+                    uri.to_file_path().ok()?.to_string_lossy().into_owned(),
+                    source.clone(),
+                ))
+            })
+            .collect();
+        let mut pending = Vec::new();
         for (uri, source) in &documents {
+            let path = uri.to_file_path().unwrap_or_else(|_| uri.path().into());
             let diagnostics = if uri.path().ends_with(".notc") {
-                notist::analyze_module("package", source)
-                    .err()
-                    .unwrap_or_default()
+                match vault.analyze_code(&path, source) {
+                    Ok(analysis) => {
+                        sources.extend(analysis.sources);
+                        analysis.diagnostics
+                    }
+                    Err(error) => {
+                        let errors = source_errors(uri, error);
+                        errors
+                            .into_iter()
+                            .map(|error| {
+                                let path = error.path.to_string_lossy().into_owned();
+                                sources.insert(path.clone(), error.source);
+                                let mut d = error.diagnostic;
+                                d.source.get_or_insert(path);
+                                d
+                            })
+                            .collect()
+                    }
+                }
             } else if uri.path().ends_with("Notist.toml") {
                 notist::environment::parse_config(source)
                     .err()
                     .unwrap_or_default()
             } else {
-                match vault
-                    .analyze(
-                        uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
-                        source,
-                    )
-                    .map_err(|error| source_errors(uri, error))
-                {
-                    Ok(analysis) => analysis.into_parts().1,
-                    Err(errors) => {
-                        for error in errors {
-                            if let Ok(error_uri) = Url::from_file_path(&error.path) {
-                                published
-                                    .entry(error_uri)
-                                    .or_default()
-                                    .push(lsp_diagnostic(&error.source, &error.diagnostic));
-                            }
+                match vault.analyze(&path, source) {
+                    Ok(analysis) => {
+                        sources.extend(analysis.sources().clone());
+                        analysis.into_parts().1
+                    }
+                    Err(error) => {
+                        for error in source_errors(uri, error) {
+                            let path = error.path.to_string_lossy().into_owned();
+                            sources.insert(path.clone(), error.source);
+                            let mut diagnostic = error.diagnostic;
+                            diagnostic.source.get_or_insert(path);
+                            pending.push((uri.clone(), diagnostic));
                         }
                         vec![notist::Diagnostic::new(
                             notist::Phase::Semantic,
@@ -368,11 +407,26 @@ impl Backend {
                     }
                 }
             };
-            published.entry(uri.clone()).or_default().extend(
-                diagnostics
-                    .iter()
-                    .map(|diagnostic| lsp_diagnostic(source, diagnostic)),
-            );
+            pending.extend(diagnostics.into_iter().map(|d| (uri.clone(), d)));
+        }
+        for (fallback, diagnostic) in pending {
+            let uri = diagnostic
+                .source
+                .as_deref()
+                .and_then(|path| Url::from_file_path(path).ok())
+                .unwrap_or(fallback.clone());
+            let source = diagnostic
+                .source
+                .as_ref()
+                .and_then(|path| sources.get(path))
+                .or_else(|| documents.get(&uri))
+                .or_else(|| documents.get(&fallback));
+            if let Some(source) = source {
+                published
+                    .entry(uri)
+                    .or_default()
+                    .push(lsp_diagnostic(source, &diagnostic));
+            }
         }
         for diagnostics in published.values_mut() {
             let mut unique = Vec::new();
@@ -519,7 +573,10 @@ impl LineIndex {
     }
 
     fn position(&self, src: &str, offset: usize) -> Position {
-        let offset = offset.min(src.len());
+        let mut offset = offset.min(src.len());
+        while !src.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let line = self.starts.partition_point(|&s| s <= offset) - 1;
         let col = src[self.starts[line]..offset]
             .chars()
@@ -554,10 +611,10 @@ fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
     if !uri.path().ends_with(".not") {
         return None;
     }
-    notist::syntax::parse_document(source)
+    notist::syntax::markup::parse_document(source)
         .syntax()
         .descendants()
-        .filter_map(notist::syntax::ast::CodeCall::cast)
+        .filter_map(notist::syntax::code::ast::CodeCall::cast)
         .find_map(|call| {
             let path = call.path()?;
             path.range()
@@ -586,7 +643,7 @@ mod tests {
             .analyze(
                 "test.not",
                 "内容 *粗体* 文字\n",
-                notist::builtins::registry(),
+                &notist::Context::default(),
             )
             .unwrap()
             .into_parts();

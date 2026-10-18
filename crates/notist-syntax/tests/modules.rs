@@ -1,8 +1,8 @@
-use notist_syntax::syntax::SyntaxKind;
-use notist_syntax::{ast, parse_document, parse_module};
+use notist_syntax::code::{ast, parse_module};
+use notist_syntax::tree::SyntaxKind;
 
 fn module(src: &str) -> ast::Module {
-    let parsed = parse_module(src);
+    let parsed = parse_module(src, &notist_syntax::markup::MarkupContentParser);
     assert_eq!(parsed.syntax().text().to_string(), src);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     ast::Module::cast(parsed.syntax()).unwrap()
@@ -67,7 +67,7 @@ fn signatures_preserve_names_types_defaults_and_mounts() {
 
 #[test]
 fn generic_types_and_shared_collection_literals() {
-    let src = "fn config(\n items: Array<Array<Bool>> = ((true, false),),\n options: Dict = (label: r#\"fn;[]\"#, n: -2, unit: (), empty: (,)),\n) -> Content;";
+    let src = "fn config(\n items: Array<Array<Bool>> = ((true, false),),\n options: Dict = (label: r#\"fn;[]\"#, n: -2, unit: (), empty: (,)),\n) -> BlockContent;";
     let module = module(src);
     let function = module.functions().next().unwrap();
     let params: Vec<_> = function.parameters().collect();
@@ -90,7 +90,7 @@ fn generic_types_and_shared_collection_literals() {
 
 #[test]
 fn comments_and_multiline_raw_strings_do_not_end_declarations() {
-    let src = "/* outer /* nested */ end */\nfn/*c*/foo(\n x/*c*/: String = r#\"\"\"\nfn fake();\n[]\n\"\"\"#,\n n: Int=-1,\n) [/*c*/children:Content]->Content;\n";
+    let src = "/* outer /* nested */ end */\nfn/*c*/foo(\n x/*c*/: String = r#\"\"\"\nfn fake();\n[]\n\"\"\"#,\n n: Int=-1,\n) [/*c*/children:BlockContent]->BlockContent;\n";
     assert_eq!(function_names(&module(src)), ["foo"]);
 }
 
@@ -122,16 +122,16 @@ fn recovery_keeps_following_declarations_and_source() {
         "fn broken(x: Dict = (key:)",
         "fn broken(x: Dict = (key:",
         "fn broken(x: Array<Bool)",
-        "fn broken() [body: Content]",
-        "fn broken()->Content",
+        "fn broken() [body: BlockContent]",
+        "fn broken()->BlockContent",
         "import something;",
-        "fn broken(x: String = [markup]) -> Content;",
+        "fn broken(x: String = [markup]) -> BlockContent;",
         "fn broken(x: String = \"unterminated\n",
-        "fn broken()->Content { body };",
+        "fn broken()->BlockContent { body };",
     ];
     for prefix in broken {
-        let src = format!("{prefix}\nfn good() -> Content;\nfn last() -> InlineContent;");
-        let parsed = parse_module(&src);
+        let src = format!("{prefix}\nfn good() -> BlockContent;\nfn last() -> InlineContent;");
+        let parsed = parse_module(&src, &notist_syntax::markup::MarkupContentParser);
         assert_eq!(parsed.syntax().text().to_string(), src, "{prefix}");
         assert!(!parsed.diagnostics.is_empty(), "{prefix}");
         let names = function_names(&ast::Module::cast(parsed.syntax()).unwrap());
@@ -147,7 +147,10 @@ fn recovery_keeps_following_declarations_and_source() {
 
 #[test]
 fn optional_and_default_are_mutually_exclusive() {
-    let parsed = parse_module("fn f(x?: Int = 1) -> Content;");
+    let parsed = parse_module(
+        "fn f(x?: Int = 1) -> BlockContent;",
+        &notist_syntax::markup::MarkupContentParser,
+    );
     assert!(
         parsed
             .diagnostics
@@ -168,31 +171,27 @@ fn optional_and_default_are_mutually_exclusive() {
 
 #[test]
 fn trivia_and_empty_modules_are_lossless() {
-    for src in ["", " \r\n// comment\n/* comment */\t", "fn f()->Content;"] {
+    for src in [
+        "",
+        " \r\n// comment\n/* comment */\t",
+        "fn f()->BlockContent;",
+    ] {
         module(src);
     }
-    let parsed = parse_module("/* outer /* inner */");
+    let parsed = parse_module(
+        "/* outer /* inner */",
+        &notist_syntax::markup::MarkupContentParser,
+    );
     assert_eq!(parsed.diagnostics.len(), 1);
     assert_eq!(parsed.diagnostics[0].message, "unclosed block comment");
 }
 
 #[test]
-fn document_and_module_use_distinct_roots_and_dispatch() {
-    let src = "fn foo() -> Content;";
-    let document = parse_document(src);
-    let code = parse_module(src);
-    assert!(ast::Document::cast(document.syntax()).is_some());
-    assert!(ast::Module::cast(document.syntax()).is_none());
-    assert!(ast::Module::cast(code.syntax()).is_some());
-    assert!(ast::Document::cast(code.syntax()).is_none());
-}
-
-#[test]
 fn every_truncated_signature_recovers_at_the_next_function() {
-    let signature = "fn broken(x: Array<Array<String>> = (1, (key: 2,)), title?: String)[children: Content] -> Content;";
+    let signature = "fn broken(x: Array<Array<String>> = (1, (key: 2,)), title?: String)[children: BlockContent] -> BlockContent;";
     for end in 0..=signature.len() {
-        let src = format!("{}\nfn good() -> Content;", &signature[..end]);
-        let parsed = parse_module(&src);
+        let src = format!("{}\nfn good() -> BlockContent;", &signature[..end]);
+        let parsed = parse_module(&src, &notist_syntax::markup::MarkupContentParser);
         assert_eq!(parsed.syntax().text().to_string(), src);
         let module = ast::Module::cast(parsed.syntax()).unwrap();
         assert_eq!(
@@ -208,8 +207,8 @@ fn every_truncated_signature_recovers_at_the_next_function() {
 fn unterminated_inline_strings_stop_at_all_line_endings() {
     for newline in ["\n", "\r\n", "\r"] {
         for tail in ["", "\\"] {
-            let src = format!("fn bad(x:String=\"broken{tail}{newline}fn good()->Content;");
-            let parsed = parse_module(&src);
+            let src = format!("fn bad(x:String=\"broken{tail}{newline}fn good()->BlockContent;");
+            let parsed = parse_module(&src, &notist_syntax::markup::MarkupContentParser);
             assert_eq!(parsed.syntax().text().to_string(), src);
             assert!(
                 parsed
@@ -229,7 +228,10 @@ fn unterminated_inline_strings_stop_at_all_line_endings() {
 
 #[test]
 fn an_escaped_triple_quote_does_not_close_a_multiline_string() {
-    let parsed = parse_module("fn bad(x: String = \"\"\"\nescaped \\\"\"\"");
+    let parsed = parse_module(
+        "fn bad(x: String = \"\"\"\nescaped \\\"\"\"",
+        &notist_syntax::markup::MarkupContentParser,
+    );
     assert!(
         parsed
             .diagnostics
@@ -241,11 +243,11 @@ fn an_escaped_triple_quote_does_not_close_a_multiline_string() {
 #[test]
 fn excessive_type_nesting_is_diagnosed_and_recovers() {
     let src = format!(
-        "fn bad(x: {}Bool{}) -> Content; fn good()->Content;",
+        "fn bad(x: {}Bool{}) -> BlockContent; fn good()->BlockContent;",
         "Array<".repeat(130),
         ">".repeat(130)
     );
-    let parsed = parse_module(&src);
+    let parsed = parse_module(&src, &notist_syntax::markup::MarkupContentParser);
     assert!(
         parsed
             .diagnostics

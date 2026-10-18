@@ -217,10 +217,17 @@ pub(super) fn load(
         .into_iter()
         .filter(|rule| graph.active_transforms.contains(&rule.path))
         .collect();
-    let rules = compose(&environment.registry, defaults, explicit, development);
+    let rules = compose(
+        environment.context().registry(),
+        defaults,
+        explicit,
+        development,
+    );
     match rules {
         Ok(rules) if graph.errors.is_empty() => {
-            let mut environment = environment
+            let mut environment = environment;
+            environment.context = environment
+                .context
                 .with_transforms(&rules)
                 .expect("rules were validated against this immutable registry");
             environment.config_path = Some(root.path);

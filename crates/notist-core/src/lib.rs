@@ -1,8 +1,10 @@
 //! Shared document IR, declaration contracts and diagnostics. No source or resource IO.
+pub mod annotation;
 pub mod builtins;
 pub mod definitions;
 pub mod diag;
 pub mod dump;
+pub mod evaluation;
 pub mod expr;
 pub mod frontend;
 pub mod index;

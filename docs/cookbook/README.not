@@ -22,21 +22,21 @@
 | :--- | ---: |
 | *苹果* | 3 |
 
-`.not` 表格按逻辑行解析，只有最外层换行结束表格行，最外层管道符分隔单元格。完整公式、字符串与调用内部可以自然换行，块级公式也可以留空行；raw / math 内部的管道符和反斜杠保持原样。普通文字里的管道符使用 `\|`。多行 raw 字符串使用 `r#"""..."""#`，开引号后立即换行。需要多个段落或列表时，用 `#[ ... ]` 包裹单元格内容，两端内侧留白：
+`.not` 表格按逻辑行解析，只有最外层换行结束表格行，最外层管道符分隔单元格。完整公式、字符串与调用内部可以自然换行，块级公式也可以留空行；raw / math 内部的管道符和反斜杠保持原样。普通文字里的管道符使用 `\|`。多行 raw 字符串使用 `r#"""..."""#`，开引号后立即换行。需要多个段落或列表时，用 `#node[ ... ]` 包裹单元格内容，两端内侧留白：
 
 | 名称 | 内容 |
 | --- | --- |
-| 图形源码 | #raw(r#"""
+| 图形源码 | #raw<BlockContent>(r#"""
 stateDiagram-v2
     [*] --> s1
     s1 --> [*]
-"""#, block: true, lang: "mermaid") |
+"""#, lang: "mermaid") |
 | 多行公式 | $
 f(x) &= x^2 + 2x + 1 \
 
      &= (x + 1)^2
 $ |
-| 多段内容 | #[
+| 多段内容 | #node[
 第一段，可以直接写字面管道符 a | b。
 
 第二段。
@@ -57,14 +57,14 @@ fn main() {
 }
 ```
 
-数学公式使用 `$x$` 写行内内容；两端内侧留白的 `$ x $` 写块级内容，对应同一个 `math` 函数的 `block: true`：
+数学公式使用 `$x$` 写行内内容；两端内侧留白的 `$ x $` 写块级内容，对应同一个 `math` 函数的 `BlockContent` 实例：
 
 $ x^2 + y^2 = z^2 $
 
 也可以显式调用：
 
 ```not
-#math("x^2 + y^2 = z^2", block: true)
+#math<BlockContent>("x^2 + y^2 = z^2")
 ```
 
 原生 `.not` 的块级公式可以在一对 `$` 内跨行并留空行；行内公式只能跨软换行。Markdown 的两种公式都限于同一 Markdown 块，允许段落内的软换行，空行会结束该段落。源码中的换行能否形成排版换行，由公式引擎决定。
@@ -153,7 +153,7 @@ Callout 没有专用 Markup 语法，直接调用：
 ]
 ```
 
-`#emph[行内调用]` 的正文按 Markdown 行内规则解析；`#callout[ ... ]` 两端内侧留有换行，因此按 Markdown 块规则解析。换成 .not 时，调用名称与参数保持一致，正文改用 .not 语法。内容通过调用后的 `[]` 挂载，`#emph([正文])` 这样的 Content 参数目前不支持。
+`#emph[行内调用]` 的正文按 Markdown 行内规则解析；`#callout[ ... ]` 两端内侧留有换行，因此按 Markdown 块规则解析。换成 .not 时，调用名称与参数保持一致，正文改用 .not 语法。内容通过调用后的 `[]` 挂载，`#emph([正文])` 这样的 BlockContent 参数目前不支持。
 
 == 按前端处理源码
 
@@ -161,13 +161,14 @@ Callout 没有专用 Markup 语法，直接调用：
 
 ```rust
 let pipeline = notist::Pipeline::default();
+let context = notist::Context::default();
 let document = pipeline.analyze(
     "example.nmd",
     "@(id: \"intro\")\n# Title\n\n#strong[**Markdown**]",
-    notist::builtins::registry(),
+    &context,
 )?;
 ```
 
-只安装原生前端时使用 `Pipeline::new().with_frontend(notist::NotistFrontend)`；只安装 Markdown 时使用 `Pipeline::new().with_frontend(notist_md::MarkdownFrontend)`。自定义前端实现 core 的 Frontend Trait，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
+只安装原生前端时使用 `Pipeline::new().with_frontend(notist::NotistFrontend)`；只安装 Markdown 时使用 `Pipeline::new().with_frontend(notist::MarkdownFrontend)`。自定义前端实现 Frontend 与 ContentLowering，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
 
-需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, registry)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。
+需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, &context)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。Context::default 提供内置函数和空转换计划；需要项目声明与转换规则时，由宿主加载 Environment 并传入 environment.context()。

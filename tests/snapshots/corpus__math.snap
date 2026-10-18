@@ -69,7 +69,7 @@ Document@0..115
     (math @7..12 :text "a^2")
     (text @12..19 :text " 搞定")
   )
-  (math @21..37 :block true :text "x|y +\n\n  z")
+  (math @21..37 :text "x|y +\n\n  z")
   (list @39..114 :ordered false :start 1
     (listitem @39..71
       (paragraph @41..71

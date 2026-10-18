@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::resources::{ResourceKind, Resources};
-use crate::{Diagnostic, Phase, Registry, TextRange, analyze_module, builtins};
-use notist_pipeline::transforms::{Replace, TransformPlan};
+use crate::{Context, Diagnostic, Phase, TextRange};
 
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
@@ -24,13 +23,13 @@ pub struct Package {
     pub source: String,
 }
 
-/// A fully installed environment. Assembly errors never return a partial environment.
+/// A host-loaded Context and the configuration/package metadata used for resources.
+/// Assembly errors never return a partial environment.
 #[derive(Debug, Clone)]
 pub struct Environment {
     config_path: Option<PathBuf>,
     packages: BTreeMap<String, Package>,
-    registry: Registry,
-    transforms: TransformPlan,
+    context: Context,
 }
 
 impl Default for Environment {
@@ -38,8 +37,7 @@ impl Default for Environment {
         Self {
             config_path: None,
             packages: BTreeMap::new(),
-            registry: builtins::registry().clone(),
-            transforms: TransformPlan::default(),
+            context: Context::default(),
         }
     }
 }
@@ -51,29 +49,30 @@ impl Environment {
     pub fn packages(&self) -> &BTreeMap<String, Package> {
         &self.packages
     }
-    pub fn registry(&self) -> &Registry {
-        &self.registry
-    }
-    pub fn transforms(&self) -> &TransformPlan {
-        &self.transforms
-    }
-    /// Compile an explicit plan against the installed declarations, without IO.
-    pub fn with_transforms(mut self, rules: &[Replace]) -> Result<Self, Vec<Diagnostic>> {
-        self.transforms = TransformPlan::compile(rules, &self.registry)?;
-        Ok(self)
+    /// Pure analysis and transform inputs, independent of host resource paths.
+    pub fn context(&self) -> &Context {
+        &self.context
     }
     /// Install explicitly supplied declaration sources; performs no IO.
     pub fn from_packages(
         packages: impl IntoIterator<Item = Package>,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        let mut environment = Self::default();
+        let mut context = Context::default();
+        let mut installed = BTreeMap::new();
         let mut diagnostics = Vec::new();
         for package in packages {
-            let result = analyze_module(&package.name, &package.source)
-                .and_then(|module| environment.registry.register(module));
+            let result = crate::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    &package.name,
+                    &package.root.join("lib.notc").to_string_lossy(),
+                    &package.source,
+                )
+                .and_then(|module| context.clone().with_module(module));
             match result {
-                Ok(()) => {
-                    environment.packages.insert(package.name.clone(), package);
+                Ok(updated) => {
+                    context = updated;
+                    installed.insert(package.name.clone(), package);
                 }
                 Err(errors) => {
                     diagnostics.extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
@@ -85,9 +84,49 @@ impl Environment {
             }
         }
         if diagnostics.is_empty() {
-            Ok(environment)
+            Ok(Self {
+                config_path: None,
+                packages: installed,
+                context,
+            })
         } else {
             Err(diagnostics)
+        }
+    }
+
+    /// Add an explicitly prepared Code source to this host environment. The
+    /// caller chooses the content dialect and performs any resource reads.
+    pub fn with_code(
+        mut self,
+        package: &str,
+        path: &Path,
+        source: &str,
+        dialect: &Path,
+    ) -> Result<Self, Vec<SourceDiagnostic>> {
+        let compiled = crate::Pipeline::default()
+            .compile_module(dialect, package, &path.to_string_lossy(), source)
+            .and_then(|module| self.context.clone().with_module(module));
+        match compiled {
+            Ok(context) => {
+                self.context = context;
+                self.packages.insert(
+                    package.into(),
+                    Package {
+                        name: package.into(),
+                        root: path.parent().unwrap_or(Path::new("")).into(),
+                        source: source.into(),
+                    },
+                );
+                Ok(self)
+            }
+            Err(errors) => Err(errors
+                .into_iter()
+                .map(|diagnostic| SourceDiagnostic {
+                    path: path.into(),
+                    source: source.into(),
+                    diagnostic,
+                })
+                .collect()),
         }
     }
 

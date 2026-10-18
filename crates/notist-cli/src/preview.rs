@@ -122,13 +122,16 @@ fn rebuild(
     observed: &mut BTreeSet<PathBuf>,
     output: &mut PathBuf,
 ) {
-    let result = site::assemble(root, config, None);
+    let result = site::assemble(root, config, None, true);
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {
         Ok(result) => {
             *observed = result.observed;
             *output = result.output;
+            if !result.site.diagnostics.is_empty() {
+                site::report(Error::Diagnostics(result.site.diagnostics.clone()));
+            }
             published.site = Some(Arc::new(result.site));
             published.revision += 1;
             published.error = None;

@@ -372,6 +372,14 @@ fn theme_overrides_use_handlebars_partials_and_escape_metadata() {
             .contains_key(Path::new("_notist/theme/custom.css"))
     );
     assert!(site.files.contains_key(Path::new("_notist/theme/site.css")));
+    assert!(
+        site.files
+            .contains_key(Path::new("_notist/theme/status.css"))
+    );
+    let site_css = output.find("_notist/theme/site.css").unwrap();
+    let status_css = output.find("_notist/theme/status.css").unwrap();
+    let custom_css = output.find("_notist/theme/custom.css").unwrap();
+    assert!(site_css < status_css && status_css < custom_css);
 }
 
 #[test]
@@ -402,7 +410,7 @@ fn default_transforms_publish_shared_component_resources_per_used_page() {
         ),
         (
             "/math/lib.notc",
-            "fn formula(text: String, block?: Bool) -> Content<block>;",
+            "fn formula<C: Type = InlineContent>(text: String) -> C;",
         ),
         (
             "/math/components/formula/index.js",
@@ -452,7 +460,7 @@ fn component_sources_cannot_contain_site_output() {
         ("/widgets/Notist.toml", "[package]\nname='widgets'"),
         (
             "/widgets/lib.notc",
-            "fn panel()[children: Content] -> Content;",
+            "fn panel<C: Type>()[children: C] -> BlockContent;",
         ),
         (
             "/widgets/components/panel/index.js",
@@ -524,5 +532,134 @@ fn same_named_packages_in_different_page_environments_are_rejected() {
             .unwrap_err()
             .to_string()
             .contains("conflicting resource roots")
+    );
+}
+
+#[test]
+fn preview_recovers_code_errors_while_build_remains_strict() {
+    let files = [
+        ("Notist.toml", "[package]\nname = 'demo'"),
+        (
+            "lib.notc",
+            "fn bad() -> InlineContent { compile_error(\"broken\") } fn good() -> InlineContent { [works] }",
+        ),
+        ("README.not", "#demo::bad() #demo::good()"),
+    ];
+    assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
+    let site =
+        notist_ssg::preview(&mut Vault::new(resources(&files)), &SiteConfig::default()).unwrap();
+    let html = html(&site, "index.html");
+    assert!(html.contains("broken"));
+    assert!(html.contains("works"));
+    assert!(
+        site.diagnostics
+            .iter()
+            .any(|d| d.path == Path::new("/vault/lib.notc"))
+    );
+    assert!(
+        site.diagnostics
+            .iter()
+            .any(|d| d.source.contains("compile_error"))
+    );
+}
+
+#[test]
+fn preview_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
+    let files = [
+        ("Notist.toml", "[package]\nname = 'demo'"),
+        (
+            "lib.notc",
+            r#"
+            fn bad_link() -> InlineContent { [#link(target: "missing.png")[ #callout[ x ] ]] }
+            fn bad_embed() -> InlineContent { [#embed(target: "missing.svg", description: "image", title: 1)] }
+            fn bad_heading() -> BlockContent { [ #heading<0>[Bad title] ] }
+            fn good() -> InlineContent { [survives] }
+        "#,
+        ),
+        (
+            "README.not",
+            "#demo::bad_link() #demo::bad_embed()\n\n#demo::bad_heading()\n\n#demo::good()",
+        ),
+    ];
+    assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
+    let site =
+        notist_ssg::preview(&mut Vault::new(resources(&files)), &SiteConfig::default()).unwrap();
+    let output = html(&site, "index.html");
+    assert!(output.contains("survives"));
+    assert!(output.contains("role=\"alert\""));
+    assert!(!site.diagnostics.is_empty());
+    assert!(
+        site.diagnostics
+            .iter()
+            .all(|d| d.diagnostic.phase == notist::Phase::Type),
+        "{:?}",
+        site.diagnostics
+    );
+    assert!(site.pages[0].headings.is_empty());
+    assert_eq!(site.pages[0].title, SiteConfig::default().title);
+}
+
+#[test]
+fn generated_reference_diagnostics_point_into_the_code_definition() {
+    for (target, message) in [
+        ("missing.png", "missing local resource"),
+        ("other.not#absent", "missing anchor"),
+        ("../private.png", "outside Vault"),
+    ] {
+        let module = format!(
+            "{}fn view() -> InlineContent {{ [#link(target: \"{target}\")[click]] }}",
+            "// retained source\n".repeat(20)
+        );
+        let document = "#demo::view()";
+        let files = [
+            ("Notist.toml", "[package]\nname = 'demo'"),
+            ("lib.notc", module.as_str()),
+            ("README.not", document),
+            ("other.not", "= Other"),
+        ];
+        let error = build(&mut Vault::new(resources(&files)), &SiteConfig::default()).unwrap_err();
+        let Error::Diagnostics(errors) = error else {
+            panic!("expected source diagnostics: {error}")
+        };
+        let diagnostic = errors
+            .iter()
+            .find(|d| d.diagnostic.message.contains(message))
+            .unwrap();
+        assert_eq!(diagnostic.path, Path::new("/vault/lib.notc"));
+        assert_eq!(diagnostic.source, module);
+        assert_eq!(
+            diagnostic.diagnostic.source.as_deref(),
+            Some("/vault/lib.notc")
+        );
+        let span = diagnostic.diagnostic.span;
+        assert!(usize::from(span.start()) > document.len());
+        assert!(usize::from(span.end()) <= module.len());
+        assert!(module[usize::from(span.start())..usize::from(span.end())].starts_with("#link("));
+    }
+}
+
+#[test]
+fn preview_recovers_function_body_syntax_errors_by_boundary() {
+    let files = [
+        ("Notist.toml", "[package]\nname = 'demo'"),
+        (
+            "lib.notc",
+            "fn bad() -> InlineContent { 1 + } fn good() -> InlineContent { [works] }",
+        ),
+        ("README.not", "#demo::bad() #demo::good()"),
+    ];
+    assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
+    let site =
+        notist_ssg::preview(&mut Vault::new(resources(&files)), &SiteConfig::default()).unwrap();
+    let output = html(&site, "index.html");
+    assert!(output.contains("works") && output.contains("role=\"alert\""));
+    assert!(
+        site.diagnostics
+            .iter()
+            .any(|d| d.diagnostic.phase == notist::Phase::Syntax && d.diagnostic.recovered)
+    );
+    let global = [("README.not", "@!(id: missing)\nbody")];
+    assert!(
+        notist_ssg::preview(&mut Vault::new(resources(&global)), &SiteConfig::default()).is_err()
     );
 }

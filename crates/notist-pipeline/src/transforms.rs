@@ -1,79 +1,38 @@
-//! Ordered transformations of materialized IR. Plans bind to an immutable
-//! definition environment; neither compilation nor execution performs IO.
+//! Ordered same-signature execution-target selection. Semantic identities are immutable.
 use notist_core::{
-    builtins::{Accepts, Level},
-    definitions::{FunctionDef, FunctionId, ParameterMode, ReturnRule},
+    definitions::{FunctionDef, FunctionId, ParameterMode, Type},
     diag::{Diagnostic, Phase},
-    expr::BodyFlavor,
-    item::{Ctor, ExtensionCtor, Item, Value},
     registry::Registry,
 };
 use rowan::TextRange;
-
-/// A function-identity replacement. The span belongs to the configuration,
-/// while execution diagnostics refer to the original document node.
 #[derive(Debug, Clone)]
 pub struct Replace {
     pub from: FunctionId,
     pub to: FunctionId,
     pub span: TextRange,
 }
-
-#[derive(Debug, Clone)]
-struct BoundReplace {
-    source: FunctionDef,
-    target: FunctionDef,
-}
-
-/// A complete, signature-checked plan. Failed compilation never returns a
-/// partial plan. Definition snapshots make execution independent of later IO.
 #[derive(Debug, Clone, Default)]
 pub struct TransformPlan {
-    replacements: Vec<BoundReplace>,
+    replacements: Vec<Replace>,
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct TransformOutput {
-    pub root: Item,
-    pub diagnostics: Vec<Diagnostic>,
-}
-
 impl TransformPlan {
     pub fn compile(rules: &[Replace], registry: &Registry) -> Result<Self, Vec<Diagnostic>> {
         let mut replacements = Vec::new();
         let mut diagnostics = Vec::new();
-        for rule in rules {
-            let mut lookup = |id: &FunctionId| {
-                let definition = registry.get(id);
-                if definition.is_none() {
-                    diagnostics.push(Diagnostic::new(
+        for r in rules {
+            match (registry.get(&r.from), registry.get(&r.to)) {
+                (Some(a), Some(b)) => match compatible(a, b) {
+                    Ok(()) => replacements.push(r.clone()),
+                    Err(m) => diagnostics.push(Diagnostic::new(
                         Phase::Type,
-                        rule.span,
-                        format!("unknown transform function `{id}`"),
-                    ));
-                }
-                definition
-            };
-            let source = lookup(&rule.from);
-            let target = lookup(&rule.to);
-            let (Some(source), Some(target)) = (source, target) else {
-                continue;
-            };
-            let result = compatible(source, target);
-            match result {
-                Ok(()) => {
-                    replacements.push(BoundReplace {
-                        source: source.clone(),
-                        target: target.clone(),
-                    });
-                }
-                Err(reason) => diagnostics.push(Diagnostic::new(
+                        r.span,
+                        format!("cannot replace `{}` with `{}`: {m}", r.from, r.to),
+                    )),
+                },
+                _ => diagnostics.push(Diagnostic::new(
                     Phase::Type,
-                    rule.span,
-                    format!(
-                        "cannot replace `{}` with `{}`: {reason}",
-                        rule.from, rule.to
-                    ),
+                    r.span,
+                    "unknown transform function",
                 )),
             }
         }
@@ -83,163 +42,91 @@ impl TransformPlan {
             Err(diagnostics)
         }
     }
-
     pub fn is_empty(&self) -> bool {
         self.replacements.is_empty()
     }
-
-    /// Clone the analysis tree, then visit it once per rule in configuration
-    /// order. Replaced nodes are not re-matched by that same rule.
-    pub fn apply(&self, root: &Item) -> TransformOutput {
-        let mut output = TransformOutput {
-            root: root.clone(),
-            diagnostics: Vec::new(),
-        };
-        for replacement in &self.replacements {
-            replacement.visit(&mut output.root, &mut output.diagnostics);
+    pub(crate) fn revalidate(&self, registry: &Registry) -> Result<Self, Vec<Diagnostic>> {
+        Self::compile(&self.replacements, registry)
+    }
+    /// Each rule can select the target once, in declaration order. No fixed point.
+    pub fn target(&self, source: &FunctionId) -> FunctionId {
+        let mut id = source.clone();
+        for rule in &self.replacements {
+            if id == rule.from {
+                id = rule.to.clone();
+            }
         }
-        output
+        id
     }
 }
-
-fn structural(definition: &FunctionDef) -> bool {
-    matches!(
-        definition.children,
-        Accepts::Items | Accepts::Rows | Accepts::Cells
-    ) || (definition.id.package == "notist"
+fn normalized(t: &Type, d: &FunctionDef) -> Type {
+    match t {
+        Type::Parameter(n) => Type::Parameter(
+            d.comptime
+                .iter()
+                .position(|p| p.name == *n)
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| n.clone()),
+        ),
+        Type::Array(t) => Type::Array(t.as_ref().map(|t| Box::new(normalized(t, d)))),
+        _ => t.clone(),
+    }
+}
+fn role(d: &FunctionDef) -> Option<&str> {
+    if d.id.package == "notist"
         && matches!(
-            definition.id.name.as_str(),
-            "heading" | "section" | "list" | "item" | "table" | "row" | "cell"
-        ))
+            d.id.name.as_str(),
+            "heading" | "section" | "table" | "row" | "cell" | "list" | "item" | "node"
+        )
+    {
+        Some(&d.id.name)
+    } else {
+        None
+    }
 }
-
-fn compatible(source: &FunctionDef, target: &FunctionDef) -> Result<(), &'static str> {
-    if structural(source) || structural(target) {
-        return Err("structural functions are not supported by replace");
+fn compatible(a: &FunctionDef, b: &FunctionDef) -> Result<(), &'static str> {
+    if role(a) != role(b) {
+        return Err("structural roles differ");
     }
-    match (&source.returns, &target.returns) {
-        (ReturnRule::Fixed(a), ReturnRule::Fixed(b)) if a == b && *a != Level::Inherit => {}
-        (ReturnRule::BlockIfTrue(a), ReturnRule::BlockIfTrue(b)) if a == b => {}
-        (ReturnRule::Inherit, _) | (_, ReturnRule::Inherit) => {
-            return Err("replace requires fixed levels or matching boolean content rules");
-        }
-        _ => return Err("content levels differ"),
+    if a.comptime.len() != b.comptime.len()
+        || a.comptime.iter().zip(&b.comptime).any(|(x, y)| {
+            normalized(&x.ty, a) != normalized(&y.ty, b)
+                || x.constraint != y.constraint
+                || x.default.as_ref().map(|v| v.key()) != y.default.as_ref().map(|v| v.key())
+        })
+    {
+        return Err("comptime parameter contracts differ");
     }
-    if source.children != target.children {
+    if normalized(&a.returns, a) != normalized(&b.returns, b) {
+        return Err("result types differ");
+    }
+    if a.children != b.children {
         return Err("children contracts differ");
     }
-    if source.parameters.len() != target.parameters.len()
-        || source.parameters.iter().any(|a| {
-            target
-                .parameters
-                .iter()
-                .find(|b| a.name == b.name)
-                .is_none_or(|b| {
-                    a.ty != b.ty || a.constraint != b.constraint || !same_mode(&a.mode, &b.mode)
-                })
+    if a.children_type.as_ref().map(|t| normalized(t, a))
+        != b.children_type.as_ref().map(|t| normalized(t, b))
+    {
+        return Err("children contracts differ");
+    }
+    if a.parameters.len() != b.parameters.len()
+        || a.parameters.iter().zip(&b.parameters).any(|(x, y)| {
+            x.name != y.name
+                || x.positional != y.positional
+                || normalized(&x.ty, a) != normalized(&y.ty, b)
+                || x.constraint != y.constraint
+                || !same_mode(&x.mode, &y.mode)
         })
     {
         return Err("parameter contracts differ");
     }
     Ok(())
 }
-
 fn same_mode(a: &ParameterMode, b: &ParameterMode) -> bool {
     match (a, b) {
-        (ParameterMode::Default(a), ParameterMode::Default(b)) => same_value(a, b),
-        _ => a == b,
-    }
-}
-
-// Defaults include native nonfinite floats and ordered dictionaries. Comparing
-// bits also distinguishes negative zero and preserves NaN payloads.
-fn same_value(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b))
-        }
-        (Value::Dict(a), Value::Dict(b)) => {
-            let a: Vec<_> = a.iter().collect();
-            let b: Vec<_> = b.iter().collect();
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|((ak, av), (bk, bv))| *ak == bk && same_value(av, bv))
+        (ParameterMode::Default(a), ParameterMode::Default(b)) => {
+            notist_core::definitions::ComptimeValue::Data(a.clone()).key()
+                == notist_core::definitions::ComptimeValue::Data(b.clone()).key()
         }
         _ => a == b,
-    }
-}
-
-impl BoundReplace {
-    fn visit(&self, item: &mut Item, diagnostics: &mut Vec<Diagnostic>) {
-        if item.function_id().as_ref() == Some(&self.source.id) {
-            let mut errors = Vec::new();
-            self.source.validate_fields(
-                &item.fields,
-                &self.source.id.to_string(),
-                item.span,
-                &mut errors,
-            );
-            let defaults_present = self.source.parameters.iter().all(|p| {
-                !matches!(p.mode, ParameterMode::Default(_)) || item.fields.get(&p.name).is_some()
-            });
-            let known_fields = item.fields.iter().all(|(name, _)| {
-                self.source
-                    .parameters
-                    .iter()
-                    .any(|parameter| parameter.name == name)
-            });
-            let children_valid = match self.source.children {
-                Accepts::Nothing => item.children.is_empty(),
-                Accepts::Inline => item
-                    .children
-                    .iter()
-                    .all(|child| child.level == Level::Inline),
-                Accepts::Content | Accepts::Any => true,
-                Accepts::Items | Accepts::Rows | Accepts::Cells => false,
-            };
-            let level = self.source.returns.level(&item.fields, BodyFlavor::None);
-            let ctor_level = if matches!(item.ctor, Ctor::Extension(_)) {
-                level
-            } else {
-                self.source.returns.base_level()
-            };
-            let snapshot_valid = item.ctor.accepts() == Some(self.source.children)
-                && item.ctor.level() == Some(ctor_level);
-            if errors.is_empty()
-                && defaults_present
-                && known_fields
-                && children_valid
-                && snapshot_valid
-                && item.level == level
-            {
-                item.ctor = if self.target.id.package == "notist" {
-                    Ctor::from_name(&self.target.id.name).expect("registered builtin")
-                } else {
-                    Ctor::Extension(ExtensionCtor {
-                        id: self.target.id.clone(),
-                        accepts: self.target.children,
-                        level,
-                    })
-                };
-            } else {
-                let reason = errors
-                    .first()
-                    .map(|error| error.message.as_str())
-                    .unwrap_or(
-                        "fields, children or content level violate the materialized contract",
-                    );
-                diagnostics.push(Diagnostic::new(
-                    Phase::Type,
-                    item.span,
-                    format!("replace skipped for `{}`: {reason}", self.source.id),
-                ));
-            }
-        }
-        // A recovery parent never prevents valid descendants from transforming.
-        for child in &mut item.children {
-            self.visit(child, diagnostics);
-        }
     }
 }

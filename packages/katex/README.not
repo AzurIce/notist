@@ -3,10 +3,10 @@
 lib.notc 定义数学函数：
 
 ```notc
-fn math(text: String, block?: Bool) -> Content<block>;
+fn math<C: Type = InlineContent>(text: String) -> C;
 ```
 
-text 是不带外围 `$` 的 LaTeX 数学源码。block 省略或为 false 时是行内内容，true 时是块级内容；Content<block> 在声明中表达这个类别规则。components/math.js 默认导出 HTMLElement 类，由 HTML host 注册 katex-math；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
+text 是不带外围 `$` 的 LaTeX 数学源码。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。components/math.js 默认导出 HTMLElement 类，由 HTML host 注册 katex-math；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
 
 == 自身配置
 
@@ -38,13 +38,13 @@ Builtin call: #math("E = mc^2"). Direct call: #katex::math(r#"\frac{a}{b}"#).
 
 $ \sum_{i=1}^{n} i = \frac{n(n+1)}{2} $
 
-也可以显式传入 block：
+也可以显式选择块级实例：
 
-#katex::math(r#"\frac{a}{b}"#, block: true)
+#katex::math<BlockContent>(r#"\frac{a}{b}"#)
 
 == 组件行为
 
-模块延迟加载，同一模块实例共享加载任务。组件处理 text、block 属性更新与重连，过期任务不覆盖新内容；block 为 true 时使用 KaTeX 的 displayMode。公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
+模块延迟加载，同一模块实例共享加载任务。组件处理 `notist-text`、`notist-content` 属性更新与重连，过期任务不覆盖新内容；`notist-content` 为 `block` 时使用 KaTeX 的 displayMode。公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
 
 == 构建与预览
 

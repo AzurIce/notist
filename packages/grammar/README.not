@@ -21,10 +21,10 @@ NOTIST_WASM_BINDGEN 可指定 wasm-bindgen 可执行文件。wasm/ 是构建产�
 
 现有 Web viewer 同样可展示组件：先构建 web/build.sh，载入 ../packages/grammar/Notist.toml，源码路径填写 README.not。
 
-== Content function
+== BlockContent function
 
 ```notc
-fn diagram(source: String, rule?: String, theme: String = "light") -> Content;
+fn diagram(source: String, rule?: String, theme: String = "light") -> BlockContent;
 ```
 
 source 为统一的匹配与结果构造规则文本。组件始终先展示源码，再展示对应的图；源码仅需维护一份。缺省渲染其中所有产生式，rule 指定只绘制一个。支持 light、dark、rust、coal、navy、ayu 主题。

@@ -39,14 +39,14 @@ const { chromium } = require("playwright");
         width: svg.getBoundingClientRect().width,
         height: svg.getBoundingClientRect().height,
         baseline: parseFloat(svg.style.verticalAlign),
-        block: svg.getRootNode().host.getAttribute("notist-block") === "true",
+        block: svg.getRootNode().host.getAttribute("notist-content") === "block",
         containsInk: view.y <= box.y && view.y + view.height >= box.y + box.height,
       };
     }));
     assert.ok(geometry.every(item => item.width > 0 && item.height > 0 && (item.block || Number.isFinite(item.baseline)) && item.containsInk));
     assert.equal(geometry.filter(item => item.block).length, 2);
     assert.ok(geometry[4].height > geometry[2].height, "display sums place limits above and below");
-    const display = page.locator('typst-math[notist-block="true"]').first();
+    const display = page.locator('typst-math[notist-content="block"]').first();
     assert.equal(await display.evaluate(node => node.closest("p")), null);
     assert.equal(await display.evaluate(node => getComputedStyle(node).display), "block");
     await page.screenshot({ path: `.${demo}preview.png`, fullPage: true });
@@ -78,12 +78,12 @@ const { chromium } = require("playwright");
     await rendered();
     const inlineHeight = await formula.locator("svg").evaluate(svg => svg.getBBox().height);
     const inlineSvg = await formula.locator("svg").evaluate(svg => svg.outerHTML);
-    await formula.evaluate(node => node.setAttribute("notist-block", "true"));
+    await formula.evaluate(node => node.setAttribute("notist-content", "block"));
     await page.waitForFunction(inlineSvg => document.querySelector("typst-math").shadowRoot.querySelector("svg")?.outerHTML !== inlineSvg
       && document.querySelector("typst-math").shadowRoot.querySelector("svg")?.getAttribute("aria-label") === "sum_(i=1)^n i", inlineSvg);
     assert.ok(await formula.locator("svg").evaluate(svg => svg.getBBox().height) > inlineHeight);
     assert.equal(await formula.locator("svg").evaluate(svg => svg.style.verticalAlign), "");
-    await formula.evaluate(node => node.setAttribute("notist-block", "false"));
+    await formula.evaluate(node => node.setAttribute("notist-content", "inline"));
     await page.waitForFunction(() => document.querySelector("typst-math").shadowRoot.querySelector("svg")?.style.verticalAlign);
 
     await formula.evaluate(node => node.setAttribute("notist-text", "frac("));
@@ -123,8 +123,8 @@ const { chromium } = require("playwright");
     await page.locator("#path").dispatchEvent("change");
     await page.fill("#src", "$frac(a, b)$ and $ sqrt(x) $ and $alpha + beta$");
     await preview(3);
-    assert.equal(await page.frameLocator("#preview").locator('typst-math[notist-block="true"]').count(), 1);
-    assert.equal(await page.frameLocator("#preview").locator('typst-math[notist-block="true"]').evaluate(node => node.closest("p")), null);
+    assert.equal(await page.frameLocator("#preview").locator('typst-math[notist-content="block"]').count(), 1);
+    assert.equal(await page.frameLocator("#preview").locator('typst-math[notist-content="block"]').evaluate(node => node.closest("p")), null);
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     assert.deepEqual(errors, []);
     console.log("Typst SVG, concurrency, lifecycle, errors, scaling and .not/.md Worker transforms passed.");

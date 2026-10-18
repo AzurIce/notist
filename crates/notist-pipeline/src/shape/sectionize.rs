@@ -1,14 +1,13 @@
-use notist_core::expr::{Expr, RExpr};
+use notist_core::expr::RExpr;
 use notist_core::item::{Ctor, Value};
 use rowan::TextRange;
 
 /// Group a block sequence into sections by heading level: a heading starts a
 /// section; everything up to the next heading of equal or higher level
 /// belongs to it; deeper headings nest. Content before the first heading
-/// stays at this level. The heading stays the first child of its section. A
-/// section is the identity carrier of its range: its attrs are transferred
-/// from the heading that opens it (a heading opens exactly one section), and
-/// its span covers the whole section extent.
+/// stays at this level. The heading stays the first child of its section, and
+/// the span covers the whole section extent. Annotations are attached later,
+/// so no attrs move here.
 pub fn sectionize(forest: Vec<RExpr>) -> Vec<RExpr> {
     let mut root: Vec<RExpr> = Vec::new();
     let mut stack: Vec<(i64, Vec<RExpr>)> = Vec::new();
@@ -37,21 +36,7 @@ fn close_section(stack: &mut Vec<(i64, Vec<RExpr>)>, root: &mut Vec<RExpr>) {
     let (_, children) = stack.pop().unwrap();
     let start = children.first().unwrap().span().start();
     let end = children.last().unwrap().span().end();
-    let mut section =
-        RExpr::resolved(Ctor::Section, TextRange::new(start, end)).with_children(children);
-    // identity transfer: the opening heading's attrs belong to the section
-    if let Expr::Call {
-        children, attrs, ..
-    } = &mut section
-    {
-        if let Some(Expr::Call {
-            attrs: heading_attrs,
-            ..
-        }) = children.first_mut()
-        {
-            *attrs = std::mem::take(heading_attrs);
-        }
-    }
+    let section = RExpr::new(Ctor::Section, TextRange::new(start, end)).with_children(children);
     match stack.last_mut() {
         Some((_, parent)) => parent.push(section),
         None => root.push(section),
@@ -59,13 +44,10 @@ fn close_section(stack: &mut Vec<(i64, Vec<RExpr>)>, root: &mut Vec<RExpr>) {
 }
 
 fn heading_level(expr: &RExpr) -> Option<i64> {
-    let Expr::Call { name, fields, .. } = expr else {
-        return None;
-    };
-    if *name != Ctor::Heading {
+    if expr.ctor != Ctor::Heading {
         return None;
     }
-    match fields.get("level") {
+    match expr.fields.get("level") {
         Some(Value::Int(n)) => Some(*n),
         _ => Some(1),
     }

@@ -130,7 +130,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     )
     .unwrap();
     let module = temp.path().join("widgets/lib.notc");
-    let source = "fn panel(title: String)[children: Content] -> Content;";
+    let source = "fn panel(title: String)[children: BlockContent] -> BlockContent;";
     std::fs::write(&module, source).unwrap();
     let document = temp.path().join("document.not");
     let uri = url::Url::from_file_path(&document).unwrap().to_string();
@@ -139,7 +139,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
     server.until(|message| message["id"] == 1);
     server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
-    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":"#widgets::panel(\"Title\")[body]"}}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":"#widgets::panel(\"Title\")[ body ]"}}}));
     let diagnostics = server.until(|message| {
         message["method"] == "textDocument/publishDiagnostics" && message["params"]["uri"] == uri
     });
@@ -152,7 +152,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":5}}}));
     let definition = server.until(|message| message["id"] == 2);
     assert_eq!(definition["result"]["uri"], module_uri);
-    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":module_uri,"languageId":"notc","version":1,"text":"fn panel(title: Unknown) -> Content;"}}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":module_uri,"languageId":"notc","version":1,"text":"fn panel(title: Unknown) -> BlockContent;"}}}));
     let invalid = server.until(|message| {
         message["method"] == "textDocument/publishDiagnostics"
             && message["params"]["uri"] == module_uri
@@ -187,4 +187,87 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
         server.until(|message| message["id"] == 3)["result"][0]["name"],
         "panel"
     );
+}
+
+#[test]
+fn code_diagnostics_publish_to_the_definition_and_do_not_slice_unicode_callers() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    let module = temp.path().join("lib.notc");
+    std::fs::write(
+        &module,
+        "fn f() -> InlineContent { compile_error(\"bad\") }",
+    )
+    .unwrap();
+    let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
+    let uri = url::Url::from_file_path(temp.path().join("doc.not"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::new(temp.path());
+    server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    server.until(|m| m["id"] == 1);
+    server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":format!("#demo::f()  {}", "汉".repeat(30))}}}));
+    let invalid = server.until(|m| {
+        m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == module_uri
+    });
+    assert_eq!(invalid["params"]["diagnostics"][0]["message"], "bad");
+    assert_eq!(
+        invalid["params"]["diagnostics"][0]["range"]["start"]["character"],
+        26
+    );
+    server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":6}}}));
+    assert!(server.until(|m| m["id"] == 2).get("result").is_some());
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":module_uri,"languageId":"notc","version":1,"text":"fn f() -> InlineContent { [fixed] }"}}}));
+    server.until(|m| {
+        m["method"] == "textDocument/publishDiagnostics"
+            && m["params"]["uri"] == module_uri
+            && m["params"]["diagnostics"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+    });
+}
+
+#[test]
+fn opening_code_alone_reports_and_clears_body_checking_and_parse_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    std::fs::write(
+        temp.path().join("lib.notc"),
+        "fn good() -> InlineContent { [good] }",
+    )
+    .unwrap();
+    let uri = url::Url::from_file_path(temp.path().join("lib.notc"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::new(temp.path());
+    server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    server.until(|m| m["id"] == 1);
+    server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notc","version":1,"text":"fn bad() -> InlineContent { compile_error(\"broken body\") }"}}}));
+    let invalid = server
+        .until(|m| m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri);
+    assert!(
+        invalid["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["message"] == "broken body")
+    );
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"fn generic<C: Type>() -> C { 1 + }"}]}}));
+    server.until(|m| {
+        m["method"] == "textDocument/publishDiagnostics"
+            && m["params"]["uri"] == uri
+            && m["params"]["diagnostics"]
+                .as_array()
+                .is_some_and(|ds| ds.iter().any(|d| d["source"] == "notist:syntax"))
+    });
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":3},"contentChanges":[{"text":"fn helper() -> InlineContent { [fixed] } fn good() -> InlineContent { demo::helper() }"}]}}));
+    server.until(|m| {
+        m["method"] == "textDocument/publishDiagnostics"
+            && m["params"]["uri"] == uri
+            && m["params"]["diagnostics"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+    });
 }

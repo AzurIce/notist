@@ -1,17 +1,15 @@
 = Draft
 
-本节收录未定设计，不作为当前语法规范。现行规则见 [Syntax](grammar/markup.not)、[Types](types.not)、[Builtin](builtin.not) 与 [Pipeline](designs/pipeline.not)。
+本页收录设计草案入口与独立议题，不作为当前语法规范。现行规则见 [Syntax](grammar/markup.not)、[Types](types.not) 与 [Builtin](builtin.not)。
 
-== Script 与函数定义
+== 专题草案
 
-探索在 `.notc` 中提供 Code 默认模式、变量、绑定、求值环境与函数定义；`.not` 继续使用内容函数的公开调用结构。
+| 主题 | 文档 |
+| --- | --- |
+| Code 类型、函数检查、内容字面量与求值 | [Code 类型与函数系统](designs/code-types.not) |
+| Markup 源码到 Item 的阶段与契约 | [Markup 管线](designs/pipeline/markup.not#数据流) |
 
-待设计的问题：
-
-- 返回 InlineContent / Content 的函数与其他函数之间的调用限制。
-- 函数内部如何访问调用点的 fields、children 和 attrs。
-- Function 值与闭包的类型及字面量写法。
-- 是否需要内容参数或 slots，以及它们在公开内容树中的表示。
+各主题的规则、迁移要求与待定扩展在对应文档维护。
 
 == 字典 key 的源码表达
 
@@ -19,12 +17,7 @@
 
 == 链接与跨文件引用
 
-探索以来源文件所在目录解析相对路径，带 scheme 的目标作为外部链接；`path#item` 与 `#item` 表示跨文件及文件内节点引用。
+路径解析、Vault 边界与链接索引见 [Pipeline](designs/pipeline.not#vault-内容边界与索引)，节点字段与降糖见 [Builtin](builtin.not)。待定扩展：
 
-待设计的问题：
-
-- item 的定位规则，及是否扩展为链式约束。
-- check / LSP 的工作范围、路径解析与链接图的统一契约。
-- 未来 computed target 与 Code import 的分析边界。
-
-当前 link 保存目标字符串，语法与降糖见 Builtin；上述扩展不改变已有节点的字段含义。
+- 节点定位是否支持链式约束，以及对应的源码表达与合法性检查。
+- computed target 的静态可分析范围、依赖发现与失效传播。

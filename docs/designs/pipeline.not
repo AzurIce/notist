@@ -1,149 +1,117 @@
 = 文档管线
 
-文档管线把源码转换为共享的 Content 树：前端负责 parse → lower，共享后端负责 resolve → shape → materialize。诊断在负责相应规则的阶段产生，查询、索引和输出消费最终内容树。
+本文描述 Markup 与 Code 源码如何经 Context 装配、分析与求值产生 Item 树，终点为求值后的表示树。
 
-本文描述数据流与阶段契约。实现归属见 [Crate 架构](crates.not)，前端接口与注册见 [文档前端](frontends.not)；源码规则、值域和构造器契约分别见 [Syntax](../grammar/markup.not)、[Types](../types.not) 与 [Builtin](../builtin.not)。
+现行实现由以下入口组成，源码与环境均由调用方显式传入：
+
+| 入口 | 当前处理范围 | 结果 |
+| --- | --- | --- |
+| Pipeline::analyze / inspect | 显式接收 Context，选择原生或 Markdown 前端，执行 Lower → Resolve → Shape → attach → Materialize | Analysis：求值前 Item 树、实例缓存与诊断；inspect 额外保留解析树和中间 IR |
+| analyze_module / Pipeline::compile_module | 解析签名与函数体，委托内容前端处理字面量 | CodeModule，供 Context::with_module 安装 |
+| Pipeline::evaluate | 执行已检查 Code，以同签名映射选择目标，递归替换子树 | 同一 Item 模型的表示树与求值诊断 |
+| Pipeline::lower_content_literal | 按所选前端解析并 lower 一个内容字面量前缀 | Expr 森林、注解 side list、flavor、诊断，以及 Code CST 与关联内容树 |
+| Vault::analyze_code | 宿主以当前源码覆盖资源，装配实际项目 Context，检查指定包 | CodeAnalysis，保存声明、诊断及各来源文件的源码 |
+
+IR 模型位于 core，语法定义位于 syntax，Context、内置前端与转换算法位于 pipeline。职责与依赖见 [Crate 架构](crates.not)，具体入口见 [文档前端](frontends.not)。Code 与 Markup 共用名称、内容契约和内容结构处理。
+
+== Context 与宿主加载
+
+Context 保存已装配的 Registry、CodeProgram 与根据签名校验的 TransformPlan，不保存配置路径、资源句柄或 package 目录。Context::default 提供内置定义和空转换计划；Context::new(registry) 使用显式装配的原生定义，with_module(module) 安装 CodeModule 的公开签名与函数体，with_transforms(rules) 编译规则并返回新的 Context。registry() 与 transforms() 只读访问，定义固定后转换计划保持一致。
+
+工具更新源码时，replace_module 替换该包的定义与实现，重新校验转换计划并返回新的 Context。CodeProgram 保留包与源码身份的对应关系，包括仅含原生声明的模块。CLI、LSP 与浏览器的 Code 检查共用 Vault::analyze_code；包身份和依赖来自项目环境，无配置的独立模块使用默认环境。诊断按自身 source 选择文件与源码，不把定义范围套到调用文档上。
+
+宿主 Environment::load_from 读取 Notist.toml、递归依赖与 lib.notc，调用声明分析与注册，再合成并检查转换规则；Environment::from_packages 接收显式准备的包身份与源码；with_code(package, path, source, dialect) 补充宿主指定路径及内容方言的 Code 源码。Environment 保存所得 Context 和配置、包资源信息；加载失败不返回部分环境。Vault 按文档选择并缓存 Environment，输入变化后由宿主重建。
+
+Markup 的 Parse / Lower 不依赖 Context；Resolve 使用其中的 Registry，Shape、attach 与 Materialize 消费已解析结构。Pipeline::analyze / inspect 将语义树与实例检查结果保存在 Analysis 中；Evaluate 执行内容实现及函数映射。
 
 == 数据流
 
-两种正文前端汇入相同的 IR₁；Registry 在 Resolve 阶段提供函数身份、签名与内容契约。
-
 #mermaid::diagram(r#"""
-%%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
+%%{init: {"themeVariables": {"fontSize": "15px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 24, "curve": "basis", "subGraphTitleMargin": {"top": 8, "bottom": 16}}}}%%
 flowchart TB
-    subgraph frontends["前端 · parse → lower"]
-        native[".not"]
-        markdown["Markdown"]
+    markup_source(["Markup 源码<br/>.not / Markdown"])
+    code_source(["Code 源码 · .notc"])
+    configuration(["Notist.toml"])
+
+    subgraph markup_pipeline["Markup 管线 · 共享阶段"]
+        lower["Lower · 各前端解析"]
+        ir1(["IR₁ · 未解析 Expr 森林"])
+        annotations(["Annotation side list"])
+        resolve["Resolve · 名称与类型检查"]
+        ir2(["IR₂ · 已解析 RExpr 森林"])
+        shape["Shape · 定稿结构"]
+        shaped(["IR₂′ · 结构已定稿"])
+        attach["attach · 按源码位置挂载注解"]
+        materialize["Materialize · 生成 Item"]
+        forest(["求值前 Item 森林"])
+        lower --> ir1 --> resolve --> ir2 --> shape --> shaped --> attach
+        lower --> annotations
+        annotations -.-> attach
+        attach --> materialize --> forest
     end
-    native --> ir1(["IR₁ · 未解析 Expr 森林"])
-    markdown --> ir1
-    ir1 --> resolve["Resolve · 解析与校验"]
-    registry["Registry"] -.-> resolve
-    resolve --> ir2(["IR₂ · 已解析 RExpr 森林"])
-    ir2 --> shape["Shape · 定稿结构"]
-    shape --> shaped(["IR₂′ · 结构定稿的 RExpr 森林"])
-    shaped --> materialize["Materialize · 生成 Item"]
-    materialize --> content(["Content 树 · Item"])
+
+    subgraph loading["Code 与 Context 装配"]
+        code_lower["Code Parse / Lower"]
+        definitions(["CodeModule<br/>公开签名与函数体"])
+        environment["Environment 装配<br/>安装包 / 校验转换规则"]
+        context(["Context<br/>Registry / CodeProgram<br/>TransformPlan"])
+        code_lower --> definitions --> environment
+        environment --> context
+    end
+
+    markup_source --> lower
+    code_source --> code_lower
+    configuration --> environment
+    instance_check["具体实例检查<br/>编译期绑定 / 函数体检查"]
+    context -.-> resolve
+    context -.-> instance_check
+    code_lower -.->|字面量委托前端| lower
+    resolve <-.->|按需检查 / 字面量复用| instance_check
+    forest -->|文档入口| doc["创建 Doc 根 / 挂载模块属性"]
+
+    subgraph analysis["Analysis · 分析结果"]
+        semantic(["求值前 Item 树<br/>语义树 / 输入 children:C"])
+        checked(["实例缓存 / 已检查函数体<br/>诊断 / 来源源码"])
+    end
+    doc --> semantic
+    instance_check --> checked
+    forest -->|字面量 Item 森林| checked
+    semantic --> evaluate["Evaluate · 递归子树替换"]
+    checked --> evaluate
+    context -.-> evaluate
+    evaluate --> result(["求值后 Item 树<br/>表示树 / 结果 children:O"])
+
+    classDef stage fill:#edf3f7,stroke:#8599a9,color:#263746
+    classDef data fill:#fafaf8,stroke:#a6aaa8,color:#303b38
+    class lower,resolve,shape,attach,materialize,code_lower,environment,instance_check,doc,evaluate stage
+    class markup_source,ir1,annotations,ir2,shaped,forest,code_source,definitions,configuration,context,semantic,checked,result data
+    style markup_pipeline fill:#fbfcfd,stroke:#c4cdd3
+    style loading fill:#fcfcf9,stroke:#c9cbbb
+    style analysis fill:#f5f9f6,stroke:#a9bfaf
 """#, theme: "neutral")
 
-| 产物 | 表示 | 已确定的信息 |
-| --- | --- | --- |
-| IR₁ | `Vec<Expr<String>>` | 源码名称、参数、children、注解与调用点 body flavor |
-| IR₂ | `Vec<RExpr>`，即 `Vec<Expr<Ctor>>` | 已完成函数解析、参数绑定、契约检查与归一 |
-| IR₂′ | `Vec<RExpr>` | 段落与 section 等结构已定稿 |
-| Content 树 | 以 `Ctor::Doc` 为根的 `Item` | 最终节点级别、字段、属性、children 与源码范围 |
+圆角节点为数据，矩形节点为处理阶段；实线为数据流，虚线为契约依赖、实例请求与共享阶段复用。
 
-IR₂′ 表示 Shape 后的状态，与 IR₂ 使用同一种 Rust 类型。模块注解随前端结果传递，在 Materialize 时挂到 Doc 根上。
+宿主通过 Resources 取得配置与源码，将 .notc 编译为 CodeModule 并装配 Environment / Context；纯 Pipeline 显式接收源码与 Context。图中的宿主装配包含包安装与转换规则校验，文件读取不进入 Context。
 
-`Pipeline::analyze(path, source, registry)` 接收显式输入，path 的扩展名用于选择前端。每份源码只调用选中的 `Frontend::compile` 一次，再运行共享后端，返回 Analysis。文件与 package 由宿主取得和装配。
+Resolve 按实际调用请求具体实例，使用返回的具体签名与检查结果完成调用校验，不执行内容实现。Code 的内容字面量在解析时委托所选 Markup 前端完成 Parse / Lower，保存 Expr 森林与注解 side list；在具体实例中复用 Resolve → Shape → attach → Materialize。两次入口使用对应的词法 Context，图中的返回连接表示共享阶段复用。
 
-== 前端：源码 → IR₁
+Lower 在块内容中按空行、显式分段与块语法边界生成 Fragment，单换行保留在同一片段内。Resolve 按具体返回类型分类：全 Inline 的片段生成一个 Paragraph，只有一个 Block 表达式的片段直接保留该表达式；混合类别或多个 Block 表达式产生诊断，要求硬分隔。Shape 递归整理内容槽并归组 section，不拆段；attach 随后挂载注解；Materialize 只转换表示。
 
-=== 原生解析
+文档入口为森林附加 Doc 根；Code 字面量产生保存在已检查函数体中的 Item 森林。Item.pending 直接保留已检查的调用、内容森林插值或失败信息；实参表达式与输入 children 随节点保存。Analysis 保存求值前 Item 树、具体实例缓存、诊断与来源源码，不引入额外转换阶段或平行内容树。
 
-NotistFrontend 组合 notist-syntax 的解析与 notist-lowering 的文档转换：
+Evaluate 直接读取求值前 Item 树，生成新的 Item 表示树并保留原语义树。调用以结果森林替换边界内的 children，保留原调用身份、类别和来源；内容值插值拼接森林并移除插值占位，不增加调用层级。失败在内容插值边界生成同身份、同类别的错误节点，其余独立内容继续求值。不重新 Shape。可选 Transform 是同签名函数映射，在 Evaluate 中选择执行目标。
 
-| 阶段 | 输入 → 输出 | 契约 |
-| --- | --- | --- |
-| Lex | 源码 → token 流 | token 保存 kind 与 span；可从源码切片恢复的文本不重复存储，空白、换行、注释作为 trivia 完整保留 |
-| Parse | token 流 → 无损 CST | 使用 rowan 绿树，文本拼接等于源文件；语法错误就近诊断，结构性破坏由 Error 节点包裹，解析继续产生树 |
-| AST 视图 | CST → Document AST | 以薄访问器提供类型化视图 |
-| Lowering / Desugar | Document AST → IR₁ | 将 Markup 映射为构造器调用，归一字面量，生成段落候选与模块属性 |
+CLI 默认查看与查询求值前的 Item 树，core / json / query 通过 `--eval` 查看求值后的 Item 树。Code 定义自身不创建文档根，内容函数的结果挂回文档中的原调用边界。
 
-MarkdownFrontend 解析自己的 rushdown AST，将正文 lower 到同一种 IR₁；显式调用头、注解与字面量复用原生语法及共用 lowering。调用正文使用所在前端的语法，位置映射还原容器内内容的原始源码范围，详见 [Markdown 与显式 Notist 语法](frontends.not)。
+各部分的具体规则见：
 
-=== 原生 Lowering 的内容规则
+- [Markup 管线](pipeline/markup.not)：将标记源码经 Lower、Resolve、Shape、attach 与 Materialize 转换为 Item 语义树。
+- Code 的类型、函数体检查与内容求值规则见 [Code 类型与函数系统](code-types.not)。
 
-行内平坦序列按空行分组成 `paragraph` 候选。标准 Markup 元素的基本类别由语法决定；显式内容函数调用保留源码名称与 body flavor，供 Resolve 确定契约、Shape 整理结构。
+宿主负责资源取得、环境装配与文档间关系，以下边界由 Vault 统一维护。
 
-text 的空白按位置处理：行内元素边界的空白保留；行首、行尾与段落边界的空白丢弃；单换行按无空格拼接。裸名非字面量、数字溢出和非法 entry 等值域错误在此产生 Semantic 诊断。
-
-== 共享后端：IR₁ → Content 树
-
-=== Resolve：名称、契约与归一
-
-Resolve 将源码名称解析为内置 Ctor，或带规范函数身份与契约的 ExtensionCtor，产出 IR₂。prelude 简写与 notist 限定名引用同一函数；未知名称产生 Type 诊断（`unknown constructor`），调用以 Custom 恢复节点保留。
-
-| 职责 | 处理规则 |
-| --- | --- |
-| 参数绑定 | 使用 FunctionDef 的共同绑定器，将位置参数归位到 fields，检查字段类型、值域与必填字段，物化默认值 |
-| 内容契约 | 逐调用点检查 body flavor；行内内容槽检查实际子节点级别，恢复树保留原始内容和值 |
-| 结构槽 | 按 Builtin 契约检查列表项、表格行与单元格，使用 Syntax 定义的 `structural_children` 视图 |
-| 内容归一 | 将需要块内容的行内挂载提升为单段块，将正文中的字面量作为 text 插入 |
-
-Resolve 检查候选结构；段落切分与 section 归组由 Shape 完成。函数签名参与分析，具体呈现交给渲染器。
-
-=== Shape：段落与节结构定稿
-
-Shape 对文档体和每个块级 children 挂载递归处理，产出 IR₂′：
-
-+ *reflow* 按已确定的内容级别切分 `paragraph` 候选，把块级调用切出，定稿块序列。
-+ *递归* 整理其中各节点的内容挂载。
-+ *sectionize* 按 heading level 将平铺块序列归组成 `section`；heading 的 attrs 转移到其开启的 section，section 的 span 覆盖整个节。
-
-内容级别来自共同定义的 ReturnRule；扩展使用 Resolve 确定的类别，Custom 恢复节点使用调用点 flavor。Shape 根据契约整理结构，不求值内容函数。
-
-带 attrs 或 fields 的段落候选拆分时，用透明的块级 group 保存完整范围与元数据，使身份只归属于一个节点。列表的 item 序列、表格的 row / cell 序列只做 reflow 并递归，保持结构轴；每个 item / cell 的普通内容槽照常执行 reflow 与 sectionize。
-
-=== Materialize：生成 Item
-
-Materialize 将定稿的 RExpr 森林转换为 Item，保存最终 Block / Inline 类别，并创建携带模块注解的 Doc 根。
-
-Content 节点包含 ctor、level、fields、children、attrs 与 span；ctor 保留规范函数身份，span 使用原始源码的 UTF-8 字节范围。解析产物服务于 tooling，内容节点的源码范围用于诊断、查询与渲染 source map。
-
-== 诊断、恢复与调试
-
-Analysis 保存原始 Content 树与源码诊断。已注册前端中的源码错误随恢复树一起返回；没有前端处理该扩展名时，Pipeline 返回 UnsupportedFormat。
-
-| 诊断阶段 | 产生位置 | 典型内容 |
-| --- | --- | --- |
-| Syntax | 前端解析 | 非法语法与结构破坏 |
-| Semantic | Lowering；需要宿主上下文的检查 | 值域错误；本地 link / embed 越过 Vault 内容边界 |
-| Type | Resolve；声明定义校验 | 未知构造器、参数与 children 契约不匹配 |
-
-`Pipeline::inspect` 在同一次源码处理中请求保留前端解析产物与中间 IR，返回 Analysis 和 Inspection：
-
-| Inspection 字段 | 内容 |
-| --- | --- |
-| syntax | 前端自身的 CST / AST；通过 FrontendSyntax 传递 |
-| lowered | 前端输出的 IR₁ |
-| shaped | 完成 Resolve 与 Shape 的 IR₂′ |
-
-正常 analyze 仍完成解析，只在返回时释放解析产物。捕获选项影响保留的数据，文档语义与诊断保持一致；具体解析产物协议见 [解析产物与调试](frontends.not)。
-
-== 声明与输出路径
-
-=== 声明：.notc → Registry
-
-声明源码由 `parse_module` 生成 Module CST / AST，`analyze_module` 将其转换并校验为 DefinitionModule，随后安装到 Registry。它复用字面量转换，产物为函数定义，供正文 Resolve 使用。
-
-文档 `parse_document` 与声明 `parse_module` 分别处理 Markup 和 Code；声明使用独立的定义模型。声明语法见 [Code Syntax](../grammar/code.not)，注册与装配见 [Content Function Extensions](content-functions.not)。
-
-=== 输出：Analysis → 转换树 → HTML
-
-Vault 通过 Resources 取得配置、声明与组件入口，按文档最近的 Notist.toml 装配 Environment，再组合 Pipeline、输出转换与 renderer。一个 Vault 可以包含多个配置环境。
-
-#mermaid::diagram(r#"""
-%%{init: {"themeVariables": {"fontSize": "14px"}, "flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
-flowchart TB
-    resources["Resources"] --> environment["Environment"]
-    environment -.->|Registry| pipeline["Pipeline"]
-    source["path + source"] --> pipeline
-    pipeline --> analysis(["Analysis<br/>原始 Content 树 · Item"])
-    analysis --> transforms["输出转换"]
-    environment -.->|TransformPlan| transforms
-    transforms --> transformed(["TransformOutput<br/>输出 Content 树 · Item"])
-    transformed --> renderer["HTML renderer"]
-    environment -.->|组件绑定| renderer
-    renderer --> rendered(["RenderResult<br/>HTML"])
-"""#, theme: "neutral")
-
-两图中圆角节点表示数据产物，处理阶段使用矩形节点；实线表示数据流，虚线表示 Registry 或环境提供的处理依据。
-
-`Vault::analyze` 返回 Analysis。`Vault::render_html` 只处理一次正文，输出前应用配置的 [IR Transforms](transforms.not)，返回 HtmlOutput：来源 path、原始 analysis、transformed 与完整 rendered。查询、语言服务和 VaultIndex 使用原始 Analysis；输出后端消费转换树。
-
-notist-html 只依赖 core，接收最终 Item 树与显式渲染输入。站点路由、跨页链接校验、主题和页面 / 资源发布由 [静态站点生成](../ssg.not) 处理；宿主与输出 crate 的分工见 [Crate 架构](crates.not)。
-
+@(id: "vault-内容边界与索引")
 == Vault 内容边界与索引
 
 === 三个目录范围
@@ -160,6 +128,6 @@ notist-html 只依赖 core，接收最终 Item 树与显式渲染输入。站点
 
 本地 link 与 embed 按文档目录解析并规范化。最终目标越过 Vault 根时，在引用节点产生 Semantic 诊断，并停止补载该目标；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 #raw("//") 的外部 URL 保持外部链接，不作为 Vault 正文读取或发布。
 
-边界诊断附加到 `Vault::analyze` / `inspect` 的 Analysis，供普通呈现、调试预览与语言服务共用。纯 Pipeline 接收源码与 Registry；内容边界检查由持有 Vault 根的宿主执行。`VaultIndex::from_documents` 对显式传入的根执行相同检查，已有诊断不重复添加。
+边界诊断附加到 `Vault::analyze` / `inspect` 的 Analysis，供查询与语言服务等宿主共用。纯 Pipeline 接收源码与 Context；内容边界检查由持有 Vault 根的宿主执行。`VaultIndex::from_documents` 对显式传入的根执行相同检查，已有诊断不重复添加。
 
 `Vault::index` 从各文档处理结果派生 VaultIndex，保存索引、诊断、链接与 backlinks。它扫描指定目录，再补载 Vault 内实际链接到的正文；检查结果和 backlinks 的路径均相对于 Vault 根。

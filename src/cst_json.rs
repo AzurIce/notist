@@ -1,26 +1,27 @@
 use rowan::NodeOrToken;
 
-use notist_core::expr::{BodyFlavor, Expr};
-use notist_syntax::ast;
-use notist_syntax::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
+use notist_core::expr::{BodyFlavor, CallArg, Expr, RExpr};
+use notist_syntax::code::ast as code_ast;
+use notist_syntax::markup::ast;
+use notist_syntax::tree::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::item::Item;
 
 pub fn analyze_json(src: &str) -> String {
-    analyze_json_with_registry(src, crate::builtins::registry())
+    analyze_json_with_context(src, &crate::Context::default())
 }
 
 /// Module inspection keeps the recovered CST available even on semantic errors.
-pub fn analyze_module_json(package: &str, src: &str) -> String {
-    let parse = notist_syntax::parse_module(src);
+pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
+    let parse = notist_syntax::code::parse_module(src, &notist_syntax::markup::MarkupContentParser);
     let mut out = String::from("{\"tree\":");
     write_element(&mut out, NodeOrToken::Node(parse.syntax()));
-    if let Some(module) = ast::Module::cast(parse.syntax()) {
+    if let Some(module) = code_ast::Module::cast(parse.syntax()) {
         out.push_str(",\"ast\":");
         out.push_str(&module_ast(&module).to_string());
     }
-    match crate::analyze_module(package, src) {
-        Ok(module) => {
+    match &analysis.definitions {
+        Some(module) => {
             out.push_str(",\"functions\":[");
             for (i, function) in module.functions.iter().enumerate() {
                 if i > 0 {
@@ -33,7 +34,7 @@ pub fn analyze_module_json(package: &str, src: &str) -> String {
                     u32::from(function.span.end()),
                     escape(&src[usize::from(function.span.start())..usize::from(function.span.end())]),
                     escape(&format!("{:?}", function.children)),
-                    escape(if function.returns.base_level() == crate::builtins::Level::Block { "block" } else { "inline" }),
+                    function.returns.level().map(|level|escape(if level==crate::builtins::Level::Block{"block"}else{"inline"})).unwrap_or_else(||"null".into()),
                 ));
                 for (j, parameter) in function.parameters.iter().enumerate() {
                     if j > 0 {
@@ -58,20 +59,24 @@ pub fn analyze_module_json(package: &str, src: &str) -> String {
                     }
                     out.push('}');
                 }
-                out.push_str("]}");
+                out.push_str("]");
+                out.push_str(&format!(",\"code\":{},\"returns\":{},\"children_type\":{},\"comptime\":{}",function.code,type_json(&function.returns),function.children_type.as_ref().map(type_json).unwrap_or_default(),serde_json::json!(function.comptime.iter().map(|p|serde_json::json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>())));
+                out.push('}');
             }
-            out.push_str("],\"diagnostics\":[]}");
+            out.push_str("],\"diagnostics\":");
+            write_diagnostics(&mut out, &analysis.diagnostics);
+            out.push('}');
         }
-        Err(diagnostics) => {
+        None => {
             out.push_str(",\"diagnostics\":");
-            write_diagnostics(&mut out, &diagnostics);
+            write_diagnostics(&mut out, &analysis.diagnostics);
             out.push('}');
         }
     }
     out
 }
 
-fn module_ast(module: &ast::Module) -> serde_json::Value {
+fn module_ast(module: &code_ast::Module) -> serde_json::Value {
     let functions = module
         .functions()
         .map(|function| {
@@ -88,6 +93,16 @@ fn module_ast(module: &ast::Module) -> serde_json::Value {
                     ast_node("Parameter", parameter.syntax(), children)
                 })
                 .collect::<Vec<_>>();
+            for parameter in function.comptime_parameters() {
+                children.push(ast_node(
+                    "ComptimeParameter",
+                    parameter.syntax(),
+                    Vec::new(),
+                ));
+            }
+            if let Some(body) = function.body() {
+                children.push(ast_node("Body", &body, Vec::new()));
+            }
             if let Some(mount) = function.children_decl() {
                 children.push(ast_node("ChildrenDecl", mount.syntax(), Vec::new()));
             }
@@ -110,17 +125,21 @@ fn ast_node(
     serde_json::json!({"kind":kind, "start":u32::from(syntax.text_range().start()), "end":u32::from(syntax.text_range().end()), "label":syntax.text().to_string(), "children":children})
 }
 
-fn type_json(ty: &crate::ValueType) -> serde_json::Value {
-    use crate::ValueType;
+fn type_json(ty: &crate::Type) -> serde_json::Value {
+    use crate::Type;
     use serde_json::json;
     match ty {
-        ValueType::Unit => json!({"kind":"Unit"}),
-        ValueType::Bool => json!({"kind":"Bool"}),
-        ValueType::Int => json!({"kind":"Int"}),
-        ValueType::Float => json!({"kind":"Float"}),
-        ValueType::String => json!({"kind":"String"}),
-        ValueType::Dict => json!({"kind":"Dict"}),
-        ValueType::Array(element) => {
+        Type::Type => json!({"kind":"Type"}),
+        Type::InlineContent => json!({"kind":"InlineContent"}),
+        Type::BlockContent => json!({"kind":"BlockContent"}),
+        Type::Parameter(name) => json!({"kind":"Parameter","name":name}),
+        Type::Unit => json!({"kind":"Unit"}),
+        Type::Bool => json!({"kind":"Bool"}),
+        Type::Int => json!({"kind":"Int"}),
+        Type::Float => json!({"kind":"Float"}),
+        Type::String => json!({"kind":"String"}),
+        Type::Dict => json!({"kind":"Dict"}),
+        Type::Array(element) => {
             json!({"kind":"Array", "element":element.as_ref().map(|element| type_json(element))})
         }
     }
@@ -129,9 +148,9 @@ fn type_json(ty: &crate::ValueType) -> serde_json::Value {
 pub fn analyze_document_json(
     path: &std::path::Path,
     src: &str,
-    registry: &crate::Registry,
+    context: &crate::Context,
 ) -> String {
-    match crate::Pipeline::default().inspect(path, src, registry) {
+    match crate::Pipeline::default().inspect(path, src, context) {
         Ok((analysis, inspection)) => inspection_json(&analysis, Some(&inspection)),
         Err(error) => format!("{{\"error\":{}}}", escape(&error.to_string())),
     }
@@ -147,7 +166,7 @@ pub fn inspection_json(
         if let Some(syntax) = inspection.syntax.as_deref().and_then(|syntax| {
             syntax
                 .as_any()
-                .downcast_ref::<notist_syntax::syntax::SyntaxNode>()
+                .downcast_ref::<notist_syntax::tree::SyntaxNode>()
         }) {
             out.push_str("\"tree\":");
             write_element(&mut out, NodeOrToken::Node(syntax.clone()));
@@ -158,9 +177,19 @@ pub fn inspection_json(
             out.push(',');
         }
         out.push_str("\"ir1\":");
-        write_forest(&mut out, analysis.root().span, &inspection.lowered);
+        write_forest(
+            &mut out,
+            analysis.root().span,
+            &inspection.lowered,
+            write_expr,
+        );
         out.push_str(",\"ir2\":");
-        write_forest(&mut out, analysis.root().span, &inspection.shaped);
+        write_forest(
+            &mut out,
+            analysis.root().span,
+            &inspection.shaped,
+            write_resolved,
+        );
         out.push(',');
     }
     out.push_str("\"core\":");
@@ -178,7 +207,12 @@ fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"start\":{},\"end\":{},\"phase\":{},\"message\":{}}}",
+            "{{\"source\":{},\"start\":{},\"end\":{},\"phase\":{},\"message\":{}}}",
+            diagnostic
+                .source
+                .as_ref()
+                .map(|s| escape(s))
+                .unwrap_or_else(|| "null".into()),
             u32::from(diagnostic.span.start()),
             u32::from(diagnostic.span.end()),
             escape(&diagnostic.phase.to_string()),
@@ -188,8 +222,8 @@ fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
     out.push(']');
 }
 
-pub fn analyze_json_with_registry(src: &str, registry: &crate::Registry) -> String {
-    analyze_document_json(std::path::Path::new("document.not"), src, registry)
+pub fn analyze_json_with_context(src: &str, context: &crate::Context) -> String {
+    analyze_document_json(std::path::Path::new("document.not"), src, context)
 }
 
 fn write_element(out: &mut String, element: NodeOrToken<SyntaxNode, SyntaxToken>) {
@@ -245,6 +279,7 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                         | SyntaxKind::Divider
                         | SyntaxKind::Table
                         | SyntaxKind::Annotation
+                        | SyntaxKind::BlockAnnotation
                 ) =>
             {
                 write_ast_run(out, &mut run, &mut first);
@@ -270,8 +305,8 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                         }
                         out.push_str("]}");
                     }
-                    SyntaxKind::Annotation => {
-                        let annotation = ast::Annotation::cast(node.clone()).unwrap();
+                    SyntaxKind::Annotation | SyntaxKind::BlockAnnotation => {
+                        let annotation = code_ast::Annotation::cast(node.clone()).unwrap();
                         let range = annotation.range();
                         let (text, _) = annotation.payload();
                         out.push_str(&format!(
@@ -332,7 +367,7 @@ fn write_ast(out: &mut String, document: &ast::Document) {
 
 /// A maximal run of inline content, displayed as an Inline group of Lines.
 /// Lines are split at top-level newline tokens; inline nodes stay whole.
-/// (Not a paragraph — paragraphs are formed at desugar, this view is syntax.)
+/// Paragraphs are classified only after Resolve knows the content categories.
 fn write_ast_run(
     out: &mut String,
     run: &mut Vec<NodeOrToken<SyntaxNode, SyntaxToken>>,
@@ -432,10 +467,11 @@ fn write_ast_list(out: &mut String, list: &ast::List) {
     out.push_str("]}");
 }
 
-fn write_forest<N: std::fmt::Display>(
+fn write_forest<T>(
     out: &mut String,
     range: rowan::TextRange,
-    exprs: &[Expr<N>],
+    exprs: &[T],
+    write: fn(&mut String, &T),
 ) {
     out.push_str(&format!(
         "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
@@ -446,34 +482,48 @@ fn write_forest<N: std::fmt::Display>(
         if i > 0 {
             out.push(',');
         }
-        write_expr(out, expr);
+        write(out, expr);
     }
     out.push_str("]}");
 }
 
-fn write_expr<N: std::fmt::Display>(out: &mut String, expr: &Expr<N>) {
+fn write_expr(out: &mut String, expr: &Expr) {
     let span = expr.span();
     let (start, end) = (u32::from(span.start()), u32::from(span.end()));
     match expr {
+        Expr::Fragment { children, .. } => {
+            out.push_str(&format!(
+                "{{\"kind\":\"Fragment\",\"start\":{start},\"end\":{end},\"children\":["
+            ));
+            for (i, child) in children.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_expr(out, child);
+            }
+            out.push_str("]}");
+        }
         Expr::Literal(value, _) => {
             out.push_str(&format!(
                 "{{\"kind\":\"Literal\",\"start\":{start},\"end\":{end},\"label\":{}}}",
                 escape(&value.to_string())
             ));
         }
+        Expr::Ref { name, .. } => {
+            out.push_str(&format!(
+                "{{\"kind\":\"Ref\",\"start\":{start},\"end\":{end},\"label\":{}}}",
+                escape(name)
+            ));
+        }
         Expr::Call {
-            name,
+            callee,
             args,
-            fields,
             children,
             body,
             attrs,
             ..
         } => {
-            let mut label = name.to_string();
-            for (key, value) in fields.iter() {
-                label.push_str(&format!(" :{key} {value}"));
-            }
+            let mut label = expr.callee_name().unwrap_or("<expression>").to_string();
             for (key, value) in attrs.iter() {
                 label.push_str(&format!(" @{key} {value}"));
             }
@@ -486,36 +536,79 @@ fn write_expr<N: std::fmt::Display>(out: &mut String, expr: &Expr<N>) {
                 "{{\"kind\":\"Call\",\"start\":{start},\"end\":{end},\"label\":{}",
                 escape(&label)
             ));
-            if !args.is_empty() || !children.is_empty() {
+            {
                 out.push_str(",\"children\":[");
-                let mut first = true;
+                let callee_span = callee.span();
+                out.push_str(&format!(
+                    "{{\"kind\":\"Callee\",\"start\":{},\"end\":{},\"children\":[",
+                    u32::from(callee_span.start()),
+                    u32::from(callee_span.end()),
+                ));
+                write_expr(out, callee);
+                out.push_str("]}");
                 for arg in args {
-                    if !first {
-                        out.push(',');
-                    }
-                    first = false;
-                    let span = arg.span();
+                    out.push(',');
+                    let span = arg.value().span();
                     out.push_str(&format!(
-                        "{{\"kind\":\"Arg\",\"start\":{},\"end\":{},\"children\":[",
+                        "{{\"kind\":\"Arg\",\"start\":{},\"end\":{}",
                         u32::from(span.start()),
                         u32::from(span.end()),
                     ));
-                    write_expr(out, arg);
+                    if let CallArg::Named { name, .. } = arg {
+                        out.push_str(&format!(",\"label\":{}", escape(name)));
+                    }
+                    out.push_str(",\"children\":[");
+                    write_expr(out, arg.value());
                     out.push(']');
                     out.push('}');
                 }
                 for child in children {
-                    if !first {
-                        out.push(',');
-                    }
-                    first = false;
+                    out.push(',');
                     write_expr(out, child);
                 }
                 out.push(']');
             }
             out.push('}');
         }
+        other => {
+            out.push_str(&format!(
+                "{{\"kind\":\"Expression\",\"start\":{start},\"end\":{end},\"label\":{}}}",
+                escape(&format!("{other:?}"))
+            ));
+        }
     }
+}
+
+fn write_resolved(out: &mut String, expr: &RExpr) {
+    let mut label = expr.ctor.to_string();
+    for (key, value) in expr.fields.iter() {
+        label.push_str(&format!(" :{key} {value}"));
+    }
+    for (key, value) in expr.attrs.iter() {
+        label.push_str(&format!(" @{key} {value}"));
+    }
+    match expr.body {
+        BodyFlavor::Inline => label.push_str(" [inline]"),
+        BodyFlavor::Block => label.push_str(" [block]"),
+        BodyFlavor::None => {}
+    }
+    out.push_str(&format!(
+        "{{\"kind\":\"Node\",\"start\":{},\"end\":{},\"label\":{}",
+        u32::from(expr.span.start()),
+        u32::from(expr.span.end()),
+        escape(&label),
+    ));
+    if !expr.children.is_empty() {
+        out.push_str(",\"children\":[");
+        for (index, child) in expr.children.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_resolved(out, child);
+        }
+        out.push(']');
+    }
+    out.push('}');
 }
 
 fn write_item(out: &mut String, item: &Item) {

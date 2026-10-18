@@ -202,7 +202,16 @@ impl HtmlRegistry {
             if self.targets.values().any(|target| matches!(target, Target::Component(existing) if existing.tag == component.tag)) {
                 return Err(format!("component tag collision: `{}`", component.tag));
             }
-            let mut attributes = BTreeSet::from(["notist-protocol".to_owned()]);
+            let mut attributes =
+                BTreeSet::from(["notist-protocol".to_owned(), "notist-content".to_owned()]);
+            for parameter in &definition.comptime {
+                let attribute = format!("notist-comptime-{}", encode_name(&parameter.name));
+                if !attributes.insert(attribute.clone()) {
+                    return Err(format!(
+                        "component parameter attribute collision: `{attribute}`"
+                    ));
+                }
+            }
             for parameter in &definition.parameters {
                 let attribute = parameter_attribute(&parameter.name);
                 if !attributes.insert(attribute.clone()) {

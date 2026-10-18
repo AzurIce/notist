@@ -1,12 +1,12 @@
 import { compile } from "./compiler.js";
 
 export default class TypstMath extends HTMLElement {
-  static observedAttributes = ["notist-text", "notist-block"];
+  static observedAttributes = ["notist-text", "notist-content"];
   #revision = 0;
   constructor() {
     super();
     this.attachShadow({ mode: "open" }).innerHTML =
-      `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; text-align: center; margin: 1em 0; } svg { overflow: visible; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>`;
+      `<style>:host { display: inline; } :host([notist-content="block"]) { display: block; text-align: center; margin: 1em 0; } svg { overflow: visible; } .error { color: #a21; font: inherit; margin-left: .4em; }</style><span class="formula"></span><span class="error" role="status"></span>`;
   }
   connectedCallback() { this.update(); }
   disconnectedCallback() { this.#revision++; }
@@ -14,7 +14,7 @@ export default class TypstMath extends HTMLElement {
   async update() {
     const revision = ++this.#revision;
     const source = this.getAttribute("notist-text") ?? "";
-    const block = this.getAttribute("notist-block") === "true";
+    const block = this.getAttribute("notist-content") === "block";
     const target = this.shadowRoot.querySelector(".formula");
     const message = this.shadowRoot.querySelector(".error");
     const current = () => this.isConnected && revision === this.#revision;

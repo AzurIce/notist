@@ -33,7 +33,7 @@ fn analyze(extension: &str, src: &str) -> Item {
         .analyze(
             format!("test.{extension}"),
             src,
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(
@@ -46,7 +46,7 @@ fn analyze(extension: &str, src: &str) -> Item {
 
 #[test]
 fn both_frontends_render_the_same_complete_document() {
-    let not = "= Title\n\n*bold* _italic_ ~removed~ `a < b` $x$ [label](https://example.com/?a=1&b=2)\n\n- first\n\n  second\n  + nested\n\n---\n\n#callout(kind: \"quote\")[quoted]\n\n![asset](file.pdf \"title\")\n\n```rust\na < b\n```\n";
+    let not = "= Title\n\n*bold* _italic_ ~removed~ `a < b` $x$ [label](https://example.com/?a=1&b=2)\n\n- first\n\n  second\n  + nested\n\n---\n\n#callout(kind: \"quote\")[ quoted ]\n\n![asset](file.pdf \"title\")\n\n```rust\na < b\n```\n";
     let md = "# Title\n\n**bold** *italic* ~~removed~~ `a < b` $x$ [label](https://example.com/?a=1&b=2)\n\n- first\n\n  second\n  1. nested\n\n---\n\n> quoted\n\n![asset](file.pdf \"title\")\n\n```rust\na < b\n```\n";
     let result = Renderer::new().render_with_diagnostics(&analyze("not", not));
     assert!(result.diagnostics.is_empty());
@@ -68,7 +68,7 @@ fn both_frontends_render_the_same_complete_document() {
 
 #[test]
 fn block_math_renders_outside_paragraphs_and_shares_math_hooks() {
-    let source = "before $x$\n@(id: \"equation\")$ x < y $\nafter";
+    let source = "before $x$\n\n@(id: \"equation\")$ x < y $\n\nafter";
     for extension in ["not", "md"] {
         let root = analyze(extension, source);
         let result = Renderer::new().render_with_diagnostics(&root);
@@ -92,7 +92,7 @@ fn block_math_renders_outside_paragraphs_and_shares_math_hooks() {
             && mapping.range.end == usize::from(equation.span.end())));
         let result = Renderer::new()
             .with_math_renderer(|item| {
-                (item.fields.get("block") == Some(&Value::Bool(true)))
+                (item.level == notist::builtins::Level::Block)
                     .then(|| "<math display=\"block\"><mi>x</mi></math>".into())
             })
             .render(&root);
@@ -120,7 +120,7 @@ fn table_headers_alignment_and_block_cells_are_preserved() {
     );
     let root = analyze(
         "not",
-        "#table[\n#row(header: true)[#cell[]]\n#row[\n#cell[\nfirst\n\n- nested\n]\n]\n]",
+        "#table[\n#row(header: true)[#cell[]]\n#row[\n#cell[ \nfirst\n\n- nested\n ]\n]\n]",
     );
     assert_eq!(
         render(&root),
@@ -132,7 +132,7 @@ fn table_headers_alignment_and_block_cells_are_preserved() {
 fn later_header_rows_keep_their_position() {
     let root = analyze(
         "not",
-        "#table[#row[#cell[a]] #row(header: true)[#cell[b]] #row[#cell[c]]]",
+        "#table[#row[#cell[ a ]] #row(header: true)[#cell[ b ]] #row[#cell[ c ]]]",
     );
     assert_eq!(
         render(&root),
@@ -145,30 +145,92 @@ fn later_header_rows_keep_their_position() {
 fn identities_classes_and_metadata_are_attached_once() {
     let root = analyze(
         "not",
-        "@!(id: \"document\")\n\n@(id: \"intro\", tags: (\"a\", \"b\"))\n= Intro\n\n@(id: \"range\")\nbefore #callout(kind: \"note\")[body] after\n",
+        "@!(id: \"document\")\n\n@(id: \"intro\", tags: (\"a\", \"b\"))\n= Intro\n\n@(id: \"range\")\nbefore\n\n#callout(kind: \"note\")[ body ]\n\nafter\n",
     );
     let html = render(&root);
     assert_eq!(
         html,
         concat!(
             "<div id=\"document\"><section id=\"intro\" data-notist-tags=\"a b\"><h1>Intro</h1>",
-            "<div id=\"range\"><p>before </p><div class=\"notist-callout\" data-notist-kind=\"note\"><p>body</p></div>",
-            "<p> after</p></div></section></div>"
+            "<p id=\"range\">before</p><div class=\"notist-callout\" data-notist-kind=\"note\"><p>body</p></div>",
+            "<p>after</p></section></div>"
         )
     );
     assert_eq!(html.matches("id=\"range\"").count(), 1);
     let root = analyze(
         "not",
-        "@(id: \"inline\", class: (\"a\", \"b\"), aria-label: \"説明\", data-test: true)#[*text*]",
+        "@(id: \"inline\", class: (\"a\", \"b\"), aria-label: \"説明\", data-test: true)#node[*text*]",
     );
     assert_eq!(
         render(&root),
         "<p><span class=\"a b\" id=\"inline\" aria-label=\"説明\" data-test=\"true\"><strong>text</strong></span></p>"
     );
     assert_eq!(
-        render(&analyze("not", "#[*text*]")),
+        render(&analyze("not", "#node[*text*]")),
         "<p><strong>text</strong></p>"
     );
+}
+
+#[test]
+fn custom_annotations_map_to_data_attributes_with_values_and_reserved_names_preserved() {
+    let mut root = analyze("not", "Metadata");
+    root.attrs.insert("status", Value::Str("draft".into()));
+    root.attrs.insert("reviewed", Value::Bool(false));
+    root.attrs.insert("revision", Value::Int(i64::MAX));
+    root.attrs.insert("note", Value::Str("<\"&".into()));
+    root.attrs.insert("optional", Value::Unit);
+    root.attrs.insert(
+        "context",
+        Value::Array(vec![Value::Int(i64::MAX), Value::Float(-0.0)]),
+    );
+    root.attrs.insert("data-notist-node", Value::Int(999));
+    root.attrs.insert("notist-node", Value::Int(998));
+    root.attrs.insert("aria-level", Value::Int(99));
+    let output = render(&root);
+    assert!(output.contains("data-status=\"draft\""));
+    assert!(output.contains("data-reviewed=\"false\""));
+    assert!(output.contains("data-revision=\"9223372036854775807\""));
+    assert!(output.contains("data-note=\"&lt;&quot;&amp;\""));
+    assert!(output.contains("data-optional=\"null\""));
+    assert!(output.contains("data-context=\"[&quot;array&quot;,[[&quot;int&quot;,&quot;9223372036854775807&quot;],[&quot;float&quot;,&quot;8000000000000000&quot;]]]\""));
+    assert!(!output.contains("data-notist-node"));
+    assert!(!output.contains("aria-level"));
+    root.attrs
+        .insert("data-status", Value::Str("staged".into()));
+    let output = render(&root);
+    assert_eq!(output.matches("data-status=").count(), 1);
+    assert!(output.contains("data-status=\"staged\""));
+}
+
+#[test]
+fn status_annotations_preserve_sections_inline_groups_and_cells_in_both_frontends() {
+    for (extension, heading) in [("not", "= Status"), ("md", "# Status")] {
+        let source = format!(
+            "@(status: \"draft\")\n{heading}\n\n@(status: \"staged\")\nPending implementation.\n\nInline @(status: \"outdate\")#node[old term] remains inline.\n\n#table[ #row[ @(status: \"outdate\")#cell[ Old definition ] #cell[ Current definition ] ] ]"
+        );
+        let root = analyze(extension, &source);
+        let before = root.clone();
+        let output = Renderer::new().render_with_diagnostics(&root);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(output.html.contains("<section data-status=\"draft\">"));
+        assert!(
+            output
+                .html
+                .contains("<p data-status=\"staged\">Pending implementation.</p>")
+        );
+        assert!(
+            output
+                .html
+                .contains("<span data-status=\"outdate\">old term</span>")
+        );
+        assert!(
+            output
+                .html
+                .contains("<td data-status=\"outdate\"><p>Old definition</p></td>")
+        );
+        assert_eq!(root, before);
+        assert!(output.used_components.is_empty());
+    }
 }
 
 #[test]
@@ -189,7 +251,7 @@ fn escaping_occurs_after_frontend_decoding_and_in_all_attributes() {
         .insert("data-x\" onclick", Value::Str("bad".into()));
     assert_eq!(
         render(&root),
-        "<p><span id=\"&quot; onmouseover=&quot;bad\">&lt;script&gt;&amp;</span></p>"
+        "<p><span id=\"&quot; onmouseover=&quot;bad\" data-onclick=\"bad()\" data-style=\"bad\">&lt;script&gt;&amp;</span></p>"
     );
     let root = analyze(
         "not",
@@ -290,7 +352,7 @@ fn callbacks_override_selected_resources_and_preserve_outer_attributes() {
 fn headings_beyond_html_levels_and_list_starts_are_preserved() {
     let root = analyze(
         "not",
-        "======= Deep\n\n#list(ordered: true, start: -3)[#item[a] #item[]]\n#list[#item[b]]\n[[target]]",
+        "======= Deep\n\n#list(ordered: true, start: -3)[#item[ a ] #item[]]\n\n#list[#item[ b ]]\n\n[[target]]",
     );
     assert_eq!(
         render(&root),
@@ -318,7 +380,7 @@ fn raw_payloads_and_language_attrs_are_escaped_without_trimming() {
 fn structural_groups_are_flattened_and_unrepresentable_attrs_are_reported() {
     let root = analyze(
         "not",
-        "#list[#[#item[a] #item[b]]]\n#table[#[#row[#[#cell[x] #cell[y]]]]]",
+        "#list[#node[ #item[ a ]\n\n#item[ b ] ]]\n\n#table[#node[ #row[#node[ #cell[ x ]\n\n#cell[ y ] ]] ]]",
     );
     let result = Renderer::new().render_with_diagnostics(&root);
     assert!(result.diagnostics.is_empty());
@@ -326,14 +388,17 @@ fn structural_groups_are_flattened_and_unrepresentable_attrs_are_reported() {
         result.html,
         "<ul><li><p>a</p></li><li><p>b</p></li></ul><table><tbody><tr><td><p>x</p></td><td><p>y</p></td></tr></tbody></table>"
     );
-    let root = analyze("not", "#list[@(id: \"items\")#[#item[a] #item[b]]]");
+    let root = analyze(
+        "not",
+        "#list[@(id: \"items\")#node[ #item[ a ]\n\n#item[ b ] ]]",
+    );
     let result = Renderer::new().render_with_diagnostics(&root);
     assert_eq!(result.html, "<ul><li><p>a</p></li><li><p>b</p></li></ul>");
     assert_eq!(result.diagnostics.len(), 1);
     assert!(
         result.diagnostics[0]
             .message
-            .contains("group attributes omitted")
+            .contains("node attributes omitted")
     );
 }
 
@@ -342,8 +407,8 @@ fn recovery_nodes_render_without_panicking_and_report_rendering_issues() {
     let document = Pipeline::default()
         .analyze(
             "test.not",
-            "#unknown[body]\n#list[text]\n#table[wrong]",
-            notist::builtins::registry(),
+            "#unknown[body]\n\n#list[text]\n\n#table[wrong]",
+            &notist::Context::default(),
         )
         .unwrap();
     assert!(!document.diagnostics().is_empty());

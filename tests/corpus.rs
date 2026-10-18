@@ -14,10 +14,10 @@ fn corpus() {
         let name = path.file_stem().unwrap().to_str().unwrap().to_string();
         let cst = format!(
             "{:#?}",
-            notist_syntax::parser::parse_document(&src).syntax()
+            notist_syntax::markup::parse_document(&src).syntax()
         );
         let analysis = notist::Pipeline::default()
-            .analyze(&path, &src, notist::builtins::registry())
+            .analyze(&path, &src, &notist::Context::default())
             .unwrap();
         let mut core = String::new();
         for diagnostic in analysis.diagnostics() {

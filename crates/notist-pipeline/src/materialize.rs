@@ -1,6 +1,6 @@
 use rowan::TextRange;
 
-use notist_core::expr::{Expr, RExpr};
+use notist_core::expr::RExpr;
 use notist_core::item::{Ctor, Dict, Item};
 
 /// M1 materialization: no environments, no computation — resolution,
@@ -8,28 +8,18 @@ use notist_core::item::{Ctor, Dict, Item};
 /// This is the thin structural conversion from a shaped `IR₂` forest to the
 /// core tree.
 pub fn materialize(expr: &RExpr) -> Item {
-    match expr {
-        Expr::Literal(..) => unreachable!("literals insert as text at resolve"),
-        Expr::Call {
-            name,
-            fields,
-            children,
-            attrs,
-            span,
-            ..
-        } => {
-            let mut item = Item::new(name.clone(), *span);
-            item.fields = fields.clone();
-            item.children = children.iter().map(materialize).collect();
-            item.attrs = attrs.clone();
-            item.level = if crate::shape::reflow::is_block_element(expr) {
-                notist_core::builtins::Level::Block
-            } else {
-                notist_core::builtins::Level::Inline
-            };
-            item
-        }
-    }
+    let mut item = Item::new(expr.ctor.clone(), expr.span);
+    item.instance = expr.instance.clone();
+    item.pending = expr.pending.clone();
+    item.fields = expr.fields.clone();
+    item.children = expr.children.iter().map(materialize).collect();
+    item.attrs = expr.attrs.clone();
+    item.level = if crate::shape::is_block_element(expr) {
+        notist_core::builtins::Level::Block
+    } else {
+        notist_core::builtins::Level::Inline
+    };
+    item
 }
 
 /// Materialize a document: the shaped forest becomes the children of a `Doc`

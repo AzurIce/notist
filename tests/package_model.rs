@@ -1,7 +1,7 @@
 use notist::{Environment, FunctionId, MemoryResources, RenderOptions, SourceDiagnostic, Vault};
 use std::path::Path;
 
-const MATH: &str = "fn math(text: String, block?: Bool) -> Content<block>;";
+const MATH: &str = "fn math<C: Type = InlineContent>(text: String) -> C;";
 fn rule(target: &str) -> String {
     format!("\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = '{target}::math'\n")
 }
@@ -29,12 +29,40 @@ fn assert_math(resources: MemoryResources, path: &str, target: &str) {
         .render_html(path, "$frac(a, b)$", RenderOptions::default())
         .unwrap();
     assert!(output.analysis.diagnostics().is_empty());
-    assert!(output.transformed.diagnostics.is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
     assert!(output.rendered.diagnostics.is_empty());
     assert_eq!(
         output.rendered.used_components[0].id,
         FunctionId::new(target, "math")
     );
+}
+
+#[test]
+fn host_loaded_context_can_analyze_and_transform_after_resources_are_dropped() {
+    let context = {
+        let mut resources = project("[dependencies]\nrenderer = {path = 'packages/renderer'}");
+        package(&mut resources, "renderer", &rule("renderer"));
+        load(&resources).unwrap().context().clone()
+    };
+    let pipeline = notist::Pipeline::default();
+    for path in ["detached.not", "detached.md"] {
+        let analysis = pipeline.analyze(path, "$x$", &context).unwrap();
+        assert!(analysis.diagnostics().is_empty());
+        let original = analysis.root().clone();
+        let output = pipeline.evaluate(&analysis, &context);
+        assert!(output.diagnostics.is_empty());
+        assert!(
+            output
+                .root
+                .find(|node| {
+                    node.target
+                        .as_ref()
+                        .is_some_and(|i| i.function == FunctionId::new("renderer", "math"))
+                })
+                .is_some()
+        );
+        assert_eq!(*analysis.root(), original);
+    }
 }
 
 #[test]
@@ -48,12 +76,18 @@ fn disabling_default_transforms_keeps_packages_available_for_direct_calls() {
     }
     let environment = load(&resources).unwrap();
     assert_eq!(environment.packages().len(), 2);
-    assert!(environment.registry().resolve("one::math").is_ok());
+    assert!(
+        environment
+            .context()
+            .registry()
+            .resolve("one::math")
+            .is_ok()
+    );
     let output = Vault::new(resources)
         .render_html("doc.not", "$x$ #one::math(\"y\")", RenderOptions::default())
         .unwrap();
     assert!(output.analysis.diagnostics().is_empty());
-    assert!(output.transformed.diagnostics.is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
     assert!(output.rendered.diagnostics.is_empty());
     assert_eq!(
         output
@@ -74,7 +108,7 @@ fn disabled_dependency_defaults_skip_contract_validation_and_allow_root_rules() 
     let config = "[dependencies]\nrenderer = {path = 'packages/renderer', transforms = false}";
     let mut resources = project(config);
     package(&mut resources, "renderer", &rule("missing"));
-    assert!(load(&resources).unwrap().transforms().is_empty());
+    assert!(load(&resources).unwrap().context().transforms().is_empty());
     resources.insert(
         "Notist.toml",
         format!("{config}{}", rule("renderer")).into_bytes(),
@@ -82,7 +116,7 @@ fn disabled_dependency_defaults_skip_contract_validation_and_allow_root_rules() 
     assert_math(resources.clone(), "doc.not", "renderer");
     resources.insert(
         "packages/renderer/lib.notc",
-        b"fn invalid(text: Content) -> InlineContent;".to_vec(),
+        b"fn invalid(text: BlockContent) -> InlineContent;".to_vec(),
     );
     assert!(load(&resources).is_err());
 }
@@ -92,7 +126,7 @@ fn disabled_development_dependency_defaults_keep_explicit_development_rules() {
     let config = "[dev-dependencies]\nrenderer = {path = 'packages/renderer', transforms = false}";
     let mut resources = project(config);
     package(&mut resources, "renderer", &rule("renderer"));
-    assert!(load(&resources).unwrap().transforms().is_empty());
+    assert!(load(&resources).unwrap().context().transforms().is_empty());
     resources.insert(
         "Notist.toml",
         format!(
@@ -125,11 +159,14 @@ fn shared_defaults_are_enabled_by_any_importing_edge_independent_of_first_visit(
         if left || right {
             assert_math(resources, "doc.not", "shared");
         } else {
-            assert!(environment.transforms().is_empty());
+            assert!(environment.context().transforms().is_empty());
             let output = Vault::new(resources)
                 .render_html("doc.not", "$x$", RenderOptions::default())
                 .unwrap();
-            assert_eq!(output.transformed.root, *output.analysis.root());
+            assert_eq!(
+                notist::dump::dump(&output.evaluation.root),
+                notist::dump::dump(output.analysis.root())
+            );
             assert!(output.rendered.used_components.is_empty());
         }
     }
@@ -163,10 +200,16 @@ fn root_package_registers_itself_and_exports_only_public_configuration() {
     assert_math(resources.clone(), "doc.not", "base");
     let consumer = load(&resources).unwrap();
     assert_eq!(consumer.packages().len(), 1);
-    assert!(consumer.registry().resolve("helper::math").is_err());
+    assert!(
+        consumer
+            .context()
+            .registry()
+            .resolve("helper::math")
+            .is_err()
+    );
     let own = Environment::load_from(&resources, "packages/base/Notist.toml").unwrap();
     assert_eq!(own.packages().len(), 2);
-    assert!(own.registry().resolve("base::math").is_ok());
+    assert!(own.context().registry().resolve("base::math").is_ok());
     assert_math(resources, "packages/base/README.not", "helper");
 }
 
@@ -191,6 +234,7 @@ fn transitive_diamond_dependencies_and_identical_defaults_are_loaded_once() {
     for name in ["left", "right", "shared"] {
         assert!(
             environment
+                .context()
                 .registry()
                 .resolve(&format!("{name}::math"))
                 .is_ok()
@@ -233,6 +277,7 @@ fn development_dependencies_and_transforms_also_work_for_a_document_root() {
     assert!(
         load(&resources)
             .unwrap()
+            .context()
             .registry()
             .resolve("renderer::math")
             .is_ok()
@@ -327,7 +372,7 @@ fn invalid_public_defaults_report_the_dependency_manifest_even_with_an_override(
     );
     resources.insert(
         "packages/bad/lib.notc",
-        b"fn math(text: Int, block?: Bool) -> Content<block>;".to_vec(),
+        b"fn math<C: Type = InlineContent>(text: Int) -> C;".to_vec(),
     );
     let errors = load(&resources).unwrap_err();
     assert!(

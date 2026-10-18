@@ -46,6 +46,7 @@
             filter = path: type:
               craneLib.filterCargoSources path type
               || pkgs.lib.hasPrefix "${toString ./.}/crates/notist-ssg/src/theme/" path
+              || path == "${toString ./.}/crates/notist-html/src/status.css"
               || path == "${toString ./.}/crates/notist-cli/src/preview.js";
           };
           commonArgs = {

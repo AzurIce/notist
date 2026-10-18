@@ -124,7 +124,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
         ("doc.nmd", "#typst::math(\"sqrt(x)\") $frac(a, b)$", 2),
     ] {
         let source = format!(
-            "{source}\n\n$ sum_(i=1)^n i $\n\n#typst::math(\"sum_(i=1)^n i\", block: true)"
+            "{source}\n\n$ sum_(i=1)^n i $\n\n#typst::math<BlockContent>(\"sum_(i=1)^n i\")"
         );
         let document = project.path().join(name);
         std::fs::write(&document, source).unwrap();
@@ -144,7 +144,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
         );
         let html = std::fs::read_to_string(output.join("index.html")).unwrap();
         assert_eq!(html.matches("<typst-math ").count(), count + 2);
-        assert_eq!(html.matches("notist-block=\"true\"").count(), 2);
+        assert_eq!(html.matches("notist-content=\"block\"").count(), 2);
         assert!(html.contains("notist-text=\"frac(a, b)\""));
         assert!(html.contains("notist-text=\"sqrt(x)\""));
         assert!(!html.contains("<notist-math "));
@@ -206,4 +206,98 @@ fn checks_json_and_html_report_vault_escapes_at_the_source_reference() {
     let stderr = String::from_utf8(result.stderr).unwrap();
     assert_eq!(stderr.matches("outside Vault root").count(), 4, "{stderr}");
     assert!(stderr.contains("notes/page.not") && stderr.contains("notes/page.md"));
+}
+
+#[test]
+fn eval_inspection_exposes_code_output_and_definition_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(root.join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    let definition = "fn f() -> InlineContent { [#strong[body]] }";
+    std::fs::write(root.join("lib.notc"), definition).unwrap();
+    std::fs::write(root.join("doc.not"), "#demo::f()").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let semantic = run(&["query", "doc.not", "function:notist::strong"]);
+    assert!(semantic.status.success());
+    let v: Value = serde_json::from_slice(&semantic.stdout).unwrap();
+    assert!(v.as_array().unwrap().is_empty());
+    let evaluated = run(&["query", "--eval", "doc.not", "function:notist::strong"]);
+    assert!(
+        evaluated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&evaluated.stderr)
+    );
+    let v: Value = serde_json::from_slice(&evaluated.stdout).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert!(v[0]["text"].as_str().unwrap().contains("#strong[body]"));
+    assert!(
+        v[0]["origin"]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("lib.notc")
+    );
+    let output = run(&["core", "--eval", "doc.not"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("strong"));
+    let output = run(&["json", "--eval", "doc.not"]);
+    let v: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(v["core"].to_string().contains("expanded"));
+}
+
+#[test]
+fn module_check_and_json_use_the_actual_package_and_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir(root.join("dep")).unwrap();
+    for (path, source) in [
+        (
+            "Notist.toml",
+            "[package]\nname = 'demo'\n[dependencies]\ndep = {path = 'dep'}",
+        ),
+        ("dep/Notist.toml", "[package]\nname = 'dep'"),
+        ("dep/lib.notc", "fn value() -> String { \"dependency\" }"),
+        (
+            "lib.notc",
+            "fn helper() -> String { dep::value() } fn view() -> InlineContent { [#text(text: demo::helper())] }",
+        ),
+    ] {
+        std::fs::write(root.join(path), source).unwrap();
+    }
+    for command in ["check", "json"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root)
+            .args([command, "lib.notc"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if command == "json" {
+            let data: Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(data["functions"][1]["function"], "demo::view");
+            assert!(data["diagnostics"].as_array().unwrap().is_empty());
+        }
+    }
+    std::fs::write(
+        root.join("lib.notc"),
+        "fn f() -> InlineContent { compile_error(\"module problem\") }",
+    )
+    .unwrap();
+    std::fs::write(root.join("doc.not"), "#demo::f()  中文中文中文中文").unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root)
+        .args(["check", "."])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(error.contains("lib.notc:1:"), "{error}");
+    assert!(!error.contains("doc.not:1:"), "{error}");
 }

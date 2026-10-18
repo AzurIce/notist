@@ -2,7 +2,7 @@
 fn query_selectors() {
     let src = "@(id: \"x\", tags: (\"a\",))#emph[目标]\n\n*粗*\n";
     let (item, diags) = notist::Pipeline::default()
-        .analyze("test.not", src, notist::builtins::registry())
+        .analyze("test.not", src, &notist::Context::default())
         .unwrap()
         .into_parts();
     assert!(diags.is_empty());

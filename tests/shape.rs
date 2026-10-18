@@ -1,45 +1,37 @@
 #[test]
-fn reflow_splits_paragraphs_around_block_calls() {
-    // 未知构造器诊断 + 恢复：block flavor 把段落切成兄弟
-    let (item, diags) = notist::Pipeline::default()
-        .analyze(
-            "test.not",
-            "文字\n#note[\n块 body\n]\n后续\n",
-            notist::builtins::registry(),
-        )
-        .unwrap()
-        .into_parts();
-    assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(diags[0].message.contains("unknown constructor"));
-    let dump = notist::dump::dump(&item);
+fn block_calls_require_source_fragment_boundaries() {
+    let src = "文字\n\n#callout[\n块 body\n]\n\n后续\n";
+    let analysis = notist::Pipeline::default()
+        .analyze("test.not", src, &notist::Context::default())
+        .unwrap();
+    assert!(
+        analysis.diagnostics().is_empty(),
+        "{:?}",
+        analysis.diagnostics()
+    );
     assert_eq!(
-        dump,
-        "\
-(doc @0..32
-  (paragraph @0..6
-    (text @0..6 :text \"文字\")
-  )
-  (note @7..24
-    (paragraph @14..22
-      (text @14..22 :text \"块 body\")
-    )
-  )
-  (paragraph @25..31
-    (text @25..31 :text \"后续\")
-  )
-)
-"
+        analysis
+            .root()
+            .children
+            .iter()
+            .map(|item| &item.ctor)
+            .collect::<Vec<_>>(),
+        [
+            &notist::Ctor::Paragraph,
+            &notist::Ctor::Callout,
+            &notist::Ctor::Paragraph
+        ]
     );
 }
 
 #[test]
-fn reflow_keeps_inline_calls_inside_paragraph() {
-    // inline flavor 的调用不切
+fn soft_newlines_keep_inline_calls_inside_paragraph() {
+    // 行内调用不改变片段边界。
     let (item, diags) = notist::Pipeline::default()
         .analyze(
             "test.not",
             "文字 #note[x] 后续\n",
-            notist::builtins::registry(),
+            &notist::Context::default(),
         )
         .unwrap()
         .into_parts();
@@ -52,7 +44,7 @@ fn reflow_keeps_inline_calls_inside_paragraph() {
 fn shape_groups_sections_by_heading_level() {
     let src = "序言\n\n= 一\n\n内容\n\n== 一点一\n\n细节\n\n= 二\n";
     let (item, diags) = notist::Pipeline::default()
-        .analyze("test.not", src, notist::builtins::registry())
+        .analyze("test.not", src, &notist::Context::default())
         .unwrap()
         .into_parts();
     assert!(diags.is_empty());
@@ -92,39 +84,29 @@ fn shape_groups_sections_by_heading_level() {
 
 #[test]
 fn shape_recurses_into_block_mounts() {
-    // block body 内的段落候选同样切分、各自成节
-    let src = "#note[\n前 #item[x] 后\n\n= 节\n]\n";
-    let (item, diags) = notist::Pipeline::default()
-        .analyze("test.not", src, notist::builtins::registry())
-        .unwrap()
-        .into_parts();
-    assert_eq!(diags.len(), 1, "{diags:?}");
-    assert!(diags[0].message.contains("unknown constructor"));
-    let out = notist::dump::dump(&item);
+    let src = "#callout[\n前\n\n#divider()\n\n后\n\n= 节\n]\n";
+    let analysis = notist::Pipeline::default()
+        .analyze("test.not", src, &notist::Context::default())
+        .unwrap();
+    assert!(
+        analysis.diagnostics().is_empty(),
+        "{:?}",
+        analysis.diagnostics()
+    );
+    let callout = &analysis.root().children[0];
+    assert_eq!(callout.ctor, notist::Ctor::Callout);
     assert_eq!(
-        out,
-        "\
-(doc @0..33
-  (note @0..32
-    (paragraph @7..11
-      (text @7..11 :text \"前 \")
-    )
-    (listitem @11..19
-      (paragraph @11..19
-        (text @17..18 :text \"x\")
-      )
-    )
-    (paragraph @19..23
-      (text @19..23 :text \" 后\")
-    )
-    (section @25..30
-      (heading @25..30 :level 1
-        (text @27..30 :text \"节\")
-      )
-    )
-  )
-)
-"
+        callout
+            .children
+            .iter()
+            .map(|item| &item.ctor)
+            .collect::<Vec<_>>(),
+        [
+            &notist::Ctor::Paragraph,
+            &notist::Ctor::Divider,
+            &notist::Ctor::Paragraph,
+            &notist::Ctor::Section
+        ]
     );
 }
 
@@ -133,7 +115,7 @@ fn shape_transfers_heading_attrs_to_section() {
     // heading 的注解转移到其开启的 section 上（一个 heading 恰开启一个 section）
     let src = "@(id: \"intro\", tags: (\"a\",))\n= 一\n\n内容\n";
     let (item, diags) = notist::Pipeline::default()
-        .analyze("test.not", src, notist::builtins::registry())
+        .analyze("test.not", src, &notist::Context::default())
         .unwrap()
         .into_parts();
     assert!(diags.is_empty());

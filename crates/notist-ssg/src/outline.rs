@@ -1,4 +1,4 @@
-use notist::{Ctor, Item, Value};
+use notist::{Ctor, EvaluationState, Item, Value};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -16,7 +16,8 @@ pub(crate) struct Outline {
 pub(crate) fn text(item: &Item) -> String {
     let mut result = String::new();
     for node in item.descendants() {
-        if matches!(node.ctor, Ctor::Text | Ctor::RawInline | Ctor::Math)
+        if !matches!(node.evaluation, Some(EvaluationState::Error(_)))
+            && matches!(node.ctor, Ctor::Text | Ctor::RawInline | Ctor::Math)
             && let Some(Value::Str(value)) = node.fields.get("text")
         {
             result.push_str(value);
@@ -58,6 +59,9 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
         ids,
     };
     fn visit(node: &mut Item, inherited: Option<String>, outline: &mut Outline) {
+        if matches!(node.evaluation, Some(EvaluationState::Error(_))) {
+            return;
+        }
         if node.ctor == Ctor::Heading {
             let title = text(node);
             if outline.headings.is_empty() {

@@ -74,6 +74,7 @@ pub fn assemble(
     root: &Path,
     config: Option<&Path>,
     output: Option<&Path>,
+    recovery: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     let files = Files::new(root);
     let mut vault = Vault::new(files);
@@ -94,7 +95,11 @@ pub fn assemble(
             options.output = normalize(&std::env::current_dir().unwrap().join(output));
         }
         let output = vault.resources().resolve(&options.output);
-        let site = notist_ssg::build(&mut vault, &options)?;
+        let site = if recovery {
+            notist_ssg::preview(&mut vault, &options)
+        } else {
+            notist_ssg::build(&mut vault, &options)
+        }?;
         Ok((site, output))
     })();
     let observed = vault.resources().observed();
@@ -203,7 +208,7 @@ pub fn report(error: Error) {
 pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
     let result = (|| {
         let root = std::fs::canonicalize(root).map_err(io)?;
-        let result = assemble(&root, config, output).map_err(|(error, _)| error)?;
+        let result = assemble(&root, config, output, false).map_err(|(error, _)| error)?;
         publish(&result.site, &result.output, &root)?;
         println!(
             "{} pages → {}",

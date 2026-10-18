@@ -18,9 +18,9 @@ packages/example/
         └── style.js
 ```
 
-lib.notc 是唯一的 Code 入口，只包含内容函数签名声明。package 不发现其他 Code 模块，不执行函数体、脚本或 import。声明文法见 [Code Syntax](grammar/code.not)。
+lib.notc 是唯一的 Code 入口，包含原生签名声明和 Code 函数定义。package 不发现其他 Code 模块，不提供 import 或宿主脚本；内容函数在 Evaluate 中执行。声明文法见 [Code Syntax](grammar/code.not)。
 
-components/ 是可选的 HTML 实现：函数 badge 使用 components/badge.js，函数 panel 可以使用 components/panel/index.js 并附带辅助模块与资源。同名两种入口同时存在时报冲突。组件入口默认导出 HTMLElement 类，宿主负责标签注册和资源发布；完整协议见 [Content Function Extensions](designs/content-functions.not)。
+components/ 是可选的 HTML 实现：函数 badge 使用 components/badge.js，函数 panel 可以使用 components/panel/index.js 并附带辅助模块与资源。同名两种入口同时存在时报冲突。组件入口默认导出 HTMLElement 类，宿主负责标签注册和资源发布；完整协议见 [BlockContent Function Extensions](designs/content-functions.not)。
 
 README.not 是 package 的文档，可包含真实的内容函数调用。Notist.toml 装配该文档的环境。package 还可以携带 Rust 源码、构建脚本与浏览器依赖；它们属于实现资源，不构成 Notist 的 Code 模块系统。
 
@@ -35,7 +35,7 @@ name = "example"
 
 名称使用与限定调用相同的标识符规则，区分大小写，不能使用保留名 notist。使用者的 dependency 键必须与清单名称一致，当前不支持别名。
 
-原生 .not 与 Markdown 扩展中的调用 `#example::panel("Title")[body]` 都查找 example::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入，并使用所在文档前端的语法；前端与 AST lowering 的职责见 [文档前端](designs/frontends.not)。声明返回 Content 或 InlineContent 决定内容类别，Content<block> 则按补齐默认值后的布尔参数选择类别；IR 保留函数身份、字段、children、属性与源码范围。
+原生 .not 与 Markdown 扩展中的调用 `#example::panel("Title")[body]` 都查找 example::panel，参数由共同定义模型校验，正文从唯一的 children 槽传入，并使用所在文档前端的语法；前端与 AST lowering 的职责见 [文档前端](designs/frontends.not)。声明返回 BlockContent 或 InlineContent 决定内容类别，返回编译期 Type 参数的声明在实例化后确定唯一类别；IR 保留函数身份、字段、children、属性与源码范围。
 
 内置函数属于 notist 命名空间，prelude 提供 `#callout` 等简写；notist 是保留包名。外部组件标签包含注册包名与函数名，例如 example-panel 和 mermaid-diagram。
 
@@ -57,7 +57,7 @@ katex = { path = "../packages/katex" }
 
 宿主递归读取 dependencies 指向的 Notist.toml 与 lib.notc。共享依赖按规范资源路径只加载一次；循环依赖、名称与 dependency 键不符、同名 package 来自不同目录、缺失清单或声明均产生诊断。配置和声明错误时不返回部分装配的正式环境。
 
-package 依赖图不引入 Code 模块：parse_module 仍只解析一份 lib.notc，资源与图装配由宿主承担。Environment::load_from 使用资源视图装配；Environment::from_packages 接收宿主已经准备好的包身份和声明源码，提供无 IO 的注册入口。
+package 依赖图不引入 Code 模块：parse_module 仍只解析一份 lib.notc，资源与图装配由宿主承担。Environment::load_from 使用资源视图加载配置与声明；Environment::from_packages 接收宿主已经准备好的包身份和声明源码，提供无 IO 的注册入口。Environment 将 Registry 与 TransformPlan 装配为 Context，通过 context() 交给正文分析与转换；配置路径和包资源信息仍由 Environment 保存，纯管线不读取它们。
 
 == Vault 自身的组件
 
@@ -150,20 +150,34 @@ to = "typst::math"
 
 | Package | 内容 |
 | --- | --- |
-| [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | 文法记法的 Rust / WASM 解析与铁路图可视化 #grammar::diagram(r#"lex Digit -> [`0`-`9`];"#) |
-| [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | Mermaid 图形组件 #mermaid::diagram(r#"""
+| [grammar](https://github.com/AzurIce/notist/blob/main/packages/grammar/README.not) | #node[ 文法记法的 Rust / WASM 解析与铁路图可视化
+
+#grammar::diagram(r#"lex Digit -> [`0`-`9`];"#)
+] |
+| [mermaid](https://github.com/AzurIce/notist/blob/main/packages/mermaid/README.not) | #node[ Mermaid 图形组件
+
+#mermaid::diagram(r#"""
 stateDiagram-v2
     direction LR
     [*] --> s1
     s1 --> [*]
-"""#) |
-| [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | LaTeX 数学呈现 #katex::math(r#"""
+"""#)
+] |
+| [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | #node[ LaTeX 数学呈现
+
+#katex::math<BlockContent>(r#"""
 f(\relax{x}) = \int_{-\infty}^\infty
 \hat{f}(\xi)\,e^{2 \pi i \xi x}
 \,d\xi
-"""#, true)|
-| [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | Typst 数学源码经 WASM 编译为 SVG $ e^(i pi) = -1 $ |
-| [shader](https://github.com/AzurIce/notist/blob/main/packages/shader/README.not) | WebGPU / WGSL 全屏 shader、动画与交互 #shader::canvas(r#"""
+"""#)
+]|
+| [typst](https://github.com/AzurIce/notist/blob/main/packages/typst/README.not) | #node[ Typst 数学源码经 WASM 编译为 SVG
+
+$ e^(i pi) = -1 $
+] |
+| [shader](https://github.com/AzurIce/notist/blob/main/packages/shader/README.not) | #node[ WebGPU / WGSL 全屏 shader、动画与交互
+
+#shader::canvas(r#"""
 fn palette(t: f32) -> vec3f {
   return 0.5 + 0.5 * cos(6.283185 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
 }
@@ -176,4 +190,5 @@ fn mainImage(fragCoord: vec2f) -> vec4f {
   let color = palette(rings * 0.18 + length(uv) * 0.15 + time * 0.05);
   return vec4f(color, 1.0);
 }
-"""#) |
+"""#)
+] |

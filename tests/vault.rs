@@ -19,12 +19,12 @@ fn memory() -> MemoryResources {
         "widgets/Notist.toml",
         b"[package]\nname = 'widgets'".to_vec(),
     );
-    resources.insert("widgets/lib.notc", b"fn panel(title: String = \"outer\")[children: Content] -> Content; fn badge(label: String) -> InlineContent;".to_vec());
+    resources.insert("widgets/lib.notc", b"fn panel<C: Type>(title: String = \"outer\")[children: C] -> BlockContent; fn badge(label: String) -> InlineContent;".to_vec());
     resources.insert("widgets/components/panel/index.js", Vec::new());
     resources.insert("widgets/components/badge.js", Vec::new());
     resources
 }
-const DOCUMENT: &str = "#widgets::panel()[#widgets::badge(\"inner\")]";
+const DOCUMENT: &str = "#widgets::panel()[ #widgets::badge(\"inner\") ]";
 
 #[test]
 fn typed_output_preserves_nested_components_maps_and_published_urls() {
@@ -213,7 +213,7 @@ fn html_entry_conflicts_do_not_invalidate_semantic_declarations() {
     );
     resources.insert(
         "widgets/lib.notc",
-        b"fn panel()[children: Content] -> Content;".to_vec(),
+        b"fn panel<C: Type>()[children: C] -> BlockContent;".to_vec(),
     );
     let output = Vault::new(resources)
         .render_html(
@@ -282,6 +282,24 @@ fn host_failures_and_invalid_utf8_are_not_treated_as_missing_resources() {
 
 static LOWER_CALLS: AtomicUsize = AtomicUsize::new(0);
 struct CountingFrontend;
+impl notist::syntax::content::ContentParser for CountingFrontend {
+    fn parse_content(
+        &self,
+        source: &str,
+        open: notist::TextSize,
+    ) -> notist::syntax::content::ParsedContent {
+        notist::syntax::content::ContentParser::parse_content(&notist::NotistFrontend, source, open)
+    }
+}
+impl notist::ContentLowering for CountingFrontend {
+    fn lower_content(
+        &self,
+        content: &notist::syntax::content::ParsedContent,
+        diagnostics: &mut Vec<notist::Diagnostic>,
+    ) -> notist::Lowered {
+        notist::ContentLowering::lower_content(&notist::NotistFrontend, content, diagnostics)
+    }
+}
 impl notist::Frontend for CountingFrontend {
     fn extensions(&self) -> &[&str] {
         &["not"]
@@ -304,7 +322,7 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
     assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 1);
     let (analysis, inspection) = vault.inspect("doc.not", DOCUMENT).unwrap();
     vault
-        .render_output("doc.not", analysis.root(), RenderOptions::default())
+        .render_output("doc.not", &analysis, RenderOptions::default())
         .unwrap();
     assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 2);
     assert!(
@@ -313,7 +331,7 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
             .as_deref()
             .unwrap()
             .as_any()
-            .downcast_ref::<notist_syntax::syntax::SyntaxNode>()
+            .downcast_ref::<notist_syntax::tree::SyntaxNode>()
             .is_some()
     );
     assert_eq!(analysis, output.analysis);
@@ -449,7 +467,7 @@ fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
     );
     // The pure graph API enforces the same boundary on Pipeline-only results.
     let analysis = notist::Pipeline::default()
-        .analyze("notes/page.not", source, notist::builtins::registry())
+        .analyze("notes/page.not", source, &notist::Context::default())
         .unwrap();
     let pure =
         notist::VaultIndex::from_documents("/repo/docs", [("notes/page.not".into(), analysis)]);
@@ -507,6 +525,7 @@ fn package_dependencies_outside_the_vault_remain_available() {
         vault
             .environment_for("README.not")
             .unwrap()
+            .context()
             .registry()
             .resolve("demo::badge")
             .is_ok()
@@ -543,6 +562,7 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
             );
         }
         for definition in environment
+            .context()
             .registry()
             .functions()
             .filter(|definition| definition.id.package != "notist")
@@ -576,7 +596,7 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
             .render_html(path, &source, RenderOptions::default())
             .unwrap();
         assert!(disk.analysis.diagnostics().is_empty());
-        assert!(disk.transformed.diagnostics.is_empty());
+        assert!(disk.evaluation.diagnostics.is_empty());
         assert!(disk.rendered.diagnostics.is_empty());
         assert!(
             !disk.rendered.used_components.is_empty(),
@@ -586,7 +606,7 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
             assert_eq!(disk.rendered.html.matches("<shader-canvas ").count(), 2);
         }
         assert_eq!(disk.analysis, prepared.analysis);
-        assert_eq!(disk.transformed, prepared.transformed);
+        assert_eq!(disk.evaluation, prepared.evaluation);
         assert_eq!(disk.rendered.html, prepared.rendered.html);
         assert_eq!(disk.rendered.diagnostics, prepared.rendered.diagnostics);
         assert_eq!(disk.rendered.source_map, prepared.rendered.source_map);
@@ -690,4 +710,30 @@ fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
     .unwrap();
     assert_eq!(missing["diagnostics"][0]["origin"], "render");
     assert_eq!(missing["diagnostics"][0]["path"], "doc.not");
+}
+
+#[test]
+fn explicit_code_sources_keep_host_loading_outside_context() {
+    let source = "fn f() -> InlineContent { [#strong[hello]] }";
+    let environment = notist::Environment::default()
+        .with_code(
+            "demo",
+            Path::new("/code/widgets.notc"),
+            source,
+            Path::new("content.not"),
+        )
+        .unwrap();
+    let mut vault = Vault::new(MemoryResources::new("/notes")).with_environment(environment);
+    let output = vault
+        .render_html("doc.not", "#demo::f()", RenderOptions::default())
+        .unwrap();
+    assert!(output.analysis.diagnostics().is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
+    assert!(output.rendered.html.contains("<strong"));
+    assert!(output.rendered.source_map.iter().any(|m| {
+        m.origin
+            .as_ref()
+            .is_some_and(|o| o.source == "/code/widgets.notc")
+    }));
+    assert_eq!(output.analysis.sources()["/code/widgets.notc"], source);
 }

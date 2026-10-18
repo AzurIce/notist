@@ -1,11 +1,11 @@
 = Vault 组件示例
 
-本目录提供文档 Vault 自用的 panel 与 badge 示例。它们由 docs/lib.notc 声明，docs/components/ 提供 Web Component 实现，使用 docs/Notist.toml 中的 notist-doc 命名空间。可复用组件包及其边界见 [Package Model](../package.not)。
+本目录提供文档 Vault 自用的 panel 与 badge，由 docs/lib.notc 声明，docs/components/ 提供 Web Component 实现，使用 docs/Notist.toml 中的 notist-doc 命名空间。可复用组件包及其边界见 [Package Model](../package.not)。
 
 == panel
 
 ```notc
-fn panel(title: String = "Panel", expanded: Bool = true)[children: Content] -> Content;
+fn panel(title: String = "Panel", expanded: Bool = true)[children: BlockContent] -> BlockContent;
 ```
 
 panel 是块级内容函数。title 显示标题，expanded 决定初始展开状态；正文通过唯一的 children 槽传入，组件使用 slot 显示已渲染的内容。children 保留在文档 IR 中，组件内部的 DOM 不进入 IR。
@@ -20,7 +20,22 @@ fn badge(label: String, count: Int = 1) -> InlineContent;
 
 badge 是行内内容函数，显示 label 与 count。components/badge.js 是单文件组件入口；使用 BigInt 读取 count，保留 i64 精度。HTML host 注册 notist-doc-badge。
 
-完整参数协议与生命周期契约见 [Content Function Extensions](../designs/content-functions.not)。
+完整参数协议与生命周期契约见 [BlockContent Function Extensions](../designs/content-functions.not)。
+
+@(id: "内容状态")
+== 内容状态
+
+状态通过 `@(status: "...")` 注解已有节点，HTML 映射为 data-status。它不建立函数调用边界，普通内容、查询与源码范围保持原有结构。
+
+| status | 含义 | 默认样式 |
+| --- | --- | --- |
+| draft | 方案仍在讨论 | 绿色虚线框与 Draft · 草案标签 |
+| staged | 方案已确定，等待实现 | 蓝色细框与 Staged · 待实现标签 |
+| outdate | 已被新设计取代 | 柔和红框与 Outdate · 已过时标签 |
+
+块级节点显示边框与标签；行内节点使用细下划线，outdate 为红色波浪线。cell 的边框沿格子内侧绘制，留出格间空隙。标注任意内容范围可使用带注解的显式 node；直接标注标题时，状态随标题属性归入 section。
+
+样式来自共享的 status.css，静态站点与 Web 预览使用同一份 CSS，不需要 JavaScript。颜色使用宿主的 accent、surface、staged-color 与 outdate-color 变量；打印时边框为实线并去掉背景。属性输出规则见 [HTML 属性与状态](../html.not#属性)。
 
 == 自身配置
 
@@ -53,6 +68,35 @@ Pythagoras: $x^2 + y^2 = z^2$. Direct package call: #katex::math(r#"\frac{a}{b}"
 
 两个 panel 展示嵌套 children 与 expanded 参数；badge 展示大整数属性；Mermaid 呈现嵌套图形。内置调用和语法糖使用 Typst，直接 katex::math 调用使用 LaTeX。
 
+@(status: "draft")
+#node[
+草案内容与普通正文使用相同的排版；边框仅标识设计状态，不改变内容结构。
+
+#notist-doc::badge("Draft")
+]
+
+@(status: "staged")
+#node[
+方案已确定，等待实现；内容状态由注解与 CSS 呈现。
+]
+
+@(status: "outdate")
+#node[
+已过时的设计保留原文，通过边框和状态标签标记。
+
+#notist-doc::badge("Outdate")
+]
+
+段落中的 @(status: "outdate")#node[旧术语 `BlockContent = Type{...}`] 使用红色波浪线，前后的文字保持行内排版。
+
+#table[
+  #row(header: true)[#cell[状态] #cell[说明]]
+  #row[
+    @(status: "outdate")#cell[旧定义]
+    @(status: "outdate")#cell[此行仅在 cell 内侧绘制边框。]
+  ]
+]
+
 == 构建与预览
 
 在仓库根目录执行：
@@ -63,10 +107,12 @@ cargo run -p notist-cli -- html docs/components/README.not --out-dir target/comp
 python3 -m http.server
 ```
 
-通过 HTTP 打开 /target/components-demo/。panel 与 badge 无需构建步骤或 CDN；组合示例中的 Mermaid、Typst 与 KaTeX 从固定版本 CDN 加载依赖。
+通过 HTTP 打开 /target/components-demo/。panel、badge 与状态样式无需构建步骤或 CDN；组合示例中的 Mermaid、Typst 与 KaTeX 从固定版本 CDN 加载依赖。
 
 Web 预览先构建 ./web/build.sh，通过 HTTP 打开 /web/，配置 URL 为 ../docs/Notist.toml，源码路径为 components/README.not，点击“载入项目”。
 
 == 验证
 
-web/tests/browser.cjs 验证此 Example 的静态页面、组件更新与重连、项目预览、数学替换与模块诊断。运行前导出 target/components-demo 并构建 web/pkg，Playwright 须在 NODE_PATH 上可用。NOTIST_TEST_URL 指定服务地址，NOTIST_CHROMIUM 指定 Chromium 路径，NOTIST_COMPONENTS_DEMO 可指定示例页面路径。
+web/tests/browser.cjs 验证此 Example 的静态页面、组件更新与重连、status 注解、项目预览、数学替换与模块诊断。运行前导出 target/components-demo 并构建 web/pkg，Playwright 须在 NODE_PATH 上可用。NOTIST_TEST_URL 指定服务地址，NOTIST_CHROMIUM 指定 Chromium 路径，NOTIST_COMPONENTS_DEMO 可指定示例页面路径。
+
+web/tests/status.cjs 验证三种状态的块、行内与 cell 样式、嵌套内容、主题、窄屏、打印和无 JavaScript 呈现。运行前执行 `cargo run -p notist-cli -- build docs --out-dir target/status-preview` 并通过 HTTP 服务仓库；Playwright、NOTIST_TEST_URL 与 NOTIST_CHROMIUM 的约定相同。

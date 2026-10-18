@@ -2,7 +2,7 @@
 
 记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/markup.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
 
-签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。其他具名字段保留，多余位置参数产生诊断。实现对应关系见 Syntax。
+签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。未知具名字段与多余位置参数产生诊断。实现对应关系见 Syntax。
 
 === text
 
@@ -28,38 +28,38 @@ ast MD_Text -> MD.Text(s) => text(text: decode_once(s));
 === paragraph
 
 ```signature
-paragraph()[children: InlineContent] -> Content
+paragraph()[children: InlineContent] -> BlockContent
 ```
 
 #grammar::diagram(r#"""
-syntax ParagraphRun(ctx) -> body:InlineRun(ctx, block_end, None)
-  => { if lower(body) != [] then paragraph()[lower(body)] else [] };
+syntax ContentFragment(ctx) -> body:InlineRun(ctx, block_end, None)
+  => { if lower(body) != [] then Fragment(lower(body)) else [] };
 syntax ExplicitBreak -> BACKSLASH NL
   => ε;
 """#)
 
 #grammar::diagram(r#"""
 ast SkipNewline -> NL => ε;
-ast MD_Paragraph -> MD.Paragraph(body) => paragraph()[lower(body)];
+ast MD_Paragraph -> MD.Paragraph(body) => Fragment(lower(body));
 """#)
 
-paragraph 是平坦 CST 元素序列的结果构造，没有独立 Paragraph CST 节点。空行、显式分段和块节点结束候选段落；单 NL 不插入空格，行末与续行开头空白丢弃。Markdown 双空格换行归一为单 NL，反斜杠换行分段。
+平坦 CST 中的连续内容由空行、显式分段或块语法边界划为 Fragment，没有独立 Paragraph CST 节点。Lower 只保留分组；Resolve 确定类别后，全 Inline 的片段生成一个 paragraph，单个 Block 表达式直接保留。混合类别或多个 Block 表达式要求硬分隔，Shape 不自动拆段。显式 paragraph 调用始终按签名检查。单 NL 不插入空格，行末与续行开头空白丢弃；Markdown 双空格换行归一为单 NL，反斜杠换行分段。
 
 === heading
 
 ```signature
-heading(level: Int = 1)[children: InlineContent] -> Content
+heading<level: Int = 1>()[children: InlineContent] -> BlockContent
 require level > 0
 ```
 
 #grammar::diagram(r#"""
 syntax Heading(ctx) ->
   marker:EQ WS body:InlineRun(ctx, always_true, None)
-  => heading(level: size(marker))[lower(body)];
+  => { heading<level: size(marker)>()[lower(body)] };
 """#)
 
 #grammar::diagram(r#"""
-ast MD_Heading -> MD.Heading(level, body) => heading(level: level)[lower(body)];
+ast MD_Heading -> MD.Heading(level, body) => { heading<level: level>()[lower(body)] };
 """#)
 
 `always_true` 使当前行的 NL 结束正文，NL 留给外层。原生块分派在块起点识别 Heading；EQ 是整个连续 `=` run。Markdown 对应 ATX 与 Setext 标题。
@@ -67,7 +67,7 @@ ast MD_Heading -> MD.Heading(level, body) => heading(level: level)[lower(body)];
 === section
 
 ```signature
-section()[children: Content] -> Content
+section<C: Type = BlockContent>()[children: C] -> BlockContent
 ```
 
 无独立源码语法糖；对块序列应用以下 shape 规则：
@@ -92,7 +92,6 @@ sectionize(forest) {
 close_section() {
   entry = stack.pop()
   result = section()[entry.children]
-  transfer entry.children.first.attrs to result.attrs
   result.span = hull(entry.children)
   append result to stack.last.children if stack != [] else root
 }
@@ -189,8 +188,7 @@ ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
 === raw
 
 ```signature
-raw(text: String, block?: Bool, lang?: String) -> InlineContent | Content
-result = Content if block == true else InlineContent
+raw<C: Type = InlineContent>(text: String, lang?: String) -> C
 ```
 
 text 可使用第一个位置参数。
@@ -205,7 +203,7 @@ syntax RawBlock(ctx) ->
   tag:scan LineTail(ctx)
   NL?
   tail:scan FenceTail(size(open); ctx)
-  => raw(text: strip_container_indent(source(tail.payload)), block: true, lang: nonempty(trim(source(tag))));
+  => { raw<BlockContent>(text: strip_container_indent(source(tail.payload)), lang: nonempty(trim(source(tag)))) };
 
 syntax BlockBacktick(ctx) -> RawBlock(ctx) | RawInline(ctx);
 """#)
@@ -251,7 +249,7 @@ scanner FenceTail(n; ctx) -> { end, payload, close } | Miss {
 
 #grammar::diagram(r#"""
 ast MD_CodeSpan -> MD.CodeSpan(s) => raw(text: s);
-ast MD_CodeBlock -> MD.CodeBlock(s, info) => raw(text: s, block: true, lang: nonempty(trim(info)));
+ast MD_CodeBlock -> MD.CodeBlock(s, info) => { raw<BlockContent>(text: s, lang: nonempty(trim(info))) };
 """#)
 
 ```recover
@@ -274,16 +272,15 @@ Error 包装的未闭合 raw 块在 desugar 时跳过。正文保留末尾换行
 === math
 
 ```signature
-math(text: String, block?: Bool) -> InlineContent | Content
-result = Content if block == true else InlineContent
+math<C: Type = InlineContent>(text: String) -> C
 ```
 
-text 可使用第一个位置参数；block 为可选的具名布尔参数，省略时采用行内类别。`$x$` 对应 math，`$ x $` 对应 block 为 true 的同一个 math；块级节点参与 reflow，切开前后的段落。
+text 可使用第一个位置参数；C 为编译期类别，默认 InlineContent。`$x$` 对应 math，`$ x $` 对应 C 为 BlockContent 的同一个 math；块级公式必须独占一个内容片段，与前后正文用空行或显式分段分隔。
 
 #grammar::diagram(r#"""
 syntax Math(ctx) ->
   open:DOLLAR tail:scan MathTail(ctx)
-  => math(text: math_text(tail), block: tail.block);
+  => { math<C: if tail.block then BlockContent else InlineContent>(text: math_text(tail)) };
 """#)
 
 ```scanner
@@ -303,7 +300,7 @@ scanner MathTail(ctx) -> { end, payload, block } | Miss {
 ```
 
 #grammar::diagram(r#"""
-ast MD_Math -> MD.Math(s, block) => math(text: s, block: block);
+ast MD_Math -> MD.Math(s, block) => { math<C: if block then BlockContent else InlineContent>(text: s) };
 """#)
 
 ```recover
@@ -316,7 +313,7 @@ recover Math on Miss when kind(rule_start) == Dollar {
 
 payload 不透明。开后的留白确定类别，随后第一个闭前留白与之匹配的美元符号关闭公式：两端内侧都非空白时为行内数学，都为空白时为块级数学。不匹配的美元符号属于 payload；扫描范围内没有匹配闭符号、payload 为空或全为空白时，开美元符号保留为普通文字。行内形式允许跨软换行，不跨空行或其他块边界。原生块级形式扫描至匹配的闭美元符号或容器 limit；内部的空行、管道符和类似标题或列表的文字都归公式源码。
 
-math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在 block 为 true 时 trim 首尾布局空白；行内 payload 原样保留。块级语法糖写入 block: true，行内语法糖省略 block。Markdown 使用相同的留白匹配规则，但 payload 仍受 Markdown 块范围限制，不跨空行或其他块边界；其段落解析会去掉续行的前导空白。代码内容与转义的美元符号不触发数学解析。
+math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在块级形式中 trim 首尾布局空白；行内 payload 原样保留。语法糖直接选择 BlockContent 或 InlineContent 实例。Markdown 使用相同的留白匹配规则，但 payload 仍受 Markdown 块范围限制，不跨空行或其他块边界；其段落解析会去掉续行的前导空白。代码内容与转义的美元符号不触发数学解析。
 
 === link
 
@@ -464,7 +461,7 @@ Markdown 行内、引用式图片均匹配 MD.Image。
 === list
 
 ```signature
-list(ordered: Bool = false, start: Int = 1)[children: Content] -> Content
+list(ordered: Bool = false, start: Int = 1)[children: BlockContent] -> BlockContent
 require structural_children(children) 的构造器全为 item
 ```
 
@@ -504,7 +501,7 @@ gap 的空白属于 List CST；同缩进切换标记结束该 list。不保存 M
 === item
 
 ```signature
-item()[children: Content] -> Content
+item<C: Type = BlockContent>()[children: C] -> BlockContent
 ```
 
 #grammar::diagram(r#"""
@@ -546,7 +543,7 @@ marker 与 WS 的消费前缀固定正文起始列；BlankLine 不单独结束 i
 === callout
 
 ```signature
-callout(kind?: String)[children: Content] -> Content
+callout(kind?: String)[children: BlockContent] -> BlockContent
 ```
 
 `.not` 无语法糖。
@@ -560,7 +557,7 @@ MD.Blockquote 由 Markdown 的 `>` 引用块语法产生。
 === divider
 
 ```signature
-divider() -> Content
+divider() -> BlockContent
 ```
 
 #grammar::diagram(r#"""
@@ -581,7 +578,7 @@ ast MD_ThematicBreak -> MD.ThematicBreak => divider();
 === table
 
 ```signature
-table(align?: Array<String>)[children: Content] -> Content
+table(align?: Array<String>)[children: BlockContent] -> BlockContent
 require structural_children(children) 的构造器全为 row
         每个 align 值属于 {"none", "left", "center", "right"}
 ```
@@ -627,7 +624,7 @@ ast MD_Table -> MD.Table(align, rows) => table(align: align)[lower(rows)];
 === row
 
 ```signature
-row(header?: Bool)[children: Content] -> Content
+row(header?: Bool)[children: BlockContent] -> BlockContent
 require structural_children(children) 的构造器全为 cell
 ```
 
@@ -661,12 +658,12 @@ ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)]
 
 原生语法糖按逻辑行解析：最外层 NL 结束表格行，最外层 Pipe 分隔单元格。完整 raw、math、字符串、注释和调用内部的管道符归内部内容；块级 math、字符串、注释和调用内部的换行也不结束行。raw / math 的源码保持自身的反斜杠，普通 Markup 中的字面 `|` 使用 `\|`。调用沿用 CodeCall 的边界规则；未闭合的调用或不透明界定符不保护管道符或换行。闭合公式之后的换行已在最外层，末尾管道符写在同一行，例如 `$ |`。Markdown 表格沿用 GFM 的物理行规则，其行内 raw / math 中的管道符仍须按 GFM 转义。
 
-需要多段内容、列表或嵌套表格时，用 `#[ ... ]` 包裹单元格内容，两端内侧留白以使用 Content 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
+需要多段内容、列表或嵌套表格时，用 `#node[ ... ]` 包裹单元格内容，两端内侧留白以使用 BlockContent 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
 === cell
 
 ```signature
-cell()[children: Content] -> Content
+cell<C: Type = BlockContent>()[children: C] -> BlockContent
 ```
 
 #grammar::diagram(r#"""
@@ -679,23 +676,17 @@ TableCell 从 TableLine 提供的 range.start 开始匹配；界定符扫描和�
 
 #grammar::diagram(r#"""
 ast table_cell(range) -> ε => cell()[
-  { if table_inline(range) != [] then paragraph()[table_inline(range)] else [] }
+  { if table_inline(range) != [] then Fragment(table_inline(range)) else [] }
 ];
 ast MD_TableCell -> MD.TableCell(body) => cell()[lower(body)];
 """#)
 
 table_inline 在 range.start 解析 TableCell 并 lower，沿用正文的转义规则，不对 raw / math payload 额外解码。空区间产生空 cell。
 
-=== group
+=== node
 
 ```signature
-group()[children: InlineContent] -> InlineContent
-group()[children: Content] -> Content
+node<C: Type = InlineContent>()[children: C] -> C
 ```
 
-#grammar::diagram(r#"""
-syntax AnonymousGroup(ctx) -> &(`#` `[`) parsed:CallBody(ctx)
-  => group()[lower(parsed.body)];
-"""#)
-
-CallBody 按 [Types](types.not) 确定内容槽 flavor；没有名称的调用归为 group。Markdown 无专用语法糖。
+显式调用 `#node[...]` 保留边界与注解，类别由输入推导。node 的公开结构透明契约允许结构槽验证其 children；源码不提供匿名调用入口。

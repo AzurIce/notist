@@ -8,12 +8,12 @@ function load() {
 }
 
 export default class Math extends HTMLElement {
-  static observedAttributes = ["notist-text", "notist-block"];
+  static observedAttributes = ["notist-text", "notist-content"];
   #revision = 0;
   constructor() {
     super();
     const root = this.attachShadow({ mode: "open" });
-    root.innerHTML = `<style>:host { display: inline; } :host([notist-block="true"]) { display: block; } .error { color: #a21; font: inherit; margin-left: .4em; } .error:empty { display: none; }</style><span class="formula"></span><span class="error" role="status"></span>`;
+    root.innerHTML = `<style>:host { display: inline; } :host([notist-content="block"]) { display: block; } .error { color: #a21; font: inherit; margin-left: .4em; } .error:empty { display: none; }</style><span class="formula"></span><span class="error" role="status"></span>`;
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href = stylesheet;
@@ -35,7 +35,7 @@ export default class Math extends HTMLElement {
   async update() {
     const revision = ++this.#revision;
     const source = this.getAttribute("notist-text") ?? "";
-    const block = this.getAttribute("notist-block") === "true";
+    const block = this.getAttribute("notist-content") === "block";
     const target = this.shadowRoot.querySelector(".formula");
     const message = this.shadowRoot.querySelector(".error");
     target.textContent = source;

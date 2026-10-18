@@ -1,145 +1,102 @@
 = Code · `.notc`
 
-`.notc` 从文件起点持续使用 Code 词法，顶层仅包含内容函数签名声明。package 的入口文件为 lib.notc；本节只定义单文件解析。包结构与用法见 [Package Model](../package.not)，注册与名称解析见 [Content Function Extensions](../designs/content-functions.not)。记法见 [Grammar Notation](notation.not)，共享字面量见 [Types & Literals](../types.not)。
-
-== 词法
-
-Code 与 Markup 调用参数共用 Ident、String、Number、空白、换行与嵌套注释扫描。Code 额外识别以下 token：
-
-| token | 源码 |
-| --- | --- |
-| FN | fn，完整标识符匹配 |
-| COLON_COLON | :: |
-| QUESTION | ? |
-| ARROW | -> |
-| SEMICOLON | ; |
-| LESS / GREATER | < / > |
-| EQ | =，逐字符 token |
-
-`fn` 是 Code 保留字，不可作为声明名、参数名或类型路径段。`fnfoo` 仍为 IDENT；Markup 中的 `#fn()` 不受影响。Ident 的字符规则与 Markup 共用；Code 中紧邻的 -> 优先于 Ident 中的连字符，因此 Content->Content 在箭头处结束第一个名称。
-
-#grammar::diagram(r#"""
-lex ColonColon -> `::`;
-lex Question -> `?`;
-lex Arrow -> `->`;
-lex Semicolon -> `;`;
-lex Less -> `<`;
-lex Greater -> `>`;
-lex Equals -> `=`;
-"""#)
-
-```scanner
-lex scanner CodeIdent {
-  要求首字符为 Unicode alphabetic 或 "_"
-  消耗首字符，继续消费 Unicode alphanumeric、"_" 或 "-"
-    每次消费前若剩余源码以 "->" 开始，停止
-  原始文本恰为 "fn" 时产出 FN，否则产出 IDENT
-}
-```
-
-括号不会结束 Code 词法，方括号也不启用 Markup。字符串和注释作为完整 token 屏蔽其内部标点与 fn。未闭合行内字符串在 CR、LF 或文件末尾结束 token 并给出 syntax 诊断；多行字符串与块注释未闭合时可延伸至文件末尾。
+Code 是固定的纯函数语言；内容字面量的语法由注入的 Markup 前端决定。包入口为 lib.notc。类型、实例检查与求值规则见 [Code 类型与函数系统](../designs/code-types.not)。
 
 == 声明
+
+```notation
+Module       = FunctionDecl*
+FunctionDecl = "fn" name ComptimeParams? Params? Children? "->" TypeRef (Block | ";")
+ComptimeParams = "<" (name ":" TypeRef ("=" Literal)? ",")* ">"
+Params       = "(" (name "?"? ":" TypeRef ("=" Literal)? ",")* ")"
+Children     = "[" "children" ":" TypeRef "]"
+TypeRef      = Path ("<" TypeRef ("," TypeRef)* ">")?
+Block        = "{" ("let" name "=" Expr ";")* Expr? "}"
+```
+
+列表可不写最后的逗号。`?` 与默认值不能并用，且可选普通参数只用于原生声明。children 是固定槽名。类型构造目前只有 Array，可省略元素类型或指定一个数据元素类型。
+
+```notc
+fn math<C: Type = InlineContent>(text: String) -> C;
+fn mark<C: Type>[children: C] -> C {
+    if C == InlineContent { [#emph[#children]] }
+    else { [ #children ] }
+}
+```
 
 #grammar::diagram(r#"""
 import syntax Trivia from `markup.not`;
 import syntax Path from `markup.not`;
 import syntax Value from `../types.not`;
-
 syntax Module -> Trivia* (FunctionDecl Trivia*)* !ANY;
-
-syntax FunctionDecl ->
-  FN ^ Trivia* name:IDENT Trivia* parameters:ParameterList Trivia*
-  mount:ChildrenDecl? Trivia* ARROW Trivia* result:TypeRef Trivia* SEMICOLON;
-
-syntax ParameterList ->
-  LPAREN Trivia*
-  (parameter:Parameter (Trivia* COMMA Trivia* parameter:Parameter)*
-   Trivia* COMMA?)?
-  Trivia* RPAREN;
-
-syntax Parameter ->
-  name:IDENT Trivia*
-  (QUESTION Trivia* COLON Trivia* ty:TypeRef
-   | COLON Trivia* ty:TypeRef (Trivia* default:DefaultValue)?);
-
-syntax DefaultValue -> EQ Trivia* value:Value;
-
-syntax ChildrenDecl ->
-  LBRACKET Trivia* `children` Trivia* COLON Trivia* ty:TypeRef Trivia* RBRACKET;
-
-syntax TypeRef ->
-  name:Path
-  (Trivia* LESS Trivia* argument:TypeRef
-   (Trivia* COMMA Trivia* argument:TypeRef)* Trivia* COMMA? Trivia* GREATER)?;
+syntax FunctionDecl -> `fn` IDENT ComptimeParams? Params? Children? `->` TypeRef (Block | `;`);
+syntax ComptimeParams -> `<` ComptimeParam (`,` ComptimeParam)* `,`? `>`;
+syntax ComptimeParam -> IDENT `:` TypeRef (`=` Value)?;
+syntax Params -> `(` (Parameter (`,` Parameter)* `,`?)? `)`;
+syntax Parameter -> IDENT `?`? `:` TypeRef (`=` Value)?;
+syntax Children -> `[` `children` `:` TypeRef `]`;
+syntax TypeRef -> Path (`<` TypeRef (`,` TypeRef)* `,`? `>`)?;
+syntax Block -> `{` Binding* Expr? `}`;
+syntax Binding -> `let` IDENT `=` Expr `;`;
+syntax Expr -> If | Match | Comptime | Or;
+syntax If -> `if` Expr Block `else` (If | Block);
+syntax Match -> `match` Expr `{` Arm (`,` Arm)* `,`? `}`;
+syntax Arm -> Expr `=>` Expr;
+syntax Comptime -> `comptime` Expr;
+syntax Or -> And (`||` And)*;
+syntax And -> Equality (`&&` Equality)*;
+syntax Equality -> Compare ((`==` | `!=`) Compare)*;
+syntax Compare -> Sum ((`<` | `<=` | `>` | `>=`) Sum)*;
+syntax Sum -> Product ((`+` | `-`) Product)*;
+syntax Product -> Prefix ((`*` | `/` | `%`) Prefix)*;
+syntax Prefix -> (`!` | `-`)* Postfix;
+syntax Postfix -> Atom CallSuffix*;
+syntax Atom -> Path | Value | Block | ContentLiteral;
+syntax CallSuffix -> ComptimeArgs Args? ContentLiteral? | Args ContentLiteral? | ContentLiteral;
+syntax ComptimeArgs -> `<` Argument (`,` Argument)* `,`? `>`;
+syntax Args -> `(` (Argument (`,` Argument)* `,`?)? `)`;
+syntax Argument -> IDENT `:` Expr | Expr;
+syntax ContentLiteral -> `[` body:scan FrontendContent `]`?;
 """#)
 
-除 Path 名称段、负号与数字等共享规则明确要求紧邻的位置外，声明按上述 Trivia* 允许空白、换行与注释。参数列表和类型实参允许尾逗号；空类型实参列表不合法。可选标记和默认值不能同时使用；恢复树可以同时保留两者，并产生 syntax 诊断。
+上述产生式省略词法项间的 Trivia；表达式中 ComptimeArgs 的开括号必须紧贴调用目标。FrontendContent 委托当前前端识别结束范围，不能由 Code 规则递归扫描正文。
 
-```notc
-fn diagram(source: String, theme: String = "default") -> Content;
-fn panel(title?: String)[children: Content] -> Content;
-fn badges(labels: Array<String>)[children: InlineContent] -> InlineContent;
-fn math(text: String, block?: Bool) -> Content<block>;
-```
+== 表达式
 
-没有函数体、import、模块声明或表达式默认值。children 是唯一内容挂载的固定名称，不是普通参数。声明名是包内局部名，不包含包前缀。
+原子表达式为共享数据字面量、Path、内容字面量和块。调用写作 `foo<ct>(args)[body]`；三个实参区均可省略，但调用必须保留至少一个实参区；`foo<ct>` 已表示调用，全部省略时名称只表示引用。编译期调用的 `<` 必须紧贴目标；比较运算 `<` 与左操作数之间使用空白或注释，避免二者歧义。实参支持位置或 `name: expression` 绑定。Code 字面量中的调用加 `#`，值插值写 `#name`。
 
-TypeRef 保留路径与递归类型实参，支持 Array<String> 等形式。解析不判断类型是否存在、类型实参数量、Content 是否可用于普通参数或返回类型是否属于内容类型；analyze_module 与共同注册层完成这些检查。普通参数支持 Unit、Bool、Int、Float、String、Dict 和 Array；Array 可不带元素类型，也可带一个递归的 Value 类型。其他基本类型不接受类型实参。
+| 优先级，从低到高 | 运算 |
+| --- | --- |
+| 1 | `\|\|` |
+| 2 | `&&` |
+| 3 | `==`、`!=` |
+| 4 | `<`、`<=`、`>`、`>=` |
+| 5 | `+`、`-` |
+| 6 | `*`、`/`、`%` |
+| 7 | 前缀 `!`、`-` |
+| 8 | 调用与括号 |
 
-返回类型 Content 与 InlineContent 分别固定为块级与行内。Content<block> 引用本函数的 Bool 参数 block：补齐默认值后，其值为 true 时返回块级内容，false 或没有值时返回行内内容；也可引用其他名称的 Bool 参数。例如 `block?: Bool` 省略时为行内，`block: Bool = true` 省略时为块级。这是声明式类别选择，不求值表达式。实参必须是一个未限定的参数名，且该参数必须存在并具有 Bool 类型。children 挂载仍只接受无实参的 Content 或 InlineContent。
+if 写作 `if condition { yes } else { no }`；match 写作 `match subject { pattern => expr, _ => expr, }`。`comptime expression` 要求编译期结果。`<...>` 内的比较表达式使用括号，例如 `<enabled: (n > 0)>`，以区分角括号与比较运算。普通数据参数与集合字面量共用 [Types & Literals](../types.not) 的值转换规则。
 
-默认值采用与 Markup 参数相同的字面量 CST：标量 token、Neg、Unit、Array、Dict、Group 和 Entry。集合的缺失／重复逗号恢复行为也共用。裸名称可在恢复后的默认值中保留，是否为 Bool 字面量、非法转义、整数溢出与默认值类型均由共享值转换及定义校验处理；语法解析成功不等于定义可以安装。analyze_module(package, source) 在失败时返回带源码范围的 diagnostics，成功时返回 DefinitionModule；不执行文件读取或 Registry 安装。
+== 词法、CST 与内容嵌入
 
-== CST 与 AST
+关键字为 fn、let、if、else、match、comptime。标识符支持 Unicode 字母、数字、下划线及连字符；减法与名称以空白区分，箭头 `->` 总是结束标识符。字符串、注释对括号平衡不透明。
 
-Module 直接包含 FunctionDecl 和顶层 trivia。声明从 fn 开始至分号结束，不包含前置或尾随 trivia；缺失分号时范围截至实际消费位置。ParameterList 包含括号、Parameter 和分隔 trivia；ChildrenDecl 独立于参数列表。
-
-TypeRef 包含 Path 及类型实参的 TypeRef 子节点，不包含类型后的分隔 trivia。DefaultValue 包含等号、其后的 trivia 和字面量。所有节点保留源码 token，不合成缺失标点。
+notist-syntax 共用一套 Rowan 类型与 SyntaxKind，Document 与 Module 是独立根。Module 包含 FunctionDecl、编译期与普通 Parameter、ChildrenDecl、TypeRef、BlockExpr 及表达式节点。AST 访问器只返回语法与范围，语义检查属于 pipeline。
 
 ```rust
-use notist_syntax::{ast::Module, parse_module};
-
-let parsed = parse_module(source);
-let module = Module::cast(parsed.syntax()).unwrap();
-for function in module.functions() {
-    let name = function.name();
-    let parameters = function.parameters();
-    let mount = function.children_decl();
-    let result = function.return_type();
-}
+let parsed = notist_syntax::code::parse_module(
+    source,
+    &notist_syntax::markup::MarkupContentParser,
+);
 ```
 
-AST 访问器返回语法视图和范围；缺失部分返回 None。Module.functions 包含恢复声明，调用者需检查 diagnostics 后再进入定义安装。parse_module 只接收源字符串，不识别项目目录，不处理依赖。
+`parse_module` 显式接收 ContentParser。遇到内容字面量时，回调确定范围并生成前端自己的树；Code CST 只保存方括号、ContentText 和关联范围。token 游标越过整个字面量后恢复 Code 扫描，不以 Code 字符串规则扫描正文。
 
-== 同步与恢复
+调用头、注解和内容字面量另有片段入口，供 Markup 前端组合。两侧插值使用同一语法；独立 Markup 对值引用的限制在语义检查阶段实施。坐标与接口见 [文档前端](../designs/frontends.not)。
 
-```recover
-recover FunctionDecl on Failure(reason) {
-  consume = 从当前位置消耗至第一个 SEMICOLON（含），
-            或下一个 FN（不含），或 EOF；不越过 FN
-  cst = 已形成的 FunctionDecl，消费的恢复尾部包为 Error
-  diagnostic = syntax，失败处 token 范围；EOF 为零宽范围
-}
-```
+== 恢复
 
-```scanner
-syntax algorithm ModuleRecovery {
-  顶层 trivia：直接保留在 Module
-  FN：解析 FunctionDecl，发生失败时使用其 recover
-  其他 token：在当前 token 产生 expected a function declaration
-    按 FunctionDecl 的同步范围消耗，包为 Module 下的 Error
-}
+解析保留全部已消费文本及诊断，不合成缺失 token。损坏的声明同步到分号、下一个 fn 或 EOF，不吞掉后续 fn。类型嵌套与表达式嵌套有界。字符串及块注释未闭合时，按其词法范围恢复。
 
-syntax algorithm ParameterRecovery {
-  缺少逗号但当前为 IDENT：产生诊断，继续解析下一 Parameter
-  其他参数错误：将原始 token 包为 Error，消耗至
-    COMMA、RPAREN、SEMICOLON、FN 或 EOF（均不含）
-  COMMA：继续参数列表；RPAREN：关闭列表
-  SEMICOLON、FN 或 EOF：报告未闭合列表并返回声明恢复
-}
-```
-
-默认值的集合解析额外在 SEMICOLON 或 FN 前停止并报告未闭合 group。Entry 缺失值时不消费这些同步 token，也不消费 RPAREN。不可用的内容字面量不进入 Markup 解析，原始 token 按参数恢复保留。后续函数的 FN 不会被损坏的声明或集合消费；字符串和注释内部的 fn 不是同步点。
-
-类型实参递归深度最多 128 层，超过时产生 syntax 诊断并进行参数或声明恢复。未闭合多行字符串／块注释仍按词法消费至 EOF，后面的源码属于该 token，不能作为独立声明恢复。
+公开签名错误阻止模块安装；函数体的解析或 lowering 错误保留在实现模板上，使用该实例时诊断并恢复，不妨碍无关定义。

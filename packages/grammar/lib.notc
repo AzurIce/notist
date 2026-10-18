@@ -1,1 +1,1 @@
-fn diagram(source: String, rule?: String, theme: String = "light") -> Content;
+fn diagram(source: String, rule?: String, theme: String = "light") -> BlockContent;

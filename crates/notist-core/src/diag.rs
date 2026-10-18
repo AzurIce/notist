@@ -28,6 +28,11 @@ pub struct Diagnostic {
     pub span: TextRange,
     pub message: String,
     pub phase: Phase,
+    /// Source identity when expansion/checking crosses the document boundary.
+    pub source: Option<String>,
+    /// A content boundary contains this failure and preserves independent content.
+    /// Hosts may present the recovered tree regardless of the diagnostic phase.
+    pub recovered: bool,
 }
 
 impl Diagnostic {
@@ -36,6 +41,8 @@ impl Diagnostic {
             span,
             message: message.into(),
             phase,
+            source: None,
+            recovered: false,
         }
     }
 }

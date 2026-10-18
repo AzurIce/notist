@@ -10,7 +10,7 @@
 
 裸 # 只是字符
 
-#[匿名 *内容* 拼接]
+#node[显式 node *内容* 拼接]
 
 #strong[空行
 
@@ -30,13 +30,13 @@
 块 body 喂给 inline 构造器
 
 #list[body]
-inline body 提升为段落
+结构槽只接受 item 角色
 
 #demo([x], [ y ])
 参数位置内容字面量
 
-#[
-块级匿名
+#node[
+块级显式 node
 
 - 列表
 ]

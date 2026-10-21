@@ -1,3 +1,4 @@
+#import "../../modules/katex/lib.notc" as katex;
 # IR Transforms 与内置内容的 Package 呈现
 
 2026-10-05 · 状态：内置 replace 与 package 作用域已实现；条件筛选待讨论 · 范围：IR 转换、项目配置、内置 replace、package 组件、宿主扩展边界
@@ -10,7 +11,7 @@
 
 此前讨论的 HTML 目标覆盖只改变渲染绑定。本设计选择实际转换 IR：替换后节点的规范函数身份也随之改变，后端消费转换后的树，不增加 `html.renderers` 配置。
 
-现有管线与宿主边界见[管线与 Vault 装配边界](2026-10-05-pipeline-vault-html.md)，package 机制见 [.notc 声明模块与 Package / Plugin 扩展](2026-10-04-notc-packages-plugins.md)。当前规范见 [IR Transforms](../designs/transforms.not)；stdio 扩展仍为后续方向。
+现有管线与宿主边界见[管线与 Vault 装配边界](2026-10-05-pipeline-vault-html.md)，package 机制见 [.notc 声明模块与 Package / Plugin 扩展](2026-10-04-notc-packages-plugins.md)。当前规范见 IR Transforms 文档；stdio 扩展仍为后续方向。
 
 ## 变更总览
 
@@ -87,7 +88,7 @@ $x^2$ / #math("x^2")
     → <katex-math notist-protocol="1" notist-text="x^2"></katex-math>
 ```
 
-katex package 定义自己的函数，不能占用保留包名 notist。作者也可以直接使用 `#katex::math(...)`，这种调用无需替换。组件按原有协议读取参数并实现呈现；引擎不需要知道组件内部使用哪种数学库。
+katex package 定义自己的函数，不能占用保留包名 notist。作者也可以直接使用 `#katex.math(...)`，这种调用无需替换。组件按原有协议读取参数并实现呈现；引擎不需要知道组件内部使用哪种数学库。
 
 katex 示例位于仓库根目录 packages/katex，自带 Notist.toml 与 README.not，使用者在自身配置中安装。替换本身不需要 WASM；组件是否使用 JS、WASM 或其他浏览器资源由 package 作者选择。
 

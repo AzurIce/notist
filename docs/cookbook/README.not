@@ -2,7 +2,7 @@
 
 == 基础 Markup 语法
 
-下列示例使用 `.not`；完整规则见 [Syntax](../grammar/markup.not) 与 [Builtin](../builtin.not)。
+下列示例使用 `.not`；完整规则见 [Syntax](../markup/syntax.not) 与 [Builtin](../markup/builtin.not)。
 
 `=` 标题，*加粗*，_强调（斜体）_，~删除线~
 
@@ -45,7 +45,7 @@ $ |
 - 列表项二
 ] |
 
-公式采用本 Vault 默认的 Typst 数学方言：反斜杠表示排版换行，& 标记对齐点，普通源码换行只是空白。数学引擎由 Notist.toml 的 transforms 选择，切换引擎不会转换公式方言，见 [Package Model](../package.not)。
+公式采用本 Vault 默认的 Typst 数学方言：反斜杠表示排版换行，& 标记对齐点，普通源码换行只是空白。数学引擎由 Notist.toml 的 transforms 选择，切换引擎不会转换公式方言，见 [本地模块](../modules.not)。
 
 闭公式后的换行已在最外层，因此表格行末的管道符要与闭美元符号写在同一行，例如 `$ |`。Markdown 表格仍按 GFM 的物理行规则解析，不能使用这个多行表格写法。
 
@@ -109,11 +109,11 @@ Let's say *Hello* _World_!
         - Text("!")
 ```
 
-其中对 Heading 的属性标注比较特殊，按 [section 规则](../builtin.not)，每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
+其中对 Heading 的属性标注比较特殊，按 [section 规则](../markup/builtin.not)，每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
 
 == 类型系统
 
-见 [Types & Literals](../types.not)。
+见 [Types & Literals](../code/types.not)。
 
 == 内容函数
 
@@ -169,6 +169,6 @@ let document = pipeline.analyze(
 )?;
 ```
 
-只安装原生前端时使用 `Pipeline::new().with_frontend(notist::NotistFrontend)`；只安装 Markdown 时使用 `Pipeline::new().with_frontend(notist::MarkdownFrontend)`。自定义前端实现 Frontend 与 ContentLowering，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
+只安装原生前端时使用 `Pipeline.new().with_frontend(notist.NotistFrontend)`；只安装 Markdown 时使用 `Pipeline.new().with_frontend(notist.MarkdownFrontend)`。自定义前端实现 Frontend 与 ContentLowering，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
 
-需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, &context)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。Context::default 提供内置函数和空转换计划；需要项目声明与转换规则时，由宿主加载 Environment 并传入 environment.context()。
+需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, &context)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。Context.default 提供内置函数和空转换计划；需要项目声明与转换规则时，由宿主加载 Environment 并传入 environment.context()。

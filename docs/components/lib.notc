@@ -1,2 +1,3 @@
 fn panel(title: String = "Panel", expanded: Bool = true)[children: BlockContent] -> BlockContent;
 fn badge(label: String, count: Int = 1) -> InlineContent;
+fn diagram(source: String, theme: String = "auto") -> BlockContent;

@@ -25,7 +25,7 @@ theme = "theme"
 
 include 默认为所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 默认为 target/site，theme 默认使用内置主题。配置路径相对于 Vault；命令行 --out-dir 相对于当前工作目录。
 
-[site] 只配置站点发现与展示，不合并文档的包环境。每篇文档仍使用最近的 Notist.toml，保留自己的依赖和 transforms / dev-transforms；显式 --config 同时指定站点配置与所有文档的环境。
+[site] 配置站点发现与展示；Notist.toml 的每条 transforms 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
 
 build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/site.json；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
 
@@ -51,7 +51,7 @@ link 与 embed 的本地目标相对于源文档解析。指向已发布文档�
 
 本地正文与资源必须在 Vault 内。排除或未选中的正文不能成为发布链接目标，缺失资源和不存在的锚点产生源码诊断。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
 
-package 声明依赖及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/packages/；各页面只注册自己使用的组件。同名 package 对应不同资源根时报告冲突。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
+导入的 Code 模块及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/modules/；各页面只注册自己使用的组件。资源按规范模块身份分目录；不同目录的同名模块可以共存。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
 
 == Handlebars 主题
 
@@ -107,10 +107,10 @@ notist-ssg 通过 Resources 读取逻辑输入，生成拥有全部字节的 Sit
 
 preview 保留已被内容边界恢复的错误及其诊断，呈现错误节点和其余独立内容；恢复状态不取决于诊断产生阶段。环境、路由、资源及其他未恢复错误仍阻止站点生成。
 
-CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部 package / 配置资源；搜索、手工导航顺序与增量编译不属于此接口。
+CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部模块 / 配置资源；搜索、手工导航顺序与增量编译不属于此接口。
 
 == GitHub Pages
 
-仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar package 的 recipe 构建 WASM，再运行 notist build docs，上传 target/site 并部署到 GitHub Pages。docs/ 是 Vault 根目录，配置位于 docs/Notist.toml，output = "../target/site"；docs/README.not 发布到 /。根目录 packages/ 提供声明依赖和组件资源，包文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块 的 recipe 构建 WASM，再运行 notist build docs，上传 target/site 并部署到 GitHub Pages。docs/ 是 Vault 根目录，配置位于 docs/Notist.toml，output = "../target/site"；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
 
 push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

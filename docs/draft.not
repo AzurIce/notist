@@ -1,15 +1,6 @@
 = Draft
 
-本页收录设计草案入口与独立议题，不作为当前语法规范。现行规则见 [Syntax](grammar/markup.not)、[Types](types.not) 与 [Builtin](builtin.not)。
-
-== 专题草案
-
-| 主题 | 文档 |
-| --- | --- |
-| Code 类型、函数检查、内容字面量与求值 | [Code 类型与函数系统](designs/code-types.not) |
-| Markup 源码到 Item 的阶段与契约 | [Markup 管线](designs/pipeline/markup.not#数据流) |
-
-各主题的规则、迁移要求与待定扩展在对应文档维护。
+本页收录尚未确定的独立议题，不作为当前语法规范。现行规则见 [Syntax](markup/syntax.not)、[Types](code/types.not) 与 [Builtin](markup/builtin.not)。
 
 == 字典 key 的源码表达
 
@@ -17,7 +8,11 @@
 
 == 链接与跨文件引用
 
-路径解析、Vault 边界与链接索引见 [Pipeline](designs/pipeline.not#vault-内容边界与索引)，节点字段与降糖见 [Builtin](builtin.not)。待定扩展：
+路径解析、Vault 边界与链接索引见 [Pipeline](designs/pipeline.not#vault-内容边界与索引)，节点字段与降糖见 [Builtin](markup/builtin.not)。待定扩展：
 
 - 节点定位是否支持链式约束，以及对应的源码表达与合法性检查。
 - computed target 的静态可分析范围、依赖发现与失效传播。
+
+== 函数与输出实现的显式关联
+
+当前原生内容声明按定义文件目录与函数名约定查找组件入口，规则见 [内容函数与输出绑定](designs/content-functions.not)。待定：是否在定义上增加显式输出元数据，以指定组件入口或支持多种输出后端。该元数据应只由输出阶段消费。

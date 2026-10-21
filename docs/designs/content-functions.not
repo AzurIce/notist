@@ -1,28 +1,22 @@
-= Content Function Extensions
+= 内容函数与输出绑定
 
-内容函数由公开签名和实现分别装配。签名供实例检查、Shape 和工具使用；实现可以是 Code 函数体或原生输出绑定。类型与实例规则见 [Code 类型与函数系统](code-types.not)，包布局见 [Package Model](../package.not)。
+原生内容声明提供静态签名，HTML 实现由输出阶段绑定。Code 函数体由 Evaluate 执行；其 Expanded 边界呈现返回的森林，无须对应组件。类型、实例与错误边界见 [Code 类型与函数系统](../code/functions.not)，导入与目录布局见 [本地模块](../modules.not)。
 
-== 定义与上下文
+== HTML 绑定
 
-FunctionDef 保存 FunctionId、编译期与普通参数、children 输入类型、返回类型、原生结构契约及实现种类。Type 参数只出现在签名模板中，具体实例必须得到唯一返回类型。
+HtmlRegistry 以规范函数身份绑定内置 Native handler 或 Component。Renderer 根据 Item.target 选择实际实现；未映射的节点使用自身身份。绑定引用 Registry 中的 FunctionDef，不创建另一份语义定义。
 
-Registry 只保存公开定义；CodeProgram 按 FunctionId 保存函数体与来源。Context 组合 Registry、CodeProgram、TransformPlan。CodeModule 由 analyze_module 或指定前端的 Pipeline::compile_module 产生，经 Context::with_module 原子安装。Environment 与 Vault 负责资源取得，不把文件访问带入编译器。
+宿主在求值后收集实际需要的原生目标，再查找声明文件同目录的 name.js 或 name/index.js。两种入口并存时报冲突；缺少入口由 Renderer 产生呈现诊断并保留回退 children。未使用的声明、未返回的输入与错误节点隐藏的 children 不触发入口查找。单独检查 .notc 文件只加载源码导入图，不查找 HTML 资源。
 
-函数名以 package::name 保持规范身份。独立 Markup 的简写只查内置 prelude；Code 函数体先查本包，再查内置 prelude。限定路径当前只支持两段。
+组件入口默认导出 Custom Element 类。宿主按 used_components 发布并注册实际使用的组件及其相对依赖资源，按函数身份去重。组件的 children 是 light DOM，组件可使用 slot 呈现；其浏览器生命周期不属于纯 Code 求值。
 
-== Code 与原生实现
+内部名称保持原样。encode_name 保留小写 ASCII、数字与短横线，其余 Unicode scalar 编码为 u + 小写十六进制码点 + x；结果首位不是小写 ASCII 时加 x。标签使用 notist-、规范模块身份的稳定哈希及编码后的函数名；发布资源位于 _notist/modules/<模块哈希>/。参数属性在编码后的参数名前加 notist-。绑定检查标签与参数属性碰撞；冲突不覆盖已有目标。
 
-花括号定义由 pipeline 检查及求值；分号声明提供原生内容接口。原生内容的可变返回类别使用编译期 Type 参数，合法类别限定为 InlineContent 和 BlockContent。raw、math 及公式包共享这个协议，没有普通 block 参数或联合返回类型。
+== 组件属性
 
-每次内容调用保留原边界和输入 children。Evaluate 在该边界内替换 Code 实现返回的森林，或保留原生挂载内容供目标后端呈现。同签名映射只改变执行目标，详见 [函数映射](transforms.not)。
+每个组件带 notist-protocol="2"、记录规范函数身份的 notist-function，以及 notist-content="inline" 或 "block"。protocol、function、content 是保留参数名。
 
-== Web Component 映射
-
-原生扩展可在 components/name.js 或 components/name/index.js 提供默认导出的 Custom Element 类；两者并存视为冲突。Code 函数不要求组件文件。宿主按实际使用的输出组件发布模块和相对 import 资源，注册规范标签并去重。
-
-HtmlRegistry 以函数身份绑定 Native handler 或 Component；Renderer 使用 Item.target 选择目标。Expanded Code 边界透明呈现其结果；注解需要元素时使用对应类别的容器。合法原生函数没有 HTML 实现时产生呈现诊断，保留回退内容。
-
-组件带 notist-protocol="2"、notist-content="inline" 或 "block"。编译期参数按 notist-comptime-name 传递：Type 使用规范类型名称，数据使用下述标量编码。普通参数继续使用 notist-name。绑定拒绝名称编码或保留属性碰撞；编译期元数据不混入普通 fields。
+编译期实参通过 notist-comptime-name 传递：Type 使用规范类型名称，数据使用下述标量编码。普通参数通过 notist-name 传递，按执行目标的具体实例签名解释；编译期元数据不混入普通 fields。空字符串生成空属性，省略参数不生成属性。
 
 @(id: "参数编码")
 == 参数编码
@@ -34,15 +28,13 @@ HTML 属性承载字符串，因此映射协议需要定义如何保留 Value。
 | String | 原始字符串，经 HTML 属性转义 |
 | Bool | true 或 false |
 | Int | 十进制字符串；解码时保留 i64 精度 |
-| Float | 可往返 f64 的字符串，明确非有限值编码 |
+| Float | 可往返 f64 的十进制字符串；非有限值为 NaN / Infinity / -Infinity |
 | Unit | null |
 | Array / Dict | 保留 Value 类型的版本化 JSON |
 
 基本值由签名中的参数类型解释，例如 String 的 "null" 仍然是字符串。复杂值的 JSON 保留整数精度和 Dict 的键值顺序。组件辅助库 web/component-protocol.js 提供 readParameter(element, name, type)，缺失属性返回 undefined，Int 返回 BigInt，Dict 返回保序 Map；组件也可按契约直接读取。
 
 恢复树中的非法参数值不能按合法签名强制转成另一种 Value。renderer 为不匹配的参数产生诊断并省略对应属性，继续渲染 children；保留原值的完整 IR 仍可用于 debug 与分析。
-
-每个组件带 notist-protocol="2"；protocol 是保留参数名。String 使用原始内容，Bool 使用 true / false，Int 使用十进制，Float 使用可往返十进制与 NaN / Infinity / -Infinity，Unit 使用 null。空字符串生成空属性，省略参数不生成属性。
 
 Array / Dict 使用以下递归 JSON，不经普通 JSON number 传递整数或浮点：
 
@@ -58,10 +50,8 @@ Dict    = ["dict", [[string_key, Value], ...]]
 
 Dict 条目按原顺序编码；Float 使用 IEEE 754 的 64 位比特（高位在前），保留负零及非有限值。HTML 属性转义在协议编码之后执行。
 
-内部名称保持原样。encode_name 保留小写 ASCII、数字与短横线，其余 Unicode scalar 编码为 u + 小写十六进制码点 + x；结果首位不是小写 ASCII 时加 x。标签连接编码后的 package 与 function，属性在编码后的参数名前加 notist-。绑定检查标签拼接、编码碰撞、HTML 保留标签与参数属性碰撞；冲突不覆盖已有目标。
-
 == 呈现与诊断
 
-组件的 children 是 light DOM 内容，组件实现可用 slot 呈现。浏览器生命周期不属于纯 Code 求值。Renderer 返回 HTML、诊断、source_map 与 used_components；source_map 保留来源文件及调用展开链。
+Renderer 返回 HTML、诊断、source_map 与 used_components；source_map 保留来源文件及调用展开链。Expanded 边界默认透明呈现，需保留注解时使用对应类别的容器。
 
-求值失败时，错误 Item 保留原函数身份、类别、字段、注解与来源，HTML 使用对应类别的错误元素显示诊断，其余内容继续呈现。普通参数的非法恢复值不会被强制转换为另一种类型。
+求值失败时，错误 Item 保留原函数身份、类别、字段、注解与来源，HTML 使用对应类别的错误元素显示诊断，隐藏其 children，其余内容继续呈现。

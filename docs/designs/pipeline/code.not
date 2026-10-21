@@ -1,0 +1,70 @@
+#import "../../components/lib.notc" as components;
+= Code 管线
+
+Code 模块（.notc）用函数扩展内容。本文描述单个模块如何从源码编译成可复用的 CodeModule，以及检查会话如何把函数体 Expr 变成具体实例的 TypedExpr。类型系统与求值规则见 [Code 函数系统](../../code/functions.not)，模块间的 import 与名称解析见 [本地模块](../../modules.not)，两种语言的交互与整体数据流见 [文档管线](../pipeline.not)。
+
+== 数据流
+
+#components.diagram(r#"""
+%%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
+flowchart TB
+    source(["Code 源码 · .notc"]) --> parse["Parse · 声明语法 / 字面量定界"]
+    parse --> cst(["Code CST + 内容语法树 side list"])
+    cst --> lower["Lower · imports / 签名 / 函数体"]
+    lower --> module(["CodeModule"])
+    module --> context(["Context · with_module 装配"])
+    context --> check["实例检查 · Checker 会话"]
+    check --> typed(["TypedExpr · 实例树"])
+    check --> backend["共享 Markup 后端 · 交出 IR₁，收回 Item 森林"]
+"""#)
+
+以是否依赖环境为界分成两段。装配之前：源码 → Code CST → CodeModule，不读取任何定义，产物与实例无关、可复用。会话之内：按具体实例把函数体检查为 TypedExpr；内容节点把内嵌的 IR₁ 交给共享 Markup 后端，收回 Item 森林。
+
+| 阶段对象 | 表示 | 已确定的信息 |
+| --- | --- | --- |
+| Code CST | 无损 Module 语法树 | import / fn 声明结构、签名语法与恢复节点；内容字面量是不透明 token |
+| 内容语法树 | ParsedContent side list | 字面量范围、Inline / Block flavor、前端语法树与语法诊断 |
+| 函数体 Expr（Code IR） | CodeProgram.bodies | 名称引用、调用与字面量结构；内容位置是内嵌 IR₁ 的 `Expr::Content` |
+| TypedExpr | InstanceRecord.body | 具体类型、编译期已知值、已检查调用与已完成的 Item 内容 |
+
+== Parse：声明语法与字面量定界
+
+模块顶层只有两类声明：`import` 与 `fn`。CST 无损——空白与注释作为 trivia 保留，源码可完整恢复；语法错误就近诊断，恢复以声明为界：破损声明进入 Error 节点，下一个 `fn` / `import` 从不被吞掉。AST 视图（Module、FunctionDecl、ImportDecl 等）是 CST 上的薄访问器，值与类型在此仍是语法：默认值保存字面量 token，类型引用保存路径节点，转换与校验留给 Lower。
+
+内容字面量外包给所选前端。遇到 `[` 时，`ContentParser.parse_content(source, open)` 用前端自己的 token 流做括号配平——raw 块、字符串等不透明区域整块跳过——决定字面量边界与 flavor，并就地解析出前端语法树。Code 词法器随后从字面量结束处继续，字面量在 CST 里只有 `[`、`ContentText`、`]` 三个 token；语法树与诊断按源码范围放进 side list，等 Lower 回查。
+
+片段入口让文档前端复用同一份 Code 语法：`parse_call_prefix`、`parse_annotation_prefix`、`parse_import_prefix`、`parse_content_literal` 分别解析 `#` 调用头、`@` 注解、`#import` 行与独立字面量前缀。它们只产 CST 与诊断，不做语义。
+
+== Lower：CST → CodeModule
+
+Lower 把一份模块拆成三个去向：
+
+- *imports*：别名默认为文件 stem；`notist`、`self`、`true`、`false` 不可作别名，别名与本模块函数名冲突报诊断。
+- *签名*：类型引用与默认值在此转换为 FunctionDef，汇入 DefinitionModule；签名与 imports 的错误使模块编译整体失败。
+- *函数体*：机械映射为 Expr——成员访问、调用、If / Match、数据字面量与块；调用的 children 字面量整体作为一个 `Expr::Content` 进入 children，flavor 取自 Parse 结果，函数体内的错误收进 CodeBody 诊断。
+
+内容字面量在这一步才 Lower：按 span 回查内容语法树，经 ContentLowering 转成 Markup IR₁ 嵌入 `Expr::Content`。名称解析、类型检查与结构定稿都不在这里发生——函数体保留源码里的名字，直到实例检查。
+
+== 实例检查：Expr → TypedExpr
+
+检查以 FunctionInstance（函数身份 + 编译期实参值）为单位、按需进行。Checker 会话持有只读 Context、当前模块、局部绑定与实例缓存 CheckedProgram，规则如下：
+
+- *名称解析*：局部绑定遮蔽优先，随后是当前模块作用域与 import 链，裸名回落内置 prelude；`notist` 与 `self` 是保留命名空间。非调用位置的模块成员访问报 `module members must be called`。
+- *常量折叠与折枝*：沿途记录编译期已知值；编译期已知的 If / Match 直接折枝，未选中分支不做名称与类型检查。
+- *实例建立*：先占座再检查函数体，递归引用直接返回已有记录；换入定义处的模块与作用域，普通参数与 children 作为输入绑定；嵌套深度上限 32，实例总数上限 4096。
+- *内容穿越*：`Expr::Content` 的 IR₁ 连同当前词法绑定进入共享后端的 prepare → shape → materialize，收回的 Item 森林嵌入 `ExprKind::Content`。
+
+产物按实例进 CheckedProgram：一个函数可对应多个实例、多棵 TypedExpr 树，CodeModule 的 Expr 保持可复用。文档分析把 CheckedProgram 保存在 Analysis 中；独立 Code 检查（check_module、check）以编译期参数均有默认值的函数为种子，其余实例在调用处触发，CodeAnalysis 只导出声明、诊断与来源源码。
+
+== 诊断与恢复
+
+| 阶段 | 诊断与恢复 |
+| --- | --- |
+| Parse | 语法错误就近诊断并继续；恢复以声明为界；类型嵌套超过 128 层报错 |
+| Lower | 数据字面量、默认值与 imports 的语义错误；函数体错误收进 CodeBody，签名与 imports 错误使模块编译失败 |
+| 实例检查 | 名称、实参、类型与内容契约错误；诊断随 InstanceRecord 保存，单个实例失败不影响其他实例与独立内容 |
+| 求值 | 步数与内容节点数各 100k（步数预算在每个内容边界重置）、调用深度 32；失败在内容边界恢复 |
+
+== 求值
+
+Evaluate 在求值前 Item 树上原地展开：先解析插值并捕获调用的自由变量，再在内容边界执行调用——transform 在此选择同签名目标，目标实例沿用原编译期实参，缺失的实例就地补检查。原生实现产生 prototype Item，Code 实现的结果森林嵌入调用边界；失败标记为 Error 并在边界恢复，原语义树保持可用。完整契约见 [Code 函数系统](../../code/functions.not#对-item-与-shape-的契约)。

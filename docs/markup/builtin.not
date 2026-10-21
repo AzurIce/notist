@@ -1,6 +1,7 @@
+#import "../../modules/grammar/lib.notc" as grammar;
 == Builtin Content Functions & Sugar Grammar
 
-记法见 [Grammar Notation](grammar/notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](grammar/markup.not)，类型与字面量见 [Types](types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
+记法见 [Grammar Notation](../notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](syntax.not)，类型与字面量见 [Types](../code/types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
 
 签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。未知具名字段与多余位置参数产生诊断。实现对应关系见 Syntax。
 
@@ -10,7 +11,7 @@
 text(text: String) -> InlineContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 lex Escapable -> [`=` `*` `_` `~` `\` `[` `]`
                    `(` `)` `|` `#` `$` U+0060 `!`];
 lex Escape -> `\` Escapable;
@@ -18,7 +19,7 @@ syntax PlainText -> value:TEXT | value:ESCAPE
   => { if value.kind == Escape then text(text: source(value)[1..]) else text(text: source(value)) };
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast LiteralText -> LiteralToken(value) => text(text: source(value));
 ast MD_Text -> MD.Text(s) => text(text: decode_once(s));
 """#)
@@ -31,14 +32,14 @@ ast MD_Text -> MD.Text(s) => text(text: decode_once(s));
 paragraph()[children: InlineContent] -> BlockContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax ContentFragment(ctx) -> body:InlineRun(ctx, block_end, None)
   => { if lower(body) != [] then Fragment(lower(body)) else [] };
 syntax ExplicitBreak -> BACKSLASH NL
   => ε;
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast SkipNewline -> NL => ε;
 ast MD_Paragraph -> MD.Paragraph(body) => Fragment(lower(body));
 """#)
@@ -52,13 +53,13 @@ heading<level: Int = 1>()[children: InlineContent] -> BlockContent
 require level > 0
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Heading(ctx) ->
   marker:EQ WS body:InlineRun(ctx, always_true, None)
   => { heading<level: size(marker)>()[lower(body)] };
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Heading -> MD.Heading(level, body) => { heading<level: level>()[lower(body)] };
 """#)
 
@@ -105,7 +106,7 @@ close_section() {
 strong()[children: InlineContent] -> InlineContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax MatchedInline(k, ctx) ->
   @{ can_open(cursor, ctx) }
   mate:probe FlankedClose(k; ctx)
@@ -137,7 +138,7 @@ scanner FlankedClose(k; ctx) -> { end, close } | Miss {
 }
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Strong -> MD.Strong(body) => strong()[lower(body)];
 """#)
 
@@ -157,12 +158,12 @@ recover MatchedInline on Miss when kind(rule_start) == k {
 emph()[children: InlineContent] -> InlineContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Emph(ctx) -> matched:MatchedInline(Underscore, ctx)
   => emph()[lower(matched.body)];
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Emphasis -> MD.Emphasis(body) => emph()[lower(body)];
 """#)
 
@@ -174,12 +175,12 @@ ast MD_Emphasis -> MD.Emphasis(body) => emph()[lower(body)];
 strike()[children: InlineContent] -> InlineContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Strike(ctx) -> matched:MatchedInline(Tilde, ctx)
   => strike()[lower(matched.body)];
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
 """#)
 
@@ -193,7 +194,7 @@ raw<C: Type = InlineContent>(text: String, lang?: String) -> C
 
 text 可使用第一个位置参数。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax RawInline(ctx) ->
   open:BACKTICK tail:scan RawTail(size(open); ctx)
   => raw(text: source(tail.payload));
@@ -247,7 +248,7 @@ scanner FenceTail(n; ctx) -> { end, payload, close } | Miss {
 
 `next_newline_or_limit` 返回第一个 NL 的下标或 limit；`after_next_newline_or_limit` 在存在 NL 时返回其后一个下标，否则返回 limit。`display_width` 的 tab 到下一个四列边界。原生块分派优先识别 RawBlock；闭围栏行尾 NL 不消耗。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_CodeSpan -> MD.CodeSpan(s) => raw(text: s);
 ast MD_CodeBlock -> MD.CodeBlock(s, info) => { raw<BlockContent>(text: s, lang: nonempty(trim(info))) };
 """#)
@@ -277,7 +278,7 @@ math<C: Type = InlineContent>(text: String) -> C
 
 text 可使用第一个位置参数；C 为编译期类别，默认 InlineContent。`$x$` 对应 math，`$ x $` 对应 C 为 BlockContent 的同一个 math；块级公式必须独占一个内容片段，与前后正文用空行或显式分段分隔。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Math(ctx) ->
   open:DOLLAR tail:scan MathTail(ctx)
   => { math<C: if tail.block then BlockContent else InlineContent>(text: math_text(tail)) };
@@ -299,7 +300,7 @@ scanner MathTail(ctx) -> { end, payload, block } | Miss {
 }
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Math -> MD.Math(s, block) => { math<C: if block then BlockContent else InlineContent>(text: s) };
 """#)
 
@@ -323,7 +324,7 @@ link(target: String, title?: String)[children: InlineContent] -> InlineContent
 
 target 可使用第一个位置参数。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Link(ctx) -> &LBRACKET parsed:LinkBody(ctx, false)
   => link(target: destination(parsed))[lower(parsed.label)];
 syntax WikiLink(ctx) -> &(`[` `[`) parsed:WikiBody(ctx)
@@ -395,7 +396,7 @@ syntax algorithm WikiBody(ctx) {
 
 LinkBody 与 WikiBody 的 stop 继承调用它们的 InlineRun。预探测的位置不作为 label 的新 limit；实际 label 消费仍使用正文分派与 active 停止条件。Escape token 不作为括号界定符。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Link -> MD.Link(target, body, _) => link(target: decode_once(target))[lower(body)];
 """#)
 
@@ -433,12 +434,12 @@ embed(target: String, description?: String, title?: String) -> InlineContent
 
 target 可使用第一个位置参数。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Embed(ctx) -> &(`!` `[`) parsed:LinkBody(ctx, true)
   => embed(target: destination(parsed), description: description(parsed.label), title: embed_title(parsed));
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Image -> MD.Image(target, body, title) => embed(target: decode_once(target),
                                      description: plain_text(lower(body)),
                                      title: decode_optional(title));
@@ -465,7 +466,7 @@ list(ordered: Bool = false, start: Int = 1)[children: BlockContent] -> BlockCont
 require structural_children(children) 的构造器全为 item
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax List(ctx) ->
   let m = { kind(cursor) }
   let i = { column(cursor) }
@@ -491,7 +492,7 @@ scanner ListGap(m, i; ctx) -> { end } | Miss {
 }
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_List -> MD.List(ordered, start, body) => list(ordered: ordered,
                                     start: if ordered then start else 1)[lower(body)];
 """#)
@@ -504,7 +505,7 @@ gap 的空白属于 List CST；同缩进切换标记结束该 list。不保存 M
 item<C: Type = BlockContent>()[children: C] -> BlockContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Item(m, i, ctx) ->
   @{ column(cursor) == i }
   marker:TokenKind(m) WS
@@ -534,7 +535,7 @@ scanner ItemExtent(c; ctx) -> { end } {
 }
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_ListItem -> MD.ListItem(body) => item()[lower(body)];
 """#)
 
@@ -548,7 +549,7 @@ callout(kind?: String)[children: BlockContent] -> BlockContent
 
 `.not` 无语法糖。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Blockquote -> MD.Blockquote(body) => callout(kind: "quote")[lower(body)];
 """#)
 
@@ -560,7 +561,7 @@ MD.Blockquote 由 Markdown 的 `>` 引用块语法产生。
 divider() -> BlockContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Divider(ctx) ->
   @{ block_start(cursor, ctx) }
   MINUS MINUS MINUS &EndAfterWhitespace(ctx)
@@ -569,7 +570,7 @@ syntax Divider(ctx) ->
 syntax EndAfterWhitespace(ctx) -> WS? End(ctx);
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_ThematicBreak -> MD.ThematicBreak => divider();
 """#)
 
@@ -583,7 +584,7 @@ require structural_children(children) 的构造器全为 row
         每个 align 值属于 {"none", "left", "center", "right"}
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Table(ctx) ->
   @{ table_start(cursor, ctx) }
   header:scan TableLine(ctx)
@@ -609,11 +610,11 @@ predicate table_start(p, ctx) {
 
 表头和 delimiter 等宽，至少一行 has_pipe；AlignCell 在字符层匹配整个单元格。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 lex AlignCell -> [` ` U+0009]* `:`? `-`+ `:`? [` ` U+0009]*;
 """#)
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast MD_Table -> MD.Table(align, rows) => table(align: align)[lower(rows)];
 """#)
 
@@ -628,7 +629,7 @@ row(header?: Bool)[children: BlockContent] -> BlockContent
 require structural_children(children) 的构造器全为 cell
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax TableRow(ctx) -> frame:scan TableLine(ctx);
 """#)
 
@@ -649,7 +650,7 @@ scanner TableLine(ctx) -> { end, cells, has_pipe } | Miss {
 }
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast table_row(frame, header, width) -> ε => row(header: header)[
   { pad_to(width, take(width, map(table_cell, frame.cells)), cell()) }
 ];
@@ -658,7 +659,7 @@ ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)]
 
 原生语法糖按逻辑行解析：最外层 NL 结束表格行，最外层 Pipe 分隔单元格。完整 raw、math、字符串、注释和调用内部的管道符归内部内容；块级 math、字符串、注释和调用内部的换行也不结束行。raw / math 的源码保持自身的反斜杠，普通 Markup 中的字面 `|` 使用 `\|`。调用沿用 CodeCall 的边界规则；未闭合的调用或不透明界定符不保护管道符或换行。闭合公式之后的换行已在最外层，末尾管道符写在同一行，例如 `$ |`。Markdown 表格沿用 GFM 的物理行规则，其行内 raw / math 中的管道符仍须按 GFM 转义。
 
-需要多段内容、列表或嵌套表格时，用 `#node[ ... ]` 包裹单元格内容，两端内侧留白以使用 BlockContent 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
+需要多段内容、列表或嵌套表格时，用 `#node[ ... ]` 包裹单元格内容，两端内侧留白以使用 BlockContent 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](../cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
 === cell
 
@@ -666,7 +667,7 @@ ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)]
 cell<C: Type = BlockContent>()[children: C] -> BlockContent
 ```
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax TableCell(range, ctx) ->
   body:within(range.end,
     InlineRun(ctx with in_body=false, always_true, None));
@@ -674,7 +675,7 @@ syntax TableCell(range, ctx) ->
 
 TableCell 从 TableLine 提供的 range.start 开始匹配；界定符扫描和消费都受 range.end 限制。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 ast table_cell(range) -> ε => cell()[
   { if table_inline(range) != [] then Fragment(table_inline(range)) else [] }
 ];

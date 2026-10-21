@@ -1,20 +1,22 @@
 = Notist Documentation
 
 - [Cook Book](cookbook/README.not)：从示例开始编写文档。
-- [Markup Syntax](grammar/markup.not)：.not 的词法、调用、注解与通用解析规则，以及 Markdown 扩展语法。
-- [Code Syntax](grammar/code.not)：.notc 的签名声明、类型引用、CST / AST 与错误恢复。
-- [Code 类型与函数系统草案](designs/code-types.not)：Type 类型值、编译期实参、函数检查、森林插值与调用边界，以及求值前后的 Item 契约。
-- [Types & Literals](types.not)：类型、字面量与内容 flavor。
-- [Builtin BlockContent Functions & Sugar Grammar](builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
-- [Grammar Notation](grammar/notation.not)：阅读和编写语法规范使用的记法。
-- [Grammar Package](https://github.com/AzurIce/notist/blob/main/packages/grammar/markup.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
+- [Markup Syntax](markup/syntax.not)：.not 的词法、调用、注解与通用解析规则，以及 Markdown 扩展语法。
+- [Code Syntax](code/syntax.not)：.notc 的签名声明、类型引用、CST / AST 与错误恢复。
+- [Code 函数系统](code/functions.not)：Type 类型值、编译期实参、函数检查、森林插值与调用边界，以及求值前后的 Item 契约。
+- [Option 类型](code/option.not)：可选参数与缺席值。
+- [Types & Literals](code/types.not)：类型、字面量与内容 flavor。
+- [Builtin BlockContent Functions & Sugar Grammar](markup/builtin.not)：每个内置函数的完整签名、语法糖与降糖规则。
+- [Grammar Notation](notation.not)：阅读和编写语法规范使用的记法。
+- [Grammar 模块](https://github.com/AzurIce/notist/blob/main/modules/grammar/README.not)：文法铁路图的 Rust / WASM 实现、构建与可运行示例。
 - [Crate Architecture](designs/crates.not)：当前 crate 与模块职责、依赖方向及 API / 宿主边界。
 - [Document Frontends](designs/frontends.not)：默认前端、主树与关联内容树、内容字面量的解析 / lowering、注册与产物捕获。
-- [Pipeline](designs/pipeline.not)：Context 与宿主加载边界、现行入口、完整管线的目标数据流与 Vault 内容边界。
+- [Pipeline](designs/pipeline.not)：Context 与宿主加载边界、现行入口、从源码到求值后 Item 的完整数据流与 Vault 内容边界。
 - [Markup Pipeline](designs/pipeline/markup.not)：Markup 源码到 Item 的数据流、阶段契约、诊断与调试。
-- [Package Model](package.not)：package 的定义、命名空间、使用者环境与自身文档环境。
-- [Vault 组件示例](components/README.not)：在 Vault 根声明并使用 panel、badge，组合其他 package 的图形与数学组件。
-- [BlockContent Function Extensions](designs/content-functions.not)：内置与外部函数的统一定义、.notc 声明和 package 装配、HTML 组件协议与 host 接口。
+- [Code Pipeline](designs/pipeline/code.not)：.notc 模块的 Parse / Lower、实例检查与 TypedExpr、诊断与求值边界。
+- [本地模块](modules.not)：相对路径 import、词法命名空间、输出配置与资源布局。
+- [Vault 组件示例](components/README.not)：在同一目录声明并实现 panel、badge，直接导入其他本地模块的图形组件，并使用输出数学映射。
+- [内容函数与输出绑定](designs/content-functions.not)：原生内容函数的 HTML 绑定、组件参数协议与呈现生命周期。
 - [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
 - [Static Site Generation](ssg.not)：README 路由、站点构建、主题与本地预览。

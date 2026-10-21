@@ -1,3 +1,4 @@
+#import "../../modules/mermaid/lib.notc" as mermaid;
 # 管线与 Vault 装配边界
 
 2026-10-05 · 更新：pipeline 提取与统一 package 环境 · 状态：本轮重构已实现 · 范围：crate 组织、声明装配、Vault、HTML、库 API、宿主接入
@@ -30,7 +31,7 @@
 
 crate 依赖方向如下，箭头表示依赖。`notist-html` 消费 core 模型，不依赖 pipeline 或顶层 Vault；Markdown 前端继续只输出共享 Expr。
 
-#mermaid::diagram(r#"""
+#mermaid.diagram(r#"""
 flowchart TD
     CLI["notist-cli：notist 可执行文件"] --> APP["notist：Vault 与装配"]
     APP --> PIPE["notist-pipeline"]
@@ -164,7 +165,7 @@ Vault 提供源码处理与 HTML 渲染的组合入口，也允许消费者分�
 
 `src/project.rs`、旧的 `Notist` facade 和顶层阶段模块路径重导出已删除。测试直接向 `Pipeline` 传入 Registry；`Environment` 只通过 `Resources` 装配，最近配置选择归入 `Vault`，删除旧的文件系统加载包装与吞掉访问错误的配置发现入口。Markup parser 统一使用 `parse_document`，移除旧 `parse` 别名。
 
-当前接口说明已更新到 [Pipeline](../designs/pipeline.not)、[Content Function Extensions](../designs/content-functions.not) 和 [HTML Rendering](../html.not)。`examples/prepared_preview.rs` 演示宿主准备配置、声明和组件资源，传入 Worker 后取得完整渲染结果。
+当前接口说明已更新到 Pipeline、Content Function Extensions 和 HTML Rendering 文档。`examples/prepared_preview.rs` 演示宿主准备配置、声明和组件资源，传入 Worker 后取得完整渲染结果。
 
 ## 验证结果
 

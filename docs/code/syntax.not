@@ -1,11 +1,13 @@
+#import "../../modules/grammar/lib.notc" as grammar;
 = Code · `.notc`
 
-Code 是固定的纯函数语言；内容字面量的语法由注入的 Markup 前端决定。包入口为 lib.notc。类型、实例检查与求值规则见 [Code 类型与函数系统](../designs/code-types.not)。
+Code 是固定的纯函数语言；内容字面量的语法由注入的 Markup 前端决定。每份 .notc 是独立模块，由显式源文件入口或 import 加载。类型、实例检查与求值规则见 [Code 函数系统](functions.not)。
 
 == 声明
 
 ```notation
-Module       = FunctionDecl*
+Module       = (ImportDecl | FunctionDecl)*
+ImportDecl   = "import" String ("as" name)? ";"
 FunctionDecl = "fn" name ComptimeParams? Params? Children? "->" TypeRef (Block | ";")
 ComptimeParams = "<" (name ":" TypeRef ("=" Literal)? ",")* ">"
 Params       = "(" (name "?"? ":" TypeRef ("=" Literal)? ",")* ")"
@@ -24,11 +26,12 @@ fn mark<C: Type>[children: C] -> C {
 }
 ```
 
-#grammar::diagram(r#"""
-import syntax Trivia from `markup.not`;
-import syntax Path from `markup.not`;
-import syntax Value from `../types.not`;
-syntax Module -> Trivia* (FunctionDecl Trivia*)* !ANY;
+#grammar.diagram(r#"""
+import syntax Trivia from `../markup/syntax.not`;
+import syntax Path from `../markup/syntax.not`;
+import syntax Value from `types.not`;
+syntax Module -> Trivia* ((ImportDecl | FunctionDecl) Trivia*)* !ANY;
+syntax ImportDecl -> `import` STR (`as` IDENT)? `;`;
 syntax FunctionDecl -> `fn` IDENT ComptimeParams? Params? Children? `->` TypeRef (Block | `;`);
 syntax ComptimeParams -> `<` ComptimeParam (`,` ComptimeParam)* `,`? `>`;
 syntax ComptimeParam -> IDENT `:` TypeRef (`=` Value)?;
@@ -61,9 +64,11 @@ syntax ContentLiteral -> `[` body:scan FrontendContent `]`?;
 
 上述产生式省略词法项间的 Trivia；表达式中 ComptimeArgs 的开括号必须紧贴调用目标。FrontendContent 委托当前前端识别结束范围，不能由 Code 规则递归扫描正文。
 
+import 只在模块顶层出现，路径为相对字符串字面量，as 省略时绑定文件名去掉扩展名。导出、模块身份与宿主装配见 [本地模块](../modules.not)。
+
 == 表达式
 
-原子表达式为共享数据字面量、Path、内容字面量和块。调用写作 `foo<ct>(args)[body]`；三个实参区均可省略，但调用必须保留至少一个实参区；`foo<ct>` 已表示调用，全部省略时名称只表示引用。编译期调用的 `<` 必须紧贴目标；比较运算 `<` 与左操作数之间使用空白或注释，避免二者歧义。实参支持位置或 `name: expression` 绑定。Code 字面量中的调用加 `#`，值插值写 `#name`。
+原子表达式为共享数据字面量、名称、内容字面量和块。`module.member` 按嵌套 MemberExpr 保存静态模块成员访问，成员之间不插入空白。调用写作 `foo<ct>(args)[body]`；三个实参区均可省略，但调用必须保留至少一个实参区；`foo<ct>` 已表示调用，全部省略时名称只表示引用。编译期调用的 `<` 必须紧贴目标；比较运算 `<` 与左操作数之间使用空白或注释，避免二者歧义。实参支持位置或 `name: expression` 绑定。Code 字面量中的调用加 `#`，值插值写 `#name`。
 
 | 优先级，从低到高 | 运算 |
 | --- | --- |
@@ -76,13 +81,13 @@ syntax ContentLiteral -> `[` body:scan FrontendContent `]`?;
 | 7 | 前缀 `!`、`-` |
 | 8 | 调用与括号 |
 
-if 写作 `if condition { yes } else { no }`；match 写作 `match subject { pattern => expr, _ => expr, }`。`comptime expression` 要求编译期结果。`<...>` 内的比较表达式使用括号，例如 `<enabled: (n > 0)>`，以区分角括号与比较运算。普通数据参数与集合字面量共用 [Types & Literals](../types.not) 的值转换规则。
+if 写作 `if condition { yes } else { no }`；match 写作 `match subject { pattern => expr, _ => expr, }`。`comptime expression` 要求编译期结果。`<...>` 内的比较表达式使用括号，例如 `<enabled: (n > 0)>`，以区分角括号与比较运算。普通数据参数与集合字面量共用 [Types & Literals](types.not) 的值转换规则。
 
 == 词法、CST 与内容嵌入
 
-关键字为 fn、let、if、else、match、comptime。标识符支持 Unicode 字母、数字、下划线及连字符；减法与名称以空白区分，箭头 `->` 总是结束标识符。字符串、注释对括号平衡不透明。
+关键字为 fn、import、as、let、if、else、match、comptime。标识符支持 Unicode 字母、数字、下划线及连字符；减法与名称以空白区分，箭头 `->` 总是结束标识符。字符串、注释对括号平衡不透明。
 
-notist-syntax 共用一套 Rowan 类型与 SyntaxKind，Document 与 Module 是独立根。Module 包含 FunctionDecl、编译期与普通 Parameter、ChildrenDecl、TypeRef、BlockExpr 及表达式节点。AST 访问器只返回语法与范围，语义检查属于 pipeline。
+notist-syntax 共用一套 Rowan 类型与 SyntaxKind，Document 与 Module 是独立根。Module 包含 ImportDecl、FunctionDecl、编译期与普通 Parameter、ChildrenDecl、TypeRef、BlockExpr 及表达式节点。AST 访问器只返回语法与范围，语义检查属于 pipeline。
 
 ```rust
 let parsed = notist_syntax::code::parse_module(
@@ -97,6 +102,6 @@ let parsed = notist_syntax::code::parse_module(
 
 == 恢复
 
-解析保留全部已消费文本及诊断，不合成缺失 token。损坏的声明同步到分号、下一个 fn 或 EOF，不吞掉后续 fn。类型嵌套与表达式嵌套有界。字符串及块注释未闭合时，按其词法范围恢复。
+解析保留全部已消费文本及诊断，不合成缺失 token。损坏的声明同步到分号、下一个 fn / import 或 EOF，不吞掉后续声明。类型嵌套与表达式嵌套有界。字符串及块注释未闭合时，按其词法范围恢复。
 
 公开签名错误阻止模块安装；函数体的解析或 lowering 错误保留在实现模板上，使用该实例时诊断并恢复，不妨碍无关定义。

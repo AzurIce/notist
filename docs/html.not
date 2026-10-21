@@ -1,18 +1,20 @@
 = HTML Rendering
 
-`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Markup 管线](designs/pipeline/markup.not) 产生，节点契约见 [Builtin](builtin.not)。
+`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Markup 管线](designs/pipeline/markup.not) 产生，节点契约见 [Builtin](markup/builtin.not)。
 
 == 使用
 
 ```rust
 let context = notist::Context::default();
-let analysis = notist::Pipeline::default().analyze("example.not", source, &context)?;
-let html = notist_html::render(analysis.root());
+let pipeline = notist::Pipeline::default();
+let analysis = pipeline.analyze("example.not", source, &context)?;
+let evaluated = pipeline.evaluate(&analysis, &context);
+let html = notist_html::render(&evaluated.root);
 ```
 
 仓库中可使用 `cargo run --example html -- document.not` 或 `.md` / `.notmd` / `.nmd` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
 
-`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer::new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
+`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer.new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
 
 renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留段落、行内空白、raw payload 及节点身份。输入以完成 Resolve / Shape 的合法树为准；恢复节点采用可显示的回退形式。
 
@@ -62,7 +64,7 @@ raw 的 lang 字段取首个空白分隔片段生成 language-* 类，正文原�
 
 status 是字符串注解，约定 draft（方案讨论中）、staged（方案确定、等待实现）与 outdate（已被取代）三种值。它挂载已有节点，不新增函数身份，不改变内容类别与 Shape；标注任意范围时使用带注解的 `#node[ ... ]`。
 
-共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html::STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
+共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html.STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
 
 == 资源与数学扩展
 
@@ -80,7 +82,7 @@ let renderer = notist_html::Renderer::new()
 let result = renderer.render_with_diagnostics(analysis.root());
 ```
 
-回调接收完整 Item，可以借用应用状态；外层元素及属性由 renderer 保留。数学回调可按 block 字段选择行内或显示公式排版。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
+回调接收完整 Item，可以借用应用状态；外层元素及属性由 renderer 保留。数学回调可按 Item.level 选择行内或显示公式排版。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
 
 默认 embed 不推断文件类型，同一个 IR 节点可以由应用转换为图片、音视频或其他资源。默认 math 保留公式文本，实际排版通过回调接入。
 
@@ -90,21 +92,21 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写文档扩展名；资源位置与发布路径由应用决定。
 
-Renderer::with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写原生 link / embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
+Renderer.with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写原生 link / embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
 
 结构映射参照 [HTML table content model](https://html.spec.whatwg.org/multipage/tables.html#the-table-element) 与 [HTML grouping content](https://html.spec.whatwg.org/multipage/grouping-content.html)。
 
-== Package 组件与完整页面
+== 模块组件与完整页面
 
-HtmlRegistry::default 装配原生内置 handler；bind_component(function_def, ModuleLocator) 将同一语义签名绑定到约定标签，Renderer::with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
+HtmlRegistry.default 装配原生内置 handler；bind_component(function_def, ModuleLocator) 将同一语义签名绑定到约定标签，Renderer.with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
 
-组件的命名、notist-protocol="2" 参数协议及目标冲突规则见 [BlockContent Function Extensions](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
+组件的命名、notist-protocol="2" 参数协议及目标冲突规则见 [内容函数与输出绑定](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
 
 组件字段使用执行目标实例的编译期实参替换签名中的类型参数后检查。错误 Item 优先呈现为错误占位；列表、表格等结构位置保留合法的外围 HTML 容器。
 
-Vault::render_html 按文档配置装配共同签名与 HTML 目标，返回原始正文分析、evaluation 表示树及完整渲染结果。配置的 [IR Transforms](designs/transforms.not) 在渲染前执行；renderer 本身只消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry::from_bindings 引用同一 Registry 的 FunctionDef。
+Vault.render_html 沿源码 import 装配签名与实现，完成分析和求值后，只为结果树实际需要的原生目标查找 HTML 入口。未使用的声明、未返回的输入和错误节点隐藏的 children 不参与绑定。它返回原始 analysis、evaluation 表示树及完整 rendered 结果；[函数映射](designs/transforms.not) 在 Evaluate 中选择目标，renderer 消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry.from_bindings 引用同一 Registry 的 FunctionDef。
 
-notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板与资源计划由 notist-ssg 处理，CLI 负责文件系统发布；组件资源位于 _notist/packages/。多页面路由、链接改写、主题和预览见 [Static Site Generation](ssg.not)。内存与浏览器宿主消费 Vault::render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
+notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。完整页面模板与资源计划由 notist-ssg 处理，CLI 负责文件系统发布；组件资源位于 _notist/modules/。多页面路由、链接改写、主题和预览见 [Static Site Generation](ssg.not)。内存与浏览器宿主消费 Vault.render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 
 ```sh
 cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo

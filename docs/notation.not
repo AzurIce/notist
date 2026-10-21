@@ -1,3 +1,4 @@
+#import "../modules/grammar/lib.notc" as grammar;
 = Grammar Notation
 
 基础表达式采用 [Rust Reference 的记法](https://doc.rust-lang.org/reference/notation.html)，补充 Notist 所需的输入层级、捕获、上下文、扫描与恢复契约。这套记法用于表达语法识别、上下文、降糖与错误恢复。
@@ -12,7 +13,7 @@
 | `shape` | 已解析构造器的 Expr 序列 | 重组后的 Expr 序列 |
 | `recover` | 指定规则的失败状态 | 消耗范围、恢复结构与诊断 |
 
-`signature` 使用 `name(parameters)[children: T] -> R`；`p?: T` 为可省略字段，`p: T = v` 为有默认值的字段。省略可选字段不会自动插入值。内容类型和挂载写法见 [Types](../types.not)。
+`signature` 使用 `name(parameters)[children: T] -> R`；`p?: T` 为可省略字段，`p: T = v` 为有默认值的字段。省略可选字段不会自动插入值。内容类型和挂载写法见 [Types](code/types.not)。
 
 匹配与结果构造共用 `grammar` 规则。具名算法、签名、树重组与恢复分别使用 `scanner`、`signature`、`shape`、`recover` 块。`grammar` 块中的 Notist 规则显式标明 lex、syntax 或 ast，使用分号结束；没有源码语法的构造器直接声明“无语法糖”。为接收 Rust 风格的片段，也允许省略层级（默认为 syntax）和分号：此时下一行的产生式声明或文件末尾结束当前规则。换行本身不结束表达式。`@root` 标记入口规则，不改变匹配语义。
 
@@ -86,7 +87,7 @@ syntax 的字符 run 由 lexer token 表示，例如多个 `=` 是一个 EQ toke
 
 空格、tab、换行和 `//` 行注释可分隔文法项，且不参与匹配被描述的语言。参数列表和计算块由上述独立配平扫描读取。裸产生式、可省略分号和 @root 独占前一行的兼容写法按上文的声明边界规则识别；其余结构与下列规范形式相同。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Grammar -> (Production | Import)+;
 syntax Production -> (`@` `root`)? Layer? NAME ARGS? `-` `>` Expression (`=>` Result)? `;`;
 syntax Layer -> `lex` | `syntax` | `ast`;
@@ -184,7 +185,7 @@ scanner Name(args; ctx) -> { end, fields... } | Miss {
 
 `=>` 的优先级低于整个匹配表达式，一条规则最多一个结果部分；每个分支需要不同构造时，使用捕获值的纯计算或提取成具名子规则。结果引用可调用构造器或具名变换；名称定义决定其含义。节点使用 `name(args)[children]` 明确描述 children，省略 children 时按函数签名处理，`[]` 为显式空 children。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Heading(ctx) ->
   marker:EQ WS body:InlineRun(ctx, always_true, None)
   => heading(level: size(marker))[lower(body)];
@@ -198,7 +199,7 @@ ast 的输入是已有节点，圆括号中的字段模式绑定其字段；`_` 
 
 结果部分不使用前瞻、捕获声明、guard、提交、scan / probe、within 等输入操作。构造条件只影响输出，不能把已成功消费的输入变为 Miss。图分别展示匹配轨道与结果结构，并将节点构造和计算加以标注；计算块保留源码而不求值。
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax ContentFragment(ctx) -> body:InlineRun(ctx, block_end, None)
   => { if lower(body) != [] then Fragment(lower(body)) else [] };
 """#)
@@ -232,7 +233,7 @@ recover 在所属规则最终失败后执行，在外层分支选择之前将失
 
 == 例：捕获与提交
 
-#grammar::diagram(r#"""
+#grammar.diagram(r#"""
 syntax Example -> begin:OPEN ^ (body:ITEM)* end:CLOSE;
 """#)
 

@@ -1,22 +1,22 @@
 = 函数映射与求值
 
-TransformPlan 保存有序的同签名函数映射，在 Evaluate 中选择执行实现。它不修改原调用的函数身份，也不另建转换树。内容求值及错误边界见 [Code 类型与函数系统](code-types.not)，整体入口见 [文档管线](pipeline.not)。
+TransformPlan 保存有序的同签名函数映射，在 Evaluate 中选择执行实现。它不修改原调用的函数身份，也不另建转换树。内容求值及错误边界见 [Code 类型与函数系统](../code/functions.not)，整体入口见 [文档管线](pipeline.not)。
 
 == 配置与作用域
 
-```toml
-[dependencies]
-katex = { path = "../packages/katex" }
+Notist.toml 的每条规则声明自己的 import 表与映射两端：
 
+```toml
 [[transforms]]
 kind = "replace"
-from = "notist::math"
-to = "katex::math"
+imports = { katex = "../modules/katex/lib.notc" }
+from = "notist.math"
+to = "katex.math"
 ```
 
-from / to 使用完整 package::function。包的公开规则随 dependencies 引入；依赖项的 transforms=false 仅关闭该包的默认映射。共享包有任一引入边启用时，其默认规则生效。
+import 路径相对于配置文件。from / to 使用 Code 相同的名称解析规则，在当前规则的 import 表中解析；内置 prelude 可直接使用。规则不继承文档或其他规则的绑定，也不向它们注入名称。被导入模块目录中的配置不参与装配。
 
-同源同目标规则去重；不同默认目标冲突。根 transforms 覆盖同源默认规则，根 dev-transforms 再覆盖同源公开规则；根规则保留顺序，开发配置只在根环境生效。规则在装配时检查，即使最终被覆盖也不能掩盖有效配置中的错误。
+模块按规范路径在同一次环境装配中去重，文档与规则可用不同别名引用同一模块。解析及签名检查完成后，TransformPlan 只保存规范函数身份与规则范围；临时 import 表不进入执行阶段。Code 函数体始终使用定义模块的作用域。所有规则由宿主显式提供并校验，保留声明顺序。模块与文件入口见 [本地模块](../modules.not)。
 
 == 契约与执行
 
@@ -29,17 +29,18 @@ from / to 使用完整 package::function。包的公开规则随 dependencies �
 == API 与宿主
 
 ```rust
-let context = Context::default()
-    .with_module(analyze_module("katex", declarations)?)?
-    .with_transforms(&rules)?;
 let pipeline = Pipeline::default();
+let module = pipeline.compile_module("content.not", "katex", "katex.notc", declarations)?;
+let context = Context::default()
+    .with_module(module)?
+    .with_transforms(&rules)?;
 let analysis = pipeline.analyze("example.not", source, &context)?;
 let evaluation = pipeline.evaluate(&analysis, &context);
 ```
 
-analyze / inspect 返回语义树。evaluate 返回独立的表示树与求值诊断。Context 不可变；配置读取、依赖合成、Code 源码及组件资源加载属于 Environment / Vault。
+analyze / inspect 返回语义树。evaluate 返回独立的表示树与求值诊断。Context 不可变；配置读取、import 图装配、Code 源码及组件资源加载属于 Environment / Vault。
 
-Vault::evaluate(path, analysis) 使用文档的 Context；render_output(path, analysis, options) 求值并渲染已有 Analysis。render_html 组合一次分析、求值与呈现，返回 analysis、evaluation、rendered。已求值的 Item 可直接交给 Renderer。
+Vault.evaluate(path, analysis) 使用文档的 Context；render_output(path, analysis, options) 求值并渲染已有 Analysis。render_html 组合一次分析、求值与呈现，返回 analysis、evaluation、rendered。已求值的 Item 可直接交给 Renderer。
 
 默认查询、索引和语言服务消费语义树；CLI 的 core、json、query 使用 `--eval` 选择表示树。HTML 根据 target 绑定原生处理器或组件；Code 的 Expanded 边界不要求对应 Web Component。源码映射记录文件身份和展开链。
 

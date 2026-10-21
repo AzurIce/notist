@@ -1,0 +1,134 @@
+#import "../modules/grammar/lib.notc" as grammar;
+#import "../modules/katex/lib.notc" as katex;
+#import "../modules/mermaid/lib.notc" as mermaid;
+#import "../modules/pele/lib.notc" as pele;
+#import "../modules/shader/lib.notc" as shader;
+= 本地模块
+
+Code 模块是一份 .notc 源文件。模块通过相对路径 import 其他模块，公开顶层函数与导入的命名空间；不需要包名、版本或依赖清单。内容字面量由所选 Markup 前端处理，函数类型与求值规则见 [Code 函数系统](code/functions.not)。
+
+== 导入与名称解析
+
+```notc
+import "../modules/mermaid/lib.notc" as diagrams;
+import "./cards.notc";
+
+fn overview() -> BlockContent {
+    [ #diagrams.diagram("graph LR; Source --> Item") ]
+}
+```
+
+import 只允许模块顶层声明，路径必须是相对于当前源文件的字符串字面量。as 指定本地名称；省略时使用文件名去掉扩展名。相同名称不可重复，且不能与本模块函数名冲突；notist 与 self 是保留命名空间。
+
+`diagrams.diagram` 是对静态模块绑定的成员访问。名称链逐级访问模块公开的绑定，不按名称搜索文件系统。导入不会把被导入模块的函数或依赖提升为当前模块的全局名称，也不执行函数体。模块不是运行期值。
+
+普通名称先查当前函数的局部绑定、当前模块函数，再查内置 prelude。self 显式指向当前模块，notist 指向内置定义；局部值会遮蔽同名模块绑定。Markup 使用当前文件的导入作用域；Code 函数体始终使用定义所在模块的作用域。两侧调用分别写作 `#diagrams.diagram(...)` 和 `diagrams.diagram(...)`。
+
+模块身份由宿主规范化后的逻辑源路径确定；函数身份是该模块身份与函数名的组合。导入别名不进入身份或实例缓存键。同一规范路径只加载一次；不同目录的同名文件与函数保持独立。循环导入、缺失文件与无效声明产生带来源文件和范围的诊断，加载失败不返回部分正式环境。
+
+== 文件入口与作用域
+
+每份 Markup 文件通过文件级声明导入需要的模块：
+
+```not
+#import "./widgets.notc" as widgets;
+
+#widgets.panel[ 内容 ]
+```
+
+`#import` 独占一行，允许出现在文件顶层任意位置，绑定对整个文件有效。它产生静态模块声明，不产生 Item、内容调用边界或空段落。字符串、注释、转义与代码块中的相同文字保持普通内容。内容函数的 children、列表、表格等嵌套位置以及 Code 内容字面量不能声明 import；字面量使用定义模块的词法作用域。
+
+Code 使用同一份 import 语法与 lowering，省略 Markup 的 `#`。每份源文件是独立入口，宿主沿声明递归取得模块；相邻的 lib.notc 没有特殊加载行为。引用其他文件的定义必须显式导入，未限定的 Markup 调用查内置 prelude。
+
+前端输出独立的 import 列表和内容 Expr 森林。宿主在 Parse / Lower 之后加载模块图，再建立内部 Context 并运行 Resolve → Shape → Materialize → Evaluate。Context 是签名、模块绑定、Code 实现和执行映射的分析状态，不由用户指定入口。
+
+== 输出配置
+
+Notist.toml 保存显式函数映射与站点选项。宿主可选择最近的配置，CLI 可通过 --config 指定；配置不合并父级配置。每条映射通过自身的 imports 声明输出依赖，不向文档提供绑定。
+
+```toml
+[[transforms]]
+kind = "replace"
+imports = { typst = "../modules/typst/lib.notc" }
+from = "notist.math"
+to = "typst.math"
+
+[site]
+title = "My Notes"
+```
+
+每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析并校验。文档无须导入输出目标；文档、不同规则之间的同名别名相互独立，同一规范模块只加载一次。规则不读取导入模块目录的配置。源码 import 只提供定义，不自动启用 transform。执行契约见 [函数映射](designs/transforms.not)。Code 文件检查只加载自身的 import 图。
+
+项目可以只声明内容函数，由输出规则选择实现，无须为原声明提供 Web Component。本仓库的 [components.diagram](components/README.not#diagram) 使用同签名规则选择 Pele 或 Mermaid；正文保留项目函数身份，HTML 绑定选中的渲染器。下方模块示例直接调用各自实现，以展示模块本身。
+
+== 原生组件与资源
+
+```text
+widgets/
+├── lib.notc
+├── cards.notc
+├── README.not
+├── badge.js
+└── panel/
+    ├── index.js
+    └── style.js
+```
+
+原生内容函数的 HTML 实现与声明文件同目录；badge 使用 badge.js，panel 可使用 panel/index.js。入口选择、冲突检查与注册协议见 [内容函数与输出绑定](designs/content-functions.not)。
+
+组件标签和发布资源路径从规范模块身份生成，与 import 别名无关。同名函数来自不同目录时可以共存；目录组件的辅助资源保持相对路径。具体映射与参数协议见 [Content Function Extensions](designs/content-functions.not)。
+
+Vault 根限定正文与本地内容引用；Code 模块和组件资源可以位于根外。加载外部模块不会把其 README 或其他文档纳入正文索引。宿主通过 Resources 读取源码、递归加载 import 并装配 Environment / Context；纯 Pipeline 只接收显式源码与 Context。内存宿主使用 MemoryResources，PreparedInputs 将完整输入视图传给 Worker；两者复用同一加载路径。
+
+仓库的 modules/ 存放普通本地模块及实现资源。模块可另带 Rust crate 或构建脚本，它们不构成 Notist 的包机制；包注册表、版本与分发留待单独设计。
+
+== 实现与示例
+
+| 模块 | 内容 |
+| --- | --- |
+| [grammar](https://github.com/AzurIce/notist/blob/main/modules/grammar/README.not) | #node[ 文法记法的 Rust / WASM 解析与铁路图可视化
+
+#grammar.diagram(r#"lex Digit -> [`0`-`9`];"#)
+] |
+| [mermaid](https://github.com/AzurIce/notist/blob/main/modules/mermaid/README.not) | #node[ Mermaid 图形组件
+
+#mermaid.diagram(r#"""
+stateDiagram-v2
+    direction LR
+    [*] --> s1
+    s1 --> [*]
+"""#)
+] |
+| [pele](https://github.com/AzurIce/notist/blob/main/modules/pele/README.not) | #node[ Mermaid 语法、CSS 主题与自适应 SVG
+
+#pele.diagram("flowchart LR; Source[源码] --> IR([Expr 森林]); IR --> Item([Item 树])")
+] |
+| [katex](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not) | #node[ LaTeX 数学呈现
+
+#katex.math<BlockContent>(r#"""
+f(\relax{x}) = \int_{-\infty}^\infty
+\hat{f}(\xi)\,e^{2 \pi i \xi x}
+\,d\xi
+"""#)
+]|
+| [typst](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not) | #node[ Typst 数学与通用源码经 WASM 编译为 SVG，支持运行时导入 Typst 包
+
+$ e^(i pi) = -1 $
+] |
+| [shader](https://github.com/AzurIce/notist/blob/main/modules/shader/README.not) | #node[ WebGPU / WGSL 全屏 shader、动画与交互
+
+#shader.canvas(r#"""
+fn palette(t: f32) -> vec3f {
+  return 0.5 + 0.5 * cos(6.283185 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
+}
+
+fn mainImage(fragCoord: vec2f) -> vec4f {
+  let uv = (2.0 * fragCoord - uniforms.iResolution.xy) / uniforms.iResolution.y;
+  let time = uniforms.iTime;
+  let wave = sin(uv.x * 4.0 + time) * cos(uv.y * 4.0 - time * 0.7);
+  let rings = sin(length(uv) * 10.0 - time * 2.0 + wave);
+  let color = palette(rings * 0.18 + length(uv) * 0.15 + time * 0.05);
+  return vec4f(color, 1.0);
+}
+"""#)
+] |

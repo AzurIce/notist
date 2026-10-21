@@ -1,0 +1,76 @@
+= Option 类型
+
+可选参数 `arg?: T` 的"缺席"是一个值：`Option<T>` 名义枚举。Code 与原生声明共用同一 `?` 边界——原生实现从缺席的属性观察，Code 函数体接收 `Option<T>`，可以转发或分解它。
+
+Option<T> 不是联合类型。`String`、`Option<String>` 与 `some("x")` 的类型身份互不相同，`T` 与 `Option<T>` 互不隶属——系统不引入子类型、宽化或收窄规则。类型相等仍是规范化身份比较。
+
+== 类型
+
+`Option<T>` 是内置名义泛型，T 限数据类型（不含内容类型）。身份规则：`Option<A> == Option<B>` 当且仅当 `A == B`。
+
+两个变体：
+
+| 变体 | 含义 | 构造 |
+| --- | --- | --- |
+| `some(v)` | 提供了一个 T 值 | 内置值构造器（特殊形式，非内容函数），T 从 v 推断 |
+| `none` | 缺席 | 由 `?` 参数边界产生；自由书写时类型取自已知的 Option 位置（见下） |
+
+相等规则：`some` 之间按载荷比较，`none == none` 为真，跨变体必假；`Option<T>` 与 `T` 不同型，比较必假。
+
+== 可选参数边界
+
+Code 与原生声明均可书写 `arg?: T`；`?` 与默认值互斥（沿用现有解析规则）。`?` 是普通参数的边界协议，两侧视图不同：
+
+- 调用方视图：参数类型为 T，可省略。
+- 函数体视图：`arg` 的类型是 `Option<T>`。bind 时提供的实参包成 `some(v)`，省略则为 `none`。
+
+转发是边界的逆方向：把 `Option<T>` 传给另一个 `?: T` 参数时反向解包——`none` 即省略，`some(v)` 即 `v`。包装函数由此可以原样传递缺席：
+
+```notc
+fn graph(source: String, rule?: String, theme: String = "light") -> BlockContent;
+
+fn diagram(source: String, rule?: String, theme: String = "light") -> BlockContent {
+    [
+        #notist.raw<BlockContent>(source)
+
+        #graph(source, rule: rule, theme: theme)
+    ]
+}
+```
+
+`?` 参数是普通参数，不参与实例缓存键；缓存键仍只含编译期实参。
+
+== 分解：match 构造器模式
+
+Option 值唯一的分解手段是 match。subject 类型为 `Option<T>` 时，臂左部有两种构造器形状：
+
+```notc
+let label = match rule {
+    some(r) => r,      // r: String，新绑定
+    none => "（全部）", // none 臂
+};
+```
+
+match 臂左部本来就是 `Expr`，语法零改动：检查器只在 subject 为 `Option<T>` 时把 call 形 `some(name)` 与名称形 `none` 解释为构造器模式；其他 subject 类型下这些形状保持普通表达式的 `==` 匹配语义，行为不变。`some(name)` 绑定的是新名字，subject 本身的类型不变——不存在流收窄。
+
+沿用 match 的现有纪律：comptime 已知的 Option 直接折枝，必须命中对应构造器臂；运行期 Option 要求 `none` 与 `some` 两臂或末尾 `_` 覆盖。
+
+== 与输出的一致
+
+- `?` 参数为 `none` 时，HTML 输出不生成对应属性——原生端"省略参数不生成属性"的契约原样保持，组件可观察行为不变。
+- `some(v)` 按 `v` 的普通编码。集合内嵌套的 Option 值递归编码：`some(v)` 为 `["some", v]`，`none` 为 `["none"]`。
+- transform 按同签名替换实现时，原生与 Code 实现对省略的可观察行为一致：原生从缺席属性观察，Code 从 `none` 值观察，输出层把 `none` 映射回缺席。
+
+== 诊断
+
+- `none` 出现在无法确定 T 的位置（既非 `?: T` 实参，也无已定型的姊妹分支或声明返回类型）：诊断"无法确定 none 的类型"。
+- `Option<T>` 传给非 `?` 的 T 参数、或 `some(v)` / `none` 与 T 混用：按普通类型不匹配诊断，无隐式包装或拆包。
+- 运行期 match 的 Option subject 缺少 `none` 臂与 `_`：沿用 match 覆盖诊断。
+
+== 边界（本版不做）
+
+- 自由书写的 `none` 字面量携带推断 T 的一般期望类型传播。
+- Option 的方法族（没有闭包；map / unwrap_or 用 match 表达）。
+- 编译期 Option 参数；Option 包裹内容类型。
+- `Option<Option<T>>` 自然成立，不做特殊规则。
+

@@ -1,3 +1,4 @@
+#import "../../modules/mermaid/lib.notc" as mermaid;
 # .notc 声明模块与 Package / Plugin 扩展
 
 2026-10-04 · 更新：Markup / Code 划分与统一函数注册 · 状态：已实现并验收 · 范围：语法、定义模型、core、package、配置、HTML、工具链
@@ -21,7 +22,7 @@
 | 内容 IR | 合法调用保留稳定函数身份、字段、children、attrs 与解析后的内容类别 |
 | package | 带有 lib.notc 的目录；第一阶段只有这个 Code 模块 |
 | 项目配置 | `Notist.toml` 通过 dependencies 引入本地 package，依赖键确定当前环境的包名 |
-| 名称解析 | 内置 prelude 支持 `#callout`；外部函数使用 `#package::foo`，保留包作用域 |
+| 名称解析 | 内置 prelude 支持 `#callout`；外部函数使用 `#package.foo`，保留包作用域 |
 | 组件约定 | components/<函数名>.js 或 components/<函数名>/index.js 默认导出组件类，host 生成注册入口，无映射配置 |
 | HTML | 统一目标注册，生成组件元素并记录实际使用的组件资源 |
 | 工具 | CLI、LSP、预览工具使用同一个配置环境；lib 提供显式装配 API |
@@ -49,9 +50,9 @@ flowchart LR
     OUT --> HOST["host 装配 JS / CSS"]
 ```
 
-例如，安装 Mermaid package 后，项目可使用 `#mermaid::diagram("graph TD; A-->B")`。分析器按声明检查参数并保留调用；HTML renderer 输出组件元素，host 安装其 module，组件内部 DOM 不进入文档 IR。
+例如，安装 Mermaid package 后，项目可使用 `#mermaid.diagram("graph TD; A-->B")`。分析器按声明检查参数并保留调用；HTML renderer 输出组件元素，host 安装其 module，组件内部 DOM 不进入文档 IR。
 
-声明、共同注册、配置文档分析、扩展 IR、包加载、HTML 组件与资源 host、CLI / LSP / Web 预览均已实现。当前接口见 [Code Syntax](../grammar/code.not)、[Content Function Extensions](../designs/content-functions.not) 与 [HTML Rendering](../html.not)。
+声明、共同注册、配置文档分析、扩展 IR、包加载、HTML 组件与资源 host、CLI / LSP / Web 预览均已实现。当前接口见 Code Syntax、Content Function Extensions 与 HTML Rendering 文档。
 
 ## 定义与内容模型
 
@@ -147,9 +148,9 @@ mermaid = { path = "./packages/mermaid" }
 
 #### 包路径与 Prelude
 
-内置包使用保留名 notist，其内容函数默认进入 prelude。`#callout[...]` 与 `#notist::callout[...]` 解析到同一函数；语法糖固定引用 notist 的规范内置身份。
+内置包使用保留名 notist，其内容函数默认进入 prelude。`#callout[...]` 与 `#notist.callout[...]` 解析到同一函数；语法糖固定引用 notist 的规范内置身份。
 
-外部函数保留包作用域，使用 `#mermaid::diagram(...)`。安装依赖只引入包，不把其中所有函数加入 prelude；不同包可以声明同名函数。外部包不能占用 notist 名称。
+外部函数保留包作用域，使用 `#mermaid.diagram(...)`。安装依赖只引入包，不把其中所有函数加入 prelude；不同包可以声明同名函数。外部包不能占用 notist 名称。
 
 调用目标的语法表示使用 Path 及其名称段。第一阶段 Resolve 接受一段的 prelude 名和两段的 package::function；更长路径可由通用路径语法保留，但报告暂不支持的语义诊断，不进行子模块发现。`.notc` 的函数声明仍使用包内局部名，例如 fn diagram，并不在声明中重复包前缀。
 
@@ -191,7 +192,7 @@ customElements.define("mermaid-diagram", Diagram);
 项目中的：
 
 ```not
-#mermaid::diagram("graph TD; A-->B")
+#mermaid.diagram("graph TD; A-->B")
 ```
 
 按签名补齐 theme 后，IR 保留 mermaid::diagram 身份和 source、theme 字段。HTML 映射产生：
@@ -275,7 +276,7 @@ flowchart TD
 - package：Project 提供纯源码装配与本地文件 loader，支持最近配置、显式配置、来源诊断及编辑器覆盖，失败不返回部分环境。
 - HTML：HtmlRegistry 统一绑定内置与组件，协议 v1 保留标量与复杂值，RenderResult 记录实际使用组件；host 复制目录资源并生成去重注册入口。
 - 工具：CLI 提供 html 构建及 .notc 检查 / CST / JSON；LSP 使用相同 loader，支持声明符号、hover、限定调用跳转和未保存声明的诊断刷新；Web 提供显式配置装配、组件 iframe 预览与模块检查。
-- 示例：嵌套 panel、简单 badge 和 Mermaid 已走通声明 → 调用 → IR → 静态 HTML / Web 预览；当前入口为 [Vault 组件示例](../components/README.not)。
+- 示例：嵌套 panel、简单 badge 和 Mermaid 已走通声明 → 调用 → IR → 静态 HTML / Web 预览；当前入口为 Vault 组件示例文档。
 - 验证：workspace 全特性测试、WASM 构建、文档检查与 JS 协议测试通过；CLI / LSP 进程测试覆盖装配与恢复。Chromium 验证静态页面、Mermaid SVG、i64 精度、shadow root 复用及 Web 预览，未产生页面异常。
 
 浏览器示例使用固定版本 Mermaid CDN 资源；离线分发由 package 提供本地浏览器依赖。第一阶段仍只有一个 lib.notc，没有 Code 求值、WASM 插件执行、传递依赖或远程包解析。

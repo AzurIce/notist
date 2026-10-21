@@ -1,6 +1,6 @@
-= Code 类型与函数系统
+= Code 函数系统
 
-Code 采用纯函数求值模型。每个具体实例中的正常表达式具有唯一静态类型；没有联合类型、运行期 Type 或 InlineContent 到 BlockContent 的隐式转换。语法见 [Code Syntax](../grammar/code.not)，数据流见 [文档管线](pipeline.not)。
+Code 采用纯函数求值模型。每个具体实例中的正常表达式具有唯一静态类型；没有联合类型、运行期 Type 或 InlineContent 到 BlockContent 的隐式转换。语法见 [Code Syntax](syntax.not)，数据流见 [文档管线](../designs/pipeline.not)。
 
 == 类型与阶段
 
@@ -31,7 +31,7 @@ fn foo<x: T>(arg: E)[children: C] -> O {
 | `[children: C]` | 唯一内容槽，C 为 InlineContent 或 BlockContent |
 | `-> O` | 唯一确定的数据或内容类型 |
 
-普通参数列表、编译期参数列表和 children 槽均可省略。花括号提供 Code 实现；分号声明由原生输出实现绑定。参数名在同一签名内唯一，普通参数可声明具体字面量默认值；`?` 的字段省略协议仅供原生声明使用。
+普通参数列表、编译期参数列表和 children 槽均可省略。花括号提供 Code 实现；分号声明由原生输出实现绑定。参数名在同一签名内唯一，普通参数可声明具体字面量默认值；`?` 声明可省略参数：调用方按参数类型提供或省略，Code 函数体内接收对应的 Option 值，见 [Option 类型](option.not)。
 
 输入类别 C 与输出类别 O 独立。函数体按具体实例的 O 检查，不从函数体或返回上下文推导、合并或扩大返回类型。
 
@@ -43,11 +43,11 @@ fn foo<x: T>(arg: E)[children: C] -> O {
 
 多个来源必须一致；缺失或冲突产生诊断。推导不读取普通参数值，不从期望输出倒推，也不对用户函数求逆。不存在于输入类型中的编译期参数必须显式提供或具有默认值。
 
-模块先登记全部签名与函数体，再按实际调用检查实例。实例由 FunctionId 与规范化编译期实参标识；会话缓存具体签名、已检查函数体及失败状态。同一实例的递归调用引用已登记签名，实例化深度与数量均有限额。当前实例化深度和求值调用深度上限为 32，实例数上限 4096；每个内容求值边界及每次编译期求值默认允许 100000 步，普通值调用共享当前计算的步数；数据结果上限 16 MiB，内容森林默认允许 100000 个正常节点，可由 Limits.content_nodes 调整。预算包含外围节点，错误占位不占用正常内容的额度；超限子树被替换后继续处理后续兄弟内容。
+Parse / Lower 先产生 CodeModule，其中包含签名、静态 imports 与未检查的函数体 Expr；内容字面量的 Markup IR₁ 嵌在 Expr.Content 中。宿主安装模块并解析 import 绑定，Context 的 Registry 保存定义，CodeProgram 保存可复用的 Expr。检查会话依据调用或 Code 文件检查入口选定的种子，按具体实例检查函数体。实例由 FunctionId 与规范化编译期实参标识；会话缓存具体签名、已检查函数体及失败状态。同一实例的递归调用引用已登记签名，实例化深度与数量均有限额。当前实例化深度和求值调用深度上限为 32，实例数上限 4096；每个内容求值边界及每次编译期求值默认允许 100000 步，普通值调用共享当前计算的步数；数据结果上限 16 MiB，内容森林默认允许 100000 个正常节点，可由 Limits.content_nodes 调整。预算包含外围节点，错误占位不占用正常内容的额度；超限子树被替换后继续处理后续兄弟内容。
 
 == 表达式与检查
 
-Code 支持数据与内容字面量、名称引用、具名调用、不可变 let、标量运算、Bool 运算、if、match 和 comptime。没有可变状态、宿主 I/O、Function 值、闭包或 import。
+Code 支持数据与内容字面量、名称引用、模块成员访问、具名调用、不可变 let、标量运算、Bool 运算、if、match 和 comptime。没有可变状态、宿主 I/O、Function 值或闭包；模块顶层支持静态 import，相对路径、导出和词法名称解析见 [本地模块](../modules.not)。
 
 | 分支条件 | 检查规则 |
 | --- | --- |
@@ -76,10 +76,7 @@ Array 可以省略元素类型，此时不能静态收窄为 Array<E>；已知�
 
 == 内容字面量与边界
 
-| 字面量 | 类别与结构 |
-| --- | --- |
-| `[text]`、`[]` | InlineContent，根序列只含行内片段 |
-| `[ text ]` | BlockContent，按硬分隔划分内容片段；全 Inline 片段生成段落，单个 Block 表达式保留其森林 |
+字面量的 Inline / Block 类别由 flank 判定，值域规则见 [Types & Literals](types.not)。类别决定片段结构：InlineContent 的根序列只含行内片段；BlockContent 按硬分隔划分内容片段，全 Inline 片段生成段落，单个 Block 表达式保留其森林。
 
 内容值是森林，不带字面量容器节点。Code 字面量内的 `#name` 按既有类别拼接内容森林，保留内部段落、section 与调用身份；数据必须通过 text 等内容函数显式转换。独立 Markup 的插值只允许内容函数调用，两种入口共用语法解析，在检查阶段区分合法位置。
 
@@ -89,7 +86,7 @@ Array 可以省略元素类型，此时不能静态收窄为 Array<E>；已知�
 
 每个内容调用建立一个边界节点，包括无 children 的调用。已知普通参数保存在 fields，待求值实参表达式保存在 pending，求值后得到具体字段；输入森林挂载为 children。边界对外类别取 O，输入契约取 C。数据函数调用不产生 Item。Code 直接内容调用与字面量插值共用调用绑定、输入类别和公开结构角色校验。
 
-Code 字面量通过 ContentParser 交给所选 Markup 前端解析，再复用 Lower → Resolve → Shape → attach → Materialize。具体实例检查产生已定稿的 Item 森林；节点直接保存待求值的调用实参或内容插值表达式。内容值插值使用 Interpolation 占位节点，其类别在 Shape 前确定；求值时以实际森林替换并消除占位。插值与返回不重新 Shape。
+Code 的分析分为 Parse / Lower 与具体实例检查。阶段一通过 ContentParser 确定字面量边界并取得前端语法树，再经 ContentLowering 生成 Markup IR₁，作为 Expr.Content 的森林、注解 side list 和 body flavor 嵌入 Code Expr 树。阶段二在编译期参数、局部绑定与词法作用域已知时，将 IR₁ 交给共享 Markup 内容管线，经 Resolve → Shape → Materialize 产生 Item 森林，嵌入 TypedExpr 的 Content 分支。所有分支的 Parse / Lower 在第一阶段完成；依赖环境的解析和类型检查只处理具体实例选中的分支，不重复调用前端。节点直接保存待求值的调用实参或内容插值表达式。内容值插值使用 Interpolation 占位节点，其类别在 Shape 前确定；求值时以实际森林替换并消除占位。插值与返回不重新 Shape。
 
 Markup 降糖生成的调用使用规范内置函数身份，不受模块同名函数影响；显式调用按词法 Context 解析。
 
@@ -107,7 +104,7 @@ Markup 降糖生成的调用使用规范内置函数身份，不受模块同名�
 
 Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数体、诊断与来源源码。Evaluate 接收 Analysis 和同一 Context，直接根据 Item.pending 计算实参、拼接内容值森林并替换调用边界内的 children，产出 Item 表示树。内容值绑定将自由输入绑定到当前调用环境，保留不透明调用；各次调用独立实例化函数体中的 Item 森林。映射目标按需补查的字面量先完成 Shape，再执行其实现；已有 Item 结构不重新 Shape。C → C 只承诺类别一致；直接返回 children 也保留调用边界。原生终端使用自身挂载契约，Expanded 边界由 Renderer 透明呈现或承载其注解。
 
-Transform 是同签名函数映射 f → g，在 Evaluate 中选择执行目标。普通参数的名称、顺序、类型、位置绑定、默认值、值域以及编译期参数关系、C、O 与公开角色必须相同。编译期参数可改名，按位置规范化比较。规则按序各应用一次，不求固定点；语义身份仍为 f，目标 g 单独记录，不额外增加调用层级。
+[Transform](../designs/transforms.not) 在 Evaluate 中按同签名函数映射选择执行目标。Item 的语义身份保持原调用，目标单独记录，不增加调用层级。
 
 == 错误冒泡与恢复
 
@@ -119,6 +116,6 @@ Transform 是同签名函数映射 f → g，在 Evaluate 中选择执行目标�
 
 == 实现边界
 
-Registry 保存公开签名与实现种类；Context 组合 Registry、CodeProgram 和 TransformPlan。检查结果缓存属于 Analysis 会话，Evaluate 可以为映射目标补查实例。Context 和管线均不读取文件；配置、源码、依赖与组件资源由宿主提供。
+Registry 保存公开签名与实现种类；Context 组合 Registry、CodeProgram 和 TransformPlan。Checker 的可变会话状态保存当前模块、编译期实参、参数与局部绑定及 CheckedProgram；具体实例的 TypedExpr 保存在 InstanceRecord.body 中。文档入口将 CheckedProgram 随 Item 树保存在 Analysis，Code 文件检查入口仅导出声明、诊断与来源源码组成的 CodeAnalysis。Evaluate 可以为映射目标补查实例。Context 和管线均不读取文件；配置、源码、依赖与组件资源由宿主提供。
 
-Type 返回值、通用 Set、运行期类型反射、可变状态、多内容槽、一般集合访问、用户结构角色和 Code 可选值模型不在本版范围。
+Type 返回值、通用 Set、运行期类型反射、可变状态、多内容槽、一般集合访问和用户结构角色不在本版范围。可选值模型见 [Option 类型](option.not)。

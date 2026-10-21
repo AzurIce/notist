@@ -10,14 +10,14 @@ use crate::item::Value;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FunctionId {
-    pub package: String,
+    pub module: String,
     pub name: String,
 }
 
 impl FunctionId {
-    pub fn new(package: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn new(module: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
-            package: package.into(),
+            module: module.into(),
             name: name.into(),
         }
     }
@@ -25,8 +25,16 @@ impl FunctionId {
 
 impl std::fmt::Display for FunctionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", self.package, self.name)
+        write!(f, "{}.{}", self.module, self.name)
     }
+}
+
+/// A static file-level module dependency produced by either source frontend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Import {
+    pub path: String,
+    pub alias: String,
+    pub span: TextRange,
 }
 
 /// Type descriptions. `Parameter` occurs only in signature templates.
@@ -44,6 +52,8 @@ pub enum Type {
     String,
     /// None accepts any Value elements; Some checks elements recursively.
     Array(Option<Box<Type>>),
+    /// Nominal optional data; identity requires equal payload types.
+    Option(Box<Type>),
     Dict,
 }
 
@@ -59,6 +69,8 @@ impl Type {
             (Self::Array(element), Value::Array(values)) => element
                 .as_ref()
                 .is_none_or(|ty| values.iter().all(|value| ty.accepts(value))),
+            (Self::Option(element), Value::Some(value)) => element.accepts(value),
+            (Self::Option(_), Value::None) => true,
             _ => false,
         }
     }
@@ -79,6 +91,7 @@ impl std::fmt::Display for Type {
             Self::Dict => f.write_str("dict"),
             Self::Array(None) => f.write_str("array"),
             Self::Array(Some(element)) => write!(f, "array of {element}"),
+            Self::Option(element) => write!(f, "option of {element}"),
         }
     }
 }
@@ -187,6 +200,8 @@ impl ComptimeValue {
                     "d{:?}",
                     v.iter().map(|(k, v)| (k, data(v))).collect::<Vec<_>>()
                 ),
+                Value::Some(v) => format!("o{}", data(v)),
+                Value::None => "o-".into(),
                 v => format!("{v:?}"),
             }
         }
@@ -245,6 +260,10 @@ impl Type {
                         .map(Box::new),
                 )
             }
+            Value::Some(v) => Self::Option(Box::new(Self::of(v))),
+            // A bare none carries no payload type; checked expressions keep
+            // their static Option<T> instead of deriving it here.
+            Value::None => Self::Option(Box::new(Self::Unit)),
         }
     }
     pub fn level(&self) -> Option<Level> {
@@ -258,6 +277,7 @@ impl Type {
         match self {
             Self::Parameter(_) => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::concrete),
+            Self::Option(t) => t.concrete(),
             _ => true,
         }
     }
@@ -265,6 +285,7 @@ impl Type {
         match self {
             Self::Type | Self::Parameter(_) | Self::InlineContent | Self::BlockContent => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::data),
+            Self::Option(t) => t.data(),
             _ => true,
         }
     }
@@ -272,6 +293,7 @@ impl Type {
         match self {
             Self::Type | Self::Parameter(_) => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::data),
+            Self::Option(t) => t.data(),
             _ => true,
         }
     }
@@ -282,6 +304,7 @@ impl Type {
                 _ => self.clone(),
             },
             Self::Array(t) => Self::Array(t.as_ref().map(|t| Box::new(t.substitute(bindings)))),
+            Self::Option(t) => Self::Option(Box::new(t.substitute(bindings))),
             _ => self.clone(),
         }
     }
@@ -323,15 +346,15 @@ impl FunctionDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefinitionModule {
-    pub package: String,
+    pub module: String,
     pub functions: Vec<FunctionDef>,
     pub span: TextRange,
 }
 
 impl DefinitionModule {
-    pub fn new(package: impl Into<String>) -> Self {
+    pub fn new(module: impl Into<String>) -> Self {
         Self {
-            package: package.into(),
+            module: module.into(),
             functions: Vec::new(),
             span: TextRange::empty(0.into()),
         }
@@ -342,15 +365,15 @@ impl DefinitionModule {
 pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut report = |span, message| diagnostics.push(Diagnostic::new(Phase::Type, span, message));
-    if !valid_name(&module.package) {
-        report(module.span, "invalid package name".to_string());
+    if module.module.is_empty() {
+        report(module.span, "module identity cannot be empty".to_string());
     }
     let mut names = BTreeSet::new();
     for function in &module.functions {
-        if function.id.package != module.package {
+        if function.id.module != module.module {
             report(
                 function.span,
-                format!("`{}` belongs to a different package", function.id),
+                format!("`{}` belongs to a different module", function.id),
             );
         }
         if !valid_name(&function.id.name) {
@@ -415,19 +438,19 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
                     "comptime parameters require Type or data types".into(),
                 );
             }
-            if let Some(default) = &parameter.default {
-                if match default {
+            if let Some(default) = &parameter.default
+                && match default {
                     ComptimeValue::Type(_) => parameter.ty != Type::Type,
                     ComptimeValue::Data(v) => {
                         parameter.ty.concrete() && !parameter.ty.accepts(v)
                             || !parameter.constraint.accepts(v)
                     }
-                } {
-                    report(
-                        parameter.span,
-                        format!("invalid comptime default for `{}`", parameter.name),
-                    );
                 }
+            {
+                report(
+                    parameter.span,
+                    format!("invalid comptime default for `{}`", parameter.name),
+                );
             }
         }
         fn check(ty: &Type, names: &BTreeSet<&String>) -> bool {
@@ -438,6 +461,10 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
                     Type::InlineContent | Type::BlockContent => false,
                     _ => check(t, names),
                 }),
+                Type::Option(t) => match t.as_ref() {
+                    Type::InlineContent | Type::BlockContent => false,
+                    _ => check(t, names),
+                },
                 _ => true,
             }
         }
@@ -451,6 +478,7 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
             match t {
                 Type::Parameter(_) => true,
                 Type::Array(t) => t.as_deref().is_none_or(data),
+                Type::Option(t) => data(t),
                 _ => t.data(),
             }
         }

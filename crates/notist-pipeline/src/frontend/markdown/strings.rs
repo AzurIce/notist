@@ -7,12 +7,12 @@ pub(crate) fn decode(src: &str) -> String {
     let mut chars = src.char_indices().peekable();
     while let Some((start, ch)) = chars.next() {
         if ch == '\\' {
-            if let Some(&(_, next)) = chars.peek() {
-                if next.is_ascii_punctuation() {
-                    out.push(next);
-                    chars.next();
-                    continue;
-                }
+            if let Some(&(_, next)) = chars.peek()
+                && next.is_ascii_punctuation()
+            {
+                out.push(next);
+                chars.next();
+                continue;
             }
         } else if ch == '&' {
             let len = src[start + 1..]

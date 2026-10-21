@@ -2,15 +2,38 @@
 use crate::{MemoryResources, PreparedInputs, RenderOptions, Vault, VaultError};
 use serde_json::{Value, json};
 
-pub fn configuration_json(source: &str) -> String {
-    match crate::environment::parse_config(source) {
-        Ok(config) => {
-            let dependencies = |values: &[crate::environment::Dependency]| values.iter().map(|dependency| json!({"name":dependency.name,"path":dependency.path,"transforms":dependency.transforms})).collect::<Vec<_>>();
-            let transforms = |values: &[crate::transforms::Replace]| values.iter().map(|rule|json!({"kind":"replace","from":rule.from.to_string(),"to":rule.to.to_string()})).collect::<Vec<_>>();
-            json!({"package":config.package.map(|package|json!({"name":package.name})), "dependencies":dependencies(&config.dependencies), "dev_dependencies":dependencies(&config.dev_dependencies), "transforms":transforms(&config.transforms), "dev_transforms":transforms(&config.dev_transforms)}).to_string()
+/// Discover source imports or transform-local configuration imports without IO.
+pub fn source_imports(path: &str, source: &str) -> String {
+    let (imports, diagnostics) = if path.ends_with(".toml") {
+        match crate::environment::parse_config(source) {
+            Ok(config) => (
+                config
+                    .transforms
+                    .into_iter()
+                    .flat_map(|rule| rule.imports)
+                    .collect(),
+                Vec::new(),
+            ),
+            Err(diagnostics) => (Vec::new(), diagnostics),
         }
-        Err(errors) => json!({"diagnostics": errors.iter().map(|error| diagnostic_json("Notist.toml", "environment", error)).collect::<Vec<_>>()}).to_string(),
-    }
+    } else if path.ends_with(".notc") {
+        let parsed =
+            crate::syntax::code::parse_module(source, &crate::syntax::markup::MarkupContentParser);
+        let ast = crate::syntax::code::ast::Module::cast(parsed.syntax()).unwrap();
+        let mut errors: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| crate::Diagnostic::new(crate::Phase::Syntax, d.span, &d.message))
+            .collect();
+        let imports = notist_pipeline::lowering::imports::lower_imports(ast.imports(), &mut errors);
+        (imports, errors)
+    } else {
+        match crate::Pipeline::default().lower(path, source, crate::FrontendOptions::default()) {
+            Ok(output) => (output.imports, output.diagnostics),
+            Err(error) => return json!({"error":error.to_string()}).to_string(),
+        }
+    };
+    json!({"imports":imports.iter().map(|i|json!({"path":i.path,"alias":i.alias})).collect::<Vec<_>>(),"diagnostics":diagnostics.iter().map(|d|diagnostic_json(path,"analysis",d)).collect::<Vec<_>>()}).to_string()
 }
 fn prepare(inputs: &str) -> Result<Vault<MemoryResources>, Value> {
     serde_json::from_str::<PreparedInputs>(inputs)
@@ -18,15 +41,38 @@ fn prepare(inputs: &str) -> Result<Vault<MemoryResources>, Value> {
         .map_err(|error| json!({"error":error.to_string()}))
 }
 
-/// Describe registered functions and resource roots after manifest assembly.
-/// Component candidates need not have been fetched yet.
-pub fn describe_prepared(inputs: &str) -> String {
+/// Describe HTML components actually required by this document's evaluated tree.
+/// This stage uses only source inputs; the host subsequently probes these entries.
+pub fn describe_prepared(path: &str, inputs: &str) -> String {
+    if path.ends_with(".notc") {
+        return json!({"functions": [], "diagnostics": []}).to_string();
+    }
     let mut vault = match prepare(inputs) {
         Ok(vault) => vault,
         Err(error) => return error.to_string(),
     };
-    match vault.environment_for("document.not") {
-        Ok(environment) => json!({"functions": environment.context().registry().functions().filter(|definition| definition.id.package != "notist" && !definition.code).map(|definition| json!({"package":definition.id.package,"root":environment.packages()[&definition.id.package].root,"name":definition.id.name,"entries":notist_html::components::component_entries(&definition.id.name)})).collect::<Vec<_>>(), "diagnostics":[]}).to_string(),
+    let result = (|| -> Result<Value, VaultError> {
+        let source = crate::Resources::source(vault.resources(), std::path::Path::new(path))?;
+        let analysis = vault.analyze(path, &source)?;
+        let evaluated = vault.evaluate(path, &analysis)?;
+        let environment = vault.environment_for(path, &source)?;
+        let functions: Vec<_> = notist_html::components::component_ids(&evaluated.root)
+            .iter()
+            .filter_map(|id| environment.context().registry().get(id))
+            .filter(|definition| !definition.code)
+            .map(|definition| {
+                json!({
+                    "module": definition.id.module,
+                    "root": environment.modules()[&definition.id.module].path.parent().unwrap(),
+                    "name": definition.id.name,
+                    "entries": notist_html::components::component_entries(&definition.id.name)
+                })
+            })
+            .collect();
+        Ok(json!({"functions": functions, "diagnostics": []}))
+    })();
+    match result {
+        Ok(description) => description.to_string(),
         Err(error) => error_json(error).to_string(),
     }
 }
@@ -104,7 +150,7 @@ fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Eva
 fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult) {
     data["html"] = json!(result.html);
     data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":mapping.origin.as_ref().map(|o|&o.source),"expansion":mapping.origin.as_ref().map(|o|o.expansion.iter().map(|e|json!({"source":e.source,"start":e.start,"end":e.end})).collect::<Vec<_>>())})).collect::<Vec<_>>());
-    data["used_components"] = json!(result.used_components.iter().map(|component| json!({"package":component.id.package,"name":component.id.name,"tag":component.tag,"module":component.module.url(),"resource":component.module.resource()})).collect::<Vec<_>>());
+    data["used_components"] = json!(result.used_components.iter().map(|component| json!({"identity":component.id.to_string(),"name":component.id.name,"tag":component.tag,"module":component.module.url(),"resource":component.module.resource()})).collect::<Vec<_>>());
     data["diagnostics"].as_array_mut().unwrap().extend(
         result
             .diagnostics

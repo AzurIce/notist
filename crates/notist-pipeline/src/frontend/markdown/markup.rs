@@ -78,6 +78,7 @@ struct Construct {
     end: usize,
     body: Option<(usize, usize)>,
     annotation: bool,
+    import: bool,
 }
 
 enum Scan {
@@ -106,6 +107,16 @@ fn header_crosses_paragraph(syntax: &notist_syntax::tree::SyntaxNode) -> bool {
 
 /// Literal tokens make strings/comments opaque when balancing header parens.
 fn scan(src: &str) -> Scan {
+    if notist_syntax::code::is_markup_import(src) {
+        let end = src.find(['\r', '\n']).unwrap_or(src.len());
+        return Scan::Complete(Construct {
+            header: end,
+            end,
+            body: None,
+            annotation: false,
+            import: true,
+        });
+    }
     let tokens = lex(src);
     let annotation = tokens.kind(0) == Some(SyntaxKind::At);
     let mut i = 1;
@@ -122,7 +133,7 @@ fn scan(src: &str) -> Scan {
         }
         if tokens.kind(i) == Some(SyntaxKind::Ident) {
             i += 1;
-            while tokens.kind(i) == Some(SyntaxKind::ColonColon) {
+            while tokens.kind(i) == Some(SyntaxKind::Dot) {
                 if tokens.kind(i + 1) != Some(SyntaxKind::Ident) {
                     return Scan::Text;
                 }
@@ -151,6 +162,7 @@ fn scan(src: &str) -> Scan {
             end: header,
             body: None,
             annotation,
+            import: false,
         });
     }
     let Some(end) = content_end(src, header) else {
@@ -161,6 +173,7 @@ fn scan(src: &str) -> Scan {
         end,
         body: Some((header + 1, end - 1)),
         annotation,
+        import: false,
     })
 }
 
@@ -175,9 +188,7 @@ pub(crate) fn content_end(src: &str, open: usize) -> Option<usize> {
             let run = bytes[pos..].iter().take_while(|b| **b == marker).count();
             let line_start = src[..pos].rfind('\n').map_or(0, |i| i + 1);
             if run >= 3 && src[line_start..pos].trim().is_empty() {
-                let Some(newline) = src[pos..].find('\n') else {
-                    return None;
-                };
+                let newline = src[pos..].find('\n')?;
                 let mut close = pos + newline + 1;
                 let mut closed = false;
                 while close < src.len() {
@@ -197,11 +208,11 @@ pub(crate) fn content_end(src: &str, open: usize) -> Option<usize> {
                 continue;
             }
         }
-        if bytes[pos] == b'#' {
-            if let Scan::Complete(construct) = scan(&src[pos..]) {
-                pos += construct.end;
-                continue;
-            }
+        if bytes[pos] == b'#'
+            && let Scan::Complete(construct) = scan(&src[pos..])
+        {
+            pos += construct.end;
+            continue;
         }
         match bytes[pos] {
             b'\\' => {
@@ -270,6 +281,10 @@ pub(crate) fn content_end(src: &str, open: usize) -> Option<usize> {
 }
 
 pub(crate) enum Lowered {
+    Imports {
+        imports: Vec<notist_core::definitions::Import>,
+        span: TextRange,
+    },
     Annotation {
         attrs: Dict,
         module: bool,
@@ -331,6 +346,33 @@ impl Markup {
                 annotations: Vec::new(),
             };
         };
+        if construct.import {
+            let parsed = notist_syntax::code::parse_import(&src[..construct.end]);
+            let mut errors: Vec<_> = parsed
+                .diagnostics
+                .iter()
+                .map(|d| Diagnostic::new(Phase::Syntax, d.span, &d.message))
+                .collect();
+            let mut imports = if errors.is_empty() {
+                crate::lowering::imports::lower_imports(
+                    notist_syntax::code::ast::ImportDecl::cast(parsed.syntax()),
+                    &mut errors,
+                )
+            } else {
+                Vec::new()
+            };
+            for import in &mut imports {
+                import.span = source.range(import.span);
+            }
+            diagnostics.extend(errors.into_iter().map(|mut d| {
+                d.span = source.range(d.span);
+                d
+            }));
+            return Lowered::Imports {
+                imports,
+                span: source.range(TextRange::new(0.into(), (construct.end as u32).into())),
+            };
+        }
         let mut local_diags = Vec::new();
         let header = &src[..construct.header];
         let parse = if construct.annotation {

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
-fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
+fn cli_discovers_modules_and_reports_config_failures() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let help = Command::new(env!("CARGO_BIN_EXE_notist"))
         .arg("--help")
@@ -19,7 +19,13 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
     let query = Command::new(env!("CARGO_BIN_EXE_notist"))
         .args(["query"])
         .arg(&document)
-        .arg("function:notist-doc::panel")
+        .arg(format!(
+            "function:{}.panel",
+            root.join("docs/components/lib.notc")
+                .canonicalize()
+                .unwrap()
+                .display()
+        ))
         .output()
         .unwrap();
     assert!(query.status.success());
@@ -27,7 +33,7 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
     assert_eq!(result.as_array().unwrap().len(), 2);
     let module = Command::new(env!("CARGO_BIN_EXE_notist"))
         .arg("json")
-        .arg(root.join("packages/mermaid/lib.notc"))
+        .arg(root.join("modules/mermaid/lib.notc"))
         .output()
         .unwrap();
     assert!(module.status.success());
@@ -37,7 +43,7 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
     );
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("Notist.toml");
-    std::fs::write(&config, "[dependencies]\nbroken = {path = 'absent'}").unwrap();
+    std::fs::write(&config, "context = 'absent.notc'").unwrap();
     for command in ["check", "core", "json", "query", "html"] {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_notist"));
         cmd.arg(command).arg(&document).arg("--config").arg(&config);
@@ -48,7 +54,7 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
         assert!(!result.status.success(), "{command}");
         let error = String::from_utf8(result.stderr).unwrap();
         assert!(
-            error.contains("Notist.toml") && error.contains("cannot load"),
+            error.contains("Notist.toml") && error.contains("unknown field"),
             "{error}"
         );
     }
@@ -57,6 +63,26 @@ fn cli_discovers_packages_inspects_modules_and_reports_config_failures() {
 #[test]
 fn html_command_publishes_used_components_and_relative_assets() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let doc_module = root
+        .join("docs/components/lib.notc")
+        .canonicalize()
+        .unwrap();
+    let doc_key = notist_html::components::module_key(doc_module.to_str().unwrap());
+    let katex_module = root.join("modules/katex/lib.notc").canonicalize().unwrap();
+    let typst_module = root.join("modules/typst/lib.notc").canonicalize().unwrap();
+    let katex_key = notist_html::components::module_key(katex_module.to_str().unwrap());
+    let katex_tag = notist_html::components::component_tag(&notist::FunctionId::new(
+        katex_module.to_str().unwrap(),
+        "math",
+    ));
+    let typst_tag = notist_html::components::component_tag(&notist::FunctionId::new(
+        typst_module.to_str().unwrap(),
+        "math",
+    ));
+    let panel_tag = notist_html::components::component_tag(&notist::FunctionId::new(
+        doc_module.to_str().unwrap(),
+        "panel",
+    ));
     let output = tempfile::tempdir().unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(&root)
@@ -75,44 +101,54 @@ fn html_command_publishes_used_components_and_relative_assets() {
     assert!(
         output
             .path()
-            .join("_notist/packages/notist-doc/components/panel/style.js")
+            .join(format!("_notist/modules/{doc_key}/panel/style.js"))
             .is_file()
     );
     assert!(
         output
             .path()
-            .join("_notist/packages/notist-doc/components/badge.js")
+            .join(format!("_notist/modules/{doc_key}/badge.js"))
             .is_file()
     );
     let registrations = std::fs::read_to_string(output.path().join("components.js")).unwrap();
     assert_eq!(registrations.matches("customElements.define").count(), 5);
-    assert!(registrations.contains("katex-math"));
+    assert!(registrations.contains(&katex_tag));
     assert!(
         output
             .path()
-            .join("_notist/packages/katex/components/math.js")
+            .join(format!("_notist/modules/{katex_key}/math.js"))
             .is_file()
     );
     let html = std::fs::read_to_string(output.path().join("index.html")).unwrap();
-    assert_eq!(html.matches("<katex-math ").count(), 1);
-    assert_eq!(html.matches("<typst-math ").count(), 2);
-    assert_eq!(registrations.matches("notist-doc-panel").count(), 1);
+    assert_eq!(html.matches(&format!("<{katex_tag} ")).count(), 1);
+    assert_eq!(html.matches(&format!("<{typst_tag} ")).count(), 2);
+    assert_eq!(registrations.matches(&panel_tag).count(), 1);
 }
 
 #[test]
 fn typst_math_replacement_exports_both_frontends_and_component_imports() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let package = root.join("packages/typst").canonicalize().unwrap();
-    let project = tempfile::tempdir().unwrap();
+    let module = root.join("modules/typst").canonicalize().unwrap();
+    let key = notist_html::components::module_key(module.join("lib.notc").to_str().unwrap());
+    let tag = notist_html::components::component_tag(&notist::FunctionId::new(
+        module.join("lib.notc").to_str().unwrap(),
+        "math",
+    ));
+    let project = tempfile::tempdir_in(root.join("target")).unwrap();
+    std::fs::write(
+        project.path().join("lib.notc"),
+        "import \"../../modules/typst/lib.notc\" as typst;",
+    )
+    .unwrap();
     std::fs::write(
         project.path().join("Notist.toml"),
-        format!("[dependencies]\ntypst = {{path = {package:?}}}\n"),
+        "[[transforms]]\nkind='replace'\nimports={typst='../../modules/typst/lib.notc'}\nfrom='notist.math'\nto='typst.math'\n",
     )
     .unwrap();
     for (name, source, count) in [
         (
             "doc.not",
-            "$frac(a, b)$ #math(\"sqrt(x)\") #typst::math(\"alpha + beta\")",
+            "$frac(a, b)$ #math(\"sqrt(x)\") #typst.math(\"alpha + beta\")",
             3,
         ),
         ("doc.md", "$frac(a, b)$ and $sqrt(x)$", 2),
@@ -121,10 +157,10 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
             "@(id: \"formula\")\n#math(\"sqrt(x)\") $frac(a, b)$",
             2,
         ),
-        ("doc.nmd", "#typst::math(\"sqrt(x)\") $frac(a, b)$", 2),
+        ("doc.nmd", "#typst.math(\"sqrt(x)\") $frac(a, b)$", 2),
     ] {
         let source = format!(
-            "{source}\n\n$ sum_(i=1)^n i $\n\n#typst::math<BlockContent>(\"sum_(i=1)^n i\")"
+            "#import \"../../modules/typst/lib.notc\" as typst;\n{source}\n\n$ sum_(i=1)^n i $\n\n#typst.math<BlockContent>(\"sum_(i=1)^n i\")"
         );
         let document = project.path().join(name);
         std::fs::write(&document, source).unwrap();
@@ -143,21 +179,75 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
             String::from_utf8_lossy(&result.stderr)
         );
         let html = std::fs::read_to_string(output.join("index.html")).unwrap();
-        assert_eq!(html.matches("<typst-math ").count(), count + 2);
+        assert_eq!(html.matches(&format!("<{tag} ")).count(), count + 2);
         assert_eq!(html.matches("notist-content=\"block\"").count(), 2);
         assert!(html.contains("notist-text=\"frac(a, b)\""));
         assert!(html.contains("notist-text=\"sqrt(x)\""));
         assert!(!html.contains("<notist-math "));
         let registrations = std::fs::read_to_string(output.join("components.js")).unwrap();
         assert_eq!(registrations.matches("customElements.define").count(), 1);
-        assert!(registrations.contains("typst-math"));
+        assert!(registrations.contains(&tag));
         for filename in ["index.js", "compiler.js"] {
-            let relative = format!("components/math/{filename}");
+            let relative = format!("math/{filename}");
             assert_eq!(
-                std::fs::read(output.join("_notist/packages/typst").join(&relative)).unwrap(),
-                std::fs::read(package.join(&relative)).unwrap()
+                std::fs::read(
+                    output
+                        .join(format!("_notist/modules/{key}"))
+                        .join(&relative)
+                )
+                .unwrap(),
+                std::fs::read(module.join(&relative)).unwrap()
             );
         }
+    }
+}
+
+#[test]
+fn typst_svg_exports_source_and_worker_resources_without_using_math() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let module = root.join("modules/typst").canonicalize().unwrap();
+    let key = notist_html::components::module_key(module.join("lib.notc").to_str().unwrap());
+    let tag = notist_html::components::component_tag(&notist::FunctionId::new(
+        module.join("lib.notc").to_str().unwrap(),
+        "svg",
+    ));
+    let project = tempfile::tempdir_in(root.join("target")).unwrap();
+    let source = r##"#import "../../modules/typst/lib.notc" as typst;
+#typst.svg(r#"""
+#import "@preview/fletcher:0.5.8": diagram, node
+#diagram(node((0, 0), [中文 <&>]))
+"""#)"##;
+    for name in ["doc.not", "doc.md"] {
+        let document = project.path().join(name);
+        std::fs::write(&document, source).unwrap();
+        let output = project.path().join(format!("{name}-html"));
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .arg("html")
+            .arg(&document)
+            .arg("--out-dir")
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let html = std::fs::read_to_string(output.join("index.html")).unwrap();
+        assert_eq!(html.matches(&format!("<{tag} ")).count(), 1);
+        assert!(html.contains("notist-source=\"#import &quot;@preview/fletcher:0.5.8&quot;"));
+        assert!(html.contains("中文 &lt;&amp;&gt;"));
+        let registrations = std::fs::read_to_string(output.join("components.js")).unwrap();
+        assert_eq!(registrations.matches("customElements.define").count(), 1);
+        assert!(registrations.contains(&tag));
+        let resources = output.join(format!("_notist/modules/{key}"));
+        for filename in ["index.js", "runtime.js", "compiler.js"] {
+            assert_eq!(
+                std::fs::read(resources.join("svg").join(filename)).unwrap(),
+                std::fs::read(module.join("svg").join(filename)).unwrap(),
+            );
+        }
+        assert!(!resources.join("math").exists());
     }
 }
 
@@ -212,10 +302,14 @@ fn checks_json_and_html_report_vault_escapes_at_the_source_reference() {
 fn eval_inspection_exposes_code_output_and_definition_source() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    std::fs::write(root.join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    std::fs::write(root.join("Notist.toml"), "").unwrap();
     let definition = "fn f() -> InlineContent { [#strong[body]] }";
     std::fs::write(root.join("lib.notc"), definition).unwrap();
-    std::fs::write(root.join("doc.not"), "#demo::f()").unwrap();
+    std::fs::write(
+        root.join("doc.not"),
+        "#import \"lib.notc\" as demo;\n#demo.f()",
+    )
+    .unwrap();
     let run = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_notist"))
             .current_dir(root)
@@ -223,11 +317,11 @@ fn eval_inspection_exposes_code_output_and_definition_source() {
             .output()
             .unwrap()
     };
-    let semantic = run(&["query", "doc.not", "function:notist::strong"]);
+    let semantic = run(&["query", "doc.not", "function:notist.strong"]);
     assert!(semantic.status.success());
     let v: Value = serde_json::from_slice(&semantic.stdout).unwrap();
     assert!(v.as_array().unwrap().is_empty());
-    let evaluated = run(&["query", "--eval", "doc.not", "function:notist::strong"]);
+    let evaluated = run(&["query", "--eval", "doc.not", "function:notist.strong"]);
     assert!(
         evaluated.status.success(),
         "{}",
@@ -250,20 +344,17 @@ fn eval_inspection_exposes_code_output_and_definition_source() {
 }
 
 #[test]
-fn module_check_and_json_use_the_actual_package_and_dependencies() {
+fn module_check_and_json_use_the_actual_source_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     std::fs::create_dir(root.join("dep")).unwrap();
     for (path, source) in [
-        (
-            "Notist.toml",
-            "[package]\nname = 'demo'\n[dependencies]\ndep = {path = 'dep'}",
-        ),
-        ("dep/Notist.toml", "[package]\nname = 'dep'"),
+        ("Notist.toml", ""),
+        ("dep/Notist.toml", ""),
         ("dep/lib.notc", "fn value() -> String { \"dependency\" }"),
         (
             "lib.notc",
-            "fn helper() -> String { dep::value() } fn view() -> InlineContent { [#text(text: demo::helper())] }",
+            "import \"dep/lib.notc\" as dep; fn helper() -> String { dep.value() } fn view() -> InlineContent { [#text(text: self.helper())] }",
         ),
     ] {
         std::fs::write(root.join(path), source).unwrap();
@@ -281,7 +372,10 @@ fn module_check_and_json_use_the_actual_package_and_dependencies() {
         );
         if command == "json" {
             let data: Value = serde_json::from_slice(&result.stdout).unwrap();
-            assert_eq!(data["functions"][1]["function"], "demo::view");
+            assert_eq!(
+                data["functions"][1]["function"],
+                format!("{}.view", root.join("lib.notc").display())
+            );
             assert!(data["diagnostics"].as_array().unwrap().is_empty());
         }
     }
@@ -290,7 +384,11 @@ fn module_check_and_json_use_the_actual_package_and_dependencies() {
         "fn f() -> InlineContent { compile_error(\"module problem\") }",
     )
     .unwrap();
-    std::fs::write(root.join("doc.not"), "#demo::f()  中文中文中文中文").unwrap();
+    std::fs::write(
+        root.join("doc.not"),
+        "#import \"lib.notc\" as demo;\n#demo.f()  中文中文中文中文",
+    )
+    .unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(root)
         .args(["check", "."])
@@ -300,4 +398,43 @@ fn module_check_and_json_use_the_actual_package_and_dependencies() {
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("lib.notc:1:"), "{error}");
     assert!(!error.contains("doc.not:1:"), "{error}");
+}
+
+#[test]
+fn source_imports_load_a_code_module_without_context_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::write(
+        root.join("selected.notc"),
+        "fn mark() -> InlineContent { [selected module] }",
+    )
+    .unwrap();
+    std::fs::write(root.join("lib.notc"), "invalid implicit module").unwrap();
+    std::fs::write(
+        root.join("doc.not"),
+        "#import \"selected.notc\" as selected;\n#selected.mark()",
+    )
+    .unwrap();
+    for command in ["check", "core", "json", "html"] {
+        let mut cli = Command::new(env!("CARGO_BIN_EXE_notist"));
+        cli.current_dir(root).args([command, "doc.not"]);
+        if command == "core" || command == "json" {
+            cli.arg("--eval");
+        }
+        let output = cli.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{command}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if command == "core" || command == "json" {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("selected module"));
+        }
+    }
+    let removed = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root)
+        .args(["check", "doc.not", "--context", "selected.notc"])
+        .output()
+        .unwrap();
+    assert!(!removed.status.success());
 }

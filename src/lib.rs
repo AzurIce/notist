@@ -21,19 +21,19 @@ pub use rowan::{TextRange, TextSize};
 pub use notist_core::annotation::{Annotation, AnnotationKind};
 pub use notist_core::definitions::{
     ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionInstance,
-    ParameterDef, ParameterMode, Type, ValueConstraint,
+    Import, ParameterDef, ParameterMode, Type, ValueConstraint,
 };
-pub use notist_core::diag::{Diagnostic, Phase};
+pub use notist_core::diag::{Diagnostic, Phase, Sources};
 pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
 pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;
 pub use notist_core::{annotation, builtins, diag, dump, evaluation, expr, index, item, registry};
 pub use notist_pipeline::frontend::{
-    Frontends, PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
+    PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
 };
 pub use notist_pipeline::{
-    Analysis, CodeModule, CodeProgram, ContentLowering, Context, Evaluation, Limits, Lowered,
-    LoweredContent, Pipeline, UnsupportedFormat, analyze_module,
+    Analysis, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context, Evaluation,
+    Limits, Lowered, Pipeline, UnsupportedFormat,
 };
 pub use notist_syntax as syntax;
 
@@ -48,7 +48,7 @@ pub mod query;
 pub mod resources;
 pub mod vault;
 pub mod vault_index;
-pub use environment::{Environment, Package, SourceDiagnostic};
+pub use environment::{Environment, ModuleSource, SourceDiagnostic};
 pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
 pub use vault::{CodeAnalysis, HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError};
 pub use vault_index::VaultIndex;

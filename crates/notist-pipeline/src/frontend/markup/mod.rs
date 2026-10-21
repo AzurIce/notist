@@ -84,7 +84,30 @@ impl Frontend for NotistFrontend {
             })
             .collect();
         let (forest, module_attrs, annotations) = lower_document(&parsed, &mut diagnostics);
+        let root = parsed.syntax();
+        let imports = crate::lowering::imports::lower_imports(
+            root.children()
+                .filter(|node| {
+                    !parsed
+                        .diagnostics
+                        .iter()
+                        .any(|d| node.text_range().contains_inclusive(d.span.start()))
+                })
+                .filter_map(notist_syntax::code::ast::ImportDecl::cast),
+            &mut diagnostics,
+        );
+        for node in root.descendants().filter(|n| {
+            n.kind() == notist_syntax::tree::SyntaxKind::ImportDecl
+                && n.parent().as_ref() != Some(&root)
+        }) {
+            diagnostics.push(Diagnostic::new(
+                Phase::Semantic,
+                node.text_range(),
+                "imports are only valid at the document top level",
+            ));
+        }
         FrontendOutput {
+            imports,
             forest,
             annotations,
             module_attrs,

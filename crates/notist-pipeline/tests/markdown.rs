@@ -1,19 +1,11 @@
 use notist_core::frontend::{Frontend, FrontendOptions};
 
 fn analyze(src: &str) -> (notist_core::item::Item, Vec<notist_core::diag::Diagnostic>) {
-    let output = notist_pipeline::frontend::markdown::MarkdownFrontend
-        .compile(src, FrontendOptions::default());
-    let (forest, attrs, mut diags) = (output.forest, output.module_attrs, output.diagnostics);
-    let span = rowan::TextRange::new(0.into(), (src.len() as u32).into());
-    let item = notist_pipeline::process(
-        forest,
-        output.annotations,
-        span,
-        attrs,
-        &notist_pipeline::Context::default(),
-        &mut diags,
-    );
-    (item, diags)
+    notist_pipeline::Pipeline::new()
+        .with_frontend(notist_pipeline::frontend::markdown::MarkdownFrontend)
+        .analyze("test.md", src, &notist_pipeline::Context::default())
+        .unwrap()
+        .into_parts()
 }
 
 #[test]
@@ -208,7 +200,7 @@ fn markdown_call_boundaries_keep_inline_markers_and_trailing_text() {
 #[test]
 fn markdown_nested_calls_anonymous_groups_and_multiline_payloads() {
     use notist_core::item::{Ctor, Value};
-    let src = "@!(\n title: \"标题\",\n meta: (nested: (1, true, -2)),\n)\n@(id: \"group\")\n#node[\n#notist::callout(kind: \"note\")[\n@(id: \"inner\")\n正文 #strong[一 #emph[二] `]` $x_{]}$]\n]\n]\n";
+    let src = "@!(\n title: \"标题\",\n meta: (nested: (1, true, -2)),\n)\n@(id: \"group\")\n#node[\n#notist.callout(kind: \"note\")[\n@(id: \"inner\")\n正文 #strong[一 #emph[二] `]` $x_{]}$]\n]\n]\n";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert_eq!(root.attrs.get("title"), Some(&Value::Str("标题".into())));
@@ -261,7 +253,7 @@ fn malformed_markdown_extensions_recover_for_every_truncated_prefix() {
     for src in [
         "#raw(\n\n\"value\"\n)",
         "@(id: (nested: \"值\"))\n#callout[\n# 标题\n\n正文 #strong[*内容*]\n]",
-        "#notist::raw(r#\"raw ) value\"#, lang: \"text\")",
+        "#notist.raw(r#\"raw ) value\"#, lang: \"text\")",
         "前缀 #strong[未闭合",
     ] {
         for end in src

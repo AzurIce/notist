@@ -1,0 +1,9 @@
+fn graph(source: String, rule?: String, theme: String = "auto") -> BlockContent;
+
+fn diagram(source: String, rule?: String, theme: String = "auto") -> BlockContent {
+    [
+        #notist.raw<BlockContent>(source)
+
+        #graph(source, rule: rule, theme: theme)
+    ]
+}

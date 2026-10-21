@@ -594,6 +594,12 @@ impl<'a> Parser<'a> {
     /// anonymous form, producing a transparent group node. Anything else
     /// after `#` (bare `#name`, `#(..)`) is literal text.
     fn code_call(&mut self) {
+        if crate::code::is_markup_import(
+            &self.state.source[usize::from(self.state.lexed.offset(self.state.pos))..],
+        ) {
+            self.import_decl();
+            return;
+        }
         let Some(frame) = self.code_call_at(self.state.pos) else {
             self.eat();
             return;
@@ -633,6 +639,44 @@ impl<'a> Parser<'a> {
             self.bracket_body(block);
         }
         self.state.builder.finish_node();
+    }
+
+    fn import_decl(&mut self) {
+        let start = usize::from(self.state.lexed.offset(self.state.pos));
+        let end = self.state.source[start..]
+            .find(['\r', '\n'])
+            .map_or(self.state.source.len(), |n| start + n);
+        let mut parsed = crate::code::parse_import_prefix(&self.state.source[start..end]);
+        let target = TextSize::new(start as u32) + parsed.consumed();
+        let mut boundary = self.state.pos;
+        while self.state.lexed.offset(boundary) < target {
+            boundary += 1;
+        }
+        let recovery_end = usize::from(self.state.lexed.offset(boundary));
+        if self.state.lexed.offset(boundary) != target {
+            parsed = crate::code::parse_import(&self.state.source[start..recovery_end]);
+        }
+        let consumed = usize::from(parsed.consumed());
+        let before = self.state.source[..start]
+            .rsplit(['\r', '\n'])
+            .next()
+            .unwrap_or_default();
+        let after = self
+            .state
+            .source
+            .get(start + consumed..end)
+            .unwrap_or_default()
+            .trim();
+        if recovery_end > end
+            || !before.trim().is_empty()
+            || !after.is_empty() && !after.starts_with("//")
+        {
+            self.state.diagnostics.push(Diagnostic {
+                span: TextRange::new((start as u32).into(), ((start + consumed) as u32).into()),
+                message: "import declarations must occupy their own line".into(),
+            });
+        }
+        self.import_fragment(parsed, false, None);
     }
 
     fn code_call_at(&self, start: usize) -> Option<CallFrame> {
@@ -1001,6 +1045,9 @@ impl<'a> Parser<'a> {
                 self.kind_at(next + 1) == Some(SyntaxKind::Whitespace) || self.at_divider_at(next)
             }
             Some(SyntaxKind::At) => true,
+            Some(SyntaxKind::Hash) => crate::code::is_markup_import(
+                &self.state.source[usize::from(self.state.lexed.offset(next))..],
+            ),
             _ => false,
         }
     }
@@ -1050,7 +1097,7 @@ impl Parser<'_> {
             return None;
         }
         let mut end = from + 1;
-        while self.kind_at(end) == Some(SyntaxKind::ColonColon) {
+        while self.kind_at(end) == Some(SyntaxKind::Dot) {
             if self.kind_at(end + 1) != Some(SyntaxKind::Ident) {
                 return None;
             }

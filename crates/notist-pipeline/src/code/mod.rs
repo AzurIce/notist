@@ -1,5 +1,6 @@
 //! Concrete-instance checking and a bounded pure interpreter over Item trees.
 mod check;
+mod content;
 pub(crate) mod eval;
 pub(crate) use check::Checker;
 pub use eval::{Evaluation, Limits};

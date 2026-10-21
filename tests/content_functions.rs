@@ -127,7 +127,14 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
             "{src:?}"
         );
     }
-    let json = notist::cst_json::analyze_json("before\n---\nafter");
+    let (analysis, inspection) = notist::Pipeline::default()
+        .inspect(
+            "document.not",
+            "before\n---\nafter",
+            &notist::Context::default(),
+        )
+        .unwrap();
+    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection));
     assert!(json.contains("\"kind\":\"Divider\",\"start\":7,\"end\":10"));
 }
 
@@ -701,7 +708,7 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
     for (extension, src) in [("not", "*甲\\\n乙*"), ("md", "**甲\\\n乙**")] {
         let root = engine
             .analyze(
-                &format!("test.{extension}"),
+                format!("test.{extension}"),
                 src,
                 &notist::Context::default(),
             )

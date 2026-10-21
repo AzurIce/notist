@@ -1,7 +1,7 @@
 //! Typed views of Code declarations. Values and types remain syntax here;
 //! semantic lowering owns type resolution, literal conversion and validation.
 
-use super::{NodeOrToken, Path, SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
+use super::{NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 macro_rules! node {
     ($name:ident) => {
@@ -25,6 +25,7 @@ macro_rules! node {
 }
 
 node!(Module);
+node!(ImportDecl);
 node!(FunctionDecl);
 node!(ParameterList);
 node!(Parameter);
@@ -43,6 +44,23 @@ impl Module {
     /// installing definitions into an analysis environment.
     pub fn functions(&self) -> impl Iterator<Item = FunctionDecl> + '_ {
         self.0.children().filter_map(FunctionDecl::cast)
+    }
+}
+
+impl Module {
+    pub fn imports(&self) -> impl Iterator<Item = ImportDecl> + '_ {
+        self.0.children().filter_map(ImportDecl::cast)
+    }
+}
+impl ImportDecl {
+    pub fn source(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind() == SyntaxKind::Str)
+    }
+    pub fn alias(&self) -> Option<SyntaxToken> {
+        ident(&self.0)
     }
 }
 
@@ -116,8 +134,10 @@ impl ChildrenDecl {
 }
 
 impl TypeRef {
-    pub fn path(&self) -> Option<Path> {
-        self.0.children().find_map(Path::cast)
+    pub fn name(&self) -> Option<SyntaxNode> {
+        self.0
+            .children()
+            .find(|n| matches!(n.kind(), SyntaxKind::Path | SyntaxKind::MemberExpr))
     }
 
     pub fn arguments(&self) -> impl Iterator<Item = TypeRef> + '_ {

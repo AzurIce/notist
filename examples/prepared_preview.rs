@@ -6,38 +6,38 @@ use std::{collections::BTreeMap, error::Error, path::PathBuf};
 fn main() -> Result<(), Box<dyn Error>> {
     let inputs = PreparedInputs {
         root: "/notes".into(),
-        config: None, // Select the nearest configuration for each document.
+        config: None, // No output configuration is needed.
         files: BTreeMap::from([
             (
                 PathBuf::from("Notist.toml"),
-                b"[package]\nname = 'notist-doc'".to_vec(),
+                b"".to_vec(),
             ),
             (
                 PathBuf::from("lib.notc"),
-                include_bytes!("../docs/lib.notc").to_vec(),
+                b"fn panel(title: String = \"Panel\", expanded: Bool = true)[children: BlockContent] -> BlockContent; fn badge(label: String, count: Int = 1) -> InlineContent;".to_vec(),
             ),
             (
-                PathBuf::from("components/panel/index.js"),
+                PathBuf::from("panel/index.js"),
                 include_bytes!("../docs/components/panel/index.js").to_vec(),
             ),
             (
-                PathBuf::from("components/panel/style.js"),
+                PathBuf::from("panel/style.js"),
                 include_bytes!("../docs/components/panel/style.js").to_vec(),
             ),
             (
-                PathBuf::from("components/badge.js"),
+                PathBuf::from("badge.js"),
                 include_bytes!("../docs/components/badge.js").to_vec(),
             ),
         ]),
         // Publishing the directory preserves index.js's relative style import.
         module_urls: BTreeMap::from([
             (
-                PathBuf::from("components/panel/index.js"),
-                "https://assets.example/notist-doc/components/panel/index.js".into(),
+                PathBuf::from("panel/index.js"),
+                "https://assets.example/notist-doc/panel/index.js".into(),
             ),
             (
-                PathBuf::from("components/badge.js"),
-                "https://assets.example/notist-doc/components/badge.js".into(),
+                PathBuf::from("badge.js"),
+                "https://assets.example/notist-doc/badge.js".into(),
             ),
         ]),
     };
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut vault = serde_json::from_str::<PreparedInputs>(&message)?.into_vault();
     let output = vault.render_html(
         "preview.not",
-        "#notist-doc::panel(title: \"Preview\")[#notist-doc::badge(\"nested\")]",
+        "#import \"./lib.notc\" as widgets;\n#widgets.panel(title: \"Preview\")[ #widgets.badge(\"nested\") ]",
         RenderOptions::default(),
     )?;
     assert!(output.analysis.diagnostics().is_empty());

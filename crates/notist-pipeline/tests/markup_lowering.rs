@@ -3,7 +3,7 @@ use notist_core::expr::Expr;
 #[test]
 fn lowering_preserves_qualified_targets_fields_and_children() {
     let parsed = notist_syntax::markup::parse_document(
-        "#mermaid::diagram(\"graph\", theme: \"dark\")[#other::badge[x]]",
+        "#mermaid.diagram(\"graph\", theme: \"dark\")[#other.badge[x]]",
     );
     assert!(parsed.diagnostics.is_empty());
     let mut diagnostics = Vec::new();
@@ -23,7 +23,7 @@ fn lowering_preserves_qualified_targets_fields_and_children() {
     else {
         panic!("expected diagram");
     };
-    assert!(matches!(callee.as_ref(), Expr::Ref { name, .. } if name == "mermaid::diagram"));
+    assert!(matches!(callee.as_ref(), Expr::Member { name, .. } if name == "diagram"));
     assert!(
         matches!(args[0].value(), Expr::Literal(notist_core::item::Value::Str(value), _) if value == "graph")
     );
@@ -37,6 +37,6 @@ fn lowering_preserves_qualified_targets_fields_and_children() {
     else {
         panic!("expected badge");
     };
-    assert!(matches!(callee.as_ref(), Expr::Ref { name, .. } if name == "other::badge"));
+    assert!(matches!(callee.as_ref(), Expr::Member { name, .. } if name == "badge"));
     assert_eq!(children.len(), 1);
 }

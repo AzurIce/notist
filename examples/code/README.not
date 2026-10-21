@@ -1,15 +1,18 @@
+#import "./lib.notc" as demo;
 = Code functions
 
-#code-demo::decorate[Inline content]
+本页显式导入 lib.notc；该模块通过相对路径 import labels.notc。模块绑定沿成员访问公开，不需要 Notist.toml。
 
-#code-demo::panel[Inline input becomes an explicit paragraph.]
+#demo.decorate[Inline content]
 
-#code-demo::decorate[
+#demo.panel[Inline input becomes an explicit paragraph.]
+
+#demo.decorate[
 = A block forest
 
 Existing paragraphs and sections remain intact.
 ]
 
-#code-demo::label("A runtime argument")
+#demo.labels.label("A runtime argument")
 
-#code-demo::label("Hidden content", visible: false)
+#demo.labels.label("Hidden content", visible: false)

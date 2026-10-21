@@ -176,7 +176,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
 
 /// The signature of a builtin constructor by source name (`None` for custom).
 pub fn builtin_signature(name: &str) -> Option<CtorSignature> {
-    let definition = registry().resolve(name).ok()?;
+    let definition = registry().function("notist", name)?;
     Some(CtorSignature {
         accepts: definition.children,
         level: definition.returns.level().unwrap_or(Level::Inherit),

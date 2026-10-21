@@ -1,3 +1,5 @@
+import "./labels.notc" as labels;
+
 fn decorate<C: Type>[children: C] -> C {
     match C {
         InlineContent => strong()[#children],
@@ -9,8 +11,4 @@ fn decorate<C: Type>[children: C] -> C {
 fn panel<C: Type>[children: C] -> BlockContent {
     let blocks = if C == InlineContent { [ #children ] } else { children };
     callout(kind: "note")[ #blocks ]
-}
-
-fn label(text: String, visible: Bool = true) -> InlineContent {
-    if visible { [#text(text: text)] } else { [] }
 }

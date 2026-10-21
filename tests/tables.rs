@@ -36,10 +36,10 @@ fn normalized(mut item: Item) -> Item {
 fn text(item: &Item) -> String {
     item.descendants()
         .filter_map(|node| {
-            if node.ctor == Ctor::Text {
-                if let Some(Value::Str(text)) = node.fields.get("text") {
-                    return Some(text.as_str());
-                }
+            if node.ctor == Ctor::Text
+                && let Some(Value::Str(text)) = node.fields.get("text")
+            {
+                return Some(text.as_str());
             }
             None
         })
@@ -123,7 +123,10 @@ fn table_ast_exposes_rows_cells_header_and_all_alignments_losslessly() {
         "a"
     );
     assert_eq!(usize::from(table.range().end()), src.len());
-    let json = notist::cst_json::analyze_json(src);
+    let (analysis, inspection) = notist::Pipeline::default()
+        .inspect("document.not", src, &notist::Context::default())
+        .unwrap();
+    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection));
     assert!(json.contains("\"kind\":\"Table\""));
     assert!(json.contains("\"kind\":\"TableDelimiter\""));
     assert_eq!(
@@ -266,7 +269,7 @@ fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
         let formula = format!("${newline}{payload}{newline}$");
         let source = format!(
             "| package | content |{newline}| --- | --- |{newline}\
-             | [katex](https://github.com/AzurIce/notist/blob/main/packages/katex/README.not) | {formula} |{newline}\
+             | [katex](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not) | {formula} |{newline}\
              | after | following |{newline}{newline}outside"
         );
         let root = analyze("test.not", &source);
@@ -414,15 +417,21 @@ fn multiline_strings_keep_their_payload_and_following_cells_and_rows() {
 
 #[test]
 fn mermaid_diagram_source_stays_in_one_table_cell_and_renders_as_a_component() {
-    let environment = notist::Environment::from_packages([notist::Package {
-        name: "mermaid".into(),
-        root: "packages/mermaid".into(),
-        source: include_str!("../packages/mermaid/lib.notc").into(),
-    }])
-    .unwrap();
+    let context = notist::Context::default()
+        .with_module(
+            Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "mermaid",
+                    "modules/mermaid/lib.notc",
+                    include_str!("../modules/mermaid/lib.notc"),
+                )
+                .unwrap(),
+        )
+        .unwrap();
     let src = r##"| Package | 内容 |
 | --- | --- |
-| [mermaid](packages/mermaid/README.not) | #mermaid::diagram(r#"""
+| [mermaid](modules/mermaid/README.not) | #self.diagram(r#"""
 stateDiagram-v2
     [*] --> s1
     s1 --> [*]
@@ -433,7 +442,7 @@ stateDiagram-v2
     assert_eq!(parse.syntax().to_string(), src);
     assert!(parse.diagnostics.is_empty(), "{:?}", parse.diagnostics);
     let analysis = Pipeline::default()
-        .analyze("test.not", src, environment.context())
+        .analyze("test.not", src, &context)
         .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),
@@ -457,10 +466,7 @@ stateDiagram-v2
     assert_eq!(text(&table.children[2]), "afterfollowing");
     let mut html_registry = notist_html::HtmlRegistry::default();
     html_registry
-        .bind_component(
-            environment.context().registry().get(&id).unwrap(),
-            "/components/mermaid/diagram.js",
-        )
+        .bind_component(context.registry().get(&id).unwrap(), "/mermaid/diagram.js")
         .unwrap();
     let html = notist_html::Renderer::new()
         .with_registry(html_registry)
@@ -646,8 +652,8 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
         "#node[x",
         "#call(\"x\")[body",
         "#call(",
-        "#pkg::",
-        "#pkg::()",
+        "#pkg.",
+        "#pkg.()",
         "#call [body",
         "#()[body",
         "plain (text",
@@ -753,7 +759,7 @@ fn malformed_table_markers_remain_prose_and_wrong_structural_children_diagnose()
         "a | b\n---",
         "a | b\n--- | nope",
         "a | b\n--- | --- | ---",
-        "a | b\n--- | ::---",
+        "a | b\n--- | .---",
         "a | b\n--- | - - -",
         " a | b\n--- | ---",
         "plain\n---",

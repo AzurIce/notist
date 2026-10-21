@@ -7,10 +7,6 @@ use notist_syntax::tree::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use crate::item::Item;
 
-pub fn analyze_json(src: &str) -> String {
-    analyze_json_with_context(src, &crate::Context::default())
-}
-
 /// Module inspection keeps the recovered CST available even on semantic errors.
 pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
     let parse = notist_syntax::code::parse_module(src, &notist_syntax::markup::MarkupContentParser);
@@ -59,7 +55,7 @@ pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
                     }
                     out.push('}');
                 }
-                out.push_str("]");
+                out.push(']');
                 out.push_str(&format!(",\"code\":{},\"returns\":{},\"children_type\":{},\"comptime\":{}",function.code,type_json(&function.returns),function.children_type.as_ref().map(type_json).unwrap_or_default(),serde_json::json!(function.comptime.iter().map(|p|serde_json::json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>())));
                 out.push('}');
             }
@@ -77,7 +73,7 @@ pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
 }
 
 fn module_ast(module: &code_ast::Module) -> serde_json::Value {
-    let functions = module
+    let functions: Vec<_> = module
         .functions()
         .map(|function| {
             let mut children = function
@@ -112,7 +108,13 @@ fn module_ast(module: &code_ast::Module) -> serde_json::Value {
             ast_node("FunctionDecl", function.syntax(), children)
         })
         .collect();
-    let mut tree = ast_node("Module", module.syntax(), functions);
+    let mut children: Vec<_> = module
+        .imports()
+        .map(|i| ast_node("ImportDecl", i.syntax(), Vec::new()))
+        .collect();
+    children.extend(functions);
+    children.sort_by_key(|node| node["start"].as_u64());
+    let mut tree = ast_node("Module", module.syntax(), children);
     tree.as_object_mut().unwrap().remove("label");
     tree
 }
@@ -142,17 +144,7 @@ fn type_json(ty: &crate::Type) -> serde_json::Value {
         Type::Array(element) => {
             json!({"kind":"Array", "element":element.as_ref().map(|element| type_json(element))})
         }
-    }
-}
-
-pub fn analyze_document_json(
-    path: &std::path::Path,
-    src: &str,
-    context: &crate::Context,
-) -> String {
-    match crate::Pipeline::default().inspect(path, src, context) {
-        Ok((analysis, inspection)) => inspection_json(&analysis, Some(&inspection)),
-        Err(error) => format!("{{\"error\":{}}}", escape(&error.to_string())),
+        Type::Option(element) => json!({"kind":"Option", "element":type_json(element)}),
     }
 }
 
@@ -222,10 +214,6 @@ fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
     out.push(']');
 }
 
-pub fn analyze_json_with_context(src: &str, context: &crate::Context) -> String {
-    analyze_document_json(std::path::Path::new("document.not"), src, context)
-}
-
 fn write_element(out: &mut String, element: NodeOrToken<SyntaxNode, SyntaxToken>) {
     match element {
         NodeOrToken::Node(node) => {
@@ -274,6 +262,7 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                 if matches!(
                     node.kind(),
                     SyntaxKind::Heading
+                        | SyntaxKind::ImportDecl
                         | SyntaxKind::List
                         | SyntaxKind::Raw
                         | SyntaxKind::Divider
@@ -322,7 +311,9 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                     SyntaxKind::List => {
                         write_ast_list(out, &ast::List::cast(node.clone()).unwrap())
                     }
-                    SyntaxKind::Table => write_element(out, NodeOrToken::Node(node.clone())),
+                    SyntaxKind::Table | SyntaxKind::ImportDecl => {
+                        write_element(out, NodeOrToken::Node(node.clone()))
+                    }
                     SyntaxKind::Raw | SyntaxKind::Divider => {
                         let range = node.text_range();
                         out.push_str(&format!(
@@ -509,6 +500,14 @@ fn write_expr(out: &mut String, expr: &Expr) {
                 escape(&value.to_string())
             ));
         }
+        Expr::Member { base, name, .. } => {
+            out.push_str(&format!(
+                "{{\"kind\":\"Member\",\"start\":{start},\"end\":{end},\"label\":{},\"children\":[",
+                escape(name)
+            ));
+            write_expr(out, base);
+            out.push_str("]}");
+        }
         Expr::Ref { name, .. } => {
             out.push_str(&format!(
                 "{{\"kind\":\"Ref\",\"start\":{start},\"end\":{end},\"label\":{}}}",
@@ -523,7 +522,11 @@ fn write_expr(out: &mut String, expr: &Expr) {
             attrs,
             ..
         } => {
-            let mut label = expr.callee_name().unwrap_or("<expression>").to_string();
+            let mut label = expr
+                .callee_path()
+                .as_deref()
+                .unwrap_or("<expression>")
+                .to_string();
             for (key, value) in attrs.iter() {
                 label.push_str(&format!(" @{key} {value}"));
             }

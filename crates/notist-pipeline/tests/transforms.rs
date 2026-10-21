@@ -4,12 +4,12 @@ use notist_core::{
     item::{Ctor, Value},
 };
 use notist_pipeline::{
-    Context, Pipeline, analyze_module,
+    Context, Pipeline,
     transforms::{Replace, TransformPlan},
 };
 fn rule(a: &str, b: &str) -> Replace {
     let id = |s: &str| {
-        let (p, n) = s.split_once("::").unwrap();
+        let (p, n) = s.split_once(".").unwrap();
         FunctionId::new(p, n)
     };
     Replace {
@@ -19,12 +19,12 @@ fn rule(a: &str, b: &str) -> Replace {
     }
 }
 fn context() -> Context {
-    Context::default().with_module(analyze_module("maths","fn first<C: Type = InlineContent>(text: String) -> C; fn second<K: Type = InlineContent>(text: String) -> K; fn wrong(source: String) -> BlockContent;").unwrap()).unwrap()
+    Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "maths", "maths/lib.notc","fn first<C: Type = InlineContent>(text: String) -> C; fn second<K: Type = InlineContent>(text: String) -> K; fn wrong(source: String) -> BlockContent;").unwrap()).unwrap()
 }
 #[test]
 fn both_frontends_preserve_identity_and_select_native_targets() {
     let c = context()
-        .with_transforms(&[rule("notist::math", "maths::first")])
+        .with_transforms(&[rule("notist.math", "maths.first")])
         .unwrap();
     let p = Pipeline::default();
     for path in ["test.not", "test.md"] {
@@ -59,9 +59,9 @@ fn both_frontends_preserve_identity_and_select_native_targets() {
 fn rules_run_once_in_order_and_generic_names_are_normalized() {
     let c = context();
     let rules = [
-        rule("notist::math", "maths::first"),
-        rule("maths::first", "maths::second"),
-        rule("maths::second", "notist::math"),
+        rule("notist.math", "maths.first"),
+        rule("maths.first", "maths.second"),
+        rule("maths.second", "notist.math"),
     ];
     let plan = TransformPlan::compile(&rules, c.registry()).unwrap();
     assert_eq!(
@@ -83,12 +83,12 @@ fn rules_run_once_in_order_and_generic_names_are_normalized() {
 fn incompatible_contracts_and_roles_are_rejected() {
     let c = context();
     for r in [
-        rule("notist::math", "maths::wrong"),
-        rule("notist::item", "notist::callout"),
-        rule("notist::strong", "notist::emph"),
-        rule("notist::math", "maths::missing"),
+        rule("notist.math", "maths.wrong"),
+        rule("notist.item", "notist.callout"),
+        rule("notist.strong", "notist.emph"),
+        rule("notist.math", "maths.missing"),
     ] {
-        let result = TransformPlan::compile(&[r.clone()], c.registry());
+        let result = TransformPlan::compile(std::slice::from_ref(&r), c.registry());
         if r.from.name == "strong" {
             assert!(result.is_ok());
         } else {
@@ -98,7 +98,7 @@ fn incompatible_contracts_and_roles_are_rejected() {
 }
 #[test]
 fn transform_can_execute_code_without_changing_semantic_call() {
-    let c=Context::default().with_module(analyze_module("demo","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_transforms(&[rule("notist::emph","demo::loud")]).unwrap();
+    let c=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_transforms(&[rule("notist.emph","demo.loud")]).unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "_hello_", &c).unwrap();
     let e = p.evaluate(&a, &c);
@@ -132,22 +132,25 @@ fn defaults_compare_exact_float_bits_and_parameter_binding_order() {
         m.functions.push(f);
     }
     r.register(m).unwrap();
-    assert!(TransformPlan::compile(&[rule("native::a", "native::b")], &r).is_ok());
-    assert!(TransformPlan::compile(&[rule("native::a", "native::c")], &r).is_err());
+    assert!(TransformPlan::compile(&[rule("native.a", "native.b")], &r).is_ok());
+    assert!(TransformPlan::compile(&[rule("native.a", "native.c")], &r).is_err());
 }
 
 #[test]
 fn generated_paragraphs_participate_in_function_mapping() {
     let c = Context::default()
         .with_module(
-            analyze_module(
-                "demo",
-                "fn paragraph()[children: InlineContent] -> BlockContent { divider() }",
-            )
-            .unwrap(),
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "demo",
+                    "demo/lib.notc",
+                    "fn paragraph()[children: InlineContent] -> BlockContent { divider() }",
+                )
+                .unwrap(),
         )
         .unwrap()
-        .with_transforms(&[rule("notist::paragraph", "demo::paragraph")])
+        .with_transforms(&[rule("notist.paragraph", "demo.paragraph")])
         .unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "ordinary text", &c).unwrap();
@@ -165,14 +168,14 @@ fn generated_paragraphs_participate_in_function_mapping() {
 
 #[test]
 fn output_mapping_cannot_change_compile_time_source_analysis() {
-    let base=Context::default().with_module(analyze_module("demo","fn original() -> Int { 1 } fn target() -> Int { 2 } fn show() -> BlockContent { heading<level: original()>()[title] }").unwrap()).unwrap();
+    let base=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn original() -> Int { 1 } fn target() -> Int { 2 } fn show() -> BlockContent { heading<level: original()>()[title] }").unwrap()).unwrap();
     let mapped = base
         .clone()
-        .with_transforms(&[rule("demo::original", "demo::target")])
+        .with_transforms(&[rule("demo.original", "demo.target")])
         .unwrap();
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::show()", &base).unwrap();
-    let b = p.analyze("doc.not", "#demo::show()", &mapped).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &base).unwrap();
+    let b = p.analyze("doc.not", "#self.show()", &mapped).unwrap();
     assert_eq!(a, b);
     assert!(b.diagnostics().is_empty(), "{:?}", b.diagnostics());
     let e = p.evaluate(&b, &mapped);
@@ -191,20 +194,23 @@ fn output_mapping_cannot_change_compile_time_source_analysis() {
 fn transparent_node_contract_cannot_be_replaced_by_an_opaque_code_function() {
     let c = Context::default()
         .with_module(
-            analyze_module(
-                "demo",
-                r#"
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "demo",
+                    "demo/lib.notc",
+                    r#"
         fn replacement<C: Type = InlineContent>[children: C] -> C {
             if C == InlineContent { [replacement] } else { [ replacement ] }
         }
     "#,
-            )
-            .unwrap(),
+                )
+                .unwrap(),
         )
         .unwrap();
     for (from, to) in [
-        ("notist::node", "demo::replacement"),
-        ("demo::replacement", "notist::node"),
+        ("notist.node", "demo.replacement"),
+        ("demo.replacement", "notist.node"),
     ] {
         let errors = TransformPlan::compile(&[rule(from, to)], c.registry()).unwrap_err();
         assert!(

@@ -1,5 +1,6 @@
 //! Common syntax-to-IR conversion for built-in and externally registered
 //! frontends. Per-frontend document lowering lives in `crate::frontend`.
+pub mod imports;
 
 pub mod code;
 pub mod content;
@@ -51,32 +52,37 @@ pub fn call_header(
     let span = call.range();
     let mut args = Vec::new();
     for el in call.args() {
-        if let NodeOrToken::Node(node) = &el {
-            if node.kind() == SyntaxKind::Entry {
-                let entry = Entry::cast(node.clone()).unwrap();
-                if let (Some(key), Some(value)) = (entry.key_token(), entry.value()) {
-                    if let (Some(name), Some(value)) = (
-                        key_text(&key, diags),
-                        code::expression(value, Some(parsed), Some(frontend), diags),
-                    ) {
-                        args.push(CallArg::Named { name, value });
-                    }
-                }
-                continue;
+        if let NodeOrToken::Node(node) = &el
+            && node.kind() == SyntaxKind::Entry
+        {
+            let entry = Entry::cast(node.clone()).unwrap();
+            if let (Some(key), Some(value)) = (entry.key_token(), entry.value())
+                && let (Some(name), Some(value)) = (
+                    key_text(&key, diags),
+                    code::expression(value, Some(parsed), Some(frontend), diags),
+                )
+            {
+                args.push(CallArg::Named { name, value });
             }
+            continue;
         }
         if let Some(value) = code::expression(el, Some(parsed), Some(frontend), diags) {
             args.push(CallArg::Positional(value));
         }
     }
-    let name = call.name().unwrap_or_else(|| "<anonymous>".into());
+    let callee = call
+        .callee()
+        .and_then(|node| {
+            code::expression(NodeOrToken::Node(node), Some(parsed), Some(frontend), diags)
+        })
+        .unwrap_or_else(|| Expr::reference("<anonymous>", span));
     if !has_body
         && !call
             .syntax()
             .children_with_tokens()
             .any(|e| matches!(e.kind(), SyntaxKind::LParen | SyntaxKind::ComptimeArguments))
     {
-        return Expr::reference(name, span);
+        return callee;
     }
     let comptime = call
         .syntax()
@@ -85,10 +91,7 @@ pub fn call_header(
         .map(|n| code::arguments(&n, Some(parsed), Some(frontend), diags))
         .unwrap_or_default();
     Expr::Call {
-        callee: Box::new(Expr::reference(
-            name,
-            call.path().map_or(span, |p| p.range()),
-        )),
+        callee: Box::new(callee),
         args,
         comptime,
         children: Vec::new(),

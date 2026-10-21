@@ -5,7 +5,10 @@ use crate::{Analysis, Environment, Pipeline, SourceDiagnostic, UnsupportedFormat
 use notist_html::{HtmlRegistry, ModuleLocator, RenderResult, Renderer};
 use notist_pipeline::Evaluation;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 mod code;
 pub use code::CodeAnalysis;
@@ -55,7 +58,7 @@ impl Default for RenderOptions {
     }
 }
 
-/// Analysis, evaluation and render diagnostics refer to this document source. Package/config
+/// Analysis, evaluation and render diagnostics refer to this document source. Module/config
 /// failures instead return source-bearing VaultError::Environment entries.
 #[derive(Debug)]
 pub struct HtmlOutput {
@@ -78,7 +81,7 @@ pub struct ItemOutput {
 pub struct Vault<R = FsResources> {
     resources: R,
     pipeline: Pipeline,
-    environments: BTreeMap<Option<PathBuf>, Environment>,
+    environments: BTreeMap<PathBuf, BTreeMap<Arc<str>, Arc<Environment>>>,
     config: Option<PathBuf>,
     module_urls: BTreeMap<PathBuf, String>,
 }
@@ -101,20 +104,12 @@ impl<R: Resources> Vault<R> {
     }
     pub fn with_pipeline(mut self, pipeline: Pipeline) -> Self {
         self.pipeline = pipeline;
+        self.environments.clear();
         self
     }
     pub fn with_config(mut self, path: impl AsRef<Path>) -> Self {
         self.config = Some(self.resources.resolve(path.as_ref()));
-        self
-    }
-    /// Supply a pure, already assembled default environment. Nearest or explicit
-    /// configs still select their own environments.
-    pub fn with_environment(mut self, environment: Environment) -> Self {
-        let key = environment.config_path().map(Path::to_path_buf);
-        if key.is_some() {
-            self.config = key.clone();
-        }
-        self.environments.insert(key, environment);
+        self.environments.clear();
         self
     }
     /// Host publication mapping. Resource paths remain distinct from browser URLs.
@@ -125,68 +120,110 @@ impl<R: Resources> Vault<R> {
             .collect();
         self
     }
-    /// Select the environment for `path` and ensure it is assembled and cached.
-    ///
-    /// An explicit Vault config takes precedence; otherwise discover the nearest
-    /// ancestor `Notist.toml`. Return its resolved path as the `environments` map
-    /// key, or `None` for the default environment shared by unconfigured documents.
-    ///
-    /// Reuse an existing entry, including one supplied by `with_environment`.
-    /// On a cache miss, the host loader assembles a Context from package
-    /// declarations and configured transform rules, or uses Context::default().
-    /// The Environment retains that Context alongside package resource metadata.
-    /// Assembly errors propagate without caching a partial environment.
-    /// Environments remain cached for this Vault's resource view; create a new
-    /// Vault when configuration or package inputs change.
-    fn ensure_environment(&mut self, path: &Path) -> Result<Option<PathBuf>, VaultError> {
-        let key = match &self.config {
-            Some(config) => Some(config.clone()),
-            None => discover_config_in(&self.resources, path)?,
-        };
-        if !self.environments.contains_key(&key) {
-            let environment = match &key {
-                Some(config) => Environment::load_from(&self.resources, config)
-                    .map_err(VaultError::Environment)?,
-                None => Environment::default(),
+    /// Keep each document source snapshot bound to its own import environment.
+    fn ensure_environment(
+        &mut self,
+        path: &Path,
+        source: &str,
+        imports: &[crate::Import],
+    ) -> Result<(PathBuf, Arc<str>), VaultError> {
+        let path = self.resources.resolve(path);
+        if !self
+            .environments
+            .get(&path)
+            .is_some_and(|versions| versions.contains_key(source))
+        {
+            let config = match &self.config {
+                Some(config) => Some(config.clone()),
+                None => discover_config_in(&self.resources, &path)?,
             };
-            self.environments.insert(key.clone(), environment);
+            let environment = Environment::for_document(
+                &self.resources,
+                &self.pipeline,
+                &path,
+                source,
+                imports,
+                config.as_deref(),
+            )
+            .map_err(VaultError::Environment)?;
+            self.environments
+                .entry(path.clone())
+                .or_default()
+                .insert(Arc::from(source), Arc::new(environment));
         }
-        Ok(key)
+        let text = self.environments[&path]
+            .get_key_value(source)
+            .unwrap()
+            .0
+            .clone();
+        Ok((path, text))
     }
-    pub fn environment_for(&mut self, path: impl AsRef<Path>) -> Result<&Environment, VaultError> {
-        let key = self.ensure_environment(path.as_ref())?;
-        Ok(&self.environments[&key])
+    fn environment_key(
+        &mut self,
+        path: &Path,
+        source: &str,
+    ) -> Result<(PathBuf, Arc<str>), VaultError> {
+        let path = self.resources.resolve(path);
+        if let Some((text, _)) = self
+            .environments
+            .get(&path)
+            .and_then(|versions| versions.get_key_value(source))
+        {
+            return Ok((path, text.clone()));
+        }
+        let lowered = self
+            .pipeline
+            .lower(&path, source, crate::FrontendOptions::default())?;
+        self.ensure_environment(&path, source, &lowered.imports)
+    }
+    pub fn environment_for(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+    ) -> Result<Arc<Environment>, VaultError> {
+        let (path, text) = self.environment_key(path.as_ref(), source)?;
+        Ok(self.environments[&path][text.as_ref()].clone())
     }
     pub fn analyze(
         &mut self,
         path: impl AsRef<Path>,
         source: &str,
     ) -> Result<Analysis, VaultError> {
-        let path = path.as_ref();
-        let key = self.ensure_environment(path)?;
-        let mut analysis =
-            self.pipeline
-                .analyze(path, source, self.environments[&key].context())?;
-        analysis.extend_diagnostics(crate::vault_index::check_content_paths(
-            self.resources.root(),
-            path,
-            analysis.root(),
-        ));
-        Ok(analysis)
+        self.compile(path.as_ref(), source, false)
+            .map(|(analysis, _)| analysis)
     }
     pub fn inspect(
         &mut self,
         path: impl AsRef<Path>,
         source: &str,
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
-        let path = path.as_ref();
-        let key = self.ensure_environment(path)?;
-        let (mut analysis, inspection) =
-            self.pipeline
-                .inspect(path, source, self.environments[&key].context())?;
+        self.compile(path.as_ref(), source, true)
+    }
+    fn compile(
+        &mut self,
+        path: &Path,
+        source: &str,
+        capture: bool,
+    ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
+        let path = self.resources.resolve(path);
+        let output = self.pipeline.lower(
+            &path,
+            source,
+            crate::FrontendOptions {
+                capture_syntax: capture,
+            },
+        )?;
+        let key = self.ensure_environment(&path, source, &output.imports)?;
+        let (mut analysis, inspection) = self.pipeline.analyze_lowered(
+            &path,
+            key.1.clone(),
+            output,
+            self.environments[&key.0][key.1.as_ref()].context(),
+            capture,
+        );
         analysis.extend_diagnostics(crate::vault_index::check_content_paths(
             self.resources.root(),
-            path,
+            &path,
             analysis.root(),
         ));
         Ok((analysis, inspection))
@@ -195,10 +232,21 @@ impl<R: Resources> Vault<R> {
         let source = self.resources.source(path.as_ref())?;
         self.analyze(path, &source)
     }
-    pub fn html_registry(&mut self, path: impl AsRef<Path>) -> Result<HtmlRegistry, VaultError> {
-        let key = self.ensure_environment(path.as_ref())?;
-        bind_html(&self.environments[&key], &self.resources, &self.module_urls)
-            .map_err(VaultError::Environment)
+    /// Bind only native targets visited by HTML rendering of this evaluated tree.
+    pub fn html_registry(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+        root: &crate::Item,
+    ) -> Result<HtmlRegistry, VaultError> {
+        let (path, text) = self.environment_key(path.as_ref(), source)?;
+        bind_html(
+            &self.environments[&path][text.as_ref()],
+            &self.resources,
+            &self.module_urls,
+            root,
+        )
+        .map_err(VaultError::Environment)
     }
     pub fn render_html(
         &mut self,
@@ -226,23 +274,40 @@ impl<R: Resources> Vault<R> {
         path: impl AsRef<Path>,
         analysis: &Analysis,
     ) -> Result<Evaluation, VaultError> {
-        let key = self.ensure_environment(path.as_ref())?;
+        let path = self.resources.resolve(path.as_ref());
+        let source = analysis
+            .sources()
+            .get(path.to_string_lossy().as_ref())
+            .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
+        let (path, text) = self.environment_key(&path, source)?;
         Ok(self
             .pipeline
-            .evaluate(analysis, self.environments[&key].context()))
+            .evaluate(analysis, self.environments[&path][text.as_ref()].context()))
     }
 
-    /// Evaluate an analysis once and render the result. Callers with an
-    /// already evaluated tree can pass it directly to notist_html::Renderer.
+    /// Evaluate once, then bind and render only the targets present in the result.
     pub fn render_output(
         &mut self,
         path: impl AsRef<Path>,
         analysis: &Analysis,
         options: RenderOptions,
     ) -> Result<ItemOutput, VaultError> {
-        let path = path.as_ref();
-        let evaluation = self.evaluate(path, analysis)?;
-        let mut renderer = Renderer::new().with_registry(self.html_registry(path)?);
+        let path = self.resources.resolve(path.as_ref());
+        let source = analysis
+            .sources()
+            .get(path.to_string_lossy().as_ref())
+            .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
+        let (path, text) = self.environment_key(&path, source)?;
+        let environment = &self.environments[&path][text.as_ref()];
+        let evaluation = self.pipeline.evaluate(analysis, environment.context());
+        let registry = bind_html(
+            environment,
+            &self.resources,
+            &self.module_urls,
+            &evaluation.root,
+        )
+        .map_err(VaultError::Environment)?;
+        let mut renderer = Renderer::new().with_registry(registry);
         if options.source_map {
             renderer = renderer.with_source_map();
         }
@@ -314,24 +379,24 @@ pub(crate) fn bind_html(
     environment: &Environment,
     resources: &(impl Resources + ?Sized),
     urls: &BTreeMap<PathBuf, String>,
+    root: &crate::Item,
 ) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
     let mut bindings = BTreeMap::new();
     let mut errors = Vec::new();
-    for definition in environment
-        .context()
-        .registry()
-        .functions()
+    for definition in notist_html::components::component_ids(root)
+        .iter()
+        .filter_map(|id| environment.context().registry().get(id))
         .filter(|definition| {
-            definition.id.package != "notist"
+            definition.id.module != "notist"
                 && !definition.code
                 && (definition.returns.level().is_some()
                     || matches!(definition.returns, crate::Type::Parameter(_)))
         })
     {
-        let package = &environment.packages()[&definition.id.package];
+        let module = &environment.modules()[&definition.id.module];
         let result = (|| -> Result<Option<ModuleLocator>, String> {
             let entries = notist_html::components::component_entries(&definition.id.name)
-                .map(|entry| resources.resolve(&package.root.join(entry)));
+                .map(|entry| resources.resolve(&module.path.parent().unwrap().join(entry)));
             let available = [
                 resources.kind(&entries[0]).map_err(|e| e.to_string())? == Some(ResourceKind::File),
                 resources.kind(&entries[1]).map_err(|e| e.to_string())? == Some(ResourceKind::File),
@@ -339,7 +404,7 @@ pub(crate) fn bind_html(
             let entry =
                 notist_html::components::select_component_entry(&definition.id.name, available)?;
             Ok(entry.map(|entry| {
-                let path = resources.resolve(&package.root.join(entry));
+                let path = resources.resolve(&module.path.parent().unwrap().join(entry));
                 match urls.get(&path) {
                     Some(url) => ModuleLocator::Url(url.clone()),
                     None => ModuleLocator::Resource(path),
@@ -352,8 +417,8 @@ pub(crate) fn bind_html(
             }
             Ok(None) => {}
             Err(message) => errors.push(issue(
-                &package.root.join("lib.notc"),
-                &package.source,
+                &module.path,
+                &module.source,
                 definition.span,
                 message,
             )),
@@ -364,19 +429,14 @@ pub(crate) fn bind_html(
         Ok(_) => Err(errors),
         Err(binding_errors) => {
             for error in binding_errors {
-                let package = &environment.packages()[&error.id.package];
+                let module = &environment.modules()[&error.id.module];
                 let span = environment
                     .context()
                     .registry()
                     .get(&error.id)
                     .unwrap()
                     .span;
-                errors.push(issue(
-                    &package.root.join("lib.notc"),
-                    &package.source,
-                    span,
-                    error.message,
-                ));
+                errors.push(issue(&module.path, &module.source, span, error.message));
             }
             Err(errors)
         }

@@ -98,7 +98,7 @@ impl Parser<'_, '_> {
             return None;
         }
         let mut end = from + 1;
-        while self.kind_at(end) == Some(SyntaxKind::ColonColon) {
+        while self.kind_at(end) == Some(SyntaxKind::Dot) {
             if self.kind_at(end + 1) != Some(SyntaxKind::Ident) {
                 return None;
             }
@@ -108,12 +108,19 @@ impl Parser<'_, '_> {
     }
 
     pub(super) fn path(&mut self) {
-        let end = self.path_end(self.state.pos).unwrap();
+        let end = self.path_end(self.state.pos).unwrap_or(self.state.pos + 1);
+        let checkpoint = self.state.builder.checkpoint();
         self.state.builder.start_node(SyntaxKind::Path.into());
-        while self.state.pos < end {
-            self.eat();
-        }
+        self.eat();
         self.state.builder.finish_node();
+        while self.state.pos < end {
+            self.state
+                .builder
+                .start_node_at(checkpoint, SyntaxKind::MemberExpr.into());
+            self.eat(); // .
+            self.eat(); // member
+            self.state.builder.finish_node();
+        }
     }
 
     pub(super) fn annotation_contents(&mut self) {
@@ -225,7 +232,10 @@ impl Parser<'_, '_> {
                         && matches!(
                             self.cur(),
                             Some(
-                                SyntaxKind::FnKeyword | SyntaxKind::Semicolon | SyntaxKind::RParen
+                                SyntaxKind::FnKeyword
+                                    | SyntaxKind::ImportKeyword
+                                    | SyntaxKind::Semicolon
+                                    | SyntaxKind::RParen
                             )
                         ))
                 {
@@ -271,7 +281,8 @@ impl Parser<'_, '_> {
         loop {
             self.eat_trivia();
             match self.cur() {
-                None | Some(SyntaxKind::Semicolon | SyntaxKind::FnKeyword)
+                None
+                | Some(SyntaxKind::Semicolon | SyntaxKind::FnKeyword | SyntaxKind::ImportKeyword)
                     if self.state.in_module || self.cur().is_none() =>
                 {
                     let point = self.state.lexed.offset(self.state.pos);

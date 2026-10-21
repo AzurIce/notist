@@ -246,3 +246,40 @@ pub fn parse_content_literal(source: &str, content: &dyn ContentParser) -> Parse
     // This is a prefix entry: its enclosing Code parser owns the continuation.
     parser.state.finish()
 }
+
+/// Recognize a Markup import keyword without treating longer identifiers as directives.
+pub fn is_markup_import(source: &str) -> bool {
+    source.strip_prefix("#import").is_some_and(|tail| {
+        tail.chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-')
+    })
+}
+
+/// Parse a single import prefix, optionally including the Markup `#` marker.
+/// The caller supplies one physical line and owns its trailing text.
+pub fn parse_import_prefix(source: &str) -> Parse {
+    import_fragment(source, false)
+}
+
+/// Parse a complete import fragment, retaining invalid trailing syntax.
+pub fn parse_import(source: &str) -> Parse {
+    import_fragment(source, true)
+}
+
+fn import_fragment(source: &str, complete: bool) -> Parse {
+    let mut parser = Parser::new(source, true, None);
+    parser
+        .state
+        .builder
+        .start_node(SyntaxKind::ImportDecl.into());
+    if parser.cur() == Some(SyntaxKind::Hash) {
+        parser.eat();
+    }
+    parser.import_contents();
+    if complete {
+        parser.fragment_tail();
+    }
+    parser.state.builder.finish_node();
+    parser.state.finish()
+}

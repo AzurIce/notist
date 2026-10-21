@@ -89,10 +89,11 @@ pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
 }
 
 /// Check local document and embed references against the logical Vault root.
-/// This requires no resource reads; package dependencies are not content references.
+/// This requires no resource reads; module dependencies are not content references.
 pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
     let path = normalize(&root.join(path));
     let file_dir = path.parent().unwrap_or(root);
+    let source = path.to_string_lossy().into_owned();
     item.descendants()
         .filter(|node| matches!(node.ctor, Ctor::Link | Ctor::Embed))
         .filter_map(|node| {
@@ -100,14 +101,18 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
                 return None;
             };
             match parse_target(target, file_dir) {
-                Target::Path { path, .. } if !path.starts_with(root) => Some(Diagnostic::new(
-                    Phase::Semantic,
-                    node.span,
-                    format!(
-                        "local content reference `{target}` is outside Vault root `{}`",
-                        root.display()
-                    ),
-                )),
+                Target::Path { path, .. } if !path.starts_with(root) => {
+                    let mut diagnostic = Diagnostic::new(
+                        Phase::Semantic,
+                        node.span,
+                        format!(
+                            "local content reference `{target}` is outside Vault root `{}`",
+                            root.display()
+                        ),
+                    );
+                    diagnostic.source = Some(source.clone());
+                    Some(diagnostic)
+                }
                 _ => None,
             }
         })
@@ -205,20 +210,20 @@ impl VaultIndex {
                             ),
                         )),
                         Some(doc2) => {
-                            if let Some(item) = item {
-                                if doc2.index.by_id(item).is_none() {
-                                    out.push((
-                                        path.clone(),
-                                        Diagnostic::new(
-                                            Phase::Semantic,
-                                            link.span,
-                                            format!(
-                                                "missing item `#{item}` in `{}`",
-                                                self.relative(target).display()
-                                            ),
+                            if let Some(item) = item
+                                && doc2.index.by_id(item).is_none()
+                            {
+                                out.push((
+                                    path.clone(),
+                                    Diagnostic::new(
+                                        Phase::Semantic,
+                                        link.span,
+                                        format!(
+                                            "missing item `#{item}` in `{}`",
+                                            self.relative(target).display()
                                         ),
-                                    ));
-                                }
+                                    ),
+                                ));
                             }
                         }
                     },
@@ -238,10 +243,10 @@ impl VaultIndex {
         let mut out = Vec::new();
         for (source, doc) in &self.docs {
             for link in &doc.links {
-                if let Target::Path { path: p, .. } = &link.target {
-                    if *p == path {
-                        out.push((self.relative(source), link.span));
-                    }
+                if let Target::Path { path: p, .. } = &link.target
+                    && *p == path
+                {
+                    out.push((self.relative(source), link.span));
                 }
             }
         }

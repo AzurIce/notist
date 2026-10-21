@@ -192,15 +192,15 @@ impl State<'_, '_> {
                 }
             }
         }
-        if let Some(target) = &item.target {
-            if target.function.package != "notist" {
-                self.diagnostic(
-                    item,
-                    format!("no HTML implementation for `{}`", target.function),
-                );
-                self.transparent(item, if is_block(item) { "div" } else { "span" });
-                return;
-            }
+        if let Some(target) = &item.target
+            && target.function.module != "notist"
+        {
+            self.diagnostic(
+                item,
+                format!("no HTML implementation for `{}`", target.function),
+            );
+            self.transparent(item, if is_block(item) { "div" } else { "span" });
+            return;
         }
         self.native(item, &item.ctor);
     }
@@ -215,6 +215,7 @@ impl State<'_, '_> {
         }
         self.open(&component.tag, item, "");
         self.attr("notist-protocol", "2");
+        self.attr("notist-function", &component.id.to_string());
         self.attr(
             "notist-content",
             if is_block(item) { "block" } else { "inline" },

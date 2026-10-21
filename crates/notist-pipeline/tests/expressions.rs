@@ -1,25 +1,41 @@
 use notist_core::diag::Phase;
+use notist_core::expr::RExpr;
 use notist_core::expr::{BodyFlavor, CallArg, Expr};
 use notist_core::frontend::{Frontend, FrontendOptions};
 use notist_core::item::{Ctor, Dict, Value};
-use notist_pipeline::{Pipeline, resolve::resolve};
+use notist_pipeline::{Analysis, Pipeline};
 use rowan::TextRange;
 
 fn span(start: u32, end: u32) -> TextRange {
     TextRange::new(start.into(), end.into())
 }
 
+fn analyze(forest: Vec<Expr>) -> (Analysis, Vec<RExpr>) {
+    let len = forest
+        .iter()
+        .map(|e| usize::from(e.span().end()))
+        .max()
+        .unwrap_or(0);
+    let (analysis, inspection) = Pipeline::default().analyze_lowered(
+        std::path::Path::new("test.not"),
+        " ".repeat(len).into(),
+        notist_core::frontend::FrontendOutput {
+            forest,
+            ..Default::default()
+        },
+        &notist_pipeline::Context::default(),
+        true,
+    );
+    (analysis, inspection.shaped)
+}
+
 #[test]
 fn a_reference_to_a_constructor_does_not_invoke_it() {
-    let mut diagnostics = Vec::new();
-    let forest = resolve(
-        vec![
-            Expr::reference("divider", span(0, 7)),
-            Expr::call("divider", span(8, 18)),
-        ],
-        &notist_pipeline::Context::default(),
-        &mut diagnostics,
-    );
+    let (analysis, forest) = analyze(vec![
+        Expr::reference("divider", span(0, 7)),
+        Expr::call("divider", span(8, 18)),
+    ]);
+    let diagnostics = analysis.diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].phase, Phase::Type);
     assert_eq!(diagnostics[0].message, "unbound reference `divider`");
@@ -44,12 +60,8 @@ fn nonliteral_arguments_are_diagnosed_instead_of_dropped_silently() {
         0,
         CallArg::Positional(Expr::reference("source", span(4, 10))),
     );
-    let mut diagnostics = Vec::new();
-    resolve(
-        vec![call],
-        &notist_pipeline::Context::default(),
-        &mut diagnostics,
-    );
+    let (analysis, _) = analyze(vec![call]);
+    let diagnostics = analysis.diagnostics();
     for (name, range) in [("source", span(4, 10)), ("language", span(20, 28))] {
         assert!(
             diagnostics
@@ -74,7 +86,7 @@ fn duplicate_named_arguments_survive_lowering_and_are_diagnosed() {
             let Expr::Call { args, children, .. } = expr else {
                 return None;
             };
-            if expr.callee_name() == Some("raw") {
+            if expr.callee_path().as_deref() == Some("raw") {
                 return Some(args);
             }
             children.iter().find_map(find_raw)
@@ -147,20 +159,15 @@ fn unsupported_callee_expressions_recover_without_losing_content_or_metadata() {
         attrs: attrs.clone(),
         span: span(0, 8),
     };
-    let mut diagnostics = Vec::new();
-    let forest = resolve(
-        vec![call, Expr::call("divider", span(9, 19))],
-        &notist_pipeline::Context::default(),
-        &mut diagnostics,
-    );
+    let (analysis, forest) = analyze(vec![call, Expr::call("divider", span(9, 19))]);
+    let diagnostics = analysis.diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].span, span(0, 1));
     assert_eq!(forest[0].attrs, attrs);
     assert_eq!(forest[0].body, BodyFlavor::Block);
     assert_eq!(forest[0].children.len(), 1);
     assert_eq!(forest[1].ctor, Ctor::Divider);
-    let forest = notist_pipeline::shape::shape(forest);
-    let root = notist_pipeline::materialize::materialize_doc(&forest, span(0, 19), Dict::default());
+    let root = analysis.root();
     assert_eq!(
         root.children[0].attrs.get("id"),
         Some(&Value::Str("call".into()))
@@ -189,10 +196,10 @@ fn markdown_prefix_remapping_covers_callees_named_arguments_and_nested_calls() {
             ..
         } = expr
         {
-            if matches!(expr.callee_name(), Some("link" | "strong")) {
+            if matches!(expr.callee_path().as_deref(), Some("link" | "strong")) {
                 let name =
                     &src[usize::from(callee.span().start())..usize::from(callee.span().end())];
-                assert_eq!(Some(name), expr.callee_name());
+                assert_eq!(Some(name), expr.callee_path().as_deref());
                 targets.push(name.into());
                 for arg in args {
                     let value = arg.value();

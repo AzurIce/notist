@@ -45,9 +45,6 @@ impl TransformPlan {
     pub fn is_empty(&self) -> bool {
         self.replacements.is_empty()
     }
-    pub(crate) fn revalidate(&self, registry: &Registry) -> Result<Self, Vec<Diagnostic>> {
-        Self::compile(&self.replacements, registry)
-    }
     /// Each rule can select the target once, in declaration order. No fixed point.
     pub fn target(&self, source: &FunctionId) -> FunctionId {
         let mut id = source.clone();
@@ -73,7 +70,7 @@ fn normalized(t: &Type, d: &FunctionDef) -> Type {
     }
 }
 fn role(d: &FunctionDef) -> Option<&str> {
-    if d.id.package == "notist"
+    if d.id.module == "notist"
         && matches!(
             d.id.name.as_str(),
             "heading" | "section" | "table" | "row" | "cell" | "list" | "item" | "node"

@@ -56,18 +56,24 @@ pub(crate) fn lower_content(
         }
     };
     for node in document.syntax().descendants() {
-        if let Some(annotation) = SyntaxAnnotation::cast(node) {
-            if annotation.is_module()
-                && !diags.iter().any(|d| {
-                    d.span == annotation.range() && d.message.starts_with("module annotation")
-                })
-            {
-                diags.push(Diagnostic::new(
-                    Phase::Semantic,
-                    annotation.range(),
-                    "module annotations are not valid in content literals",
-                ));
-            }
+        if node.kind() == SyntaxKind::ImportDecl {
+            diags.push(Diagnostic::new(
+                Phase::Semantic,
+                node.text_range(),
+                "imports are not valid in content literals",
+            ));
+        }
+        if let Some(annotation) = SyntaxAnnotation::cast(node)
+            && annotation.is_module()
+            && !diags
+                .iter()
+                .any(|d| d.span == annotation.range() && d.message.starts_with("module annotation"))
+        {
+            diags.push(Diagnostic::new(
+                Phase::Semantic,
+                annotation.range(),
+                "module annotations are not valid in content literals",
+            ));
         }
     }
     crate::lowering::content::Lowered {
@@ -108,6 +114,7 @@ fn lower_blocks(
         let el = &elements[i];
         match el {
             NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::ImportDecl => {}
                 SyntaxKind::Annotation | SyntaxKind::BlockAnnotation => {
                     let annotation = SyntaxAnnotation::cast(node.clone()).unwrap();
                     let block = annotation.is_block();
@@ -158,7 +165,7 @@ fn lower_blocks(
                     let level = heading.level() as i64;
                     let children = lower_inline(heading.content(), parsed, diags, annotations);
                     forest.push(
-                        Expr::call("notist::heading", heading.range())
+                        Expr::call("notist.heading", heading.range())
                             .with_comptime(
                                 "level",
                                 Expr::Literal(Value::Int(level), node.text_range()),
@@ -194,7 +201,7 @@ fn lower_blocks(
                 SyntaxKind::Divider => {
                     flush_run!();
                     seen_content = true;
-                    forest.push(Expr::call("notist::divider", node.text_range()));
+                    forest.push(Expr::call("notist.divider", node.text_range()));
                 }
                 // boundaries with no core counterpart (ParBreak) or already
                 // diagnosed (Error)
@@ -294,7 +301,7 @@ fn lower_raw_block(node: &SyntaxNode) -> Expr {
         }
         None => (String::new(), String::new()),
     };
-    let mut expr = Expr::call("notist::raw", node.text_range())
+    let mut expr = Expr::call("notist.raw", node.text_range())
         .with_category(notist_core::definitions::Type::BlockContent)
         .with_literal_arg("text", Value::Str(text));
     if !tag.is_empty() {
@@ -310,7 +317,7 @@ fn lower_list(
     annotations: &mut Vec<Annotation>,
 ) -> Expr {
     let ordered = list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
-    Expr::call("notist::list", list.range())
+    Expr::call("notist.list", list.range())
         .with_literal_arg("ordered", Value::Bool(ordered))
         .with_literal_arg("start", Value::Int(1))
         .with_children(
@@ -341,21 +348,21 @@ fn lower_table(
                     } else {
                         vec![Expr::fragment(inline, cell.range())]
                     };
-                    Expr::call("notist::cell", cell.range()).with_children(children)
+                    Expr::call("notist.cell", cell.range()).with_children(children)
                 })
                 .collect();
             while cells.len() < width {
                 cells.push(Expr::call(
-                    "notist::cell",
+                    "notist.cell",
                     TextRange::empty(row.range().end()),
                 ));
             }
-            Expr::call("notist::row", row.range())
+            Expr::call("notist.row", row.range())
                 .with_literal_arg("header", Value::Bool(row.is_header()))
                 .with_children(cells)
         })
         .collect();
-    Expr::call("notist::table", table.range())
+    Expr::call("notist.table", table.range())
         .with_literal_arg(
             "align",
             Value::Array(
@@ -376,7 +383,7 @@ fn lower_list_item(
 ) -> Expr {
     let elements: Vec<_> = item.content().collect();
     let (children, _) = lower_blocks(&elements, parsed, diags, annotations);
-    Expr::call("notist::item", item.range()).with_children(children)
+    Expr::call("notist.item", item.range()).with_children(children)
 }
 
 fn lower_code_call(
@@ -523,7 +530,7 @@ impl TextRun {
 fn append_description(expr: &Expr, out: &mut String) {
     match expr {
         Expr::Literal(value, _) => out.push_str(&value.to_string()),
-        Expr::Ref { .. } => {}
+        Expr::Ref { .. } | Expr::Member { .. } => {}
         Expr::Content { forest, .. }
         | Expr::Fragment {
             children: forest, ..
@@ -601,6 +608,7 @@ fn lower_inline(
                 _ => run.push_content(token.text(), token.text_range()),
             },
             NodeOrToken::Node(node) => match node.kind() {
+                SyntaxKind::ImportDecl => {}
                 SyntaxKind::Annotation | SyntaxKind::BlockAnnotation => {
                     let annotation = SyntaxAnnotation::cast(node.clone()).unwrap();
                     if annotation.is_module() {
@@ -630,7 +638,7 @@ fn lower_inline(
                         .iter()
                         .map(|t| t.text())
                         .collect();
-                    let expr = Expr::call("notist::raw", node.text_range())
+                    let expr = Expr::call("notist.raw", node.text_range())
                         .with_literal_arg("text", Value::Str(text));
                     items.push(expr);
                     after_element = true;
@@ -665,7 +673,7 @@ fn lower_inline(
                         })
                         .collect::<String>();
                     let text = if block { text.trim().to_owned() } else { text };
-                    let mut expr = Expr::call("notist::math", node.text_range());
+                    let mut expr = Expr::call("notist.math", node.text_range());
                     if block {
                         expr = expr.with_category(notist_core::definitions::Type::BlockContent);
                     }
@@ -689,7 +697,7 @@ fn lower_inline(
                     };
                     let children =
                         lower_inline(elements[1..end].iter().cloned(), parsed, diags, annotations);
-                    let expr = Expr::call(&format!("notist::{name}"), node.text_range())
+                    let expr = Expr::call(&format!("notist.{name}"), node.text_range())
                         .with_children(children);
                     items.push(expr);
                     after_element = true;
@@ -703,7 +711,7 @@ fn lower_inline(
                     for expr in &content {
                         append_description(expr, &mut description);
                     }
-                    let mut expr = Expr::call("notist::embed", embed.range())
+                    let mut expr = Expr::call("notist.embed", embed.range())
                         .with_literal_arg("target", Value::Str(target))
                         .with_literal_arg("description", Value::Str(description));
                     if let Some(title) = title {
@@ -727,7 +735,7 @@ fn lower_inline(
                             lower_inline(link.content(), parsed, diags, annotations),
                         )
                     };
-                    let expr = Expr::call("notist::link", node.text_range())
+                    let expr = Expr::call("notist.link", node.text_range())
                         .with_literal_arg("target", Value::Str(target))
                         .with_children(children);
                     items.push(expr);

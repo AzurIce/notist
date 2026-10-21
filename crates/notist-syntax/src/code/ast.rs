@@ -4,7 +4,7 @@ use rowan::{NodeOrToken, TextRange};
 
 mod module;
 pub use module::{
-    ChildrenDecl, DefaultValue, FunctionDecl, Module, Parameter, ParameterList, TypeRef,
+    ChildrenDecl, DefaultValue, FunctionDecl, ImportDecl, Module, Parameter, ParameterList, TypeRef,
 };
 
 /// The text between the first balanced `()` pair of a node (depth-aware),
@@ -148,13 +148,15 @@ impl CodeCall {
         (node.kind() == SyntaxKind::CodeCall).then_some(Self(node))
     }
 
-    /// The complete call target, including any package/module segments.
+    /// The complete call target, including any module/module segments.
     pub fn name(&self) -> Option<String> {
-        self.path().map(|path| path.text())
+        self.callee().map(|callee| callee.text().to_string())
     }
 
-    pub fn path(&self) -> Option<Path> {
-        self.0.children().find_map(Path::cast)
+    pub fn callee(&self) -> Option<SyntaxNode> {
+        self.0
+            .children()
+            .find(|n| matches!(n.kind(), SyntaxKind::Path | SyntaxKind::MemberExpr))
     }
 
     /// The argument members: `Entry` nodes and bare literal elements between

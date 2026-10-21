@@ -1,4 +1,5 @@
 use notist::{MemoryResources, Vault};
+use notist_html::components::{component_tag, module_key};
 use notist_ssg::{Error, Routes, Site, SiteConfig, build};
 use std::path::{Path, PathBuf};
 
@@ -186,32 +187,29 @@ fn mixed_frontends_share_directory_routes_anchors_and_assets() {
 }
 
 #[test]
-fn docs_vault_excludes_repository_content_but_loads_external_packages() {
+fn docs_vault_excludes_repository_content_but_loads_external_modules() {
     let mut files = MemoryResources::new("/repo/docs");
     for (path, source) in [
         ("/repo/README.not", "= Repository"),
         (
             "README.not",
-            "= Documentation\n\n#widgets::badge(\"Ready\")",
+            "#import \"../modules/widgets/lib.notc\" as widgets;\n= Documentation\n\n#widgets.badge(\"Ready\")",
         ),
         ("guide.md", "# Guide"),
         (
-            "Notist.toml",
-            "[dependencies]\nwidgets={path='../packages/widgets'}",
+            "lib.notc",
+            "import \"../modules/widgets/lib.notc\" as widgets;",
         ),
+        ("/repo/modules/widgets/Notist.toml", ""),
         (
-            "/repo/packages/widgets/Notist.toml",
-            "[package]\nname='widgets'",
-        ),
-        (
-            "/repo/packages/widgets/lib.notc",
+            "/repo/modules/widgets/lib.notc",
             "fn badge(label: String) -> InlineContent;",
         ),
         (
-            "/repo/packages/widgets/components/badge.js",
+            "/repo/modules/widgets/badge.js",
             "export default class extends HTMLElement {}",
         ),
-        ("/repo/packages/widgets/README.not", "= Widgets"),
+        ("/repo/modules/widgets/README.not", "= Widgets"),
     ] {
         files.insert(path, source.as_bytes().to_vec());
     }
@@ -220,15 +218,21 @@ fn docs_vault_excludes_repository_content_but_loads_external_packages() {
     assert_eq!(site.pages.len(), 2);
     assert_eq!(site.pages[0].route.url, "/");
     assert_eq!(site.pages[0].title, "Documentation");
-    assert!(html(&site, "index.html").contains("<widgets-badge "));
-    assert!(
-        site.files
-            .contains_key(Path::new("_notist/packages/widgets/components/badge.js"))
-    );
+    assert!(html(&site, "index.html").contains(&format!(
+        "<{} ",
+        component_tag(&notist::FunctionId::new(
+            "/repo/modules/widgets/lib.notc",
+            "badge"
+        ))
+    )));
+    assert!(site.files.contains_key(Path::new(&format!(
+        "_notist/modules/{}/badge.js",
+        module_key("/repo/modules/widgets/lib.notc")
+    ))));
 
     files.insert(
         "README.not",
-        b"= Documentation\n\n[Widgets](../packages/widgets/README.not)".to_vec(),
+        b"= Documentation\n\n[Widgets](../modules/widgets/README.not)".to_vec(),
     );
     let error = build(&mut Vault::new(files), &SiteConfig::default()).unwrap_err();
     assert!(error.to_string().contains("outside Vault"));
@@ -401,53 +405,64 @@ fn template_errors_fail_build_instead_of_publishing_empty_values() {
 }
 
 #[test]
-fn default_transforms_publish_shared_component_resources_per_used_page() {
+fn explicit_transforms_publish_shared_component_resources_per_used_page() {
     let site = render(&[
-        ("Notist.toml", "[dependencies]\nmath = {path='../math'}"),
+        ("lib.notc", "import \"../math/lib.notc\" as math;"),
         (
-            "/math/Notist.toml",
-            "[package]\nname='math'\n[[transforms]]\nkind='replace'\nfrom='notist::math'\nto='math::formula'",
+            "Notist.toml",
+            "[[transforms]]\nkind='replace'\nimports={math='../math/lib.notc'}\nfrom='notist.math'\nto='math.formula'",
         ),
         (
             "/math/lib.notc",
             "fn formula<C: Type = InlineContent>(text: String) -> C;",
         ),
         (
-            "/math/components/formula/index.js",
+            "/math/formula/index.js",
             "export default class extends HTMLElement {}",
         ),
+        ("/math/formula/helper.js", "export const value=1;"),
         (
-            "/math/components/formula/helper.js",
-            "export const value=1;",
+            "README.not",
+            "#import \"../math/lib.notc\" as math;\n= Home\n\n$x$",
         ),
-        ("README.not", "= Home\n\n$x$"),
-        ("other.md", "# Other\n\n$y$"),
-        ("guide/deep/README.not", "= Nested\n\n$z$"),
-        ("plain.md", "# Plain"),
+        (
+            "other.md",
+            "#import \"../math/lib.notc\" as math;\n# Other\n\n$y$",
+        ),
+        (
+            "guide/deep/README.not",
+            "#import \"../../../math/lib.notc\" as math;\n= Nested\n\n$z$",
+        ),
+        ("plain.md", "#import \"../math/lib.notc\" as math;\n# Plain"),
     ]);
-    assert!(html(&site, "index.html").contains("<math-formula "));
-    assert!(site.files.contains_key(Path::new(
-        "_notist/packages/math/components/formula/helper.js"
+    assert!(html(&site, "index.html").contains(&format!(
+        "<{} ",
+        component_tag(&notist::FunctionId::new("/math/lib.notc", "formula"))
     )));
+    let key = module_key("/math/lib.notc");
+    assert!(site.files.contains_key(Path::new(&format!(
+        "_notist/modules/{key}/formula/helper.js"
+    ))));
     assert!(site.files.contains_key(Path::new("components.js")));
     assert!(site.files.contains_key(Path::new("other/components.js")));
     assert!(!site.files.contains_key(Path::new("plain/components.js")));
     let registration =
         String::from_utf8(site.files[Path::new("other/components.js")].clone()).unwrap();
-    assert!(registration.contains("../_notist/packages/math/components/formula/index.js"));
+    assert!(registration.contains(&format!("../_notist/modules/{key}/formula/index.js")));
     let nested = html(&site, "guide/deep/index.html");
     assert!(nested.contains("href=\"../../_notist/theme/site.css\""));
     assert!(nested.contains("src=\"../../_notist/theme/site.js\""));
     assert!(nested.contains("src=\"./components.js\""));
     let nested_registration = html(&site, "guide/deep/components.js");
-    assert!(
-        nested_registration.contains("../../_notist/packages/math/components/formula/index.js")
-    );
+    assert!(nested_registration.contains(&format!("../../_notist/modules/{key}/formula/index.js")));
 }
 
 #[test]
-fn site_configuration_is_separate_from_package_configuration() {
-    let config=SiteConfig::parse("[package]\nname='docs'\n[site]\ntitle='Book'\ninclude=['docs/**']\nexclude=['docs/drafts/**']\ntheme='theme'").unwrap();
+fn site_configuration_is_separate_from_context_configuration() {
+    let config = SiteConfig::parse(
+        "[site]\ntitle='Book'\ninclude=['docs/**']\nexclude=['docs/drafts/**']\ntheme='theme'",
+    )
+    .unwrap();
     assert_eq!(config.title, "Book");
     assert_eq!(config.theme, Some(PathBuf::from("theme")));
     assert!(SiteConfig::parse("[site]\nunknown=true").is_err());
@@ -456,20 +471,23 @@ fn site_configuration_is_separate_from_package_configuration() {
 #[test]
 fn component_sources_cannot_contain_site_output() {
     let mut vault = Vault::new(resources(&[
-        ("Notist.toml", "[dependencies]\nwidgets={path='../widgets'}"),
-        ("/widgets/Notist.toml", "[package]\nname='widgets'"),
+        ("lib.notc", "import \"../widgets/lib.notc\" as widgets;"),
+        ("/widgets/Notist.toml", ""),
         (
             "/widgets/lib.notc",
             "fn panel<C: Type>()[children: C] -> BlockContent;",
         ),
         (
-            "/widgets/components/panel/index.js",
+            "/widgets/panel/index.js",
             "export default class extends HTMLElement {}",
         ),
-        ("README.not", "#widgets::panel[Hello]"),
+        (
+            "README.not",
+            "#import \"../widgets/lib.notc\" as widgets;\n#widgets.panel[Hello]",
+        ),
     ]));
     let config = SiteConfig {
-        output: "/widgets/components/panel/site".into(),
+        output: "/widgets/panel/site".into(),
         ..SiteConfig::default()
     };
     assert!(
@@ -496,20 +514,26 @@ fn page_routes_cannot_use_a_published_asset_as_a_directory() {
 }
 
 #[test]
-fn same_named_packages_in_different_page_environments_are_rejected() {
+fn same_named_modules_in_different_page_contexts_publish_distinct_resources() {
     let mut vault = Vault::new(resources(&[
         (
-            "one/Notist.toml",
-            "[dependencies]\nwidgets={path='../../first'}",
+            "one/lib.notc",
+            "import \"../../first/lib.notc\" as widgets;",
         ),
         (
-            "two/Notist.toml",
-            "[dependencies]\nwidgets={path='../../second'}",
+            "two/lib.notc",
+            "import \"../../second/lib.notc\" as widgets;",
         ),
-        ("one/README.not", "#widgets::badge(\"One\")"),
-        ("two/README.not", "#widgets::badge(\"Two\")"),
-        ("/first/Notist.toml", "[package]\nname='widgets'"),
-        ("/second/Notist.toml", "[package]\nname='widgets'"),
+        (
+            "one/README.not",
+            "#import \"../../first/lib.notc\" as widgets;\n#widgets.badge(\"One\")",
+        ),
+        (
+            "two/README.not",
+            "#import \"../../second/lib.notc\" as widgets;\n#widgets.badge(\"Two\")",
+        ),
+        ("/first/Notist.toml", ""),
+        ("/second/Notist.toml", ""),
         (
             "/first/lib.notc",
             "fn badge(label: String) -> InlineContent;",
@@ -519,31 +543,40 @@ fn same_named_packages_in_different_page_environments_are_rejected() {
             "fn badge(label: String) -> InlineContent;",
         ),
         (
-            "/first/components/badge.js",
+            "/first/badge.js",
             "export default class extends HTMLElement {}",
         ),
         (
-            "/second/components/badge.js",
+            "/second/badge.js",
             "export default class extends HTMLElement {}",
         ),
     ]));
-    assert!(
-        build(&mut vault, &SiteConfig::default())
-            .unwrap_err()
-            .to_string()
-            .contains("conflicting resource roots")
-    );
+    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    for module in ["/first/lib.notc", "/second/lib.notc"] {
+        assert!(site.files.contains_key(Path::new(&format!(
+            "_notist/modules/{}/badge.js",
+            module_key(module)
+        ))));
+    }
+    let first = component_tag(&notist::FunctionId::new("/first/lib.notc", "badge"));
+    let second = component_tag(&notist::FunctionId::new("/second/lib.notc", "badge"));
+    assert_ne!(first, second);
+    assert!(html(&site, "one/index.html").contains(&first));
+    assert!(html(&site, "two/index.html").contains(&second));
 }
 
 #[test]
 fn preview_recovers_code_errors_while_build_remains_strict() {
     let files = [
-        ("Notist.toml", "[package]\nname = 'demo'"),
+        ("Notist.toml", ""),
         (
             "lib.notc",
             "fn bad() -> InlineContent { compile_error(\"broken\") } fn good() -> InlineContent { [works] }",
         ),
-        ("README.not", "#demo::bad() #demo::good()"),
+        (
+            "README.not",
+            "#import \"lib.notc\" as demo;\n#demo.bad() #demo.good()",
+        ),
     ];
     assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
     let site =
@@ -566,7 +599,7 @@ fn preview_recovers_code_errors_while_build_remains_strict() {
 #[test]
 fn preview_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
     let files = [
-        ("Notist.toml", "[package]\nname = 'demo'"),
+        ("Notist.toml", ""),
         (
             "lib.notc",
             r#"
@@ -578,7 +611,7 @@ fn preview_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
         ),
         (
             "README.not",
-            "#demo::bad_link() #demo::bad_embed()\n\n#demo::bad_heading()\n\n#demo::good()",
+            "#import \"lib.notc\" as demo;\n#demo.bad_link() #demo.bad_embed()\n\n#demo.bad_heading()\n\n#demo.good()",
         ),
     ];
     assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
@@ -610,9 +643,9 @@ fn generated_reference_diagnostics_point_into_the_code_definition() {
             "{}fn view() -> InlineContent {{ [#link(target: \"{target}\")[click]] }}",
             "// retained source\n".repeat(20)
         );
-        let document = "#demo::view()";
+        let document = "#import \"lib.notc\" as demo;\n#demo.view()";
         let files = [
-            ("Notist.toml", "[package]\nname = 'demo'"),
+            ("Notist.toml", ""),
             ("lib.notc", module.as_str()),
             ("README.not", document),
             ("other.not", "= Other"),
@@ -641,12 +674,15 @@ fn generated_reference_diagnostics_point_into_the_code_definition() {
 #[test]
 fn preview_recovers_function_body_syntax_errors_by_boundary() {
     let files = [
-        ("Notist.toml", "[package]\nname = 'demo'"),
+        ("Notist.toml", ""),
         (
             "lib.notc",
             "fn bad() -> InlineContent { 1 + } fn good() -> InlineContent { [works] }",
         ),
-        ("README.not", "#demo::bad() #demo::good()"),
+        (
+            "README.not",
+            "#import \"lib.notc\" as demo;\n#demo.bad() #demo.good()",
+        ),
     ];
     assert!(build(&mut Vault::new(resources(&files)), &SiteConfig::default()).is_err());
     let site =

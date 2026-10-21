@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// Site presentation and discovery, independent of package/environment scopes.
+/// Site presentation and discovery, independent of module/environment scopes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SiteConfig {
@@ -24,7 +24,7 @@ impl Default for SiteConfig {
     }
 }
 impl SiteConfig {
-    /// Read only [site]; package configuration remains owned by notist.
+    /// Read only [site]; module configuration remains owned by notist.
     pub fn parse(source: &str) -> Result<Self, toml::de::Error> {
         #[derive(Deserialize)]
         struct Config {

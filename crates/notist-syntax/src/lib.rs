@@ -1,6 +1,6 @@
 //! Lossless native Markup and Code syntax, without semantic IR or lowering.
 //!
-//! Parsers accept source text and perform no file or package IO.
+//! Parsers accept source text and perform no file or module IO.
 //! They return a CST and syntax diagnostics; typed AST accessors preserve
 //! incomplete declarations for tooling.
 //!

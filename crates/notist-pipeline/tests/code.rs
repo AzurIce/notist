@@ -2,17 +2,21 @@ use notist_core::{
     definitions::FunctionId,
     item::{EvaluationState, Value},
 };
-use notist_pipeline::{Context, Pipeline, analyze_module};
+use notist_pipeline::{Context, Pipeline};
 fn context(src: &str) -> Context {
     Context::default()
-        .with_module(analyze_module("demo", src).unwrap())
+        .with_module(
+            notist_pipeline::Pipeline::default()
+                .compile_module("content.not", "demo", "demo/lib.notc", src)
+                .unwrap(),
+        )
         .unwrap()
 }
 #[test]
 fn code_bodies_are_opaque_until_evaluation() {
     let c = context("fn greet(name: String) -> InlineContent { [Hello #text(text: name)] }");
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::greet(\"world\")", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.greet(\"world\")", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let original = a
         .root()
@@ -39,7 +43,7 @@ fn concrete_type_branch_preserves_category_and_splices_forests() {
         "fn draft<C: Type>[children: C] -> C { if C == InlineContent { [#emph[#children]] } else { [ #children ] } }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::draft[one]", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.draft[one]", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -56,7 +60,7 @@ fn value_functions_runtime_arguments_and_failure_recovery() {
     );
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#demo::bad() #demo::good(3)", &c)
+        .analyze("doc.not", "#self.bad() #self.good(3)", &c)
         .unwrap();
     let e = p.evaluate(&a, &c);
     assert!(!e.diagnostics.is_empty());
@@ -78,7 +82,7 @@ fn runtime_branches_cannot_widen_return_types_or_specialize_on_arguments() {
     ] {
         let c = context(src);
         let p = Pipeline::default();
-        let a = p.analyze("doc.not", "#demo::f(true)", &c).unwrap();
+        let a = p.analyze("doc.not", "#self.f(true)", &c).unwrap();
         assert!(!a.diagnostics().is_empty(), "{src}");
         let e = p.evaluate(&a, &c);
         assert!(
@@ -94,7 +98,7 @@ fn compile_time_values_are_explicit_or_inferred_from_input_types() {
         "fn identity<T: Type>(x: T) -> T { x } fn choose<b: Bool>(x: Int) -> Int { if b { x } else { x + 1 } } fn show() -> InlineContent { let n = comptime choose<true>(identity(2)); [#text(text: if n == 2 { \"yes\" } else { \"no\" })] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -110,7 +114,7 @@ fn content_implementation_is_checked_per_concrete_instance() {
         "fn mark<C: Type>[children: C] -> C { match C { InlineContent => [#strong[#children]], BlockContent => [ #children ], _ => compile_error(\"not content\"), } }",
     );
     let p = Pipeline::default();
-    for src in ["#demo::mark[x]", "#demo::mark[ x ]"] {
+    for src in ["#self.mark[x]", "#self.mark[ x ]"] {
         let a = p.analyze("doc.not", src, &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         assert!(p.evaluate(&a, &c).diagnostics.is_empty());
@@ -118,15 +122,33 @@ fn content_implementation_is_checked_per_concrete_instance() {
 }
 #[test]
 fn type_values_cannot_escape_comptime_and_categories_do_not_convert() {
-    assert!(analyze_module("bad", "fn f() -> Type { Type }").is_err());
-    assert!(analyze_module("bad", "fn f(x: Type) -> Int { 1 }").is_err());
+    assert!(
+        notist_pipeline::Pipeline::default()
+            .compile_module(
+                "content.not",
+                "bad",
+                "bad/lib.notc",
+                "fn f() -> Type { Type }"
+            )
+            .is_err()
+    );
+    assert!(
+        notist_pipeline::Pipeline::default()
+            .compile_module(
+                "content.not",
+                "bad",
+                "bad/lib.notc",
+                "fn f(x: Type) -> Int { 1 }"
+            )
+            .is_err()
+    );
     let c = context(
         "fn block()[children: BlockContent] -> BlockContent { children } fn same<C: Type>(x: C) -> C { x }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::block[inline]", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.block[inline]", &c).unwrap();
     assert!(!a.diagnostics().is_empty());
-    let a = p.analyze("doc.not", "#demo::same<Type>(Type)", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.same<Type>(Type)", &c).unwrap();
     assert!(!a.diagnostics().is_empty());
 }
 #[test]
@@ -141,7 +163,7 @@ fn code_literals_use_selected_frontend_and_preserve_definition_origins() {
         )
         .unwrap();
     let c = Context::default().with_module(m).unwrap();
-    let a = p.analyze("doc.not", "#demo::f()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.f()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     let strong = e
@@ -159,7 +181,7 @@ fn recursive_calls_are_bounded_and_siblings_survive() {
     );
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#demo::bad() #demo::good()", &c)
+        .analyze("doc.not", "#self.bad() #self.good()", &c)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate_with_limits(
@@ -185,11 +207,7 @@ fn shape_is_finished_before_repeated_block_forest_splicing() {
     );
     let p = Pipeline::default();
     let a = p
-        .analyze(
-            "doc.not",
-            "= Outer\n\n#demo::twice[\n= Inner\n\nText\n]",
-            &c,
-        )
+        .analyze("doc.not", "= Outer\n\n#self.twice[\n= Inner\n\nText\n]", &c)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
@@ -215,7 +233,7 @@ fn nested_literals_splice_without_adding_call_nodes() {
         "fn f()[children: InlineContent] -> InlineContent { let a = [#children]; let b = [#a]; [#b] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::f[x]", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.f[x]", &c).unwrap();
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     let f = e
@@ -232,10 +250,10 @@ fn shared_interpolation_grammar_has_context_specific_validation() {
     );
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#text(text: demo::value())", &c)
+        .analyze("doc.not", "#text(text: self.value())", &c)
         .unwrap();
     assert!(!a.diagnostics().is_empty());
-    let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     assert!(p.evaluate(&a, &c).diagnostics.is_empty());
 }
@@ -246,7 +264,7 @@ fn type_constructors_are_canonical_comptime_values() {
         "fn first<T: Type>(x: T) -> Bool { T == Array<Int> } fn show() -> InlineContent { let b = comptime first<Array<Int>>((1, 2)); [#text(text: if b { \"array\" } else { \"other\" })] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -255,7 +273,7 @@ fn type_constructors_are_canonical_comptime_values() {
 fn default_limits_recover_recursive_content_expansion() {
     let c = context("fn spin() -> InlineContent { [#spin()] }");
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::spin()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.spin()", &c).unwrap();
     let e = p.evaluate(&a, &c);
     assert!(
         e.root
@@ -269,7 +287,7 @@ fn malformed_body_does_not_remove_unrelated_public_definitions() {
     let c = context("fn bad() -> InlineContent { fn good() -> InlineContent { [survives] }");
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#demo::bad() #demo::good()", &c)
+        .analyze("doc.not", "#self.bad() #self.good()", &c)
         .unwrap();
     let e = p.evaluate(&a, &c);
     assert!(
@@ -302,7 +320,7 @@ fn comptime_expressions_share_normal_operators_and_parsing() {
     );
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#demo::f<1>() #demo::select<(2 < 3)>()", &c)
+        .analyze("doc.not", "#self.f<1>() #self.select<(2 < 3)>()", &c)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
@@ -322,7 +340,7 @@ fn checking_failure_recovers_at_nested_literal_interpolation_not_parent_function
         "fn bad() -> InlineContent { compile_error(\"bad child\") } fn good() -> InlineContent { [good child] } fn outer() -> InlineContent { [#bad() #good()] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::outer()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.outer()", &c).unwrap();
     assert!(!a.diagnostics().is_empty());
     let e = p.evaluate(&a, &c);
     assert!(
@@ -353,7 +371,7 @@ fn generic_defaults_are_checked_after_concrete_type_binding() {
         "fn value<T: Type>(x: T = 1) -> T { x } fn show() -> InlineContent { let n = comptime value<Int>(); [#text(text: if n == 1 { \"default\" } else { \"wrong\" })] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     assert!(p.evaluate(&a, &c).diagnostics.is_empty());
 }
@@ -364,7 +382,7 @@ fn content_bindings_stay_opaque_until_interpolated_and_preserve_failed_call_iden
         "fn bad() -> InlineContent { compile_error(\"bad binding\") } fn good() -> InlineContent { [good binding] } fn outer() -> InlineContent { let content = bad(); [#content #good()] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::outer()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.outer()", &c).unwrap();
     let e = p.evaluate(&a, &c);
     assert!(
         e.root
@@ -385,7 +403,7 @@ fn discarded_content_is_not_evaluated() {
         "fn spin() -> InlineContent { [#spin()] } fn keep()[children: InlineContent] -> InlineContent { [kept] } fn outer() -> InlineContent { let discarded = spin(); keep()[#spin()] }",
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::outer()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.outer()", &c).unwrap();
     assert!(a.diagnostics().is_empty());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -415,7 +433,7 @@ fn direct_calls_and_literal_interpolations_share_structural_validation() {
             .unwrap();
         let c = Context::default().with_module(module).unwrap();
         for name in ["direct", "literal"] {
-            let a = p.analyze(dialect, &format!("#demo::{name}()"), &c).unwrap();
+            let a = p.analyze(dialect, &format!("#self.{name}()"), &c).unwrap();
             assert!(
                 a.diagnostics()
                     .iter()
@@ -428,7 +446,7 @@ fn direct_calls_and_literal_interpolations_share_structural_validation() {
             assert!(matches!(list.evaluation, Some(EvaluationState::Error(_))));
             assert!(list.children.is_empty());
         }
-        let a = p.analyze(dialect, "#demo::valid()", &c).unwrap();
+        let a = p.analyze(dialect, "#self.valid()", &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let e = p.evaluate(&a, &c);
         assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -450,8 +468,8 @@ fn incomplete_binding_preserves_known_call_contract_and_recovers_at_its_boundary
     let p = Pipeline::default();
     for path in ["doc.not", "doc.md"] {
         for src in [
-            "@(id: \"failed\")#demo::required(label: \"kept\")[x]\n\nend",
-            "#demo::forwarded()\n\nend",
+            "@(id: \"failed\")#self.required(label: \"kept\")[x]\n\nend",
+            "#self.forwarded()\n\nend",
         ] {
             let a = p.analyze(path, src, &c).unwrap();
             let e = p.evaluate(&a, &c);
@@ -513,7 +531,7 @@ fn nested_content_in_interpolation_arguments_uses_the_selected_frontend() {
             )
             .unwrap();
         for name in ["direct", "literal"] {
-            let a = p.analyze(dialect, &format!("#demo::{name}()"), &c).unwrap();
+            let a = p.analyze(dialect, &format!("#self.{name}()"), &c).unwrap();
             assert!(
                 a.diagnostics().is_empty(),
                 "{dialect}: {:?}",
@@ -541,7 +559,7 @@ fn exhausted_content_budget_does_not_disable_independent_siblings() {
     "#,
     );
     let p = Pipeline::default();
-    for src in ["#demo::exhaust() #demo::good()", "#demo::outer()"] {
+    for src in ["#self.exhaust() #self.good()", "#self.outer()"] {
         let a = p.analyze("doc.not", src, &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let e = p.evaluate_with_limits(
@@ -584,7 +602,7 @@ fn recovered_dependency_diagnostics_do_not_invalidate_a_successful_argument_call
         "#
         ));
         let p = Pipeline::default();
-        let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+        let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
         assert!(
             a.diagnostics()
                 .iter()
@@ -616,7 +634,7 @@ fn erased_array_elements_cannot_be_narrowed_but_known_empty_arrays_can_be_checke
         fn show() -> InlineContent { let a = erase(("oops",)); [bad] }
     "#,
     );
-    let a = p.analyze("doc.not", "#demo::show()", &bad).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &bad).unwrap();
     assert!(
         a.diagnostics()
             .iter()
@@ -632,7 +650,7 @@ fn erased_array_elements_cannot_be_narrowed_but_known_empty_arrays_can_be_checke
         fn show() -> InlineContent { let a = nested(); [#text(text: accept(empty())) #text(text: accept((,)))] }
     "#,
     );
-    let a = p.analyze("doc.not", "#demo::show()", &good).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &good).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &good);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -654,12 +672,12 @@ fn comptime_only_call_suffixes_work_in_code_and_both_content_dialects() {
         "#).unwrap()).unwrap();
         for name in [
             "label<1>",
-            "label<demo::number<1>>",
+            "label<self.number<1>>",
             "direct()",
             "literal()",
             "arithmetic()",
         ] {
-            let a = p.analyze(dialect, &format!("#demo::{name}"), &c).unwrap();
+            let a = p.analyze(dialect, &format!("#self.{name}"), &c).unwrap();
             assert!(
                 a.diagnostics().is_empty(),
                 "{dialect}: {:?}",
@@ -699,7 +717,7 @@ fn comparisons_and_attached_comptime_calls_are_unambiguous() {
                     .unwrap(),
             )
             .unwrap();
-        let a = p.analyze(dialect, "#demo::show()", &c).unwrap();
+        let a = p.analyze(dialect, "#self.show()", &c).unwrap();
         assert!(
             a.diagnostics().is_empty(),
             "{dialect}: {:?}",
@@ -729,7 +747,7 @@ fn comptime_and_runtime_match_share_numeric_equality() {
     "#,
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::show()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.show()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -756,10 +774,7 @@ fn expanded_content_size_recovery_preserves_later_siblings() {
         "#leaf()".repeat(15)
     ));
     let p = Pipeline::default();
-    for src in [
-        "#demo::chunk() #demo::chunk() #demo::good()",
-        "#demo::outer()",
-    ] {
+    for src in ["#self.chunk() #self.chunk() #self.good()", "#self.outer()"] {
         let a = p.analyze("doc.not", src, &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let e = p.evaluate_with_limits(
@@ -808,7 +823,7 @@ fn spliced_forest_size_recovery_keeps_small_later_content() {
     "#,
     );
     let p = Pipeline::default();
-    let a = p.analyze("doc.not", "#demo::many()", &c).unwrap();
+    let a = p.analyze("doc.not", "#self.many()", &c).unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate_with_limits(
         &a,
@@ -848,7 +863,7 @@ fn comptime_arrays_check_all_elements_and_accept_known_empty_values() {
         fn bad_default() -> InlineContent { let x = defaulted<Array<Int>>(); [unused] }
     "#,
     );
-    for call in ["#demo::bad()", "#demo::bad_default()"] {
+    for call in ["#self.bad()", "#self.bad_default()"] {
         let a = p.analyze("doc.not", call, &c).unwrap();
         assert!(!a.diagnostics().is_empty(), "{call}");
         assert!(
@@ -859,7 +874,7 @@ fn comptime_arrays_check_all_elements_and_accept_known_empty_values() {
         );
     }
     for path in ["doc.not", "doc.md"] {
-        let a = p.analyze(path, "#demo::accept<(,)>", &c).unwrap();
+        let a = p.analyze(path, "#self.accept<(,)>", &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let e = p.evaluate(&a, &c);
         assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
@@ -885,7 +900,7 @@ fn markup_sugar_keeps_builtin_identity_inside_a_shadowing_module() {
             .compile_module(dialect, "demo", "lib.notc", &source)
             .unwrap();
         let c = Context::default().with_module(module).unwrap();
-        let a = p.analyze("doc.not", "#demo::view()", &c).unwrap();
+        let a = p.analyze("doc.not", "#self.view()", &c).unwrap();
         assert!(
             a.diagnostics().is_empty(),
             "{dialect}: {:?}",
@@ -922,7 +937,7 @@ fn reused_content_items_capture_each_calls_lexical_inputs_without_executing_unus
         let a = p
             .analyze(
                 dialect,
-                "#demo::make(\"first\", true) #demo::make(\"second\", false)",
+                "#self.make(\"first\", true) #self.make(\"second\", false)",
                 &c,
             )
             .unwrap();

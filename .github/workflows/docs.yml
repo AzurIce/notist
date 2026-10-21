@@ -34,7 +34,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            packages/grammar/target
+            modules/grammar/target
           key: docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             docs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}-
@@ -62,7 +62,7 @@ jobs:
       - name: Build Grammar WASM
         env:
           NOTIST_WASM_BINDGEN: ${{ runner.temp }}/wasm-bindgen/bin/wasm-bindgen
-        run: nix develop -c just --justfile packages/grammar/justfile build
+        run: nix develop -c just --justfile modules/grammar/justfile build
 
       - name: Build site
         run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- build docs

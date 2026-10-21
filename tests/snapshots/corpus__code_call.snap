@@ -288,7 +288,7 @@ error[syntax] @203..203: inline content cannot contain a blank line
 error[syntax] @626..626: unclosed code call body
 error[syntax] @422..422: unclosed call arguments
 error[type] @111..112: unbound reference `<anonymous>`
-error[type] @214..218: unbound reference `foo`
+error[type] @215..218: unbound reference `foo`
 error[type] @229..312: unknown constructor or function `note`
 error[type] @214..312: a content fragment must be all inline or a single block expression; separate blocks with a blank line
 error[type] @314..326: expected InlineContent, found BlockContent
@@ -341,7 +341,7 @@ error[type] @587..597: unknown constructor or function `f`
     )
   )
   (paragraph @214..312
-    (interpolation @214..218)
+    (interpolation @215..218)
     (text @218..228 :text "[未闭合")
     (note @229..312
       (paragraph @250..268

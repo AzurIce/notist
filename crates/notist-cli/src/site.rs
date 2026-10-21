@@ -81,6 +81,7 @@ pub fn assemble(
     if let Some(config) = config {
         vault = vault.with_config(normalize(&std::env::current_dir().unwrap().join(config)));
     }
+
     let result = (|| {
         let path = config
             .map(|path| normalize(&std::env::current_dir().unwrap().join(path)))

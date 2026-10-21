@@ -1,7 +1,0 @@
-[package]
-name = "typst"
-
-[[transforms]]
-kind = "replace"
-from = "notist::math"
-to = "typst::math"

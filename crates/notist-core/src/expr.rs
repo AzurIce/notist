@@ -54,6 +54,13 @@ pub enum Expr {
         name: String,
         span: TextRange,
     },
+    Member {
+        base: Box<Expr>,
+        name: String,
+        span: TextRange,
+    },
+    /// Markup IR₁, lowered without an environment. The shared backend
+    /// resolves and shapes this forest when checking a concrete Code instance.
     Content {
         forest: Vec<Expr>,
         annotations: Vec<crate::annotation::Annotation>,
@@ -105,6 +112,26 @@ pub enum Expr {
 }
 
 impl Expr {
+    pub fn path(path: &str, span: TextRange) -> Self {
+        let mut names = path.split('.');
+        let mut expr = Self::reference(names.next().unwrap_or_default(), span);
+        for name in names {
+            expr = Self::Member {
+                base: Box::new(expr),
+                name: name.into(),
+                span,
+            };
+        }
+        expr
+    }
+
+    pub fn name_path(&self) -> Option<String> {
+        match self {
+            Self::Ref { name, .. } => Some(name.clone()),
+            Self::Member { base, name, .. } => Some(format!("{}.{name}", base.name_path()?)),
+            _ => None,
+        }
+    }
     pub fn fragment(children: Vec<Expr>, span: TextRange) -> Self {
         Self::Fragment { children, span }
     }
@@ -118,7 +145,7 @@ impl Expr {
 
     pub fn call(name: &str, span: TextRange) -> Self {
         Self::Call {
-            callee: Box::new(Self::reference(name, span)),
+            callee: Box::new(Self::path(name, span)),
             args: Vec::new(),
             comptime: Vec::new(),
             children: Vec::new(),
@@ -129,7 +156,7 @@ impl Expr {
     }
 
     pub fn text(text: String, span: TextRange) -> Self {
-        Self::call("notist::text", span).with_literal_arg("text", Value::Str(text))
+        Self::call("notist.text", span).with_literal_arg("text", Value::Str(text))
     }
 
     pub fn with_named_arg(mut self, name: impl Into<String>, value: Expr) -> Self {
@@ -176,6 +203,7 @@ impl Expr {
             Self::Literal(_, span)
             | Self::Fragment { span, .. }
             | Self::Ref { span, .. }
+            | Self::Member { span, .. }
             | Self::Call { span, .. }
             | Self::Content { span, .. }
             | Self::Block { span, .. }
@@ -194,6 +222,10 @@ impl Expr {
     pub fn map_spans(&mut self, map: &mut impl FnMut(TextRange) -> TextRange) {
         match self {
             Self::Literal(_, span) | Self::Ref { span, .. } => *span = map(*span),
+            Self::Member { base, span, .. } => {
+                *span = map(*span);
+                base.map_spans(map);
+            }
             Self::Fragment { children, span } => {
                 *span = map(*span);
                 for child in children {
@@ -319,12 +351,9 @@ impl Expr {
         })
     }
 
-    pub fn callee_name(&self) -> Option<&str> {
+    pub fn callee_path(&self) -> Option<String> {
         match self {
-            Self::Call { callee, .. } => match callee.as_ref() {
-                Self::Ref { name, .. } => Some(name),
-                _ => None,
-            },
+            Self::Call { callee, .. } => callee.name_path(),
             _ => None,
         }
     }

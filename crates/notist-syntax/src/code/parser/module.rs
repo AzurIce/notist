@@ -10,14 +10,37 @@ impl Parser<'_, '_> {
             match self.cur() {
                 None => break,
                 Some(SyntaxKind::FnKeyword) => self.function_decl(),
+                Some(SyntaxKind::ImportKeyword) => self.import_decl(),
                 _ => {
-                    self.module_error("expected a function declaration");
+                    self.module_error("expected a function or import declaration");
                     self.recover_declaration();
                 }
             }
         }
         self.state.builder.finish_node();
         self.state.finish()
+    }
+
+    fn import_decl(&mut self) {
+        self.state.builder.start_node(SyntaxKind::ImportDecl.into());
+        self.import_contents();
+        self.state.builder.finish_node();
+    }
+
+    pub(super) fn import_contents(&mut self) {
+        self.eat();
+        self.eat_trivia();
+        self.module_expect(SyntaxKind::Str, "import requires a literal source path");
+        self.eat_trivia();
+        if self.cur() == Some(SyntaxKind::AsKeyword) {
+            self.eat();
+            self.eat_trivia();
+            self.module_expect(SyntaxKind::Ident, "expected a module alias after `as`");
+            self.eat_trivia();
+        }
+        if !self.module_expect(SyntaxKind::Semicolon, "expected `;` after import") {
+            self.recover_declaration();
+        }
     }
 
     fn function_decl(&mut self) {
@@ -74,7 +97,7 @@ impl Parser<'_, '_> {
         self.eat_trivia();
         while !matches!(
             self.cur(),
-            None | Some(SyntaxKind::Greater | SyntaxKind::FnKeyword)
+            None | Some(SyntaxKind::Greater | SyntaxKind::FnKeyword | SyntaxKind::ImportKeyword)
         ) {
             let start = self.state.pos;
             self.parameter();
@@ -294,17 +317,25 @@ impl Parser<'_, '_> {
     fn declaration_boundary(&self) -> bool {
         matches!(
             self.cur(),
-            None | Some(SyntaxKind::FnKeyword | SyntaxKind::Semicolon)
+            None | Some(SyntaxKind::FnKeyword | SyntaxKind::ImportKeyword | SyntaxKind::Semicolon)
         )
     }
 
-    /// The next `fn` is never consumed, even inside a broken signature.
+    /// The next `fn` or `import` is never consumed by a broken declaration.
     fn recover_declaration(&mut self) {
-        if matches!(self.cur(), None | Some(SyntaxKind::FnKeyword)) {
+        if matches!(
+            self.cur(),
+            None | Some(SyntaxKind::FnKeyword | SyntaxKind::ImportKeyword)
+        ) {
             return;
         }
         self.state.builder.start_node(SyntaxKind::Error.into());
-        while self.cur().is_some() && self.cur() != Some(SyntaxKind::FnKeyword) {
+        while self.cur().is_some()
+            && !matches!(
+                self.cur(),
+                Some(SyntaxKind::FnKeyword | SyntaxKind::ImportKeyword)
+            )
+        {
             let end = self.cur() == Some(SyntaxKind::Semicolon);
             self.eat();
             if end {

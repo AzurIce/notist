@@ -1,11 +1,11 @@
 use notist::builtins::Accepts;
 use notist::{
     Context, DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, Pipeline,
-    Registry, Type, Value, analyze_module, builtins,
+    Registry, Type, Value, builtins,
 };
 #[test]
 fn definitions_preserve_parameter_types_modes_and_defaults() {
-    let m=analyze_module("widgets","fn panel<C: Type = BlockContent>(title: String, count: Int = 2, note?: String, tags: Array<Array<Bool>> = ((true,),))[children: C] -> BlockContent;").unwrap();
+    let m=notist_pipeline::Pipeline::default().compile_module("content.not", "widgets", "widgets/lib.notc","fn panel<C: Type = BlockContent>(title: String, count: Int = 2, note?: String, tags: Array<Array<Bool>> = ((true,),))[children: C] -> BlockContent;").unwrap();
     let f = &m.definitions.functions[0];
     assert_eq!(f.id, FunctionId::new("widgets", "panel"));
     assert_eq!(f.comptime.len(), 1);
@@ -14,7 +14,7 @@ fn definitions_preserve_parameter_types_modes_and_defaults() {
     assert_eq!(f.children_type, Some(Type::Parameter("C".into())));
     let c = Context::default().with_module(m).unwrap();
     let a = Pipeline::default()
-        .analyze("doc.not", "#widgets::panel(\"Title\")[ text ]", &c)
+        .analyze("doc.not", "#self.panel(\"Title\")[ text ]", &c)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     assert_eq!(
@@ -23,26 +23,29 @@ fn definitions_preserve_parameter_types_modes_and_defaults() {
     );
 }
 #[test]
-fn registry_is_atomic_and_package_scoped() {
+fn registry_is_atomic_and_indexes_definition_modules() {
     let mut r = builtins::registry().clone();
-    for package in ["one", "two"] {
+    for module in ["one", "two"] {
         r.register(
-            analyze_module(package, "fn diagram() -> BlockContent;")
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    module,
+                    &format!("{}/lib.notc", module),
+                    "fn diagram() -> BlockContent;",
+                )
                 .unwrap()
                 .definitions,
         )
         .unwrap();
     }
-    assert!(r.resolve("diagram").is_err());
-    assert!(r.resolve("one::diagram").is_ok());
-    assert_eq!(
-        r.resolve("one::sub::f").unwrap_err(),
-        notist::registry::LookupError::UnsupportedPath
-    );
+    assert!(r.function("notist", "diagram").is_none());
+    assert!(r.function("one", "diagram").is_some());
     let n = r.functions().count();
     assert!(
         r.register(
-            analyze_module("one", "fn other() -> Int;")
+            notist_pipeline::Pipeline::default()
+                .compile_module("content.not", "one", "one/lib.notc", "fn other() -> Int;")
                 .unwrap()
                 .definitions
         )
@@ -51,7 +54,13 @@ fn registry_is_atomic_and_package_scoped() {
     assert_eq!(r.functions().count(), n);
     assert!(
         r.register(
-            analyze_module("notist", "fn other() -> Int;")
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "notist",
+                    "notist/lib.notc",
+                    "fn other() -> Int;"
+                )
                 .unwrap()
                 .definitions
         )
@@ -97,7 +106,9 @@ fn invalid_signatures_and_literals_are_located_in_code_source() {
         "fn a(x: String = name)->BlockContent;",
         "fn a(x: Int = 9223372036854775808)->BlockContent;",
     ] {
-        let errors = analyze_module("pkg", source).unwrap_err();
+        let errors = notist_pipeline::Pipeline::default()
+            .compile_module("content.not", "pkg", "pkg/lib.notc", source)
+            .unwrap_err();
         assert!(
             errors
                 .iter()
@@ -108,7 +119,7 @@ fn invalid_signatures_and_literals_are_located_in_code_source() {
 }
 #[test]
 fn shared_literals_preserve_integer_limits_raw_strings_and_dictionary_order() {
-    let m=analyze_module("pkg","fn f(n: Int = -9223372036854775808, data: Dict = (first: 1, second: true, first: 3), label: String = r#\"raw \\q\"#) -> BlockContent;").unwrap();
+    let m=notist_pipeline::Pipeline::default().compile_module("content.not", "pkg", "pkg/lib.notc","fn f(n: Int = -9223372036854775808, data: Dict = (first: 1, second: true, first: 3), label: String = r#\"raw \\q\"#) -> BlockContent;").unwrap();
     let f = &m.definitions.functions[0];
     assert_eq!(
         f.parameters[0].mode,
@@ -131,22 +142,25 @@ fn shared_literals_preserve_integer_limits_raw_strings_and_dictionary_order() {
 fn native_and_source_comptime_signatures_select_content_category() {
     let c = Context::default()
         .with_module(
-            analyze_module(
-                "maths",
-                "fn math<C: Type = InlineContent>(text: String) -> C;",
-            )
-            .unwrap(),
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "maths",
+                    "maths/lib.notc",
+                    "fn math<C: Type = InlineContent>(text: String) -> C;",
+                )
+                .unwrap(),
         )
         .unwrap();
     for (path, src, level) in [
         (
             "doc.not",
-            "#maths::math(\"x\")",
+            "#self.math(\"x\")",
             notist::builtins::Level::Inline,
         ),
         (
             "doc.md",
-            "#maths::math<BlockContent>(\"x\")",
+            "#self.math<BlockContent>(\"x\")",
             notist::builtins::Level::Block,
         ),
     ] {
@@ -164,11 +178,18 @@ fn native_and_source_comptime_signatures_select_content_category() {
 fn invalid_explicit_values_remain_visible_without_optional_fields() {
     let c = Context::default()
         .with_module(
-            analyze_module("pkg", "fn f(n: Int = 3,label?: String)->BlockContent;").unwrap(),
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "pkg",
+                    "pkg/lib.notc",
+                    "fn f(n: Int = 3,label?: String)->BlockContent;",
+                )
+                .unwrap(),
         )
         .unwrap();
     let a = Pipeline::default()
-        .analyze("doc.not", "#pkg::f(n: \"bad\")", &c)
+        .analyze("doc.not", "#self.f(n: \"bad\")", &c)
         .unwrap();
     assert!(!a.diagnostics().is_empty());
     let f = &a.root().children[0];

@@ -14,7 +14,6 @@ use std::{
 pub(crate) struct Assets {
     pub files: BTreeMap<PathBuf, Vec<u8>>,
     sources: BTreeMap<PathBuf, PathBuf>,
-    packages: BTreeMap<String, PathBuf>,
     output: PathBuf,
 }
 impl Assets {
@@ -95,30 +94,19 @@ impl Assets {
         let mut registrations = String::new();
         let mut tags = BTreeMap::<String, (FunctionId, PathBuf)>::new();
         for (index, component) in components.iter().enumerate() {
-            let package = &environment.packages()[&component.id.package];
-            if let Some(previous) = self
-                .packages
-                .insert(package.name.clone(), package.root.clone())
-                && previous != package.root
-            {
-                return Err(Error::Message(format!(
-                    "site package `{}` has conflicting resource roots `{}` and `{}`",
-                    package.name,
-                    previous.display(),
-                    package.root.display()
-                )));
-            }
+            let definition_module = &environment.modules()[&component.id.module];
+            let root = definition_module.path.parent().unwrap();
             let source = component.module.resource().ok_or_else(|| {
                 Error::Message(format!(
                     "cannot publish URL-only component `{}`",
                     component.id
                 ))
             })?;
-            let relative = source
-                .strip_prefix(&package.root)
-                .map_err(|_| Error::Message("component is outside its package".into()))?;
-            let destination = PathBuf::from("_notist/packages")
-                .join(notist_html::components::encode_name(&package.name))
+            let relative = source.strip_prefix(root).map_err(|_| {
+                Error::Message("component is outside its defining module resource root".into())
+            })?;
+            let destination = PathBuf::from("_notist/modules")
+                .join(notist_html::components::module_key(&component.id.module))
                 .join(relative);
             if let Some(previous) =
                 tags.insert(component.tag.clone(), (component.id.clone(), source.into()))

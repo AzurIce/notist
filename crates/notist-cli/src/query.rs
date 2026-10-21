@@ -1,10 +1,7 @@
 //! Output envelope for the query command.
 use notist::{Ctor, Item};
 
-pub fn render_json(
-    sources: &std::collections::BTreeMap<String, String>,
-    matches: &[&Item],
-) -> String {
+pub fn render_json(sources: &notist::Sources, matches: &[&Item]) -> String {
     let results = matches
         .iter()
         .map(|item| {

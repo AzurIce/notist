@@ -66,8 +66,12 @@ pub enum SyntaxKind {
     Error,
 
     // Code declarations, paths and content-literal frames.
-    ColonColon,
+    Dot,
     FnKeyword,
+    ImportKeyword,
+    AsKeyword,
+    ImportDecl,
+    MemberExpr,
     Question,
     Arrow,
     Semicolon,

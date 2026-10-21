@@ -1,4 +1,4 @@
-import init, { analyze_prepared, configuration, describe_prepared } from "./pkg/notist.js";
+import init, { analyze_prepared, source_imports, describe_prepared } from "./pkg/notist.js";
 
 import { emptyInputs, loadInputs } from "./project-inputs.js";
 
@@ -15,8 +15,11 @@ const corpusEl = document.querySelector("#corpus");
 
 let projectInputs = emptyInputs();
 let projectLoadGeneration = 0;
+let renderGeneration = 0;
+let activeProject = null;
 const pathEl = document.querySelector("#path");
 const configEl = document.querySelector("#config-url");
+const rootEl = document.querySelector("#root-url");
 const previewEl = document.querySelector("#preview");
 
 const SAMPLE = [
@@ -200,8 +203,24 @@ corpusEl.addEventListener("change", async () => {
   render();
 });
 
-function render() {
+async function render() {
+  const generation = ++renderGeneration;
+  const path = pathEl.value;
+  const source = srcEl.value;
+  let preparationError;
+  if (activeProject) {
+    try {
+      const inputs = await loadInputs(new URL(path, activeProject.rootURL), { ...activeProject, source_imports, describe_prepared, source }, activeProject.fetcher);
+      if (generation !== renderGeneration) return;
+      projectInputs = inputs;
+    } catch (error) {
+      if (generation !== renderGeneration) return;
+      projectInputs = error.inputs ?? emptyInputs();
+      preparationError = { phase: "project", start: 0, end: 0, message: error.message };
+    }
+  }
   const data = JSON.parse(analyze_prepared(pathEl.value, srcEl.value, JSON.stringify(projectInputs)));
+  if (preparationError) (data.diagnostics ??= []).push(preparationError);
   if (data.error || !data.core && !data.tree) {
     renderDiags(data.diagnostics ?? [{phase: "project", start: 0, end: 0, message: data.error}]);
     previewEl.srcdoc = "";
@@ -256,28 +275,35 @@ main();
 
 async function loadProject() {
   const generation = ++projectLoadGeneration;
+  ++renderGeneration;
   const sourcePath = pathEl.value.trim();
   const originalSource = srcEl.value;
+  if (!rootEl.value.trim()) {
+    activeProject = null;
+    projectInputs = emptyInputs();
+    render();
+    return;
+  }
+  const rootURL = new URL(rootEl.value.replace(/\/?$/, '/'), location.href);
+  const configURL = configEl.value.trim() ? new URL(configEl.value, rootURL) : null;
+  const cache = new Map();
+  const fetcher = async (url, options) => {
+    const key = `${options?.method ?? 'GET'} ${url}`;
+    if (!cache.has(key)) cache.set(key, fetch(url, options));
+    return (await cache.get(key)).clone();
+  };
   try {
-    if (!configEl.value.trim()) { projectInputs = emptyInputs(); render(); return; }
-    const configURL = new URL(configEl.value, location.href);
-    const inputs = await loadInputs(configURL, { configuration, describe_prepared });
+    const documentURL = new URL(sourcePath, rootURL);
+    const response = await fetcher(documentURL);
+    const source = response.ok ? await response.text() : originalSource;
+    const inputs = await loadInputs(documentURL, { rootURL, configURL, source, source_imports, describe_prepared }, fetcher);
     if (generation !== projectLoadGeneration) return;
-    let loadedSource;
-    if (sourcePath) {
-      const response = await fetch(new URL(sourcePath, configURL));
-      if (response.ok) loadedSource = await response.text();
-    }
-    if (generation !== projectLoadGeneration) return;
-    // Publish one complete environment; preserve edits made during loading.
+    activeProject = { rootURL, configURL, fetcher };
     projectInputs = inputs;
-    if (loadedSource !== undefined && pathEl.value.trim() === sourcePath && srcEl.value === originalSource) {
-      srcEl.value = loadedSource;
-      pathEl.value = sourcePath;
-    }
+    if (pathEl.value.trim() === sourcePath && srcEl.value === originalSource) srcEl.value = source;
     render();
   } catch (error) {
     if (generation !== projectLoadGeneration) return;
-    renderDiags([{ phase: "project", start: 0, end: 0, message: error.message }]);
+    renderDiags([{ phase: 'project', start: 0, end: 0, message: error.message }]);
   }
 }

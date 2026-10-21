@@ -1,1 +1,0 @@
-fn diagram(source: String, rule?: String, theme: String = "light") -> BlockContent;

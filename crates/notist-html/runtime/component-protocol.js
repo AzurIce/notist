@@ -17,6 +17,8 @@ export function decodeValue(value) {
     }
     case "array": return payload.map(decodeValue);
     case "dict": return new Map(payload.map(([key, value]) => [key, decodeValue(value)]));
+    case "some": return decodeValue(payload);
+    case "none": return undefined;
     default: throw new Error(`Unknown Notist value type: ${type}`);
   }
 }
@@ -31,10 +33,17 @@ export function readParameter(element, name, type) {
     case "Int": return BigInt(value);
     case "Float": return Number(value);
     case "Array": case "Dict": return decodeValue(JSON.parse(value));
+    case "Option": return decodeValue(JSON.parse(value));
     default: throw new Error(`Unknown Notist parameter type: ${type}`);
   }
 }
+const registrations = new WeakMap();
 export async function registerComponents(components) {
+  let registry = registrations.get(customElements);
+  if (!registry) {
+    registry = { implementations: new Map(), constructors: new Set() };
+    registrations.set(customElements, registry);
+  }
   const seen = new Map();
   for (const component of components) {
     if (typeof component.module !== "string" || !component.module) throw new Error(`No published module URL for Notist component: ${component.tag}`);
@@ -44,7 +53,14 @@ export async function registerComponents(components) {
     seen.set(component.tag, component.module);
     const { default: implementation } = await import(component.module);
     const existing = customElements.get(component.tag);
-    if (existing && existing !== implementation) throw new Error(`Conflicting Notist component: ${component.tag}`);
-    if (!existing) customElements.define(component.tag, implementation);
+    if (existing && existing !== implementation && registry.implementations.get(component.tag) !== implementation) throw new Error(`Conflicting Notist component: ${component.tag}`);
+    if (!existing) {
+      // A resource can implement distinct function identities. Browsers require
+      // a different constructor for each custom element name.
+      const constructor = registry.constructors.has(implementation) ? class extends implementation {} : implementation;
+      customElements.define(component.tag, constructor);
+      registry.implementations.set(component.tag, implementation);
+    }
+    registry.constructors.add(implementation);
   }
 }

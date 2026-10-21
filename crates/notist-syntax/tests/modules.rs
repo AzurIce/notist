@@ -26,7 +26,7 @@ fn signatures_preserve_names_types_defaults_and_mounts() {
     let functions: Vec<_> = module.functions().collect();
     let params: Vec<_> = functions[0].parameters().collect();
     assert_eq!(params[0].name().unwrap().text(), "source");
-    assert_eq!(params[0].ty().unwrap().path().unwrap().text(), "String");
+    assert_eq!(params[0].ty().unwrap().name().unwrap().text(), "String");
     assert!(!params[0].is_optional());
     assert!(params[0].default_value().is_none());
     assert_eq!(
@@ -48,13 +48,13 @@ fn signatures_preserve_names_types_defaults_and_mounts() {
             .unwrap()
             .ty()
             .unwrap()
-            .path()
+            .name()
             .unwrap()
             .text(),
         "InlineContent"
     );
     assert_eq!(
-        functions[2].return_type().unwrap().path().unwrap().text(),
+        functions[2].return_type().unwrap().name().unwrap().text(),
         "InlineContent"
     );
     for function in functions {
@@ -72,10 +72,10 @@ fn generic_types_and_shared_collection_literals() {
     let function = module.functions().next().unwrap();
     let params: Vec<_> = function.parameters().collect();
     let outer = params[0].ty().unwrap();
-    assert_eq!(outer.path().unwrap().text(), "Array");
+    assert_eq!(outer.name().unwrap().text(), "Array");
     let inner = outer.arguments().next().unwrap();
     assert_eq!(
-        inner.arguments().next().unwrap().path().unwrap().text(),
+        inner.arguments().next().unwrap().name().unwrap().text(),
         "Bool"
     );
     assert_eq!(
@@ -96,7 +96,7 @@ fn comments_and_multiline_raw_strings_do_not_end_declarations() {
 
 #[test]
 fn syntax_keeps_unknown_types_for_semantic_validation() {
-    let module = module("fn custom(value: some::Unknown<Other> = 1) -> FutureType;");
+    let module = module("fn custom(value: some.Unknown<Other> = 1) -> FutureType;");
     let function = module.functions().next().unwrap();
     assert_eq!(
         function
@@ -105,10 +105,10 @@ fn syntax_keeps_unknown_types_for_semantic_validation() {
             .unwrap()
             .ty()
             .unwrap()
-            .path()
+            .name()
             .unwrap()
             .text(),
-        "some::Unknown"
+        "some.Unknown"
     );
 }
 
@@ -261,4 +261,54 @@ fn excessive_type_nesting_is_diagnosed_and_recovers() {
             .map(String::as_str),
         Some("good")
     );
+}
+
+#[test]
+fn import_declarations_preserve_paths_aliases_and_unicode() {
+    let module = module(
+        "import \"./视图.notc\" as 页面;\nimport r#\"other/lib.notc\"#;\nfn f() -> Int { 页面.value() }",
+    );
+    let imports: Vec<_> = module.imports().collect();
+    assert_eq!(imports[0].source().unwrap().text(), "\"./视图.notc\"");
+    assert_eq!(imports[0].alias().unwrap().text(), "页面");
+    assert!(imports[1].alias().is_none());
+    let member = module
+        .functions()
+        .next()
+        .unwrap()
+        .body()
+        .unwrap()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::MemberExpr)
+        .unwrap();
+    assert_eq!(member.text().to_string(), "页面.value");
+}
+
+#[test]
+fn truncated_imports_and_functions_recover_at_either_declaration_kind() {
+    for source in [
+        "import \"./视图.notc\" as 页面;",
+        "fn bad(x: Dict = (key: value)) -> Int { a.b() }",
+    ] {
+        for end in (0..=source.len()).filter(|&i| source.is_char_boundary(i)) {
+            let prefix = &source[..end];
+            let input = format!(
+                "{prefix}\nimport \"./good.notc\" as good;\nfn last() -> Int {{ good.value() }}"
+            );
+            let parsed = parse_module(&input, &notist_syntax::markup::MarkupContentParser);
+            assert_eq!(parsed.syntax().text().to_string(), input);
+            let module = ast::Module::cast(parsed.syntax()).unwrap();
+            assert!(
+                module
+                    .imports()
+                    .any(|i| i.alias().is_some_and(|a| a.text() == "good")),
+                "prefix: {prefix}"
+            );
+            assert_eq!(
+                function_names(&module).last().map(String::as_str),
+                Some("last"),
+                "prefix: {prefix}"
+            );
+        }
+    }
 }

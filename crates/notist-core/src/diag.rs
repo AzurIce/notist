@@ -1,5 +1,8 @@
 use rowan::TextRange;
 
+/// Immutable source texts shared by module, analysis and host metadata.
+pub type Sources = std::collections::BTreeMap<String, std::sync::Arc<str>>;
+
 /// Which pipeline phase produced a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {

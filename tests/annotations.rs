@@ -129,9 +129,12 @@ fn annotations_inside_call_bodies_attach_in_place() {
 
 #[test]
 fn annotations_in_code_content_literals_attach_before_evaluation() {
-    let module = notist::analyze_module(
-        "demo",
-        r#"
+    let module = notist_pipeline::Pipeline::default()
+        .compile_module(
+            "content.not",
+            "demo",
+            "demo/lib.notc",
+            r#"
 fn box() -> BlockContent {
     [
 @(id: "x")
@@ -141,12 +144,12 @@ fn inline() -> InlineContent {
     [text @(id: "e")#emph[x] text]
 }
 "#,
-    )
-    .unwrap();
+        )
+        .unwrap();
     let context = notist::Context::default().with_module(module).unwrap();
     let pipeline = Pipeline::default();
     let analysis = pipeline
-        .analyze("test.not", "#demo::box()\n\n#demo::inline()", &context)
+        .analyze("test.not", "#self.box()\n\n#self.inline()", &context)
         .unwrap();
     assert!(
         analysis.diagnostics().is_empty(),

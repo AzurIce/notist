@@ -2,10 +2,34 @@
 use notist_core::{
     builtins,
     definitions::{FunctionDef, FunctionId},
-    item::{Ctor, Value},
+    item::{Ctor, EvaluationState, Item, Value},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// External function identities actually visited by rendering an evaluated tree.
+/// Errors hide their children; expanded Code boundaries render only their result.
+pub fn component_ids(root: &Item) -> BTreeSet<FunctionId> {
+    let mut ids = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(item) = stack.pop() {
+        if matches!(item.evaluation, Some(EvaluationState::Error(_))) {
+            continue;
+        }
+        if item.evaluation != Some(EvaluationState::Expanded)
+            && let Some(id) = item
+                .target
+                .as_ref()
+                .map(|target| target.function.clone())
+                .or_else(|| item.function_id())
+            && id.module != "notist"
+        {
+            ids.insert(id);
+        }
+        stack.extend(item.children.iter());
+    }
+    ids
+}
 
 /// Resource identity and published browser URL have different host semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,11 +75,11 @@ impl From<&String> for ModuleLocator {
     }
 }
 
-/// Relative candidates, in the package's logical resource root. Neither has priority.
+/// Relative candidates, in the module's logical resource root. Neither has priority.
 pub fn component_entries(name: &str) -> [PathBuf; 2] {
     [
-        PathBuf::from("components").join(format!("{name}.js")),
-        PathBuf::from("components").join(name).join("index.js"),
+        PathBuf::from(format!("{name}.js")),
+        PathBuf::from(name).join("index.js"),
     ]
 }
 /// Validate availability without IO; access failures must be handled by the caller.
@@ -85,7 +109,7 @@ pub struct Component {
     pub tag: String,
     /// Browser module locator interpreted by the host, not the renderer.
     pub module: ModuleLocator,
-    pub definition: FunctionDef,
+    pub definition: Box<FunctionDef>,
 }
 #[derive(Debug, Clone)]
 pub enum Target {
@@ -156,13 +180,13 @@ impl HtmlRegistry {
                 id: definition.id.clone(),
                 tag: component_tag(&definition.id),
                 module: module.into(),
-                definition: definition.clone(),
+                definition: Box::new(definition.clone()),
             }),
         )
     }
     /// Both native handlers and components enter the same identity registry.
     pub fn register(&mut self, definition: &FunctionDef, target: Target) -> Result<(), String> {
-        let mut module = notist_core::definitions::DefinitionModule::new(&definition.id.package);
+        let mut module = notist_core::definitions::DefinitionModule::new(&definition.id.module);
         module.functions.push(definition.clone());
         let errors = notist_core::definitions::validate_module(&module);
         if !errors.is_empty() {
@@ -202,8 +226,11 @@ impl HtmlRegistry {
             if self.targets.values().any(|target| matches!(target, Target::Component(existing) if existing.tag == component.tag)) {
                 return Err(format!("component tag collision: `{}`", component.tag));
             }
-            let mut attributes =
-                BTreeSet::from(["notist-protocol".to_owned(), "notist-content".to_owned()]);
+            let mut attributes = BTreeSet::from([
+                "notist-protocol".to_owned(),
+                "notist-content".to_owned(),
+                "notist-function".to_owned(),
+            ]);
             for parameter in &definition.comptime {
                 let attribute = format!("notist-comptime-{}", encode_name(&parameter.name));
                 if !attributes.insert(attribute.clone()) {
@@ -225,7 +252,7 @@ impl HtmlRegistry {
             Target::Component(mut component) => {
                 // The supplied semantic definition is authoritative; target records
                 // never introduce their own signature, including NaN defaults.
-                component.definition = definition.clone();
+                component.definition = Box::new(definition.clone());
                 Target::Component(component)
             }
             target => target,
@@ -235,7 +262,7 @@ impl HtmlRegistry {
     }
 }
 
-// Ordinary ASCII names retain the package-function convention. Escapes are
+// Lowercase ASCII names stay readable. Escapes are
 // deterministic; registration rejects every collision, including separators.
 pub fn encode_name(name: &str) -> String {
     let mut out = String::new();
@@ -251,8 +278,20 @@ pub fn encode_name(name: &str) -> String {
     }
     out
 }
+/// Stable resource key independent of any import alias.
+pub fn module_key(module: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in module.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
 pub fn component_tag(id: &FunctionId) -> String {
-    format!("{}-{}", encode_name(&id.package), encode_name(&id.name))
+    format!(
+        "notist-{}-{}",
+        module_key(&id.module),
+        encode_name(&id.name)
+    )
 }
 pub fn parameter_attribute(name: &str) -> String {
     format!("notist-{}", encode_name(name))
@@ -269,7 +308,9 @@ pub fn encode_parameter(value: &Value) -> String {
         Value::Float(value) if *value == f64::NEG_INFINITY => "-Infinity".into(),
         Value::Float(value) => value.to_string(),
         Value::Unit => "null".into(),
-        Value::Array(_) | Value::Dict(_) => value_json(value).to_string(),
+        Value::Array(_) | Value::Dict(_) | Value::Some(_) | Value::None => {
+            value_json(value).to_string()
+        }
     }
 }
 /// Typed Value wire representation shared with IR inspection tools.
@@ -288,5 +329,7 @@ pub fn value_json(value: &Value) -> serde_json::Value {
                 .map(|(key, value)| json!([key, value_json(value)]))
                 .collect::<Vec<_>>()
         ]),
+        Value::Some(v) => json!(["some", value_json(v)]),
+        Value::None => json!(["none"]),
     }
 }

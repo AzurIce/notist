@@ -42,3 +42,25 @@ test("distributed runtime registers once and rejects missing URLs or conflicting
     await assert.rejects(registerComponents([{ tag: "missing-widget", module: null }]), /No published module URL/);
   } finally { globalThis.customElements = previous; }
 });
+
+test("distinct module functions can share one browser implementation", async () => {
+  const previous = globalThis.customElements;
+  const definitions = new Map();
+  const constructors = new Set();
+  globalThis.customElements = {
+    get: tag => definitions.get(tag),
+    define: (tag, constructor) => {
+      assert(!constructors.has(constructor), "a browser constructor may only be registered once");
+      constructors.add(constructor);
+      definitions.set(tag, constructor);
+    },
+  };
+  try {
+    const module = "data:text/javascript,export default class Shared {}";
+    const components = [{ tag: "module-one-f", module }, { tag: "module-two-f", module }];
+    await registerComponents(components);
+    await registerComponents(components);
+    assert.equal(definitions.size, 2);
+    assert.notEqual(definitions.get("module-one-f"), definitions.get("module-two-f"));
+  } finally { globalThis.customElements = previous; }
+});

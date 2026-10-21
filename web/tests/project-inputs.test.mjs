@@ -1,56 +1,140 @@
-import assert from "node:assert/strict";
-import test from "node:test";
-import { loadInputs } from "../project-inputs.js";
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { loadInputs } from '../project-inputs.js';
+const imports = (_path, source) => JSON.stringify({ imports: [...source.matchAll(/#?import "([^"]+)" as (\w+);/g)].map(([, path, alias]) => ({ path, alias })) });
+const text = bytes => new TextDecoder().decode(Uint8Array.from(bytes));
 
-test("resource preparation includes root development dependencies, deduplicates public graphs and preserves Unicode", async () => {
-  const manifests = {
-    root: { package: { name: "root" }, dependencies: [{ name: "a", path: "../a" }], dev_dependencies: [{ name: "d", path: "../d" }] },
-    a: { package: { name: "a" }, dependencies: [{ name: "shared", path: "../shared" }], dev_dependencies: [{ name: "private", path: "../private" }] },
-    d: { package: { name: "d" }, dependencies: [{ name: "shared", path: "../shared" }], dev_dependencies: [] },
-    shared: { package: { name: "shared" }, dependencies: [], dev_dependencies: [] },
+test('document source imports deduplicate modules and preserve Unicode component paths', async () => {
+  const sources = {
+    '/root/doc.not': '#import "../a/widgets.notc" as a;\n#import "../d/lib.notc" as d;',
+    '/a/widgets.notc': 'import "../shared/lib.notc" as shared; fn 图(text: String = "α<&") -> BlockContent;',
+    '/d/lib.notc': 'import "../shared/lib.notc" as shared;',
+    '/shared/lib.notc': 'fn value() -> String { "shared" }',
   };
   const requests = [];
-  const fetcher = async (url, options) => {
-    url = new URL(url);
-    const path = decodeURIComponent(url.pathname);
-    requests.push([path, options?.method ?? "GET"]);
-    const name = path.split("/")[1];
-    if (path.endsWith("Notist.toml")) return new Response(name);
-    if (path.endsWith("lib.notc")) return new Response('fn 图(text: String = "α<&") -> BlockContent;');
-    return new Response(null, { status: path === "/a/components/图.js" ? 200 : 404 });
-  };
-  const inputs = await loadInputs(new URL("https://host.test/root/Notist.toml"), {
-    configuration: source => JSON.stringify(manifests[source]),
-    describe_prepared: source => {
+  const inputs = await loadInputs(new URL('https://host.test/root/doc.not'), {
+    source_imports: imports,
+    describe_prepared: (path, source) => {
       const inputs = JSON.parse(source);
-      assert.equal(inputs.root, "/root/");
-      assert.equal(inputs.config, "/root/Notist.toml");
-      assert.deepEqual(Object.keys(inputs.files).sort(), Object.keys(manifests).flatMap(name => [`/${name}/Notist.toml`, `/${name}/lib.notc`]).sort());
-      return JSON.stringify({ functions: [{ package: "a", root: "/a", name: "图", entries: ["components/图.js", "components/图/index.js"] }] });
+      assert.equal(path, '/root/doc.not');
+      assert.equal(inputs.root, '/root/');
+      assert.equal(inputs.config, null);
+      assert.deepEqual(Object.keys(inputs.files).sort(), Object.keys(sources).sort());
+      return JSON.stringify({ functions: [{ module: '/a/widgets.notc', root: '/a', name: '图', entries: ['图.js', '图/index.js'] }] });
     },
-  }, fetcher);
-  assert.equal(new TextDecoder().decode(Uint8Array.from(inputs.files["/a/lib.notc"])), 'fn 图(text: String = "α<&") -> BlockContent;');
-  assert.equal(requests.filter(([path]) => path === "/shared/Notist.toml").length, 1);
-  assert.equal(requests.filter(([path]) => path.startsWith("/private/")).length, 0);
-  assert.equal(inputs.module_urls["/a/components/图.js"], "https://host.test/a/components/%E5%9B%BE.js");
+  }, async (url, options) => {
+    const path = decodeURIComponent(url.pathname);
+    requests.push([path, options?.method ?? 'GET']);
+    if (path in sources) return new Response(sources[path]);
+    return new Response(null, { status: path === '/a/图.js' ? 200 : 404 });
+  });
+  assert.equal(text(inputs.files['/a/widgets.notc']), sources['/a/widgets.notc']);
+  assert.equal(requests.filter(([path]) => path === '/shared/lib.notc').length, 1);
+  assert(!requests.some(([path]) => path.endsWith('Notist.toml')));
+  assert.equal(inputs.module_urls['/a/图.js'], 'https://host.test/a/%E5%9B%BE.js');
 });
 
-test("missing dependency resources reach Rust's diagnostic assembly", async () => {
-  const config = { package: null, dependencies: [{ name: "missing", path: "missing" }], dev_dependencies: [] };
-  await assert.rejects(loadInputs(new URL("https://host.test/Notist.toml"), {
-    configuration: () => JSON.stringify(config),
-    describe_prepared: source => {
-      assert.deepEqual(Object.keys(JSON.parse(source).files), ["/Notist.toml"]);
-      return JSON.stringify({ diagnostics: [{ path: "/Notist.toml", message: "cannot load /missing/Notist.toml" }] });
+test('missing imports reach Rust diagnostics; no neighboring lib.notc is discovered', async () => {
+  await assert.rejects(loadInputs(new URL('https://host.test/doc.not'), {
+    source_imports: imports,
+    describe_prepared: (_path, source) => {
+      assert.deepEqual(Object.keys(JSON.parse(source).files), ['/doc.not']);
+      return JSON.stringify({ diagnostics: [{ path: '/doc.not', message: 'cannot import missing.notc' }] });
     },
-  }, async url => new Response(url.pathname === "/Notist.toml" ? "config" : null, { status: url.pathname === "/Notist.toml" ? 200 : 404 })), /cannot load/);
+  }, async url => new Response(url.pathname === '/doc.not' ? '#import "missing.notc" as missing;' : null, { status: url.pathname === '/doc.not' ? 200 : 404 })), /cannot import/);
 });
 
-test("resource discovery terminates cycles and leaves semantic rejection to Rust", async () => {
+test('source discovery terminates cycles and leaves semantic rejection to Rust', async () => {
   const requests = [];
-  await assert.rejects(loadInputs(new URL("https://host.test/root/Notist.toml"), {
-    configuration: () => JSON.stringify({ package: { name: "root" }, dependencies: [{ name: "root", path: "." }], dev_dependencies: [] }),
-    describe_prepared: () => JSON.stringify({ diagnostics: [{ path: "/root/Notist.toml", message: "dependency cycle" }] }),
-  }, async url => { requests.push(url.pathname); return new Response("source"); }), /dependency cycle/);
-  assert.deepEqual(requests, ["/root/Notist.toml", "/root/lib.notc"]);
+  const inputs = await loadInputs(new URL('https://host.test/root/lib.notc'), {
+    source_imports: imports,
+    describe_prepared: () => { throw new Error('Code preparation must not bind HTML'); },
+  }, async url => { requests.push(url.pathname); return new Response('import "./lib.notc" as recursive;'); });
+  assert.deepEqual(Object.keys(inputs.files), ['/root/lib.notc']);
+  assert.deepEqual(requests, ['/root/lib.notc']);
+});
+
+test('literal filesystem paths preserve URL punctuation', async () => {
+  const urls = [];
+  await loadInputs(new URL('https://host.test/notes/doc.not'), {
+    source_imports: imports,
+    describe_prepared: (_path, source) => {
+      assert.equal(text(JSON.parse(source).files['/notes/视图 #%.notc']), 'fn f() -> Int { 1 }');
+      return JSON.stringify({ functions: [] });
+    },
+  }, async url => {
+    urls.push(url.href);
+    return new Response(url.pathname === '/notes/doc.not' ? '#import "./视图 #%.notc" as view;' : 'fn f() -> Int { 1 }');
+  });
+  assert.equal(urls[1], 'https://host.test/notes/%E8%A7%86%E5%9B%BE%20%23%25.notc');
+});
+
+test('edited source replaces its import graph and output config supplies no source entry', async () => {
+  const requests = [];
+  const inputs = await loadInputs(new URL('https://host.test/notes/doc.md'), {
+    configURL: new URL('https://host.test/notes/Notist.toml'),
+    source: '#import "chosen.notc" as chosen;',
+    source_imports: imports,
+    describe_prepared: (_path, source) => {
+      const files = JSON.parse(source).files;
+      assert.equal(text(files['/notes/doc.md']), '#import "chosen.notc" as chosen;');
+      assert(!('/notes/lib.notc' in files));
+      return JSON.stringify({ functions: [] });
+    },
+  }, async url => { requests.push(url.pathname); return new Response(''); });
+  assert.deepEqual(requests, ['/notes/Notist.toml', '/notes/chosen.notc']);
+  assert.equal(inputs.config, '/notes/Notist.toml');
+});
+
+test('configuration imports are relative to config and share document module requests', async () => {
+  const requests = [];
+  const sources = {
+    '/settings/Notist.toml': 'output rules',
+    '/notes/doc.not': '#import "../modules/output.notc" as user;',
+    '/modules/output.notc': 'import "helper.notc" as helper;',
+    '/modules/helper.notc': 'fn value() -> String { "ok" }',
+  };
+  const inputs = await loadInputs(new URL('https://host.test/notes/doc.not'), {
+    configURL: new URL('https://host.test/settings/Notist.toml'),
+    source_imports: (path, source) => path.endsWith('.toml')
+      ? JSON.stringify({ imports: [
+        { path: '../modules/output.notc', alias: 'target' },
+        { path: '../modules/./output.notc', alias: 'target' },
+      ] })
+      : imports(path, source),
+    describe_prepared: () => JSON.stringify({ functions: [] }),
+  }, async url => {
+    requests.push(url.pathname);
+    return new Response(sources[url.pathname]);
+  });
+  assert.equal(requests.filter(path => path === '/modules/output.notc').length, 1);
+  assert.deepEqual(Object.keys(inputs.files).sort(), Object.keys(sources).sort());
+});
+
+test('Code entry preparation skips output configuration and HTML discovery', async () => {
+  const requests = [];
+  await loadInputs(new URL('https://host.test/module.notc'), {
+    configURL: new URL('https://host.test/Notist.toml'),
+    source_imports: imports,
+    describe_prepared: () => { throw new Error('Code preparation must not bind HTML'); },
+  }, async url => { requests.push(url.pathname); return new Response('fn f() -> InlineContent;'); });
+  assert.deepEqual(requests, ['/module.notc']);
+});
+
+test('HTML discovery failures retain the edited source graph for recovery', async () => {
+  const source = '#import "changed.notc" as changed;\n#changed.view()';
+  await assert.rejects(loadInputs(new URL('https://host.test/doc.not'), {
+    source,
+    source_imports: imports,
+    describe_prepared: () => JSON.stringify({ functions: [{ module: '/changed.notc', root: '/', name: 'view', entries: ['view.js', 'view/index.js'] }] }),
+  }, async (url, options) => options?.method === 'HEAD'
+    ? new Response(null, { status: 503 })
+    : new Response('fn view() -> InlineContent;')),
+  error => {
+    assert.match(error.message, /503/);
+    assert.equal(text(error.inputs.files['/doc.not']), source);
+    assert.equal(text(error.inputs.files['/changed.notc']), 'fn view() -> InlineContent;');
+    assert.deepEqual(Object.keys(error.inputs.files).sort(), ['/changed.notc', '/doc.not']);
+    return true;
+  });
 });

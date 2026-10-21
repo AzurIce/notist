@@ -42,6 +42,7 @@ impl Parser<'_, '_> {
                             | K::RParen
                             | K::RBracket
                             | K::FnKeyword
+                            | K::ImportKeyword
                             | K::Semicolon
                             | K::Greater
                     )
@@ -113,8 +114,10 @@ impl Parser<'_, '_> {
         self.state.builder.start_node(kind.into());
         self.eat();
         self.eat_trivia();
-        while !matches!(self.cur(), None | Some(K::FnKeyword | K::RBrace))
-            && self.cur() != Some(close)
+        while !matches!(
+            self.cur(),
+            None | Some(K::FnKeyword | K::ImportKeyword | K::RBrace)
+        ) && self.cur() != Some(close)
         {
             let start = self.state.pos;
             let named =
@@ -175,7 +178,7 @@ impl Parser<'_, '_> {
         }
         while !matches!(
             self.cur(),
-            None | Some(K::RParen | K::RBrace | K::FnKeyword)
+            None | Some(K::RParen | K::RBrace | K::FnKeyword | K::ImportKeyword)
         ) {
             let start = self.state.pos;
             let named =
@@ -273,7 +276,10 @@ impl Parser<'_, '_> {
         self.eat_trivia();
         self.module_expect(K::LBrace, "expected `{` after match subject");
         self.eat_trivia();
-        while !matches!(self.cur(), None | Some(K::RBrace | K::FnKeyword)) {
+        while !matches!(
+            self.cur(),
+            None | Some(K::RBrace | K::FnKeyword | K::ImportKeyword)
+        ) {
             let start = self.state.pos;
             self.state.builder.start_node(K::MatchArm.into());
             self.expression(0);

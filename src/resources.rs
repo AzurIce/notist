@@ -123,10 +123,10 @@ impl Resources for MemoryResources {
         }
         let mut entries = std::collections::BTreeSet::new();
         for path in self.files.keys() {
-            if let Ok(relative) = path.strip_prefix(&directory) {
-                if let Some(first) = relative.components().next() {
-                    entries.insert(directory.join(first));
-                }
+            if let Ok(relative) = path.strip_prefix(&directory)
+                && let Some(first) = relative.components().next()
+            {
+                entries.insert(directory.join(first));
             }
         }
         Ok(entries.into_iter().collect())
@@ -259,10 +259,10 @@ impl<R: Resources + ?Sized> Resources for OverlayResources<'_, R> {
             Some(ResourceKind::Directory) => {}
         }
         for source in self.sources.keys() {
-            if let Ok(relative) = source.strip_prefix(&path) {
-                if let Some(first) = relative.components().next() {
-                    entries.push(path.join(first));
-                }
+            if let Ok(relative) = source.strip_prefix(&path)
+                && let Some(first) = relative.components().next()
+            {
+                entries.push(path.join(first));
             }
         }
         entries.sort();

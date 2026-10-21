@@ -25,10 +25,11 @@ impl<T: Any + Debug> FrontendSyntax for T {
     }
 }
 
-/// Unresolved document expressions, node annotations, root attributes and
-/// frontend diagnostics.
+/// Static imports, unresolved document expressions, node annotations, root
+/// attributes and frontend diagnostics.
 #[derive(Debug, Default)]
 pub struct FrontendOutput {
+    pub imports: Vec<crate::definitions::Import>,
     pub forest: Vec<Expr>,
     /// Node annotations in source order; attached after shaping.
     pub annotations: Vec<Annotation>,

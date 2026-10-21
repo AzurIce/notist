@@ -24,7 +24,7 @@ use codespan_reporting::term::{self, Config};
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    /// Use this project configuration instead of searching parent directories
+    /// Use this output configuration instead of searching parent directories
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Inspect the representation tree after Code evaluation and transforms
@@ -93,23 +93,15 @@ fn main() -> ExitCode {
             )
         }),
         Command::Core { file } if is_module(&file) => {
-            let vault = match load_vault(&file, config) {
-                Ok(vault) => vault,
-                Err(code) => return code,
-            };
+            let vault = load_vault(config);
             print_with(&file, |src| {
                 format!("{:#?}\n", vault.analyze_code(&file, src))
             })
         }
         Command::Core { file } => {
-            let mut vault = match load_vault(&file, config) {
-                Ok(vault) => vault,
-                Err(code) => return code,
-            };
-            print_with(&file, |src| {
-                let Ok(document) = vault.analyze(&file, src) else {
-                    return format!("unsupported file extension: {}", file.display());
-                };
+            let mut vault = load_vault(config);
+            print_result(&file, |src| {
+                let document = vault.analyze(&file, src).map_err(emit_vault_error)?;
                 let mut out = String::new();
                 for d in document.diagnostics() {
                     out.push_str(&format!(
@@ -133,21 +125,19 @@ fn main() -> ExitCode {
                 } else {
                     out.push_str(&notist::dump::dump(document.root()));
                 }
-                out
+                Ok(out)
             })
         }
         Command::Json { file } if is_module(&file) => {
-            let vault = match load_vault(&file, config) {
-                Ok(vault) => vault,
-                Err(code) => return code,
-            };
+            let vault = load_vault(config);
             print_with(&file, |src| match vault.analyze_code(&file, src) {
                 Ok(analysis) => notist::cst_json::module_json(src, &analysis),
                 Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
             })
         }
-        Command::Json { file } => match load_vault(&file, config) {
-            Ok(mut vault) => print_with(&file, |src| match vault.inspect(&file, src) {
+        Command::Json { file } => {
+            let mut vault = load_vault(config);
+            print_result(&file, |src| match vault.inspect(&file, src) {
                 Ok((analysis, inspection)) => {
                     let text = notist::cst_json::inspection_json(&analysis, Some(&inspection));
                     if evaluate {
@@ -161,24 +151,20 @@ fn main() -> ExitCode {
                             }
                             Err(e) => data["error"] = e.to_string().into(),
                         };
-                        data.to_string()
+                        Ok(data.to_string())
                     } else {
-                        text
+                        Ok(text)
                     }
                 }
-                Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
-            }),
-            Err(code) => code,
-        },
+                Err(error) => Err(emit_vault_error(error)),
+            })
+        }
         Command::Query { file, selector } => match read(&file) {
             Ok(src) => {
-                let mut vault = match load_vault(&file, config) {
-                    Ok(vault) => vault,
-                    Err(code) => return code,
-                };
-                let Ok(document) = vault.analyze(&file, &src) else {
-                    eprintln!("unsupported file extension: {}", file.display());
-                    return ExitCode::FAILURE;
+                let mut vault = load_vault(config);
+                let document = match vault.analyze(&file, &src) {
+                    Ok(document) => document,
+                    Err(error) => return emit_vault_error(error),
                 };
                 let evaluation = if evaluate {
                     match vault.evaluate(&file, &document) {
@@ -199,10 +185,7 @@ fn main() -> ExitCode {
             Err(code) => code,
         },
         Command::Html { file, out_dir } => {
-            let mut vault = match load_vault(&file, config) {
-                Ok(vault) => vault,
-                Err(code) => return code,
-            };
+            let mut vault = load_vault(config);
             let src = match read(&file) {
                 Ok(src) => src,
                 Err(code) => return code,
@@ -224,9 +207,8 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             let environment = vault
-                .environment_for(&file)
-                .expect("assembled environment")
-                .clone();
+                .environment_for(&file, &src)
+                .expect("assembled environment");
             let resources = site::Files::new(vault.resources().root());
             let publication = notist_ssg::page(
                 output.rendered,
@@ -259,7 +241,7 @@ fn main() -> ExitCode {
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            runtime.block_on(lsp::serve_with_config(cli.config));
+            runtime.block_on(lsp::serve(cli.config));
             ExitCode::SUCCESS
         }
     }
@@ -285,6 +267,17 @@ fn print_with(file: &Path, mut f: impl FnMut(&str) -> String) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn print_result(file: &Path, mut f: impl FnMut(&str) -> Result<String, ExitCode>) -> ExitCode {
+    match read(file).and_then(|src| f(&src)) {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn check(file: &Path, config: Option<&Path>) -> ExitCode {
     if file.is_dir() {
         return check_dir(file, config);
@@ -294,10 +287,7 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         Err(code) => return code,
     };
     if is_module(file) {
-        let vault = match load_vault(file, config) {
-            Ok(vault) => vault,
-            Err(code) => return code,
-        };
+        let vault = load_vault(config);
         let analysis = match vault.analyze_code(file, &src) {
             Ok(analysis) => analysis,
             Err(error) => return emit_vault_error(error),
@@ -310,13 +300,10 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
             ExitCode::FAILURE
         };
     }
-    let mut vault = match load_vault(file, config) {
-        Ok(vault) => vault,
-        Err(code) => return code,
-    };
-    let Ok(document) = vault.analyze(file, &src) else {
-        eprintln!("unsupported file extension: {}", file.display());
-        return ExitCode::FAILURE;
+    let mut vault = load_vault(config);
+    let document = match vault.analyze(file, &src) {
+        Ok(document) => document,
+        Err(error) => return emit_vault_error(error),
     };
     let sources = document.sources().clone();
     let (item, mut diagnostics) = document.into_parts();
@@ -341,10 +328,7 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
-    let mut vault = match load_vault(dir, config) {
-        Ok(vault) => vault,
-        Err(code) => return code,
-    };
+    let mut vault = load_vault(config);
     let library = match vault.index(dir) {
         Ok(library) => library,
         Err(error) => return emit_vault_error(error),
@@ -395,15 +379,12 @@ fn is_module(file: &Path) -> bool {
     file.extension().is_some_and(|ext| ext == "notc")
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn load_vault(file: &Path, config: Option<&Path>) -> Result<notist::Vault, ExitCode> {
+fn load_vault(config: Option<&Path>) -> notist::Vault {
     let mut vault = notist::Vault::open(".");
     if let Some(config) = config {
         vault = vault.with_config(config);
     }
-    if !is_module(file) {
-        vault.environment_for(file).map_err(emit_vault_error)?;
-    }
-    Ok(vault)
+    vault
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_vault_error(error: notist::VaultError) -> ExitCode {
@@ -438,7 +419,7 @@ fn emit_diagnostics(
     path: &Path,
     source: &str,
     diagnostics: &[notist::Diagnostic],
-    sources: &std::collections::BTreeMap<String, String>,
+    sources: &notist::Sources,
 ) {
     for diagnostic in diagnostics {
         let path = diagnostic.source.as_deref().map(Path::new).unwrap_or(path);
@@ -446,7 +427,7 @@ fn emit_diagnostics(
             .source
             .as_ref()
             .and_then(|s| sources.get(s))
-            .map(String::as_str)
+            .map(|source| source.as_ref())
             .unwrap_or(source);
         emit_source(path, source, std::slice::from_ref(diagnostic));
     }

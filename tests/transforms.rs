@@ -1,368 +1,394 @@
-use notist::{Ctor, FunctionId, MemoryResources, PreparedInputs, RenderOptions, Vault, VaultError};
-use std::{collections::BTreeMap, path::Path};
+use notist::{Ctor, MemoryResources, PreparedInputs, RenderOptions, Value, Vault};
+use std::collections::BTreeMap;
 
-const CONFIG: &str = "[dependencies]\nkatex = { path = '../packages/katex' }\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-const DECLARATION: &str = "fn math<C: Type = InlineContent>(text: String) -> C;";
-
-fn resources(config: &str, declaration: &str, component: bool) -> MemoryResources {
-    let mut resources = MemoryResources::new("/repo/docs");
-    resources.insert("Notist.toml", config.as_bytes().to_vec());
-    resources.insert(
-        "../packages/katex/lib.notc",
-        declaration.as_bytes().to_vec(),
-    );
-    resources.insert(
-        "../packages/katex/Notist.toml",
-        b"[package]\nname = 'katex'".to_vec(),
-    );
-    if component {
-        resources.insert(
-            "../packages/katex/components/math.js",
+#[test]
+fn project_diagram_declaration_selects_either_renderer_without_a_local_component() {
+    for (renderer, declaration) in [
+        (
+            "pele",
+            include_bytes!("../modules/pele/lib.notc").as_slice(),
+        ),
+        (
+            "mermaid",
+            include_bytes!("../modules/mermaid/lib.notc").as_slice(),
+        ),
+    ] {
+        let mut inputs = MemoryResources::new("/project");
+        inputs.insert(
+            "components/lib.notc",
+            include_bytes!("../docs/components/lib.notc").to_vec(),
+        );
+        inputs.insert(format!("{renderer}/lib.notc"), declaration.to_vec());
+        inputs.insert(
+            format!("{renderer}/diagram/index.js"),
             b"export default class extends HTMLElement {}".to_vec(),
         );
-    }
-    resources
-}
-
-#[test]
-fn configuration_parses_ordered_rules_and_rejects_unsupported_or_malformed_entries() {
-    let source = format!(
-        "{CONFIG}\n[[transforms]]\nkind = 'replace'\nfrom = 'katex::math'\nto = 'notist::math'\n"
-    );
-    let config = notist::environment::parse_config(&source).unwrap();
-    assert_eq!(config.dependencies[0].path, Path::new("../packages/katex"));
-    assert!(config.dependencies[0].transforms);
-    assert_eq!(config.transforms.len(), 2);
-    assert_eq!(config.transforms[0].from, FunctionId::new("notist", "math"));
-    assert_eq!(config.transforms[1].from, FunctionId::new("katex", "math"));
-    assert!(config.transforms[0].span.end() <= config.transforms[1].span.start());
-    assert!(
-        notist::environment::parse_config("")
-            .unwrap()
-            .transforms
-            .is_empty()
-    );
-    for invalid in [
-        CONFIG.replace("notist::math", "math"),
-        CONFIG.replace("notist::math", "notist::nested::math"),
-        CONFIG.replace("katex::math", "katex::"),
-        CONFIG.replace("kind = 'replace'", "kind = 'command'"),
-        CONFIG.replace("kind = 'replace'", ""),
-        CONFIG.replace("kind = 'replace'", "kind = 1"),
-        CONFIG.replace("from = 'notist::math'", "from = 1"),
-        CONFIG.replace("to = 'katex::math'", ""),
-        CONFIG.replace("path = '../packages/katex'", "path = 1"),
-        CONFIG.replace("path = '../packages/katex'", "unexpected = true"),
-        CONFIG.replace("path = '../packages/katex'", "path = ''"),
-        CONFIG.replace(
-            "path = '../packages/katex'",
-            "path = '../packages/katex', transforms = 'false'",
-        ),
-        CONFIG.replace(
-            "path = '../packages/katex'",
-            "path = '../packages/katex', transforms = 0",
-        ),
-        CONFIG.replace("katex =", "notist ="),
-        "dependencies = []".to_owned(),
-        "transforms = false".to_owned(),
-    ] {
-        let errors = notist::environment::parse_config(&invalid).unwrap_err();
-        assert!(
-            errors.iter().all(|error| !error.span.is_empty()),
-            "{errors:?}"
+        inputs.insert(
+            "Notist.toml",
+            format!(
+                "[[transforms]]\nkind='replace'\nimports={{components='components/lib.notc',renderer='{renderer}/lib.notc'}}\nfrom='components.diagram'\nto='renderer.diagram'"
+            )
+            .into_bytes(),
         );
-    }
-    // An incomplete TOML header can report an empty span at end of input.
-    assert!(notist::environment::parse_config("[dependencies").is_err());
-}
-
-#[test]
-fn dependency_transform_switches_parse_and_are_exposed_to_preview() {
-    let source = "[dependencies]\n\
-                  default = {path = 'default'}\n\
-                  disabled = {path = 'disabled', transforms = false}\n\
-                  enabled = {path = 'enabled', transforms = true}\n\
-                  [dev-dependencies]\n\
-                  demo = {path = 'demo', transforms = false}";
-    let config = notist::environment::parse_config(source).unwrap();
-    assert_eq!(
-        config
-            .dependencies
-            .iter()
-            .map(|dependency| dependency.transforms)
-            .collect::<Vec<_>>(),
-        [true, false, true]
-    );
-    assert!(!config.dev_dependencies[0].transforms);
-    let description: serde_json::Value =
-        serde_json::from_str(&notist::preview::configuration_json(source)).unwrap();
-    assert_eq!(description["dependencies"][0]["transforms"], true);
-    assert_eq!(description["dependencies"][1]["transforms"], false);
-    assert_eq!(description["dependencies"][2]["transforms"], true);
-    assert_eq!(description["dev_dependencies"][0]["transforms"], false);
-}
-
-#[test]
-fn unknown_configuration_fields_preserve_dependencies_and_transforms() {
-    let source = "\
-future_option = true
-
-[future_section]
-options = { nested = [1, 2] }
-
-[[future_rules]]
-kind = 'future'
-
-[dependencies]
-katex = { path = '../packages/katex', future_option = true, options = { nested = [1, 2] } }
-
-[[transforms]]
-kind = 'replace'
-from = 'notist::math'
-to = 'katex::math'
-future_option = true
-options = { nested = [1, 2] }
-";
-    let config = notist::environment::parse_config(source).unwrap();
-    assert_eq!(config.dependencies.len(), 1);
-    assert_eq!(config.dependencies[0].name, "katex");
-    assert_eq!(config.dependencies[0].path, Path::new("../packages/katex"));
-    assert_eq!(config.transforms.len(), 1);
-    assert_eq!(config.transforms[0].from, FunctionId::new("notist", "math"));
-    assert_eq!(config.transforms[0].to, FunctionId::new("katex", "math"));
-
-    let description: serde_json::Value =
-        serde_json::from_str(&notist::preview::configuration_json(source)).unwrap();
-    assert_eq!(description["dependencies"][0]["name"], "katex");
-    assert_eq!(description["transforms"][0]["kind"], "replace");
-
-    let mut vault = Vault::new(resources(source, DECLARATION, true));
-    let output = vault
-        .render_html("doc.not", "$x$", RenderOptions::default())
-        .unwrap();
-    assert!(output.rendered.html.contains("<katex-math "));
-}
-
-#[test]
-fn vault_output_transforms_once_and_keeps_source_analysis_and_maps() {
-    let mut vault = Vault::new(resources(CONFIG, DECLARATION, true));
-    for (path, source) in [("doc.not", "$x$ #math(\"y\")"), ("doc.md", "- $x$\n\n$y$")] {
-        let output = vault
-            .render_html(path, source, RenderOptions::default())
-            .unwrap();
-        assert!(output.analysis.diagnostics().is_empty());
-        assert!(output.evaluation.diagnostics.is_empty());
-        assert!(output.rendered.diagnostics.is_empty());
-        assert_eq!(
-            output
+        let semantic_id = notist::FunctionId::new("/project/components/lib.notc", "diagram");
+        let target_id = notist::FunctionId::new(format!("/project/{renderer}/lib.notc"), "diagram");
+        let mut vault = Vault::new(inputs);
+        for (argument, theme) in [
+            ("", "auto"),
+            (", theme: \"light\"", "light"),
+            (", theme: \"dark\"", "dark"),
+        ] {
+            let source = format!(
+                "#import \"components/lib.notc\" as ui;\n#ui.diagram(\"flowchart LR; Source --> Item\"{argument})"
+            );
+            let output = vault
+                .render_html("doc.not", &source, RenderOptions::default())
+                .unwrap();
+            assert!(output.analysis.diagnostics().is_empty());
+            assert!(output.evaluation.diagnostics.is_empty());
+            assert!(output.rendered.diagnostics.is_empty());
+            let semantic = output
                 .analysis
                 .root()
-                .descendants()
-                .filter(|node| node.ctor == Ctor::Math)
-                .count(),
-            2
-        );
-        assert_eq!(
-            output
+                .find(|item| item.function_id() == Some(semantic_id.clone()))
+                .unwrap();
+            assert!(semantic.target.is_none());
+            assert_eq!(
+                semantic.fields.get("theme"),
+                Some(&Value::Str(theme.into()))
+            );
+            let evaluated = output
                 .evaluation
                 .root
-                .descendants()
-                .filter(|node| node
-                    .target
-                    .as_ref()
-                    .is_some_and(|i| i.function == FunctionId::new("katex", "math")))
-                .count(),
-            2
-        );
-        assert_eq!(output.rendered.html.matches("<katex-math ").count(), 2);
-        assert_eq!(output.rendered.used_components.len(), 1);
-        assert_eq!(
-            output.rendered.used_components[0].module.resource(),
-            Some(Path::new("/repo/packages/katex/components/math.js"))
-        );
-        assert!(!output.rendered.html.contains("notist-math"));
-        let math_spans: Vec<_> = output
-            .analysis
-            .root()
-            .descendants()
-            .filter(|node| node.ctor == Ctor::Math)
-            .map(|node| node.span)
-            .collect();
-        for span in math_spans {
+                .find(|item| item.function_id() == Some(semantic_id.clone()))
+                .unwrap();
+            assert_eq!(evaluated.target.as_ref().unwrap().function, target_id);
+            assert_eq!(evaluated.fields, semantic.fields);
+            assert_eq!(output.rendered.used_components.len(), 1);
+            assert_eq!(output.rendered.used_components[0].id, target_id);
             assert!(
                 output
                     .rendered
-                    .source_map
-                    .iter()
-                    .any(|mapping| mapping.range.start == usize::from(span.start())
-                        && mapping.range.end == usize::from(span.end()))
+                    .html
+                    .contains(&format!("notist-theme=\"{theme}\""))
             );
         }
-        let inspected = vault.inspect(path, source).unwrap().0;
-        let debug = vault
-            .render_output(path, &inspected, RenderOptions::default())
-            .unwrap();
-        assert_eq!(debug.evaluation, output.evaluation);
-        assert_eq!(debug.rendered.html, output.rendered.html);
-        assert_eq!(vault.analyze(path, source).unwrap(), output.analysis);
     }
-    // Rules can return to a native target without a component dependency.
-    let roundtrip = format!(
-        "{CONFIG}\n[[transforms]]\nkind = 'replace'\nfrom = 'katex::math'\nto = 'notist::math'\n"
-    );
-    let mut vault = Vault::new(resources(&roundtrip, DECLARATION, true));
-    let output = vault
-        .render_html("doc.not", "$x$", RenderOptions::default())
-        .unwrap();
-    assert_eq!(
-        notist::dump::dump(&output.evaluation.root),
-        notist::dump::dump(output.analysis.root())
-    );
-    assert!(output.rendered.used_components.is_empty());
-    // This list is deliberately not idempotent: applying it twice changes
-    // math to done. Both output entry points must execute it exactly once.
-    let config = "[dependencies]\nkatex = {path = '../packages/katex'}\n\n[[transforms]]\nkind = 'replace'\nfrom = 'katex::math'\nto = 'katex::done'\n\n[[transforms]]\nkind = 'replace'\nfrom = 'notist::math'\nto = 'katex::math'\n";
-    let declaration = format!("{DECLARATION} fn done<C: Type = InlineContent>(text: String) -> C;");
-    let mut vault = Vault::new(resources(config, &declaration, true));
-    let output = vault
-        .render_html("doc.not", "$x$", RenderOptions::default())
-        .unwrap();
-    assert_eq!(
-        output.rendered.used_components[0].id,
-        FunctionId::new("katex", "math")
-    );
-    let inspected = vault.inspect("doc.not", "$x$").unwrap().0;
-    let debug = vault
-        .render_output("doc.not", &inspected, RenderOptions::default())
-        .unwrap();
-    assert_eq!(debug.evaluation, output.evaluation);
 }
 
 #[test]
-fn environment_failures_retain_config_source_and_rule_span() {
-    for (config, declaration, reason) in [
+fn unmapped_project_diagram_is_valid_content_and_reports_a_missing_html_target() {
+    let mut inputs = MemoryResources::new("/project");
+    inputs.insert(
+        "components/lib.notc",
+        include_bytes!("../docs/components/lib.notc").to_vec(),
+    );
+    let output = Vault::new(inputs)
+        .render_html(
+            "doc.not",
+            "#import \"components/lib.notc\" as ui;\n#ui.diagram(\"flowchart LR; Source --> Item\")",
+            RenderOptions::default(),
+        )
+        .unwrap();
+    assert!(output.analysis.diagnostics().is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
+    assert!(output.rendered.used_components.is_empty());
+    assert!(
+        output
+            .rendered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("no HTML implementation"))
+    );
+}
+
+fn resources(mapped: bool) -> MemoryResources {
+    let mut r = MemoryResources::new("/project");
+    r.insert("lib.notc", b"import \"math/view.notc\" as view;".to_vec());
+    r.insert(
+        "math/view.notc",
+        b"fn math<C: Type = InlineContent>(text: String) -> C;".to_vec(),
+    );
+    r.insert("math/math.js", Vec::new());
+    if mapped {
+        r.insert(
+            "Notist.toml",
+            b"[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'".to_vec(),
+        );
+    }
+    r
+}
+#[test]
+fn importing_native_functions_does_not_implicitly_transform_content() {
+    let mut v = Vault::new(resources(false));
+    let a = v
+        .analyze("doc.not", "#import \"math/view.notc\" as view;\n$x$")
+        .unwrap();
+    let e = v.evaluate("doc.not", &a).unwrap();
+    let math = e.root.find(|i| i.ctor == Ctor::Math).unwrap();
+    assert_eq!(math.target.as_ref().unwrap().function.module, "notist");
+}
+#[test]
+fn explicit_transforms_resolve_private_imports_and_preserve_semantic_identity() {
+    let mut v = Vault::new(resources(true));
+    let output = v
+        .render_html("doc.not", "$x$", RenderOptions::default())
+        .unwrap();
+    assert!(output.analysis.diagnostics().is_empty());
+    assert!(output.evaluation.diagnostics.is_empty());
+    assert!(output.rendered.diagnostics.is_empty());
+    let original = output
+        .analysis
+        .root()
+        .find(|i| i.ctor == Ctor::Math)
+        .unwrap();
+    assert!(original.target.is_none());
+    let math = output
+        .evaluation
+        .root
+        .find(|i| i.ctor == Ctor::Math)
+        .unwrap();
+    assert_eq!(math.function_id().unwrap().module, "notist");
+    assert_eq!(
+        math.target.as_ref().unwrap().function.module,
+        "/project/math/view.notc"
+    );
+    assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
+    assert_eq!(output.rendered.used_components.len(), 1);
+}
+#[test]
+fn transform_errors_retain_the_configuration_source_and_span() {
+    for target in ["missing.math", "view.unknown"] {
+        let mut r = resources(false);
+        let source = format!(
+            "[[transforms]]\nkind='replace'\nimports={{view='math/view.notc'}}\nfrom='notist.math'\nto='{target}'"
+        );
+        r.insert("Notist.toml", source.as_bytes().to_vec());
+        let error = Vault::new(r)
+            .environment_for("doc.not", "#import \"math/view.notc\" as view;")
+            .unwrap_err();
+        let notist::VaultError::Environment(errors) = error else {
+            panic!()
+        };
+        assert_eq!(errors[0].path.to_string_lossy(), "/project/Notist.toml");
+        assert_eq!(errors[0].source, source);
+        assert!(!errors[0].diagnostic.span.is_empty());
+    }
+}
+
+#[test]
+fn document_and_each_rule_have_independent_bindings_and_chained_targets() {
+    let mut r = resources(false);
+    for name in ["first", "second", "document"] {
+        r.insert(
+            format!("{name}.notc"),
+            b"fn math<C: Type = InlineContent>(text: String) -> C;".to_vec(),
+        );
+    }
+    r.insert(
+        "Notist.toml",
+        br#"
+[[transforms]]
+kind = "replace"
+imports = { view = "first.notc" }
+from = "notist.math"
+to = "view.math"
+
+[[transforms]]
+kind = "replace"
+imports = { previous = "first.notc", view = "second.notc" }
+from = "previous.math"
+to = "view.math"
+"#
+        .to_vec(),
+    );
+    let source = "#import \"document.notc\" as view;\n$x$ #view.math(\"direct\")";
+    let mut vault = Vault::new(r);
+    let analysis = vault.analyze("doc.not", source).unwrap();
+    assert!(analysis.diagnostics().is_empty());
+    let environment = vault.environment_for("doc.not", source).unwrap();
+    assert_eq!(environment.modules().len(), 3);
+    assert_eq!(
+        environment
+            .context()
+            .resolve("view.math")
+            .unwrap()
+            .id
+            .module,
+        "/project/document.notc"
+    );
+    assert!(environment.context().resolve("previous.math").is_none());
+    let evaluated = vault.evaluate("doc.not", &analysis).unwrap();
+    assert!(evaluated.diagnostics.is_empty());
+    let math = evaluated.root.find(|i| i.ctor == Ctor::Math).unwrap();
+    assert_eq!(
+        math.target.as_ref().unwrap().function.module,
+        "/project/second.notc"
+    );
+    let direct = evaluated
+        .root
+        .find(|i| {
+            i.function_id()
+                .is_some_and(|id| id.module == "/project/document.notc")
+        })
+        .unwrap();
+    assert_eq!(
+        direct.target.as_ref().unwrap().function.module,
+        "/project/document.notc"
+    );
+}
+
+#[test]
+fn rules_cannot_inherit_document_or_previous_rule_bindings() {
+    for rules in [
+        "[[transforms]]\nkind='replace'\nfrom='notist.math'\nto='view.math'",
+        "[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[transforms]]\nkind='replace'\nfrom='view.math'\nto='notist.math'",
+    ] {
+        let mut r = resources(false);
+        r.insert("Notist.toml", rules.as_bytes().to_vec());
+        assert!(
+            Vault::new(r)
+                .analyze("doc.not", "#import \"math/view.notc\" as view;\n$x$")
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn config_paths_are_relative_to_config_and_shared_imports_are_read_once() {
+    use notist::{
+        Resources,
+        resources::{ResourceError, ResourceKind},
+    };
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
+    struct CountReads {
+        files: MemoryResources,
+        reads: RefCell<BTreeMap<PathBuf, usize>>,
+    }
+    impl Resources for CountReads {
+        fn root(&self) -> &Path {
+            self.files.root()
+        }
+        fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+            *self
+                .reads
+                .borrow_mut()
+                .entry(self.resolve(path))
+                .or_default() += 1;
+            self.files.read(path)
+        }
+        fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+            self.files.kind(path)
+        }
+        fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
+            self.files.entries(path)
+        }
+    }
+    let mut files = resources(false);
+    files.insert("config/Notist.toml", b"[[transforms]]\nkind='replace'\nimports={view='../math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[transforms]]\nkind='replace'\nimports={same='../math/../math/view.notc'}\nfrom='same.math'\nto='notist.math'".to_vec());
+    let resources = CountReads {
+        files,
+        reads: RefCell::new(BTreeMap::new()),
+    };
+    let mut vault = Vault::new(&resources).with_config("config/Notist.toml");
+    let analysis = vault
+        .analyze(
+            "notes/deep/doc.not",
+            "#import \"../../math/view.notc\" as own;\n$x$",
+        )
+        .unwrap();
+    assert!(analysis.diagnostics().is_empty());
+    assert_eq!(
+        resources
+            .reads
+            .borrow()
+            .get(Path::new("/project/math/view.notc")),
+        Some(&1)
+    );
+}
+
+#[test]
+fn transform_code_uses_its_definition_scope_and_reexported_members() {
+    let mut r = MemoryResources::new("/project");
+    for (path, source) in [
+        ("source.notc", "fn f() -> InlineContent { [original] }"),
+        ("output/index.notc", "import \"body.notc\" as nested;"),
         (
-            CONFIG.replace("katex::math", "missing::math"),
-            DECLARATION,
-            "unknown",
+            "output/body.notc",
+            "import \"value.notc\" as helper; fn f() -> InlineContent { [#text(text: helper.value())] }",
         ),
         (
-            CONFIG.to_owned(),
-            "fn math<C: Type = InlineContent>(source: String) -> C;",
-            "parameter",
+            "output/value.notc",
+            "fn value() -> String { \"from definition scope\" }",
         ),
         (
-            CONFIG.to_owned(),
-            "fn math(text: String) -> BlockContent;",
-            "comptime",
+            "Notist.toml",
+            "[[transforms]]\nkind='replace'\nimports={source='source.notc', target='output/index.notc'}\nfrom='source.f'\nto='target.nested.f'",
         ),
     ] {
-        let mut vault = Vault::new(resources(&config, declaration, false));
-        let VaultError::Environment(errors) = vault.analyze("doc.not", "$x$").unwrap_err() else {
-            panic!("expected configuration error")
+        r.insert(path, source.as_bytes().to_vec());
+    }
+    let mut vault = Vault::new(r);
+    let result = vault
+        .render_html(
+            "doc.not",
+            "#import \"source.notc\" as target;\n#target.f()",
+            Default::default(),
+        )
+        .unwrap();
+    assert!(result.analysis.diagnostics().is_empty());
+    assert!(result.evaluation.diagnostics.is_empty());
+    assert!(result.rendered.html.contains("from definition scope"));
+    assert!(!result.rendered.html.contains("original"));
+}
+
+#[test]
+fn invalid_config_imports_and_signature_errors_retain_source_locations() {
+    for config in [
+        "[[transforms]]\nkind='replace'\nimports={self='math/view.notc'}\nfrom='notist.math'\nto='self.math'",
+        "[[transforms]]\nkind='replace'\nimports={view='/math/view.notc'}\nfrom='notist.math'\nto='view.math'",
+        "[[transforms]]\nkind='replace'\nimports={view='missing.notc'}\nfrom='notist.math'\nto='view.math'",
+        "[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.text'\nto='view.math'",
+    ] {
+        let mut r = resources(false);
+        r.insert("Notist.toml", config.as_bytes().to_vec());
+        let notist::VaultError::Environment(errors) =
+            Vault::new(r).analyze("doc.not", "$x$").unwrap_err()
+        else {
+            panic!()
         };
         assert!(
             errors
                 .iter()
-                .any(|error| error.diagnostic.message.contains(reason)),
+                .any(|e| e.path.to_str() == Some("/project/Notist.toml")
+                    && !e.diagnostic.span.is_empty()
+                    && e.source == config),
             "{errors:?}"
         );
-        for error in errors {
-            assert_eq!(error.path, Path::new("/repo/docs/Notist.toml"));
-            assert_eq!(error.source, config);
-            assert!(
-                config[usize::from(error.diagnostic.span.start())
-                    ..usize::from(error.diagnostic.span.end())]
-                    .contains("from")
-            );
-        }
     }
 }
-
 #[test]
-fn missing_components_do_not_invalidate_transforms_and_no_config_keeps_defaults() {
-    let mut vault = Vault::new(resources(CONFIG, DECLARATION, false));
-    let analysis = vault.analyze("doc.not", "$x$").unwrap();
-    assert!(analysis.diagnostics().is_empty());
-    let evaluation = vault.evaluate("doc.not", &analysis).unwrap();
-    assert!(evaluation.diagnostics.is_empty());
-    let rendered = vault
-        .render_html("doc.not", "$x$", RenderOptions::default())
-        .unwrap();
-    assert!(
-        rendered.rendered.diagnostics[0]
-            .message
-            .contains("no HTML implementation")
-    );
-    let mut empty = Vault::new(MemoryResources::new("/plain"));
-    let output = empty
-        .render_html("doc.not", "$x$", RenderOptions::default())
-        .unwrap();
-    assert_eq!(
-        notist::dump::dump(&output.evaluation.root),
-        notist::dump::dump(output.analysis.root())
-    );
-    assert!(output.rendered.html.contains("notist-math"));
-    assert!(output.rendered.used_components.is_empty());
-}
-
-#[test]
-fn native_preview_worker_and_debug_paths_share_transforms_and_diagnostic_origins() {
-    let source = "$x$ #math(false)";
-    let config = CONFIG.replace("../packages/katex", "./packages/katex");
-    let inputs = PreparedInputs {
-        root: "/preview".into(),
-        config: Some("Notist.toml".into()),
-        files: BTreeMap::from([
-            ("Notist.toml".into(), config.as_bytes().to_vec()),
-            (
-                "packages/katex/Notist.toml".into(),
-                b"[package]\nname = 'katex'".to_vec(),
-            ),
-            (
-                "packages/katex/lib.notc".into(),
-                DECLARATION.as_bytes().to_vec(),
-            ),
-            ("packages/katex/components/math.js".into(), Vec::new()),
-        ]),
-        module_urls: BTreeMap::from([(
-            "packages/katex/components/math.js".into(),
-            "https://host.test/math.js".into(),
-        )]),
+fn prepared_worker_and_native_hosts_share_module_scopes_and_transforms() {
+    let r = resources(true);
+    let prepared = PreparedInputs {
+        root: "/project".into(),
+        config: None,
+        files: r.files().clone(),
+        module_urls: BTreeMap::new(),
     };
-    let message = serde_json::to_string(&inputs).unwrap();
-    let native = inputs
-        .clone()
-        .into_vault()
-        .render_html("doc.not", source, RenderOptions::default())
-        .unwrap();
-    let render: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
-        "doc.not", source, &message,
+    let json: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
+        "doc.md",
+        "$x$",
+        &serde_json::to_string(&prepared).unwrap(),
     ))
     .unwrap();
-    let debug: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
-        "doc.not", source, &message,
-    ))
-    .unwrap();
-    assert_eq!(render["html"], native.rendered.html);
-    for key in ["html", "diagnostics", "used_components", "source_map"] {
-        assert_eq!(render[key], debug[key], "{key}");
-    }
-    assert!(
-        render["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|error| error["origin"] == "evaluate" && error["path"] == "doc.not")
+    assert_eq!(json["diagnostics"], serde_json::json!([]));
+    assert_eq!(json["used_components"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json["evaluated"]["children"][0]["children"][0]["function"],
+        "notist.math"
     );
-    assert!(
-        render["diagnostics"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|error| error["origin"] == "analysis")
-    );
-    assert_eq!(render["used_components"][0]["package"], "katex");
-    assert!(debug["evaluated"].to_string().contains("katex::math"));
-    assert!(debug["core"].to_string().contains("notist::math"));
 }

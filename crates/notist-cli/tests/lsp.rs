@@ -119,14 +119,11 @@ impl Drop for Lsp {
 fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::create_dir(temp.path().join("widgets")).unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
+    std::fs::write(temp.path().join("widgets/Notist.toml"), "").unwrap();
     std::fs::write(
-        temp.path().join("Notist.toml"),
-        "[dependencies]\nwidgets = {path = './widgets'}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        temp.path().join("widgets/Notist.toml"),
-        "[package]\nname = 'widgets'",
+        temp.path().join("lib.notc"),
+        "import \"widgets/lib.notc\" as widgets;",
     )
     .unwrap();
     let module = temp.path().join("widgets/lib.notc");
@@ -139,7 +136,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
     server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
     server.until(|message| message["id"] == 1);
     server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
-    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":"#widgets::panel(\"Title\")[ body ]"}}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":"#import \"widgets/lib.notc\" as widgets;\n#widgets.panel(\"Title\")[ body ]"}}}));
     let diagnostics = server.until(|message| {
         message["method"] == "textDocument/publishDiagnostics" && message["params"]["uri"] == uri
     });
@@ -149,7 +146,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
             .unwrap()
             .is_empty()
     );
-    server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":5}}}));
+    server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":uri},"position":{"line":1,"character":5}}}));
     let definition = server.until(|message| message["id"] == 2);
     assert_eq!(definition["result"]["uri"], module_uri);
     server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":module_uri,"languageId":"notc","version":1,"text":"fn panel(title: Unknown) -> BlockContent;"}}}));
@@ -192,7 +189,7 @@ fn language_server_uses_declarations_unsaved_overlays_and_clears_source_errors()
 #[test]
 fn code_diagnostics_publish_to_the_definition_and_do_not_slice_unicode_callers() {
     let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
     let module = temp.path().join("lib.notc");
     std::fs::write(
         &module,
@@ -207,7 +204,7 @@ fn code_diagnostics_publish_to_the_definition_and_do_not_slice_unicode_callers()
     server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
     server.until(|m| m["id"] == 1);
     server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
-    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":format!("#demo::f()  {}", "汉".repeat(30))}}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":format!("#import \"lib.notc\" as demo;\n#demo.f()  {}", "汉".repeat(30))}}}));
     let invalid = server.until(|m| {
         m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == module_uri
     });
@@ -216,7 +213,7 @@ fn code_diagnostics_publish_to_the_definition_and_do_not_slice_unicode_callers()
         invalid["params"]["diagnostics"][0]["range"]["start"]["character"],
         26
     );
-    server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":6}}}));
+    server.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":uri},"position":{"line":1,"character":6}}}));
     assert!(server.until(|m| m["id"] == 2).get("result").is_some());
     server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":module_uri,"languageId":"notc","version":1,"text":"fn f() -> InlineContent { [fixed] }"}}}));
     server.until(|m| {
@@ -231,7 +228,7 @@ fn code_diagnostics_publish_to_the_definition_and_do_not_slice_unicode_callers()
 #[test]
 fn opening_code_alone_reports_and_clears_body_checking_and_parse_errors() {
     let temp = tempfile::tempdir().unwrap();
-    std::fs::write(temp.path().join("Notist.toml"), "[package]\nname = 'demo'").unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
     std::fs::write(
         temp.path().join("lib.notc"),
         "fn good() -> InlineContent { [good] }",
@@ -262,7 +259,7 @@ fn opening_code_alone_reports_and_clears_body_checking_and_parse_errors() {
                 .as_array()
                 .is_some_and(|ds| ds.iter().any(|d| d["source"] == "notist:syntax"))
     });
-    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":3},"contentChanges":[{"text":"fn helper() -> InlineContent { [fixed] } fn good() -> InlineContent { demo::helper() }"}]}}));
+    server.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":3},"contentChanges":[{"text":"fn helper() -> InlineContent { [fixed] } fn good() -> InlineContent { self.helper() }"}]}}));
     server.until(|m| {
         m["method"] == "textDocument/publishDiagnostics"
             && m["params"]["uri"] == uri

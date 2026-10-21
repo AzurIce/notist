@@ -72,13 +72,14 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
 fn html_and_site_publication_reject_symlink_component_resources() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    write(root, "Notist.toml", "");
+    write(root, "lib.notc", "import \"widgets/lib.notc\" as widgets;");
     write(
         root,
-        "Notist.toml",
-        "[dependencies]\nwidgets={path='widgets'}",
+        "README.not",
+        "#import \"widgets/lib.notc\" as widgets;\n#widgets.badge(\"Hello\")",
     );
-    write(root, "README.not", "#widgets::badge(\"Hello\")");
-    write(root, "widgets/Notist.toml", "[package]\nname='widgets'");
+    write(root, "widgets/Notist.toml", "");
     write(
         root,
         "widgets/lib.notc",
@@ -90,11 +91,7 @@ fn html_and_site_publication_reject_symlink_component_resources() {
         "export default class extends HTMLElement {}",
     );
     std::fs::create_dir_all(root.join("widgets/components")).unwrap();
-    std::os::unix::fs::symlink(
-        root.join("component.js"),
-        root.join("widgets/components/badge.js"),
-    )
-    .unwrap();
+    std::os::unix::fs::symlink(root.join("component.js"), root.join("widgets/badge.js")).unwrap();
     for args in [
         vec!["html", "README.not", "--out-dir", "published"],
         vec!["build", "--out-dir", "published"],
@@ -234,21 +231,22 @@ fn preview_serves_clean_urls_reload_events_and_last_successful_build() {
 }
 
 #[test]
-fn preview_recovers_from_initial_template_errors_and_watches_external_packages() {
+fn preview_recovers_from_initial_template_errors_and_watches_external_modules() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
+    write(&root, "Notist.toml", "[site]\ntheme='theme'");
     write(
         &root,
-        "Notist.toml",
-        "[dependencies]\nwidgets={path='../widgets'}\n[site]\ntheme='theme'",
+        "lib.notc",
+        "import \"../widgets/lib.notc\" as widgets;",
     );
-    write(&root, "README.not", "= Home\n\n#widgets::badge(\"Hello\")");
-    write(&root, "theme/index.hbs", "{{page.missing}}");
     write(
-        temp.path(),
-        "widgets/Notist.toml",
-        "[package]\nname='widgets'",
+        &root,
+        "README.not",
+        "#import \"../widgets/lib.notc\" as widgets;\n= Home\n\n#widgets.badge(\"Hello\")",
     );
+    write(&root, "theme/index.hbs", "{{page.missing}}");
+    write(temp.path(), "widgets/Notist.toml", "");
     write(
         temp.path(),
         "widgets/lib.notc",
@@ -256,7 +254,7 @@ fn preview_recovers_from_initial_template_errors_and_watches_external_packages()
     );
     write(
         temp.path(),
-        "widgets/components/badge.js",
+        "widgets/badge.js",
         "export default class extends HTMLElement { /* before */ }",
     );
     let preview = Preview::start(&root);
@@ -265,15 +263,18 @@ fn preview_recovers_from_initial_template_errors_and_watches_external_packages()
     update(&mut events, |event| event["error"].is_string());
     write(&root, "theme/index.hbs", "{{page.title}} {{{page.html}}}");
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
-    let path = "/_notist/packages/widgets/components/badge.js";
-    assert!(preview.get(path).contains("before"));
+    let path = format!(
+        "/_notist/modules/{}/badge.js",
+        notist_html::components::module_key(temp.path().join("widgets/lib.notc").to_str().unwrap())
+    );
+    assert!(preview.get(&path).contains("before"));
     write(
         temp.path(),
-        "widgets/components/badge.js",
+        "widgets/badge.js",
         "export default class extends HTMLElement { /* after */ }",
     );
     update(&mut events, |event| {
         event["revision"].as_u64() > good["revision"].as_u64()
     });
-    assert!(preview.get(path).contains("after"));
+    assert!(preview.get(&path).contains("after"));
 }

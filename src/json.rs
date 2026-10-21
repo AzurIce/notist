@@ -52,6 +52,8 @@ pub(crate) fn write_value(out: &mut String, value: &Value) {
             }
             out.push('}');
         }
+        Value::Some(value) => write_value(out, value),
+        Value::None => out.push_str("null"),
     }
 }
 
@@ -71,6 +73,8 @@ fn value(value: &Value) -> serde_json::Value {
                 .map(|(key, value)| (key.to_owned(), self::value(value)))
                 .collect(),
         ),
+        Value::Some(value) => self::value(value),
+        Value::None => serde_json::Value::Null,
     }
 }
 

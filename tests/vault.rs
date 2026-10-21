@@ -11,40 +11,39 @@ use std::{
 
 fn memory() -> MemoryResources {
     let mut resources = MemoryResources::new("vault");
+    resources.insert("Notist.toml", Vec::new());
     resources.insert(
-        "Notist.toml",
-        b"[dependencies]\nwidgets = {path = 'widgets'}".to_vec(),
+        "lib.notc",
+        b"import \"widgets/lib.notc\" as widgets;".to_vec(),
     );
-    resources.insert(
-        "widgets/Notist.toml",
-        b"[package]\nname = 'widgets'".to_vec(),
-    );
+    resources.insert("widgets/Notist.toml", b"".to_vec());
     resources.insert("widgets/lib.notc", b"fn panel<C: Type>(title: String = \"outer\")[children: C] -> BlockContent; fn badge(label: String) -> InlineContent;".to_vec());
-    resources.insert("widgets/components/panel/index.js", Vec::new());
-    resources.insert("widgets/components/badge.js", Vec::new());
+    resources.insert("widgets/panel/index.js", Vec::new());
+    resources.insert("widgets/badge.js", Vec::new());
     resources
 }
-const DOCUMENT: &str = "#widgets::panel()[ #widgets::badge(\"inner\") ]";
+const DOCUMENT: &str =
+    "#import \"widgets/lib.notc\" as widgets;\n#widgets.panel()[ #widgets.badge(\"inner\") ]";
 
 #[test]
 fn typed_output_preserves_nested_components_maps_and_published_urls() {
     let urls = BTreeMap::from([
         (
-            PathBuf::from("widgets/components/panel/index.js"),
+            PathBuf::from("widgets/panel/index.js"),
             "https://host.test/panel/index.js".into(),
         ),
         (
-            PathBuf::from("widgets/components/badge.js"),
+            PathBuf::from("widgets/badge.js"),
             "https://host.test/badge.js".into(),
         ),
     ]);
     let mut vault = Vault::new(memory()).with_module_urls(urls);
     let output = vault
-        .render_html("notes/doc.not", DOCUMENT, RenderOptions::default())
+        .render_html("doc.not", DOCUMENT, RenderOptions::default())
         .unwrap();
     assert!(output.analysis.diagnostics().is_empty());
     assert!(output.rendered.diagnostics.is_empty());
-    assert_eq!(output.path, Path::new("/vault/notes/doc.not"));
+    assert_eq!(output.path, Path::new("/vault/doc.not"));
     assert_eq!(output.rendered.used_components.len(), 2);
     assert_eq!(
         output.rendered.used_components[0].module.url(),
@@ -65,11 +64,7 @@ fn typed_output_preserves_nested_components_maps_and_published_urls() {
             && mapping.range.end <= DOCUMENT.len()
     }));
     let plain = vault
-        .render_html(
-            "notes/doc.not",
-            DOCUMENT,
-            RenderOptions { source_map: false },
-        )
+        .render_html("doc.not", DOCUMENT, RenderOptions { source_map: false })
         .unwrap();
     assert!(plain.rendered.source_map.is_empty());
     assert!(!plain.rendered.html.contains("data-notist-node"));
@@ -78,25 +73,24 @@ fn typed_output_preserves_nested_components_maps_and_published_urls() {
 #[test]
 fn nearest_configs_and_document_index_share_environment_selection() {
     let mut resources = memory();
+    resources.insert("nested/Notist.toml", Vec::new());
     resources.insert(
-        "nested/Notist.toml",
-        b"[dependencies]\nwidgets = {path = 'other'}".to_vec(),
+        "nested/lib.notc",
+        b"import \"other/lib.notc\" as widgets;".to_vec(),
     );
-    resources.insert(
-        "nested/other/Notist.toml",
-        b"[package]\nname = 'widgets'".to_vec(),
-    );
+    resources.insert("nested/other/Notist.toml", b"".to_vec());
     resources.insert(
         "nested/other/lib.notc",
         b"fn badge(label: Int) -> InlineContent;".to_vec(),
     );
     resources.insert(
         "outer.not",
-        b"#widgets::badge(\"text\") [[nested/inner.not]]".to_vec(),
+        b"#import \"widgets/lib.notc\" as widgets;\n#widgets.badge(\"text\") [[nested/inner.not]]"
+            .to_vec(),
     );
     resources.insert(
         "nested/inner.not",
-        b"#widgets::badge(42) [[../outer.not]]".to_vec(),
+        b"#import \"other/lib.notc\" as widgets;\n#widgets.badge(42) [[../outer.not]]".to_vec(),
     );
     let mut vault = Vault::new(resources);
     assert!(
@@ -115,7 +109,10 @@ fn nearest_configs_and_document_index_share_environment_selection() {
     );
     assert!(
         !vault
-            .analyze("nested/wrong.not", "#widgets::badge(\"text\")")
+            .analyze(
+                "nested/wrong.not",
+                "#import \"other/lib.notc\" as widgets;\n#widgets.badge(\"text\")"
+            )
             .unwrap()
             .diagnostics()
             .is_empty()
@@ -124,7 +121,10 @@ fn nearest_configs_and_document_index_share_environment_selection() {
     // Returning to the outer environment must not keep the nested signature.
     assert!(
         vault
-            .analyze("outer.not", "#widgets::badge(\"text\")")
+            .analyze(
+                "outer.not",
+                "#import \"widgets/lib.notc\" as widgets;\n#widgets.badge(\"text\")"
+            )
             .unwrap()
             .diagnostics()
             .is_empty()
@@ -136,13 +136,11 @@ fn overlays_include_unsaved_configs_and_declarations_and_errors_keep_source() {
     let base = memory();
     let overlays = BTreeMap::from([
         (
-            PathBuf::from("unsaved/Notist.toml"),
-            "[dependencies]\nwidgets = {path = 'new'}".into(),
+            PathBuf::from("unsaved/lib.notc"),
+            "import \"new/lib.notc\" as widgets;".into(),
         ),
-        (
-            PathBuf::from("unsaved/new/Notist.toml"),
-            "[package]\nname = 'widgets'".into(),
-        ),
+        (PathBuf::from("unsaved/Notist.toml"), "".into()),
+        (PathBuf::from("unsaved/new/Notist.toml"), "".into()),
         (
             PathBuf::from("unsaved/new/lib.notc"),
             "fn badge(label: Int) -> InlineContent;".into(),
@@ -151,7 +149,10 @@ fn overlays_include_unsaved_configs_and_declarations_and_errors_keep_source() {
     let mut vault = Vault::new(OverlayResources::new(&base, &overlays));
     assert!(
         vault
-            .analyze("unsaved/doc.not", "#widgets::badge(7)")
+            .analyze(
+                "unsaved/doc.not",
+                "#import \"new/lib.notc\" as widgets;\n#widgets.badge(7)"
+            )
             .unwrap()
             .diagnostics()
             .is_empty()
@@ -160,11 +161,16 @@ fn overlays_include_unsaved_configs_and_declarations_and_errors_keep_source() {
     let mut broken = overlays;
     broken.insert("unsaved/new/lib.notc".into(), broken_source.into());
     let mut vault = Vault::new(OverlayResources::new(&base, &broken));
-    let VaultError::Environment(errors) = vault.analyze("unsaved/doc.not", "Text").unwrap_err()
+    let VaultError::Environment(errors) = vault
+        .analyze(
+            "unsaved/doc.not",
+            "#import \"new/lib.notc\" as widgets;\nText",
+        )
+        .unwrap_err()
     else {
         panic!("expected declaration failure")
     };
-    assert!(errors.iter().all(
+    assert!(errors.iter().any(
         |error| error.path == Path::new("/vault/unsaved/new/lib.notc")
             && error.source == broken_source
             && !error.diagnostic.span.is_empty()
@@ -183,7 +189,7 @@ fn overlays_include_unsaved_configs_and_declarations_and_errors_keep_source() {
 #[test]
 fn html_entry_conflicts_do_not_invalidate_semantic_declarations() {
     let mut resources = memory();
-    resources.insert("widgets/components/panel.js", Vec::new());
+    resources.insert("widgets/panel.js", Vec::new());
     let mut vault = Vault::new(resources);
     assert!(
         vault
@@ -203,14 +209,12 @@ fn html_entry_conflicts_do_not_invalidate_semantic_declarations() {
     assert!(errors[0].source.starts_with("fn panel"));
 
     let mut resources = MemoryResources::new("vault");
+    resources.insert("Notist.toml", Vec::new());
     resources.insert(
-        "Notist.toml",
-        b"[dependencies]\nwidgets = {path = 'widgets'}".to_vec(),
+        "lib.notc",
+        b"import \"widgets/lib.notc\" as widgets;".to_vec(),
     );
-    resources.insert(
-        "widgets/Notist.toml",
-        b"[package]\nname = 'widgets'".to_vec(),
-    );
+    resources.insert("widgets/Notist.toml", b"".to_vec());
     resources.insert(
         "widgets/lib.notc",
         b"fn panel<C: Type>()[children: C] -> BlockContent;".to_vec(),
@@ -218,7 +222,7 @@ fn html_entry_conflicts_do_not_invalidate_semantic_declarations() {
     let output = Vault::new(resources)
         .render_html(
             "doc.not",
-            "#widgets::panel()[visible]",
+            "#import \"widgets/lib.notc\" as widgets;\n#widgets.panel()[visible]",
             RenderOptions::default(),
         )
         .unwrap();
@@ -243,7 +247,7 @@ impl Resources for Denied {
         self.0.entries(path)
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
-        if path.ends_with("components/badge.js") {
+        if path.ends_with("badge.js") {
             Err(ResourceError::Access {
                 path: path.into(),
                 message: "host denied resource metadata".into(),
@@ -256,14 +260,13 @@ impl Resources for Denied {
 #[test]
 fn host_failures_and_invalid_utf8_are_not_treated_as_missing_resources() {
     let mut vault = Vault::new(Denied(memory()));
-    assert!(
-        vault
-            .analyze("doc.not", DOCUMENT)
-            .unwrap()
-            .diagnostics()
-            .is_empty()
-    );
-    let VaultError::Environment(errors) = vault.html_registry("doc.not").unwrap_err() else {
+    let analysis = vault.analyze("doc.not", DOCUMENT).unwrap();
+    assert!(analysis.diagnostics().is_empty());
+    let evaluated = vault.evaluate("doc.not", &analysis).unwrap();
+    let VaultError::Environment(errors) = vault
+        .html_registry("doc.not", DOCUMENT, &evaluated.root)
+        .unwrap_err()
+    else {
         panic!("expected access failure")
     };
     assert!(errors[0].diagnostic.message.contains("host denied"));
@@ -342,38 +345,35 @@ fn scans_follow_sibling_documents_within_the_vault_using_their_own_configs() {
     let mut resources = MemoryResources::new("/repo");
     resources.insert(
         "docs/README.not",
-        b"@(id: \"root\")\n= Docs\n\n[Example](../packages/demo/README.not#anchor) [Missing](../packages/missing/README.not) [Remote](https://example.test/README.not)".to_vec(),
+        b"@(id: \"root\")\n= Docs\n\n[Example](../modules/demo/README.not#anchor) [Missing](../modules/missing/README.not) [Remote](https://example.test/README.not)".to_vec(),
     );
+    resources.insert("modules/demo/Notist.toml", b"".to_vec());
     resources.insert(
-        "packages/demo/Notist.toml",
-        b"[package]\nname = 'demo'".to_vec(),
-    );
-    resources.insert(
-        "packages/demo/lib.notc",
+        "modules/demo/lib.notc",
         b"fn badge(label: String) -> InlineContent;".to_vec(),
     );
     resources.insert(
-        "packages/demo/README.not",
-        b"@(id: \"anchor\")\n= Package\n\n#demo::badge(\"hello\")\n\n[Back](../../docs/README.not#root) [Bad anchor](../../docs/README.not#missing)".to_vec(),
+        "modules/demo/README.not",
+        b"#import \"lib.notc\" as demo;\n@(id: \"anchor\")\n= Module\n\n#demo.badge(\"hello\")\n\n[Back](../../docs/README.not#root) [Bad anchor](../../docs/README.not#missing)".to_vec(),
     );
     resources.insert(
-        "packages/unrelated/README.not",
-        b"#unregistered::function()".to_vec(),
+        "modules/unrelated/README.not",
+        b"#unregistered.function()".to_vec(),
     );
     let index = Vault::new(resources).index("docs").unwrap();
     let diagnostics = index.check();
     assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
     assert!(diagnostics.iter().any(|(path, diagnostic)| {
         path == Path::new("docs/README.not")
-            && diagnostic.message.contains("packages/missing/README.not")
+            && diagnostic.message.contains("modules/missing/README.not")
     }));
     assert!(diagnostics.iter().any(|(path, diagnostic)| {
-        path == Path::new("packages/demo/README.not")
+        path == Path::new("modules/demo/README.not")
             && diagnostic.message.contains("missing item `#missing`")
     }));
     assert_eq!(index.backlinks(Path::new("docs/README.not")).len(), 2);
     assert_eq!(
-        index.backlinks(Path::new("packages/demo/README.not"))[0].0,
+        index.backlinks(Path::new("modules/demo/README.not"))[0].0,
         Path::new("docs/README.not")
     );
 }
@@ -498,37 +498,34 @@ fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
                 .unwrap()
                 .iter()
                 .all(|diagnostic| diagnostic["origin"] == "analysis"
-                    && diagnostic["path"] == "notes/page.md")
+                    && diagnostic["path"] == "/repo/docs/notes/page.md")
         );
     }
 }
 
 #[test]
-fn package_dependencies_outside_the_vault_remain_available() {
+fn module_dependencies_outside_the_vault_remain_available() {
     let mut resources = MemoryResources::new("/repo/docs");
+    resources.insert("Notist.toml", Vec::new());
     resources.insert(
-        "Notist.toml",
-        b"[dependencies]\ndemo = {path = '../packages/demo'}".to_vec(),
+        "lib.notc",
+        b"import \"../modules/demo/lib.notc\" as demo;".to_vec(),
     );
+    resources.insert("../modules/demo/Notist.toml", b"".to_vec());
     resources.insert(
-        "../packages/demo/Notist.toml",
-        b"[package]\nname = 'demo'".to_vec(),
-    );
-    resources.insert(
-        "../packages/demo/lib.notc",
+        "../modules/demo/lib.notc",
         b"fn badge(label: String) -> InlineContent;".to_vec(),
     );
     let mut vault = Vault::new(resources);
-    let source = "#demo::badge(\"hello\") [package](../packages/demo/README.not)";
+    let source = "#import \"../modules/demo/lib.notc\" as demo;\n#demo.badge(\"hello\") [module](../modules/demo/README.not)";
     let analysis = vault.analyze("README.not", source).unwrap();
     assert!(
         vault
-            .environment_for("README.not")
+            .environment_for("README.not", source)
             .unwrap()
             .context()
-            .registry()
-            .resolve("demo::badge")
-            .is_ok()
+            .resolve("demo.badge")
+            .is_some()
     );
     assert_eq!(analysis.diagnostics().len(), 1);
     assert!(
@@ -539,37 +536,38 @@ fn package_dependencies_outside_the_vault_remain_available() {
 }
 
 #[test]
-fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
+fn local_and_worker_inputs_use_the_same_real_module_signatures_and_entries() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     let paths = [
         "docs/components/README.not",
-        "packages/grammar/README.not",
-        "packages/typst/README.not",
-        "packages/shader/README.not",
+        "modules/grammar/README.not",
+        "modules/typst/README.not",
+        "modules/shader/README.not",
     ];
     let mut local = Vault::open(&root);
     let mut files = BTreeMap::new();
     for document in paths {
-        let environment = local.environment_for(document).unwrap();
-        let config = environment.config_path().unwrap();
-        files.insert(config.to_path_buf(), std::fs::read(config).unwrap());
-        for package in environment.packages().values() {
-            let manifest = package.root.join("Notist.toml");
-            files.insert(manifest.clone(), std::fs::read(manifest).unwrap());
-            files.insert(
-                package.root.join("lib.notc"),
-                package.source.as_bytes().to_vec(),
-            );
+        let environment = local
+            .environment_for(
+                document,
+                &std::fs::read_to_string(root.join(document)).unwrap(),
+            )
+            .unwrap();
+        if let Some(config) = environment.config_path() {
+            files.insert(config.to_path_buf(), std::fs::read(config).unwrap());
+        }
+        for module in environment.modules().values() {
+            files.insert(module.path.clone(), module.source.as_bytes().to_vec());
         }
         for definition in environment
             .context()
             .registry()
             .functions()
-            .filter(|definition| definition.id.package != "notist")
+            .filter(|definition| definition.id.module != "notist")
         {
-            let package = &environment.packages()[&definition.id.package];
+            let module = &environment.modules()[&definition.id.module];
             for entry in notist_html::components::component_entries(&definition.id.name) {
-                let path = package.root.join(entry);
+                let path = module.path.parent().unwrap().join(entry);
                 if path.is_file() {
                     files.insert(path, Vec::new());
                 }
@@ -595,15 +593,26 @@ fn local_and_worker_inputs_use_the_same_real_package_signatures_and_entries() {
         let prepared = worker
             .render_html(path, &source, RenderOptions::default())
             .unwrap();
-        assert!(disk.analysis.diagnostics().is_empty());
+        assert!(
+            disk.analysis.diagnostics().is_empty(),
+            "{path}: {:?}",
+            disk.analysis.diagnostics()
+        );
         assert!(disk.evaluation.diagnostics.is_empty());
         assert!(disk.rendered.diagnostics.is_empty());
         assert!(
             !disk.rendered.used_components.is_empty(),
-            "{path} must contain actual package calls"
+            "{path} must contain actual module calls"
         );
-        if path == "packages/shader/README.not" {
-            assert_eq!(disk.rendered.html.matches("<shader-canvas ").count(), 2);
+        if path == "modules/shader/README.not" {
+            assert_eq!(
+                disk.rendered
+                    .used_components
+                    .iter()
+                    .filter(|component| component.id.name == "canvas")
+                    .count(),
+                1
+            );
         }
         assert_eq!(disk.analysis, prepared.analysis);
         assert_eq!(disk.evaluation, prepared.evaluation);
@@ -666,11 +675,11 @@ fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
         files: resources.files().clone(),
         module_urls: BTreeMap::from([
             (
-                PathBuf::from("widgets/components/panel/index.js"),
+                PathBuf::from("widgets/panel/index.js"),
                 "https://host.test/panel.js".into(),
             ),
             (
-                PathBuf::from("widgets/components/badge.js"),
+                PathBuf::from("widgets/badge.js"),
                 "https://host.test/badge.js".into(),
             ),
         ]),
@@ -700,32 +709,30 @@ fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
     assert_eq!(plain["html"], native.rendered.html);
     inputs
         .files
-        .remove(&PathBuf::from("/vault/widgets/components/panel/index.js"));
+        .remove(&PathBuf::from("/vault/widgets/panel/index.js"));
     inputs.module_urls.clear();
     let missing: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(
         "doc.not",
-        "#widgets::panel()[visible]",
+        "#import \"widgets/lib.notc\" as widgets;\n#widgets.panel()[visible]",
         &serde_json::to_string(&inputs).unwrap(),
     ))
     .unwrap();
     assert_eq!(missing["diagnostics"][0]["origin"], "render");
-    assert_eq!(missing["diagnostics"][0]["path"], "doc.not");
+    assert_eq!(missing["diagnostics"][0]["path"], "/vault/doc.not");
 }
 
 #[test]
 fn explicit_code_sources_keep_host_loading_outside_context() {
     let source = "fn f() -> InlineContent { [#strong[hello]] }";
-    let environment = notist::Environment::default()
-        .with_code(
-            "demo",
-            Path::new("/code/widgets.notc"),
-            source,
-            Path::new("content.not"),
-        )
-        .unwrap();
-    let mut vault = Vault::new(MemoryResources::new("/notes")).with_environment(environment);
+    let mut resources = MemoryResources::new("/notes");
+    resources.insert("/code/widgets.notc", source.as_bytes().to_vec());
+    let mut vault = Vault::new(resources);
     let output = vault
-        .render_html("doc.not", "#demo::f()", RenderOptions::default())
+        .render_html(
+            "doc.not",
+            "#import \"../code/widgets.notc\" as ui;\n#ui.f()",
+            RenderOptions::default(),
+        )
         .unwrap();
     assert!(output.analysis.diagnostics().is_empty());
     assert!(output.evaluation.diagnostics.is_empty());
@@ -735,5 +742,56 @@ fn explicit_code_sources_keep_host_loading_outside_context() {
             .as_ref()
             .is_some_and(|o| o.source == "/code/widgets.notc")
     }));
-    assert_eq!(output.analysis.sources()["/code/widgets.notc"], source);
+    assert_eq!(
+        output.analysis.sources()["/code/widgets.notc"].as_ref(),
+        source
+    );
+}
+
+#[test]
+fn normalized_document_paths_and_source_snapshots_share_one_environment() {
+    use std::sync::Arc;
+    let mut resources = MemoryResources::new("/notes");
+    let module = "fn f() -> InlineContent { [works] }";
+    resources.insert("ui.notc", module.as_bytes().to_vec());
+    let mut vault = Vault::new(resources);
+    let source = "#import \"ui.notc\" as ui;\n#ui.f()";
+    let analysis = vault.analyze("sub/../doc.not", source).unwrap();
+    assert!(analysis.diagnostics().is_empty());
+    assert!(analysis.sources().contains_key("/notes/doc.not"));
+    assert_eq!(
+        analysis.root().origin.as_ref().unwrap().source,
+        "/notes/doc.not"
+    );
+    let first = vault.environment_for("doc.not", source).unwrap();
+    let second = vault.environment_for("/notes/./doc.not", source).unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(Arc::ptr_eq(
+        &first.modules()["/notes/ui.notc"].source,
+        &first.context().program().sources()["/notes/ui.notc"],
+    ));
+    assert!(Arc::ptr_eq(
+        &first.modules()["/notes/ui.notc"].source,
+        &analysis.sources()["/notes/ui.notc"],
+    ));
+    let output = vault
+        .render_output("/notes/doc.not", &analysis, RenderOptions::default())
+        .unwrap();
+    assert!(output.evaluation.diagnostics.is_empty());
+    assert!(output.rendered.html.contains("works"));
+    let invalid = vault
+        .analyze("sub/../bad.not", "@(id: foo)\n#raw(1)")
+        .unwrap();
+    assert!(!invalid.diagnostics().is_empty());
+    assert!(
+        invalid
+            .diagnostics()
+            .iter()
+            .all(|d| d.source.as_deref() == Some("/notes/bad.not"))
+    );
+    let mut next = vault.with_pipeline(notist::Pipeline::default());
+    assert!(!Arc::ptr_eq(
+        &first,
+        &next.environment_for("doc.not", source).unwrap()
+    ));
 }

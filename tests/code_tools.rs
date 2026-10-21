@@ -3,15 +3,12 @@ use notist::{Environment, MemoryResources, Vault};
 fn resources() -> MemoryResources {
     let mut r = MemoryResources::new("/project");
     for (path, text) in [
-        (
-            "Notist.toml",
-            "[package]\nname = 'demo'\n[dependencies]\ndep = {path = 'dep'}",
-        ),
+        ("Notist.toml", ""),
         (
             "lib.notc",
             "fn stale() -> InlineContent { compile_error(\"stale\") }",
         ),
-        ("dep/Notist.toml", "[package]\nname = 'dep'"),
+        ("dep/Notist.toml", ""),
         ("dep/lib.notc", "fn value() -> String { \"dependency\" }"),
     ] {
         r.insert(path, text.as_bytes().to_vec());
@@ -22,19 +19,22 @@ fn resources() -> MemoryResources {
 #[test]
 fn code_tooling_uses_project_identity_dependencies_and_the_supplied_source() {
     let vault = Vault::new(resources());
-    let source = "fn helper() -> String { dep::value() } fn view() -> InlineContent { [#text(text: demo::helper())] }";
+    let source = "import \"dep/lib.notc\" as dep; fn helper() -> String { dep.value() } fn view() -> InlineContent { [#text(text: self.helper())] }";
     let analysis = vault.analyze_code("lib.notc", source).unwrap();
     assert!(
         analysis.diagnostics.is_empty(),
         "{:?}",
         analysis.diagnostics
     );
-    assert_eq!(analysis.definitions.as_ref().unwrap().package, "demo");
-    assert_eq!(analysis.sources["/project/lib.notc"], source);
+    assert_eq!(
+        analysis.definitions.as_ref().unwrap().module,
+        "/project/lib.notc"
+    );
+    assert_eq!(analysis.sources["/project/lib.notc"].as_ref(), source);
     assert!(analysis.sources.contains_key("/project/dep/lib.notc"));
     let json: serde_json::Value =
         serde_json::from_str(&notist::cst_json::module_json(source, &analysis)).unwrap();
-    assert_eq!(json["functions"][1]["function"], "demo::view");
+    assert_eq!(json["functions"][1]["function"], "/project/lib.notc.view");
     assert!(json["diagnostics"].as_array().unwrap().is_empty());
 }
 
@@ -67,7 +67,7 @@ fn invalid_signatures_keep_the_recovered_module_tree_and_definition_source() {
         .unwrap();
     assert!(analysis.definitions.is_none());
     assert!(!analysis.diagnostics.is_empty());
-    assert_eq!(analysis.sources["/project/lib.notc"], source);
+    assert_eq!(analysis.sources["/project/lib.notc"].as_ref(), source);
     let json: serde_json::Value =
         serde_json::from_str(&notist::cst_json::module_json(source, &analysis)).unwrap();
     assert_eq!(json["tree"]["kind"], "Module");
@@ -84,20 +84,20 @@ fn invalid_signatures_keep_the_recovered_module_tree_and_definition_source() {
 fn explicitly_installed_code_preserves_its_path_and_can_be_checked_with_edits() {
     let old = "fn old() -> InlineContent { [old] }";
     let path = std::path::Path::new("/project/custom.notc");
-    let environment = Environment::default()
-        .with_code("custom", path, old, std::path::Path::new("content.not"))
-        .unwrap();
-    let vault = Vault::new(MemoryResources::new("/project")).with_environment(environment.clone());
-    let source = "fn new() -> InlineContent { [new] } fn view() -> InlineContent { custom::new() }";
+    let mut inputs = MemoryResources::new("/project");
+    inputs.insert(path, old.as_bytes().to_vec());
+    let environment = Environment::load_from(&inputs, path).unwrap();
+    let vault = Vault::new(inputs);
+    let source = "fn new() -> InlineContent { [new] } fn view() -> InlineContent { self.new() }";
     let analysis = vault.analyze_code(path, source).unwrap();
     assert!(
         analysis.diagnostics.is_empty(),
         "{:?}",
         analysis.diagnostics
     );
-    assert_eq!(analysis.definitions.unwrap().package, "custom");
+    assert_eq!(analysis.definitions.unwrap().module, "/project/custom.notc");
     assert_eq!(
-        environment.context().program().sources()["/project/custom.notc"],
+        environment.context().program().sources()["/project/custom.notc"].as_ref(),
         old
     );
 }

@@ -29,6 +29,10 @@ pub enum ExprKind {
     Binary(String, Box<TypedExpr>, Box<TypedExpr>),
     Block(Vec<(String, TypedExpr)>, Box<TypedExpr>),
     If(Box<TypedExpr>, Box<TypedExpr>, Box<TypedExpr>),
+    /// The `some` constructor: wraps its data payload as Value::Some.
+    Some(Box<TypedExpr>),
+    /// Payload of a matched Value::Some; evaluation fails on none.
+    Unwrap(Box<TypedExpr>),
     ValueCall(Box<Invocation>),
     Content(Vec<Item>),
     Failure(String),
@@ -38,7 +42,7 @@ pub enum ExprKind {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Invocation {
     pub instance: FunctionInstance,
-    pub definition: FunctionDef,
+    pub definition: Box<FunctionDef>,
     pub arguments: Vec<(String, TypedExpr)>,
     /// Value-call children. Content-call children live on the enclosing Item.
     pub children: Option<Box<TypedExpr>>,

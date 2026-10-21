@@ -9,9 +9,9 @@ use crate::tree::SyntaxKind;
 enum CallPhase {
     /// Just after `#`: expecting an identifier, `(`.
     Start,
-    /// After a path segment: expecting `::`, `(` or `[`.
+    /// After a path segment: expecting `.`, `(` or `[`.
     AfterIdent,
-    /// After `::`: expecting another adjacent identifier.
+    /// After `.`: expecting another adjacent identifier.
     PathSegment,
     /// Inside the argument group.
     Args {
@@ -161,10 +161,10 @@ impl Lexer<'_> {
                     return self.lex_markup(i);
                 }
             }
-            CallPhase::AfterIdent if rest.starts_with("::") => {
+            CallPhase::AfterIdent if rest.starts_with(".") => {
                 self.stack.pop();
                 self.stack.push(CallPhase::PathSegment);
-                return (SyntaxKind::ColonColon, 2);
+                return (SyntaxKind::Dot, 1);
             }
             CallPhase::AfterIdent | CallPhase::AfterArgs => match ch {
                 '<' => {
@@ -200,10 +200,10 @@ impl Lexer<'_> {
         }
         match token.0 {
             SyntaxKind::Less => {
-                if let Some(CallPhase::Comptime { depth, grouped }) = self.stack.last_mut() {
-                    if *grouped == 0 {
-                        *depth += 1;
-                    }
+                if let Some(CallPhase::Comptime { depth, grouped }) = self.stack.last_mut()
+                    && *grouped == 0
+                {
+                    *depth += 1;
                 }
             }
             SyntaxKind::Greater => {

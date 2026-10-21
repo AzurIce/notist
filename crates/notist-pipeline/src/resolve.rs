@@ -1,20 +1,9 @@
-use crate::Context;
 use notist_core::{
     builtins::Accepts,
     diag::{Diagnostic, Phase},
-    expr::{Expr, RExpr},
+    expr::RExpr,
     item::{Ctor, Value},
 };
-pub fn resolve(
-    forest: Vec<Expr>,
-    context: &Context,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<RExpr> {
-    let mut checker = crate::code::Checker::new(context, "<content>");
-    let result = checker.resolve(&forest);
-    diagnostics.extend(checker.diagnostics);
-    result
-}
 pub(crate) fn validate_structure(r: &mut RExpr, name: &str, diags: &mut Vec<Diagnostic>) {
     r.children = structural_children(std::mem::take(&mut r.children));
     match r.ctor.accepts() {

@@ -3,7 +3,7 @@ use notist_core::{
     expr::Expr,
     item::{Ctor, EvaluationState, Value},
 };
-use notist_pipeline::{Context, Pipeline, analyze_module};
+use notist_pipeline::{Context, Pipeline};
 
 #[test]
 fn lowering_records_fragments_without_paragraph_invocations() {
@@ -165,7 +165,7 @@ fn invalid() -> BlockContent { [ #divider()
             .unwrap();
         let context = Context::default().with_module(module).unwrap();
         let good = pipeline
-            .analyze("doc.not", "#demo::forest()", &context)
+            .analyze("doc.not", "#self.forest()", &context)
             .unwrap();
         assert!(
             good.diagnostics().is_empty(),
@@ -185,7 +185,7 @@ fn invalid() -> BlockContent { [ #divider()
             .collect();
         assert_eq!(paragraphs.len(), 2, "{path}");
         let bad = pipeline
-            .analyze("doc.not", "#demo::invalid()", &context)
+            .analyze("doc.not", "#self.invalid()", &context)
             .unwrap();
         assert!(
             bad.diagnostics()
@@ -201,19 +201,22 @@ fn invalid() -> BlockContent { [ #divider()
 fn fragment_placement_uses_output_type_independently_of_body_flavor() {
     let context = Context::default()
         .with_module(
-            analyze_module(
-                "demo",
-                r#"
+            notist_pipeline::Pipeline::default()
+                .compile_module(
+                    "content.not",
+                    "demo",
+                    "demo/lib.notc",
+                    r#"
 fn block()[children: InlineContent] -> BlockContent { [ #children ] }
 fn inline()[children: BlockContent] -> InlineContent { [inline] }
 "#,
-            )
-            .unwrap(),
+                )
+                .unwrap(),
         )
         .unwrap();
     for path in ["doc.not", "doc.md"] {
         let good = Pipeline::default()
-            .analyze(path, "before #demo::inline[ body ] after", &context)
+            .analyze(path, "before #self.inline[ body ] after", &context)
             .unwrap();
         assert!(
             good.diagnostics().is_empty(),
@@ -221,7 +224,7 @@ fn inline()[children: BlockContent] -> InlineContent { [inline] }
             good.diagnostics()
         );
         let bad = Pipeline::default()
-            .analyze(path, "before #demo::block[body] after", &context)
+            .analyze(path, "before #self.block[body] after", &context)
             .unwrap();
         assert!(
             bad.diagnostics()
@@ -300,7 +303,7 @@ second ] after] }
             .unwrap();
         let context = Context::default().with_module(module).unwrap();
         let analysis = pipeline
-            .analyze("doc.not", "#demo::nested()", &context)
+            .analyze("doc.not", "#self.nested()", &context)
             .unwrap();
         assert!(
             analysis.diagnostics().is_empty(),

@@ -2,6 +2,7 @@ use super::*;
 use crate::Context;
 use notist_core::{
     builtins::Level,
+    definitions::ParameterMode,
     diag::Phase,
     item::{EvaluationState, SourceLocation, Value},
 };
@@ -177,6 +178,16 @@ impl Evaluator<'_> {
                     .collect::<Result<_, String>>()?;
                 Ok(Runtime::Value(ComptimeValue::Data(Value::Dict(values))))
             }
+            ExprKind::Some(value) => {
+                let value = data(self.expr(value, scope)?)?;
+                Ok(Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(
+                    value,
+                )))))
+            }
+            ExprKind::Unwrap(value) => match data(self.expr(value, scope)?)? {
+                Value::Some(value) => Ok(Runtime::Value(ComptimeValue::Data(*value))),
+                _ => Err("match arm requires `some`".into()),
+            },
             ExprKind::ValueCall(call) => {
                 let children = match &call.children {
                     Some(child) => match self.expr(child, scope)? {
@@ -264,14 +275,12 @@ impl Evaluator<'_> {
         if let Some(PendingEvaluation::Call(call)) = item.pending.as_deref() {
             return self.present_call(item, call, limit);
         }
-        if item.evaluation.is_none() {
-            if let Some(id) = item.function_id() {
-                if self.target(&id) != id {
-                    if let Some(call) = self.synthetic_call(item) {
-                        return self.present_call(item, &call, limit);
-                    }
-                }
-            }
+        if item.evaluation.is_none()
+            && let Some(id) = item.function_id()
+            && self.target(&id) != id
+            && let Some(call) = self.synthetic_call(item)
+        {
+            return self.present_call(item, &call, limit);
         }
         let mut item = item.clone();
         item.pending = None;
@@ -358,7 +367,7 @@ impl Evaluator<'_> {
             .collect();
         Some(Invocation {
             instance,
-            definition: def,
+            definition: Box::new(def),
             arguments,
             children: None,
             attrs: item.attrs.clone(),
@@ -397,20 +406,59 @@ impl Evaluator<'_> {
         let mut fields = Dict::default();
         for (name, expr) in &call.arguments {
             let value = self.expr(expr, scope)?;
-            if let Some(param) = call.definition.parameters.iter().find(|p| p.name == *name) {
-                if let Runtime::Value(ComptimeValue::Data(value)) = &value {
-                    if !param.accepts(value) {
+            let param = call.definition.parameters.iter().find(|p| p.name == *name);
+            // Forwarding unwraps one layer: some(v) provides v, none omits.
+            let provided = if param.is_some_and(|p| p.mode == ParameterMode::Optional)
+                && matches!(&expr.ty, Some(Type::Option(_)))
+            {
+                match value {
+                    Runtime::Value(ComptimeValue::Data(Value::Some(v))) => {
+                        Some(Runtime::Value(ComptimeValue::Data(*v)))
+                    }
+                    Runtime::Value(ComptimeValue::Data(Value::None)) => None,
+                    _ => {
                         return Err(format!(
-                            "invalid value for `{}.{name}`",
-                            call.instance.function
+                            "invalid option for `{}.{}`",
+                            call.instance.function, name
                         ));
                     }
                 }
+            } else {
+                Some(value)
+            };
+            let Some(value) = provided else { continue };
+            if let Some(param) = param
+                && let Runtime::Value(ComptimeValue::Data(value)) = &value
+                && !param.accepts(value)
+            {
+                return Err(format!(
+                    "invalid value for `{}.{name}`",
+                    call.instance.function
+                ));
             }
             if let Runtime::Value(ComptimeValue::Data(v)) = &value {
                 fields.insert(name, v.clone());
             }
-            inputs.insert(name.clone(), value);
+            // Code bodies observe a `?: T` parameter as Option<T>.
+            let input = if param.is_some_and(|p| p.mode == ParameterMode::Optional) {
+                match value {
+                    Runtime::Value(ComptimeValue::Data(v)) => {
+                        Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(v))))
+                    }
+                    other => other,
+                }
+            } else {
+                value
+            };
+            inputs.insert(name.clone(), input);
+        }
+        for p in &call.definition.parameters {
+            if p.mode == ParameterMode::Optional && !inputs.contains_key(&p.name) {
+                inputs.insert(
+                    p.name.clone(),
+                    Runtime::Value(ComptimeValue::Data(Value::None)),
+                );
+            }
         }
         if let Some(ty) = &call.definition.children_type {
             inputs.insert(
@@ -426,10 +474,10 @@ impl Evaluator<'_> {
         for (param, value) in definition.comptime.iter().zip(&target.arguments) {
             inputs.insert(param.name.clone(), Runtime::Value(value.clone()));
         }
-        if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading") {
-            if let Some(ComptimeValue::Data(v)) = call.instance.arguments.first() {
-                fields.insert("level", v.clone());
-            }
+        if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading")
+            && let Some(ComptimeValue::Data(v)) = call.instance.arguments.first()
+        {
+            fields.insert("level", v.clone());
         }
         if !definition.code {
             if definition.returns.level().is_none() {
@@ -573,6 +621,8 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
                 .collect(),
         ),
         ExprKind::Unary(op, e) => ExprKind::Unary(op.clone(), Box::new(capture_expr(e, scope))),
+        ExprKind::Some(e) => ExprKind::Some(Box::new(capture_expr(e, scope))),
+        ExprKind::Unwrap(e) => ExprKind::Unwrap(Box::new(capture_expr(e, scope))),
         ExprKind::Binary(op, l, r) => ExprKind::Binary(
             op.clone(),
             Box::new(capture_expr(l, scope)),
@@ -719,6 +769,21 @@ pub(super) fn binary(
             "!=" => boolean(a != b),
             _ => Err("invalid Bool operator".into()),
         },
+        (D(Value::Some(a)), D(Value::Some(b))) => match op {
+            "==" => boolean(a == b),
+            "!=" => boolean(a != b),
+            _ => Err("Option only supports equality".into()),
+        },
+        (D(Value::None), D(Value::None)) => match op {
+            "==" => boolean(true),
+            "!=" => boolean(false),
+            _ => Err("Option only supports equality".into()),
+        },
+        (D(Value::Some(_)), D(Value::None)) | (D(Value::None), D(Value::Some(_))) => match op {
+            "==" => boolean(false),
+            "!=" => boolean(true),
+            _ => Err("Option only supports equality".into()),
+        },
         _ => Err("operator requires matching scalar operands".into()),
     }
 }
@@ -733,13 +798,14 @@ fn check_value_size(value: &ComptimeValue) -> Result<(), String> {
             Value::Dict(v) => v.iter().fold(0usize, |n, (k, v)| {
                 n.saturating_add(k.len()).saturating_add(size(v))
             }),
+            Value::Some(v) => size(v).saturating_add(8),
             _ => 8,
         }
     }
-    if let ComptimeValue::Data(v) = value {
-        if size(v) > 16 * 1024 * 1024 {
-            return Err("value size limit exceeded".into());
-        }
+    if let ComptimeValue::Data(v) = value
+        && size(v) > 16 * 1024 * 1024
+    {
+        return Err("value size limit exceeded".into());
     }
     Ok(())
 }
@@ -747,22 +813,25 @@ fn check_value_size(value: &ComptimeValue) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Pipeline, analyze_module};
+    use crate::Pipeline;
 
     #[test]
     fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
         let context = Context::default()
             .with_module(
-                analyze_module(
-                    "demo",
-                    "fn greet(name: String) -> InlineContent { [#text(text: name)] }",
-                )
-                .unwrap(),
+                Pipeline::default()
+                    .compile_module(
+                        "content.not",
+                        "demo",
+                        "demo/lib.notc",
+                        "fn greet(name: String) -> InlineContent { [#text(text: name)] }",
+                    )
+                    .unwrap(),
             )
             .unwrap();
         let pipeline = Pipeline::default();
         let analysis = pipeline
-            .analyze("doc.not", "#demo::greet(\"before\")", &context)
+            .analyze("doc.not", "#self.greet(\"before\")", &context)
             .unwrap();
         let mut root = analysis.root().clone();
         let call = root.children[0].children[0].pending.as_deref_mut().unwrap();
@@ -797,22 +866,25 @@ mod tests {
     fn checked_function_bodies_contain_typed_item_interpolations() {
         let context = Context::default()
             .with_module(
-                analyze_module(
-                    "demo",
-                    "fn pass()[children: InlineContent] -> InlineContent { [#children] }",
-                )
-                .unwrap(),
+                Pipeline::default()
+                    .compile_module(
+                        "content.not",
+                        "demo",
+                        "demo/lib.notc",
+                        "fn pass()[children: InlineContent] -> InlineContent { [#children] }",
+                    )
+                    .unwrap(),
             )
             .unwrap();
         let pipeline = Pipeline::default();
         let analysis = pipeline
-            .analyze("doc.not", "#demo::pass[one]", &context)
+            .analyze("doc.not", "#self.pass[one]", &context)
             .unwrap();
         let body = analysis
             .program
             .instances
             .values()
-            .find(|r| r.definition.id.package == "demo")
+            .find(|r| r.definition.id.module == "demo")
             .unwrap()
             .body
             .as_ref()

@@ -1,33 +1,37 @@
+use super::content::known_fields;
 use super::*;
 use crate::Context;
 use notist_core::{
     annotation::Annotation,
-    builtins::{Accepts, Level},
+    builtins::Level,
     definitions::ParameterMode,
     diag::Phase,
     expr::{BodyFlavor, CallArg, Expr},
-    item::{Ctor, ExtensionCtor, Origin, Value},
+    item::{Ctor, Origin, Value},
 };
 use rowan::TextRange;
 
 type Scope = BTreeMap<String, TypedExpr>;
-struct CallFailure {
-    definition: Option<FunctionDef>,
-    fields: Dict,
-    instance: Option<FunctionInstance>,
-    message: String,
+pub(super) struct CallFailure {
+    pub(super) definition: Option<FunctionDef>,
+    pub(super) fields: Dict,
+    pub(super) instance: Option<FunctionInstance>,
+    pub(super) message: String,
 }
 
 pub(crate) struct Checker<'a> {
-    context: &'a Context,
+    pub(super) context: &'a Context,
     pub program: CheckedProgram,
     pub diagnostics: Vec<Diagnostic>,
-    scope: Scope,
-    package: String,
-    source: String,
-    depth: usize,
+    pub(super) scope: Scope,
+    pub(super) module: String,
+    pub(super) source: String,
+    pub(super) depth: usize,
     // A function owns direct checking failures; interpolation scopes recover locally.
-    failures: Vec<Vec<Diagnostic>>,
+    pub(super) failures: Vec<Vec<Diagnostic>>,
+    pub(super) content_annotations: Vec<Annotation>,
+    /// Expected Option<T> for a bare `none` in one of its three typed positions.
+    pub(super) none_hint: Option<Type>,
 }
 impl<'a> Checker<'a> {
     pub fn new(context: &'a Context, source: &str) -> Self {
@@ -36,13 +40,20 @@ impl<'a> Checker<'a> {
             program: Default::default(),
             diagnostics: Vec::new(),
             scope: BTreeMap::new(),
-            package: String::new(),
+            module: String::new(),
             source: source.into(),
             depth: 0,
             failures: Vec::new(),
+            content_annotations: Vec::new(),
+            none_hint: None,
         }
     }
-    fn report(&mut self, span: TextRange, message: impl Into<String>) {
+    pub(crate) fn for_content(context: &'a Context, source: &str) -> Self {
+        let mut checker = Self::new(context, source);
+        checker.module = context.root().unwrap_or("<content>").to_owned();
+        checker
+    }
+    pub(super) fn report(&mut self, span: TextRange, message: impl Into<String>) {
         let mut d = Diagnostic::new(Phase::Type, span, message);
         d.source = Some(self.source.clone());
         if let Some(frame) = self.failures.last_mut() {
@@ -50,7 +61,7 @@ impl<'a> Checker<'a> {
         }
         self.diagnostics.push(d);
     }
-    fn typed(
+    pub(super) fn typed(
         &self,
         ty: Option<Type>,
         kind: ExprKind,
@@ -74,12 +85,58 @@ impl<'a> Checker<'a> {
         self.typed(None, ExprKind::Failure(message), None, span)
     }
     fn expect(&mut self, t: &TypedExpr, expected: &Type) {
-        if t.ty.is_some() && !value_fits(t, expected) {
-            self.report(
-                t.span,
-                format!("expected {expected}, found {}", t.ty.as_ref().unwrap()),
-            );
+        if let Some(actual) = &t.ty
+            && !value_fits(t, expected)
+        {
+            self.report(t.span, format!("expected {expected}, found {actual}"));
         }
+    }
+    /// Check with an expected Option<T> available for a bare `none`.
+    fn check_with_hint(&mut self, e: &Expr, hint: Option<Type>) -> TypedExpr {
+        let previous = std::mem::replace(&mut self.none_hint, hint);
+        let result = self.check(e);
+        self.none_hint = previous;
+        result
+    }
+    /// Check a match arm body; a `some(name)` arm binds the payload first.
+    fn check_arm_body(
+        &mut self,
+        body: &Expr,
+        binding: Option<&str>,
+        payload: Option<&Type>,
+        subject: &TypedExpr,
+        span: TextRange,
+        hint: Option<Type>,
+    ) -> TypedExpr {
+        let bound = binding.map(|name| {
+            let value = self.typed(
+                payload.cloned(),
+                ExprKind::Unwrap(Box::new(subject.clone())),
+                None,
+                span,
+            );
+            (name.to_owned(), self.scope.insert(name.into(), value))
+        });
+        let result = self.check_with_hint(body, hint);
+        if let Some((name, previous)) = bound {
+            match previous {
+                Some(previous) => {
+                    self.scope.insert(name, previous);
+                }
+                None => {
+                    self.scope.remove(&name);
+                }
+            }
+        }
+        result
+    }
+    fn none_constant(&self, subject: &TypedExpr, span: TextRange) -> TypedExpr {
+        self.typed(
+            subject.ty.clone(),
+            ExprKind::Constant(ComptimeValue::Data(Value::None)),
+            Some(ComptimeValue::Data(Value::None)),
+            span,
+        )
     }
 
     pub fn document(
@@ -103,13 +160,13 @@ impl<'a> Checker<'a> {
         self.check_selected(None);
         self.diagnostics
     }
-    pub fn check_module(mut self, package: &str) -> Vec<Diagnostic> {
+    pub fn check_module(mut self, module: &str) -> Vec<Diagnostic> {
         for (id, body) in &self.context.program().bodies {
-            if id.package == package {
+            if id.module == module {
                 self.diagnostics.extend(body.diagnostics.iter().cloned());
             }
         }
-        self.check_selected(Some(package));
+        self.check_selected(Some(module));
         let mut unique = Vec::new();
         for diagnostic in self.diagnostics {
             if !unique.contains(&diagnostic) {
@@ -118,12 +175,12 @@ impl<'a> Checker<'a> {
         }
         unique
     }
-    fn check_selected(&mut self, package: Option<&str>) {
+    fn check_selected(&mut self, module: Option<&str>) {
         let definitions: Vec<_> = self
             .context
             .registry()
             .functions()
-            .filter(|d| d.code && package.is_none_or(|p| d.id.package == p))
+            .filter(|d| d.code && module.is_none_or(|p| d.id.module == p))
             .cloned()
             .collect();
         for def in definitions {
@@ -148,10 +205,6 @@ impl<'a> Checker<'a> {
             expansion: Vec::new(),
         }
     }
-    pub fn resolve(&mut self, forest: &[Expr]) -> Vec<RExpr> {
-        forest.iter().map(|e| self.prepare(e)).collect()
-    }
-
     pub fn with_program(context: &'a Context, program: CheckedProgram) -> Self {
         let mut s = Self::new(context, "<evaluation>");
         s.program = program;
@@ -161,7 +214,7 @@ impl<'a> Checker<'a> {
         let source = self
             .context
             .program()
-            .source_path(&instance.function.package)
+            .source_path(&instance.function.module)
             .unwrap_or(&self.source)
             .to_owned();
         let previous = std::mem::replace(&mut self.source, source);
@@ -234,20 +287,40 @@ impl<'a> Checker<'a> {
     }
     pub fn check(&mut self, e: &Expr) -> TypedExpr {
         let span = e.span();
+        // The none hint is consumed here; only the three typed positions
+        // (optional argument, typed sibling branch, Option tail) reinstall it.
+        let none_hint = self.none_hint.take();
         match e {
             Expr::Fragment { .. } => {
                 self.failed(span, "content fragments require a content sequence")
             }
             Expr::Literal(v, _) => self.constant(ComptimeValue::Data(v.clone()), span),
+            Expr::Ref { name, .. } if name == "none" && !self.scope.contains_key("none") => {
+                match none_hint {
+                    Some(ty @ Type::Option(_)) => self.typed(
+                        Some(ty),
+                        ExprKind::Constant(ComptimeValue::Data(Value::None)),
+                        Some(ComptimeValue::Data(Value::None)),
+                        span,
+                    ),
+                    _ => self.failed(span, "cannot determine the type of `none`"),
+                }
+            }
             Expr::Ref { name, .. } => self.reference(name, span),
+            Expr::Member { .. } => self.failed(span, "module members must be called"),
             Expr::Content {
                 forest,
                 annotations,
                 body,
                 ..
             } => {
-                let (t, _) = self.content(forest, annotations, *body);
-                self.typed(Some(content_type(*body)), ExprKind::Content(t), None, span)
+                let (forest, _) = self.content(forest, annotations, *body);
+                self.typed(
+                    Some(content_type(*body)),
+                    ExprKind::Content(forest),
+                    None,
+                    span,
+                )
             }
             Expr::Block {
                 bindings, value, ..
@@ -270,6 +343,9 @@ impl<'a> Checker<'a> {
                         checked.push((name.clone(), t));
                     }
                 }
+                if none_literal(value) {
+                    self.none_hint = none_hint;
+                }
                 let val = self.check(value);
                 self.scope = old;
                 let known = if checked.iter().all(|(_, v)| v.known.is_some()) {
@@ -290,10 +366,21 @@ impl<'a> Checker<'a> {
                 let c = self.check(condition);
                 self.expect(&c, &Type::Bool);
                 if let Some(ComptimeValue::Data(Value::Bool(c))) = c.known {
-                    return self.check(if c { yes } else { no });
+                    return self.check_with_hint(if c { yes } else { no }, none_hint);
                 }
-                let y = self.check(yes);
-                let n = self.check(no);
+                let (y, n) = if none_literal(yes) && !none_literal(no) {
+                    let n = self.check(no);
+                    let y = self.check_with_hint(yes, n.ty.clone());
+                    (y, n)
+                } else {
+                    let y = self.check(yes);
+                    let n = if none_literal(no) {
+                        self.check_with_hint(no, y.ty.clone())
+                    } else {
+                        self.check(no)
+                    };
+                    (y, n)
+                };
                 let ty = self.join(&y, &n, span);
                 self.typed(
                     ty,
@@ -304,10 +391,69 @@ impl<'a> Checker<'a> {
             }
             Expr::Match { subject, arms, .. } => {
                 let subject = self.check(subject);
+                let payload = match &subject.ty {
+                    Some(Type::Option(payload)) => Some((**payload).clone()),
+                    _ => None,
+                };
+                // Constructor patterns exist only under an Option subject.
+                let some_binding = |pattern: &Expr| -> Option<String> {
+                    payload.as_ref()?;
+                    let Expr::Call {
+                        callee,
+                        args,
+                        comptime,
+                        children,
+                        body,
+                        ..
+                    } = pattern
+                    else {
+                        return None;
+                    };
+                    if callee.name_path().as_deref() != Some("some")
+                        || !comptime.is_empty()
+                        || !children.is_empty()
+                        || *body != BodyFlavor::None
+                    {
+                        return None;
+                    }
+                    match args.as_slice() {
+                        [CallArg::Positional(Expr::Ref { name, .. })] => Some(name.clone()),
+                        _ => None,
+                    }
+                };
+                let none_pattern = |pattern: &Expr| {
+                    payload.is_some() && matches!(pattern, Expr::Ref { name, .. } if name == "none")
+                };
                 if subject.known.is_some() {
                     for (pattern, body) in arms {
                         if matches!(pattern,Expr::Ref{name,..} if name=="_") {
-                            return self.check(body);
+                            return self.check_with_hint(body, none_hint);
+                        }
+                        if let Some(name) = some_binding(pattern) {
+                            if let Some(ComptimeValue::Data(Value::Some(value))) = &subject.known {
+                                let binding = self.constant(
+                                    ComptimeValue::Data((**value).clone()),
+                                    pattern.span(),
+                                );
+                                let old = self.scope.insert(name.clone(), binding);
+                                let result = self.check_with_hint(body, none_hint);
+                                match old {
+                                    Some(previous) => {
+                                        self.scope.insert(name, previous);
+                                    }
+                                    None => {
+                                        self.scope.remove(&name);
+                                    }
+                                }
+                                return result;
+                            }
+                            continue;
+                        }
+                        if none_pattern(pattern) {
+                            if matches!(&subject.known, Some(ComptimeValue::Data(Value::None))) {
+                                return self.check_with_hint(body, none_hint);
+                            }
+                            continue;
                         }
                         let p = self.check(pattern);
                         if p.known.is_none() {
@@ -318,42 +464,101 @@ impl<'a> Checker<'a> {
                         }
                         let condition = self.binary("==", subject.clone(), p, pattern.span());
                         if condition.known == Some(ComptimeValue::Data(Value::Bool(true))) {
-                            return self.check(body);
+                            return self.check_with_hint(body, none_hint);
                         }
                     }
                     return self.failed(span, "non-exhaustive comptime match");
                 }
-                let mut result = None;
                 let mut wildcard = false;
+                let mut covered_some = false;
+                let mut covered_none = false;
+                // Bare none bodies wait for a typed sibling branch; everything
+                // else keeps the source-diagnostic order of plain matches.
+                let mut staged: Vec<(Option<TypedExpr>, Option<TypedExpr>)> = Vec::new();
+                let mut deferred: Vec<(usize, &Expr, Option<String>)> = Vec::new();
                 for (pattern, body) in arms.iter().rev() {
-                    let value = self.check(body);
-                    if matches!(pattern,Expr::Ref{name,..} if name=="_") {
-                        result = Some(value);
-                        wildcard = true;
-                        continue;
-                    }
-                    let p = self.check(pattern);
-                    if p.known.is_none() {
-                        self.report(
-                            pattern.span(),
-                            "match patterns must be known at compile time",
-                        );
-                    }
-                    self.expect(&p, subject.ty.as_ref().unwrap_or(&Type::Unit));
-                    if let Some(rest) = result {
-                        let ty = self.join(&value, &rest, span);
-                        let cond = self.binary("==", subject.clone(), p, span);
-                        result = Some(self.typed(
-                            ty,
-                            ExprKind::If(Box::new(cond), Box::new(value), Box::new(rest)),
-                            None,
-                            span,
-                        ));
+                    let binding = some_binding(pattern);
+                    let checked = if none_literal(body) {
+                        deferred.push((staged.len(), body, binding.clone()));
+                        None
                     } else {
-                        result = Some(value);
-                    }
+                        Some(self.check_arm_body(
+                            body,
+                            binding.as_deref(),
+                            payload.as_ref(),
+                            &subject,
+                            pattern.span(),
+                            None,
+                        ))
+                    };
+                    let cond = if matches!(pattern,Expr::Ref{name,..} if name=="_") {
+                        wildcard = true;
+                        None
+                    } else if binding.is_some() {
+                        covered_some = true;
+                        Some(self.binary(
+                            "!=",
+                            subject.clone(),
+                            self.none_constant(&subject, pattern.span()),
+                            span,
+                        ))
+                    } else if none_pattern(pattern) {
+                        covered_none = true;
+                        Some(self.binary(
+                            "==",
+                            subject.clone(),
+                            self.none_constant(&subject, pattern.span()),
+                            span,
+                        ))
+                    } else {
+                        let p = self.check(pattern);
+                        if p.known.is_none() {
+                            self.report(
+                                pattern.span(),
+                                "match patterns must be known at compile time",
+                            );
+                        }
+                        self.expect(&p, subject.ty.as_ref().unwrap_or(&Type::Unit));
+                        Some(self.binary("==", subject.clone(), p, span))
+                    };
+                    staged.push((cond, checked));
                 }
-                if !wildcard {
+                let sibling = staged.iter().find_map(|(_, body)| {
+                    body.as_ref()
+                        .and_then(|b| b.ty.clone())
+                        .filter(|t| matches!(t, Type::Option(_)))
+                });
+                for (index, body, binding) in deferred {
+                    let checked = self.check_arm_body(
+                        body,
+                        binding.as_deref(),
+                        payload.as_ref(),
+                        &subject,
+                        body.span(),
+                        sibling.clone(),
+                    );
+                    staged[index].1 = Some(checked);
+                }
+                let mut result = None;
+                for (cond, body) in staged {
+                    let body = body.expect("checked arm body");
+                    result = Some(match cond {
+                        None => body,
+                        Some(cond) => match result {
+                            None => body,
+                            Some(rest) => {
+                                let ty = self.join(&body, &rest, span);
+                                self.typed(
+                                    ty,
+                                    ExprKind::If(Box::new(cond), Box::new(body), Box::new(rest)),
+                                    None,
+                                    span,
+                                )
+                            }
+                        },
+                    });
+                }
+                if !wildcard && !(covered_some && covered_none) {
                     self.report(span, "runtime match requires a final `_` arm");
                 }
                 result.unwrap_or_else(|| self.failed(span, "empty match"))
@@ -453,10 +658,11 @@ impl<'a> Checker<'a> {
                 callee,
                 args,
                 comptime,
+                children,
                 body,
                 ..
             } => {
-                let Expr::Ref { name, .. } = callee.as_ref() else {
+                let Some(name) = callee.name_path() else {
                     return self.failed(span, "function values are not supported");
                 };
                 if name == "Array"
@@ -479,13 +685,33 @@ impl<'a> Checker<'a> {
                         _ => self.failed(span, "compile_error requires a known String"),
                     };
                 }
+                if name == "some" {
+                    let [arg] = args.as_slice() else {
+                        return self.failed(span, "some requires exactly one argument");
+                    };
+                    if !comptime.is_empty() || !children.is_empty() || *body != BodyFlavor::None {
+                        return self.failed(span, "some requires exactly one argument");
+                    }
+                    let value = self.check(arg.value());
+                    if let Some(t) = &value.ty
+                        && !t.data()
+                    {
+                        self.report(value.span, "some requires a data value");
+                    }
+                    let ty = value.ty.clone().map(|t| Type::Option(Box::new(t)));
+                    let known = value.known.clone().and_then(|v| match v {
+                        ComptimeValue::Data(v) => {
+                            Some(ComptimeValue::Data(Value::Some(Box::new(v))))
+                        }
+                        _ => None,
+                    });
+                    return self.typed(ty, ExprKind::Some(Box::new(value)), known, span);
+                }
                 // Direct content calls use exactly the same resolution, mount
                 // validation and shaped Items as literal interpolations.
                 self.failures.push(Vec::new());
-                let r = self.prepare_call(e, false);
+                let node = self.compile_call(e);
                 let failures = self.failures.pop().unwrap();
-                let r = crate::shape::shape_inline(vec![r]).remove(0);
-                let node = finish(&r, &self.source);
                 match node.pending.as_deref().cloned() {
                     Some(PendingEvaluation::Call(mut call))
                         if call.definition.returns.level().is_none() =>
@@ -544,13 +770,13 @@ impl<'a> Checker<'a> {
         }
     }
     fn binary(&mut self, op: &str, l: TypedExpr, r: TypedExpr, span: TextRange) -> TypedExpr {
-        if let (Some(a), Some(b)) = (&l.ty, &r.ty) {
-            if a != b {
-                self.report(
-                    span,
-                    format!("operator `{op}` requires equal operand types"),
-                );
-            }
+        if let (Some(a), Some(b)) = (&l.ty, &r.ty)
+            && a != b
+        {
+            self.report(
+                span,
+                format!("operator `{op}` requires equal operand types"),
+            );
         }
         let compare = matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=");
         let allowed = match l.ty.as_ref() {
@@ -558,6 +784,7 @@ impl<'a> Checker<'a> {
             Some(Type::Bool) => matches!(op, "==" | "!=" | "&&" | "||"),
             Some(Type::Int | Type::Float) => !matches!(op, "&&" | "||"),
             Some(Type::String) => compare || op == "+",
+            Some(Type::Option(_)) => matches!(op, "==" | "!="),
             _ => false,
         };
         if !allowed {
@@ -583,18 +810,20 @@ impl<'a> Checker<'a> {
         )
     }
 
-    fn definition(&self, name: &str) -> Option<FunctionDef> {
-        if !name.contains("::") && !self.package.is_empty() {
-            self.context
-                .registry()
-                .function(&self.package, name)
-                .or_else(|| self.context.registry().resolve(name).ok())
-                .cloned()
-        } else {
-            self.context.registry().resolve(name).ok().cloned()
+    pub(super) fn definition(&self, name: &str) -> Option<FunctionDef> {
+        let root = name.split('.').next().unwrap_or_default();
+        let reserved_namespace = name.contains('.') && matches!(root, "notist" | "self");
+        if !reserved_namespace && self.scope.contains_key(root) {
+            return None;
         }
+        self.context
+            .resolve_in(
+                (!self.module.is_empty()).then_some(self.module.as_str()),
+                name,
+            )
+            .cloned()
     }
-    fn invocation(
+    pub(super) fn invocation(
         &mut self,
         name: &str,
         args: &[CallArg],
@@ -602,7 +831,7 @@ impl<'a> Checker<'a> {
         children: Option<Box<TypedExpr>>,
         attrs: Dict,
         span: TextRange,
-    ) -> Result<Invocation, CallFailure> {
+    ) -> Result<Invocation, Box<CallFailure>> {
         self.failures.push(Vec::new());
         let result = self.bind_invocation(name, args, ct, children, attrs, span);
         let failures = self.failures.pop().unwrap();
@@ -622,23 +851,16 @@ impl<'a> Checker<'a> {
         children: Option<Box<TypedExpr>>,
         attrs: Dict,
         span: TextRange,
-    ) -> Result<Invocation, CallFailure> {
+    ) -> Result<Invocation, Box<CallFailure>> {
         let def = self.definition(name);
         let Some(def) = def else {
-            self.report(
-                span,
-                if name.matches("::").count() > 1 {
-                    format!("module paths are not supported yet: `{name}`")
-                } else {
-                    format!("unknown constructor or function `{name}`")
-                },
-            );
-            return Err(CallFailure {
+            self.report(span, format!("unknown constructor or function `{name}`"));
+            return Err(Box::new(CallFailure {
                 definition: None,
                 fields: Dict::default(),
                 instance: None,
                 message: format!("unknown constructor or function `{name}`"),
-            });
+            }));
         };
         let mut bindings = BTreeMap::new();
         let mut pos = 0;
@@ -680,13 +902,19 @@ impl<'a> Checker<'a> {
                 }
                 CallArg::Named { name, .. } => def.parameters.iter().find(|p| p.name == *name),
             };
-            if self.package.is_empty() && !markup_literal(arg.value()) {
+            if self.module.is_empty() && !markup_literal(arg.value()) {
                 self.report(
                     arg.value().span(),
                     "standalone Markup arguments must be data literals",
                 );
             }
-            let value = self.check(arg.value());
+            // A bare none at a `?: T` boundary takes its type from the parameter.
+            let value = match param {
+                Some(p) if p.mode == ParameterMode::Optional && p.ty.concrete() => {
+                    self.check_with_hint(arg.value(), Some(Type::Option(Box::new(p.ty.clone()))))
+                }
+                _ => self.check(arg.value()),
+            };
             if let Some(p) = param {
                 if arguments.insert(p.name.clone(), value).is_some() {
                     self.report(
@@ -710,16 +938,16 @@ impl<'a> Checker<'a> {
         }
         let mut inference_errors = Vec::new();
         for p in &def.parameters {
-            if let Some(v) = arguments.get(&p.name) {
-                if let Some(t) = &v.ty {
-                    infer(&p.ty, t, &mut bindings, span, &mut inference_errors);
-                }
+            if let Some(v) = arguments.get(&p.name)
+                && let Some(t) = &v.ty
+            {
+                infer(&p.ty, t, &mut bindings, span, &mut inference_errors);
             }
         }
-        if let (Some(t), Some(v)) = (&def.children_type, &children) {
-            if let Some(actual) = &v.ty {
-                infer(t, actual, &mut bindings, span, &mut inference_errors);
-            }
+        if let (Some(t), Some(v)) = (&def.children_type, &children)
+            && let Some(actual) = &v.ty
+        {
+            infer(t, actual, &mut bindings, span, &mut inference_errors);
         }
         for error in inference_errors {
             self.report(error.span, error.message);
@@ -737,12 +965,15 @@ impl<'a> Checker<'a> {
                     definition.returns = def.returns.substitute(&bindings);
                     definition.children_type =
                         def.children_type.as_ref().map(|t| t.substitute(&bindings));
-                    return Err(CallFailure {
+                    return Err(Box::new(CallFailure {
+                        fields: known_fields(
+                            &definition,
+                            arguments.iter().map(|(k, v)| (k.as_str(), v)),
+                        ),
                         definition: Some(definition),
-                        fields: known_fields(arguments.iter().map(|(k, v)| (k.as_str(), v))),
                         instance: None,
                         message: format!("cannot infer comptime `{}`; supply it in <>", p.name),
-                    });
+                    }));
                 }
             }
         }
@@ -772,37 +1003,53 @@ impl<'a> Checker<'a> {
                 span,
                 "Type is only permitted in <>; runtime positions require concrete types",
             );
-            return Err(CallFailure {
+            return Err(Box::new(CallFailure {
+                fields: known_fields(&concrete, arguments.iter().map(|(k, v)| (k.as_str(), v))),
                 definition: Some(concrete),
-                fields: known_fields(arguments.iter().map(|(k, v)| (k.as_str(), v))),
                 instance: Some(instance),
                 message: "Type is only permitted in <>; runtime positions require concrete types"
                     .into(),
-            });
+            }));
         }
         if !def.code && def.returns.level().is_none() && concrete.returns.level().is_none() {
             self.report(
                 span,
                 "native content category must be InlineContent or BlockContent",
             );
-            return Err(CallFailure {
+            return Err(Box::new(CallFailure {
+                fields: known_fields(&concrete, arguments.iter().map(|(k, v)| (k.as_str(), v))),
                 definition: Some(concrete),
-                fields: known_fields(arguments.iter().map(|(k, v)| (k.as_str(), v))),
                 instance: Some(instance),
                 message: "native content category must be InlineContent or BlockContent".into(),
-            });
+            }));
         }
         for p in &concrete.parameters {
             if let Some(v) = arguments.get(&p.name) {
-                let type_matches = value_fits(v, &p.ty);
+                // Forwarding: an Option<T> argument into a `?: T` parameter.
+                let forwarded = p.mode == ParameterMode::Optional
+                    && matches!(&v.ty, Some(Type::Option(t)) if same_type(t, &p.ty));
+                let type_matches = forwarded || value_fits(v, &p.ty);
                 if v.ty.is_some() && !type_matches {
                     self.report(
                         v.span,
                         format!("`{name}.{}` must be {}", p.name, p.expected()),
                     );
                 }
-                if let Some(ComptimeValue::Data(v)) = &v.known {
-                    if type_matches && !p.accepts(v) {
+                if let Some(ComptimeValue::Data(v)) = &v.known
+                    && type_matches
+                {
+                    let payload = if forwarded {
+                        match v {
+                            Value::Some(payload) => Some(&**payload),
+                            Value::None => None,
+                            _ => Some(v),
+                        }
+                    } else {
+                        Some(v)
+                    };
+                    if let Some(payload) = payload
+                        && !p.accepts(payload)
+                    {
                         self.report(
                             span,
                             format!("`{name}.{}` must be {}", p.name, p.expected()),
@@ -831,7 +1078,7 @@ impl<'a> Checker<'a> {
         self.ensure_instance(&instance, &concrete, &bindings);
         Ok(Invocation {
             instance,
-            definition: concrete,
+            definition: Box::new(concrete),
             arguments: arguments.into_iter().collect(),
             children,
             attrs,
@@ -857,21 +1104,21 @@ impl<'a> Checker<'a> {
             if !matches {
                 self.report(span, format!("comptime `{}` requires {expected}", p.name));
             }
-            if let ComptimeValue::Data(v) = &bindings[&p.name] {
-                if !p.constraint.accepts(v) {
-                    self.report(
-                        span,
-                        format!(
-                            "comptime `{}` must satisfy {}",
-                            p.name,
-                            match p.constraint {
-                                notist_core::definitions::ValueConstraint::PositiveInt =>
-                                    "positive integer",
-                                _ => "its value constraint",
-                            }
-                        ),
-                    );
-                }
+            if let ComptimeValue::Data(v) = &bindings[&p.name]
+                && !p.constraint.accepts(v)
+            {
+                self.report(
+                    span,
+                    format!(
+                        "comptime `{}` must satisfy {}",
+                        p.name,
+                        match p.constraint {
+                            notist_core::definitions::ValueConstraint::PositiveInt =>
+                                "positive integer",
+                            _ => "its value constraint",
+                        }
+                    ),
+                );
             }
         }
         self.diagnostics.len() == start
@@ -910,19 +1157,19 @@ impl<'a> Checker<'a> {
             return;
         };
         let old_scope = std::mem::take(&mut self.scope);
-        let old_package = std::mem::replace(&mut self.package, def.id.package.clone());
+        let old_module = std::mem::replace(&mut self.module, def.id.module.clone());
         let old_source = std::mem::replace(&mut self.source, body.source.clone());
         for (name, v) in ct {
             let value = self.constant(v.clone(), def.span);
             self.scope.insert(name.clone(), value);
         }
         for p in &def.parameters {
-            let value = self.typed(
-                Some(p.ty.clone()),
-                ExprKind::Input(p.name.clone()),
-                None,
-                p.span,
-            );
+            // Inside the body a `?: T` parameter is an Option<T> input.
+            let ty = match p.mode {
+                ParameterMode::Optional => Type::Option(Box::new(p.ty.clone())),
+                _ => p.ty.clone(),
+            };
+            let value = self.typed(Some(ty), ExprKind::Input(p.name.clone()), None, p.span);
             self.scope.insert(p.name.clone(), value);
         }
         if let Some(ty) = &def.children_type {
@@ -938,7 +1185,13 @@ impl<'a> Checker<'a> {
         self.failures.push(body.diagnostics.clone());
         self.diagnostics.extend(body.diagnostics);
         self.depth += 1;
-        let checked = body.expression.as_ref().map(|e| self.check(e));
+        let checked = body.expression.as_ref().map(|e| {
+            let hint = match &def.returns {
+                Type::Option(_) => Some(def.returns.clone()),
+                _ => None,
+            };
+            self.check_with_hint(e, hint)
+        });
         self.depth -= 1;
         if let Some(t) = &checked {
             self.expect(t, &def.returns);
@@ -957,218 +1210,8 @@ impl<'a> Checker<'a> {
         record.diagnostics = diagnostics;
         record.checking = false;
         self.scope = old_scope;
-        self.package = old_package;
+        self.module = old_module;
         self.source = old_source;
-    }
-
-    fn content(
-        &mut self,
-        forest: &[Expr],
-        annotations: &[Annotation],
-        body: BodyFlavor,
-    ) -> (Vec<Item>, Vec<RExpr>) {
-        let r: Vec<_> = forest.iter().map(|e| self.prepare(e)).collect();
-        let mut shaped = if body == BodyFlavor::Block {
-            crate::shape::shape(r)
-        } else {
-            crate::shape::shape_inline(r)
-        };
-        if body == BodyFlavor::Inline {
-            for r in &shaped {
-                if crate::shape::is_block_element(r) {
-                    self.report(r.span, "InlineContent literal cannot contain BlockContent");
-                }
-            }
-        }
-        crate::attach::attach(&mut shaped, annotations, &mut self.diagnostics);
-        (
-            shaped.iter().map(|r| finish(r, &self.source)).collect(),
-            shaped,
-        )
-    }
-    fn prepare(&mut self, e: &Expr) -> RExpr {
-        self.failures.push(Vec::new());
-        let result = self.prepare_interpolation(e);
-        self.failures.pop();
-        result
-    }
-    fn prepare_interpolation(&mut self, e: &Expr) -> RExpr {
-        let span = e.span();
-        if let Expr::Fragment { children, .. } = e {
-            let mut prepared: Vec<_> = children.iter().map(|e| self.prepare(e)).collect();
-            if prepared.len() == 1 && crate::shape::is_block_element(&prepared[0]) {
-                return prepared.pop().unwrap();
-            }
-            let invalid = prepared.iter().any(crate::shape::is_block_element);
-            let mut paragraph = RExpr::new(Ctor::Paragraph, span).with_children(prepared);
-            if invalid {
-                let message = "a content fragment must be all inline or a single block expression; separate blocks with a blank line";
-                self.report(span, message);
-                paragraph.pending = Some(Box::new(PendingEvaluation::Failure {
-                    ty: Some(Type::BlockContent),
-                    message: message.into(),
-                }));
-            }
-            return paragraph;
-        }
-        let Expr::Call {
-            callee,
-            children,
-            body,
-            attrs,
-            ..
-        } = e
-        else {
-            let value = self.check(e);
-            let level = value.ty.as_ref().and_then(Type::level);
-            if level.is_none() && value.ty.is_some() {
-                self.report(
-                    span,
-                    "content interpolation requires InlineContent or BlockContent",
-                );
-            }
-            let mut r = RExpr::new(Ctor::Interpolation, span);
-            r.pending = Some(Box::new(PendingEvaluation::Splice(value)));
-            r.level = level;
-            return r;
-        };
-        let Expr::Ref { .. } = callee.as_ref() else {
-            self.report(callee.span(), "content calls require a named function");
-            let mut r = RExpr::new(Ctor::Custom("<call>".into()), span)
-                .with_children(children.iter().map(|e| self.prepare(e)).collect());
-            r.body = *body;
-            r.attrs = attrs.clone();
-            return r;
-        };
-        self.prepare_call(e, true)
-    }
-    fn prepare_call(&mut self, e: &Expr, interpolation: bool) -> RExpr {
-        let Expr::Call {
-            callee,
-            args,
-            comptime,
-            children,
-            body,
-            attrs,
-            span,
-        } = e
-        else {
-            unreachable!()
-        };
-        let span = *span;
-        let Expr::Ref { name, .. } = callee.as_ref() else {
-            unreachable!()
-        };
-        // Signature inference uses the written mount category, never payload values.
-        let definition = self.definition(name);
-        let structural = definition
-            .as_ref()
-            .is_some_and(|d| matches!(d.children, Accepts::Items | Accepts::Rows | Accepts::Cells));
-        // Rows, cells and list items form structural axes, not ordinary
-        // paragraph/block content. Their separators do not create paragraphs.
-        let prepared: Vec<_> = children
-            .iter()
-            .flat_map(|e| match e {
-                Expr::Fragment { children, .. } if structural => children.as_slice(),
-                e => std::slice::from_ref(e),
-            })
-            .map(|e| self.prepare(e))
-            .collect();
-        let flavor = if structural {
-            BodyFlavor::Block
-        } else if *body == BodyFlavor::None {
-            if definition
-                .as_ref()
-                .is_some_and(|d| d.children == Accepts::Inline)
-            {
-                BodyFlavor::Inline
-            } else {
-                BodyFlavor::Block
-            }
-        } else {
-            *body
-        };
-        let child = if *body != BodyFlavor::None || !children.is_empty() {
-            Some(Box::new(self.typed(
-                Some(content_type(flavor)),
-                ExprKind::Content(Vec::new()),
-                None,
-                span,
-            )))
-        } else {
-            None
-        };
-        let call = self.invocation(name, args, comptime, child, attrs.clone(), span);
-        let mut call = match call {
-            Ok(call) => call,
-            Err(failure) => {
-                let ty = failure
-                    .definition
-                    .as_ref()
-                    .map(|d| d.returns.clone())
-                    .filter(Type::runtime);
-                let ctor = failure
-                    .definition
-                    .as_ref()
-                    .map(|d| resolved_ctor(d))
-                    .unwrap_or_else(|| Ctor::Custom(name.clone()));
-                let mut r = RExpr::new(ctor, span).with_children(prepared);
-                r.fields = failure.fields;
-                r.instance = failure.instance;
-                r.level = ty.as_ref().and_then(Type::level);
-                r.body = *body;
-                r.attrs = attrs.clone();
-                r.pending = Some(Box::new(PendingEvaluation::Failure {
-                    ty,
-                    message: failure.message,
-                }));
-                return r;
-            }
-        };
-        if interpolation && call.definition.returns.level().is_none() {
-            let message = "content interpolation requires a content result";
-            self.report(span, message);
-            call.invalid = Some(message.into());
-        }
-        call.children = None;
-        if call.definition.children_type == Some(Type::InlineContent)
-            && prepared.iter().any(contains_block)
-        {
-            let message = format!("`{name}` takes inline content; block children are not allowed");
-            self.report(span, &message);
-            call.invalid = Some(message);
-        }
-
-        let mut fields = known_fields(call.arguments.iter().map(|(k, v)| (k.as_str(), v)));
-        if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading") {
-            if let Some(ComptimeValue::Data(v)) = call.instance.arguments.first() {
-                fields.insert("level", v.clone());
-            }
-        }
-        let level = call.definition.returns.level().unwrap_or(Level::Inline);
-        let ctor = resolved_ctor(&call.definition);
-        let mut r = RExpr::new(ctor, span).with_children(prepared);
-        r.fields = fields;
-        r.body = *body;
-        r.attrs = attrs.clone();
-        r.level = Some(level);
-        r.instance = Some(call.instance.clone());
-        if matches!(
-            call.definition.children,
-            Accepts::Rows | Accepts::Cells | Accepts::Items
-        ) {
-            let mut errors = Vec::new();
-            crate::resolve::validate_structure(&mut r, &call.definition.id.name, &mut errors);
-            if let Some(error) = errors.first() {
-                call.invalid = Some(error.message.clone());
-            }
-            for error in errors {
-                self.report(error.span, error.message);
-            }
-        }
-
-        r.pending = Some(Box::new(PendingEvaluation::Call(call)));
-        r
     }
 }
 fn same_type(actual: &Type, expected: &Type) -> bool {
@@ -1185,7 +1228,7 @@ fn value_fits(value: &TypedExpr, expected: &Type) -> bool {
         _ => value.ty.as_ref().is_some_and(|t| same_type(t, expected)),
     }
 }
-fn content_type(body: BodyFlavor) -> Type {
+pub(super) fn content_type(body: BodyFlavor) -> Type {
     if body == BodyFlavor::Inline {
         Type::InlineContent
     } else {
@@ -1215,13 +1258,9 @@ fn infer(
             }
         }
         (Type::Array(Some(p)), Type::Array(Some(a))) => infer(p, a, bindings, span, diags),
+        (Type::Option(p), Type::Option(a)) => infer(p, a, bindings, span, diags),
         _ => {}
     }
-}
-
-fn contains_block(r: &RExpr) -> bool {
-    crate::shape::is_block_element(r)
-        || r.ctor == Ctor::Node && r.children.iter().any(contains_block)
 }
 
 fn markup_literal(e: &Expr) -> bool {
@@ -1233,46 +1272,11 @@ fn markup_literal(e: &Expr) -> bool {
     }
 }
 
-fn finish(r: &RExpr, source: &str) -> Item {
-    fn attach_origin(item: &mut Item, source: &str) {
-        item.origin = Some(Origin {
-            source: source.into(),
-            start: item.span.start().into(),
-            end: item.span.end().into(),
-            expansion: Vec::new(),
-        });
-        for child in &mut item.children {
-            attach_origin(child, source);
-        }
+/// A bare `none` reference, looking through block tails.
+fn none_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Ref { name, .. } => name == "none",
+        Expr::Block { value, .. } => none_literal(value),
+        _ => false,
     }
-    let mut item = crate::materialize::materialize(r);
-    attach_origin(&mut item, source);
-    item
-}
-
-fn resolved_ctor(definition: &FunctionDef) -> Ctor {
-    if definition.id.package == "notist" {
-        return Ctor::from_name(&definition.id.name).unwrap();
-    }
-    let accepts = match definition.children {
-        Accepts::Any => match definition.children_type.as_ref().and_then(Type::level) {
-            Some(Level::Inline) => Accepts::Inline,
-            _ => Accepts::Block,
-        },
-        a => a,
-    };
-    Ctor::Extension(ExtensionCtor {
-        id: definition.id.clone(),
-        accepts,
-        level: definition.returns.level().unwrap_or(Level::Inline),
-    })
-}
-
-fn known_fields<'a>(arguments: impl Iterator<Item = (&'a str, &'a TypedExpr)>) -> Dict {
-    arguments
-        .filter_map(|(name, value)| match &value.known {
-            Some(ComptimeValue::Data(v)) => Some((name.to_owned(), v.clone())),
-            _ => None,
-        })
-        .collect()
 }

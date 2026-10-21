@@ -95,7 +95,7 @@ impl Lexer<'_> {
             '%' => (SyntaxKind::Percent, 1),
             '-' if self.module && rest.starts_with("->") => (SyntaxKind::Arrow, 2),
             '-' => (SyntaxKind::Minus, 1),
-            ':' if rest.starts_with("::") => (SyntaxKind::ColonColon, 2),
+            '.' => (SyntaxKind::Dot, 1),
             '=' => (SyntaxKind::Eq, 1),
             '?' => (SyntaxKind::Question, 1),
             ';' => (SyntaxKind::Semicolon, 1),
@@ -123,6 +123,8 @@ impl Lexer<'_> {
                 let kind = if self.module {
                     match &rest[..len] {
                         "fn" => SyntaxKind::FnKeyword,
+                        "import" => SyntaxKind::ImportKeyword,
+                        "as" => SyntaxKind::AsKeyword,
                         "let" => SyntaxKind::LetKeyword,
                         "if" => SyntaxKind::IfKeyword,
                         "else" => SyntaxKind::ElseKeyword,
@@ -140,6 +142,7 @@ impl Lexer<'_> {
                     .find([
                         '"', ' ', '\t', '\n', '\r', '(', ')', '[', ']', ':', ',', '/', '-', '@',
                         '#', '$', '!', '=', '?', ';', '<', '>', '{', '}', '+', '*', '%', '&', '|',
+                        '.',
                     ])
                     .unwrap_or(rest.len());
                 if len == 0 {

@@ -1,7 +1,7 @@
 use notist::{Dict, Environment, FunctionId, Value};
 use notist_html::{HtmlRegistry, Renderer};
 fn definitions() -> notist::DefinitionModule {
-    notist::analyze_module("widgets", "fn panel(title: String = \"\", open: Bool = false, count: Int = 9223372036854775807, ratio: Float = 1.5, optional?: String, data: Array = (false,))[children: BlockContent] -> BlockContent; fn badge(label: String) -> InlineContent;").unwrap().definitions
+    notist_pipeline::Pipeline::default().compile_module("content.not", "widgets", "widgets/lib.notc", "fn panel(title: String = \"\", open: Bool = false, count: Int = 9223372036854775807, ratio: Float = 1.5, optional?: String, data: Array = (false,))[children: BlockContent] -> BlockContent; fn badge(label: String) -> InlineContent;").unwrap().definitions
 }
 #[test]
 fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies() {
@@ -19,8 +19,8 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
     let analysis = notist::Pipeline::default()
         .analyze(
             "test.not",
-            "#widgets::panel(title: \"<&\\\"\")[ #widgets::badge(\"one\") #widgets::badge(\"two\") ]",
-            &notist::Context::new(registry.clone()),
+            "#self.panel(title: \"<&\\\"\")[ #self.badge(\"one\") #self.badge(\"two\") ]",
+            &notist::Context::new(registry.clone()).with_root("widgets"),
         )
         .unwrap();
     assert!(
@@ -88,22 +88,42 @@ fn complex_values_preserve_type_order_and_exact_numeric_bits() {
     assert_eq!(json[1][2], serde_json::json!(["string", ""]));
 }
 #[test]
-fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
+fn html_registry_distinguishes_modules_and_rejects_attribute_and_reserved_collisions() {
     let mut registry = HtmlRegistry::default();
-    let first = notist::analyze_module("a-b", "fn c() -> BlockContent;").unwrap();
-    let second = notist::analyze_module("a", "fn b-c() -> BlockContent;").unwrap();
+    let first = notist_pipeline::Pipeline::default()
+        .compile_module(
+            "content.not",
+            "a-b",
+            "a-b/lib.notc",
+            "fn c() -> BlockContent;",
+        )
+        .unwrap();
+    let second = notist_pipeline::Pipeline::default()
+        .compile_module(
+            "content.not",
+            "a",
+            "a/lib.notc",
+            "fn b-c() -> BlockContent;",
+        )
+        .unwrap();
     registry
         .bind_component(&first.definitions.functions[0], "first.js")
         .unwrap();
-    assert!(
-        registry
-            .bind_component(&second.definitions.functions[0], "second.js")
-            .unwrap_err()
-            .contains("collision")
+    registry
+        .bind_component(&second.definitions.functions[0], "second.js")
+        .unwrap();
+    assert_ne!(
+        notist_html::components::component_tag(&first.definitions.functions[0].id),
+        notist_html::components::component_tag(&second.definitions.functions[0].id)
     );
-    let uppercase =
-        notist::analyze_module("case", "fn A() -> BlockContent; fn u41x() -> BlockContent;")
-            .unwrap();
+    let uppercase = notist_pipeline::Pipeline::default()
+        .compile_module(
+            "content.not",
+            "case",
+            "case/lib.notc",
+            "fn A() -> BlockContent; fn u41x() -> BlockContent;",
+        )
+        .unwrap();
     registry
         .bind_component(&uppercase.definitions.functions[0], "a.js")
         .unwrap();
@@ -116,7 +136,9 @@ fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
         "fn f(protocol: String) -> BlockContent;",
         "fn f(A: String, u41x: String) -> BlockContent;",
     ] {
-        let definition = notist::analyze_module("names", source).unwrap();
+        let definition = notist_pipeline::Pipeline::default()
+            .compile_module("content.not", "names", "names/lib.notc", source)
+            .unwrap();
         assert!(
             registry
                 .bind_component(&definition.definitions.functions[0], "f.js")
@@ -125,19 +147,19 @@ fn html_registry_rejects_tag_attribute_and_reserved_collisions() {
     }
     assert_eq!(
         notist_html::components::component_tag(&FunctionId::new("包", "图")),
-        "u5305x-u56fex"
+        format!(
+            "notist-{}-u56fex",
+            notist_html::components::module_key("包")
+        )
     );
 }
 #[test]
 fn missing_html_targets_and_filesystem_entry_conflicts() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
-    let project = Environment::load_from(&notist::FsResources::new(&root), "Notist.toml").unwrap();
+    let project =
+        Environment::load_from(&notist::FsResources::new(&root), "components/lib.notc").unwrap();
     let missing = notist::Pipeline::default()
-        .analyze(
-            "test.not",
-            "#notist-doc::badge(\"test\")",
-            project.context(),
-        )
+        .analyze("test.not", "#self.badge(\"test\")", project.context())
         .unwrap();
     let rendered = Renderer::new().render_with_diagnostics(missing.root());
     assert!(
@@ -147,63 +169,116 @@ fn missing_html_targets_and_filesystem_entry_conflicts() {
             .any(|error| error.message.contains("no HTML implementation"))
     );
     let fake = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(fake.path().join("components/f")).unwrap();
+    std::fs::create_dir_all(fake.path().join("f")).unwrap();
     std::fs::write(fake.path().join("lib.notc"), "fn f() -> BlockContent;").unwrap();
-    std::fs::write(
-        fake.path().join("components/f.js"),
-        "export default class {}",
-    )
-    .unwrap();
-    std::fs::write(
-        fake.path().join("components/f/index.js"),
-        "export default class {}",
-    )
-    .unwrap();
-    let project = Environment::from_packages([notist::Package {
-        name: "fake".into(),
-        root: fake.path().into(),
-        source: std::fs::read_to_string(fake.path().join("lib.notc")).unwrap(),
-    }])
-    .unwrap();
-    let mut vault = notist::Vault::open(fake.path()).with_environment(project);
-    let notist::VaultError::Environment(errors) = vault.html_registry("test.not").unwrap_err()
+    std::fs::write(fake.path().join("f.js"), "export default class {}").unwrap();
+    std::fs::write(fake.path().join("f/index.js"), "export default class {}").unwrap();
+    let mut vault = notist::Vault::open(fake.path());
+    let source = "#import \"./lib.notc\" as ui;\n#ui.f()";
+    let analysis = vault.analyze("test.not", source).unwrap();
+    let evaluated = vault.evaluate("test.not", &analysis).unwrap();
+    let notist::VaultError::Environment(errors) = vault
+        .html_registry("test.not", source, &evaluated.root)
+        .unwrap_err()
     else {
         panic!("expected component binding diagnostics");
     };
     assert!(errors[0].diagnostic.message.contains("conflicting"));
 }
+
+#[test]
+fn html_binding_ignores_unused_and_hidden_native_calls() {
+    let mut inputs = notist::MemoryResources::new("/notes");
+    inputs.insert(
+        "ui.notc",
+        br#"
+fn unused() -> InlineContent;
+fn used() -> InlineContent;
+fn discard[children: InlineContent] -> InlineContent { [kept] }
+fn fail[children: InlineContent] -> InlineContent { compile_error("broken") }
+"#
+        .to_vec(),
+    );
+    inputs.insert("unused.js", b"export default class {}".to_vec());
+    inputs.insert("unused/index.js", b"export default class {}".to_vec());
+    inputs.insert("used.js", b"export default class {}".to_vec());
+    let mut vault = notist::Vault::new(inputs.clone());
+    for content in [
+        "#ui.discard[#ui.unused()] #ui.used()",
+        "#ui.fail[#ui.unused()] #ui.used()",
+    ] {
+        let source = format!("#import \"ui.notc\" as ui;\n{content}");
+        let output = vault
+            .render_html("doc.not", &source, notist::RenderOptions::default())
+            .unwrap();
+        assert!(
+            output.rendered.diagnostics.is_empty(),
+            "{:?}",
+            output.rendered.diagnostics
+        );
+        assert_eq!(output.rendered.used_components.len(), 1);
+        assert_eq!(output.rendered.used_components[0].id.name, "used");
+        let mut prepared = notist::PreparedInputs {
+            root: "/notes".into(),
+            config: None,
+            files: inputs.files().clone(),
+            module_urls: Default::default(),
+        };
+        prepared
+            .files
+            .insert("/notes/doc.not".into(), source.as_bytes().to_vec());
+        let description: serde_json::Value =
+            serde_json::from_str(&notist::preview::describe_prepared(
+                "/notes/doc.not",
+                &serde_json::to_string(&prepared).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(description["functions"].as_array().unwrap().len(), 1);
+        assert_eq!(description["functions"][0]["name"], "used");
+        let code: serde_json::Value = serde_json::from_str(&notist::preview::describe_prepared(
+            "/notes/ui.notc",
+            &serde_json::to_string(&prepared).unwrap(),
+        ))
+        .unwrap();
+        assert!(code["functions"].as_array().unwrap().is_empty());
+    }
+}
 #[test]
 fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() {
-    let config = "[dependencies]\nwidgets = {path = './widgets'}\n";
+    let config = "";
     let inputs = notist::PreparedInputs {
         root: "/preview".into(),
         config: Some("Notist.toml".into()),
         files: std::collections::BTreeMap::from([
-            ("Notist.toml".into(), config.as_bytes().to_vec()),
             (
-                "widgets/Notist.toml".into(),
-                b"[package]\nname = 'widgets'".to_vec(),
+                "lib.notc".into(),
+                b"import \"widgets/lib.notc\" as widgets;".to_vec(),
             ),
+            ("Notist.toml".into(), config.as_bytes().to_vec()),
+            ("widgets/Notist.toml".into(), b"".to_vec()),
             (
                 "widgets/lib.notc".into(),
                 b"fn panel<C: Type>()[children: C] -> BlockContent;".to_vec(),
             ),
-            ("widgets/components/panel.js".into(), Vec::new()),
+            ("widgets/panel.js".into(), Vec::new()),
         ]),
         module_urls: std::collections::BTreeMap::from([(
-            "widgets/components/panel.js".into(),
+            "widgets/panel.js".into(),
             "https://example.test/panel.js".into(),
         )]),
     };
     let message = serde_json::to_string(&inputs).unwrap();
     let preview: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
         "test.not",
-        "#widgets::panel()[content]",
+        "#import \"widgets/lib.notc\" as widgets;\n#widgets.panel()[content]",
         &message,
     ))
     .unwrap();
     assert!(preview["diagnostics"].as_array().unwrap().is_empty());
-    assert!(preview["html"].as_str().unwrap().contains("<widgets-panel"));
+    assert!(preview["html"].as_str().unwrap().contains(&format!(
+        "<{} ",
+        preview["used_components"][0]["tag"].as_str().unwrap()
+    )));
     assert_eq!(
         preview["used_components"][0]["module"],
         "https://example.test/panel.js"
@@ -218,9 +293,12 @@ fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() 
     assert_eq!(module["ast"]["kind"], "Module");
     assert_eq!(module["ast"]["children"].as_array().unwrap().len(), 2);
     assert!(!module["diagnostics"].as_array().unwrap().is_empty());
-    let manifest: serde_json::Value =
-        serde_json::from_str(&notist::preview::configuration_json(config)).unwrap();
-    assert_eq!(manifest["dependencies"][0]["name"], "widgets");
+    assert!(
+        notist::environment::parse_config(config)
+            .unwrap()
+            .transforms
+            .is_empty()
+    );
 }
 
 #[test]
@@ -244,8 +322,8 @@ fn native_nonfinite_defaults_use_the_same_component_binding_path() {
     let analysis = notist::Pipeline::default()
         .analyze(
             "test.not",
-            "#native::meter()",
-            &notist::Context::new(semantics.clone()),
+            "#self.meter()",
+            &notist::Context::new(semantics.clone()).with_root("native"),
         )
         .unwrap();
     let result = Renderer::new()
@@ -257,11 +335,14 @@ fn native_nonfinite_defaults_use_the_same_component_binding_path() {
 
 #[test]
 fn inline_component_accepting_block_children_keeps_a_parseable_html_tree() {
-    let module = notist::analyze_module(
-        "widgets",
-        "fn popup()[children: BlockContent] -> InlineContent;",
-    )
-    .unwrap();
+    let module = notist_pipeline::Pipeline::default()
+        .compile_module(
+            "content.not",
+            "widgets",
+            "widgets/lib.notc",
+            "fn popup()[children: BlockContent] -> InlineContent;",
+        )
+        .unwrap();
     let mut semantics = notist::builtins::registry().clone();
     let mut html = HtmlRegistry::default();
     html.bind_component(&module.definitions.functions[0], "popup.js")
@@ -270,8 +351,8 @@ fn inline_component_accepting_block_children_keeps_a_parseable_html_tree() {
     let result = notist::Pipeline::default()
         .analyze(
             "test.not",
-            "before #widgets::popup()[ inside ] after",
-            &notist::Context::new(semantics),
+            "before #self.popup()[ inside ] after",
+            &notist::Context::new(semantics).with_root("widgets"),
         )
         .unwrap();
     assert!(result.diagnostics().is_empty());
@@ -281,17 +362,20 @@ fn inline_component_accepting_block_children_keeps_a_parseable_html_tree() {
     assert!(rendered.diagnostics.is_empty());
     assert_eq!(
         rendered.html,
-        "<div class=\"notist-paragraph\">before <widgets-popup notist-protocol=\"2\" notist-content=\"inline\"><p>inside</p></widgets-popup> after</div>"
+        format!(
+            "<div class=\"notist-paragraph\">before <{tag} notist-protocol=\"2\" notist-function=\"widgets.popup\" notist-content=\"inline\"><p>inside</p></{tag}> after</div>",
+            tag = notist_html::components::component_tag(&FunctionId::new("widgets", "popup"))
+        )
     );
 }
 
 #[test]
 fn docs_status_annotations_keep_native_nodes_and_nested_component_bindings() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
-    let mut vault = notist::Vault::open(root);
+    let mut vault = notist::Vault::open(&root);
     for status in ["draft", "staged", "outdate"] {
         let source = format!(
-            "@(status: \"{status}\")\n= Status\n\nFirst paragraph.\n\n#notist-doc::badge(\"Nested\")"
+            "@(status: \"{status}\")\n= Status\n\nFirst paragraph.\n\n#import \"components/lib.notc\" as components;\n#components.badge(\"Nested\")"
         );
         let output = vault
             .render_html("status.not", &source, notist::RenderOptions::default())
@@ -313,7 +397,12 @@ fn docs_status_annotations_keep_native_nodes_and_nested_component_bindings() {
                 .contains(&format!("data-status=\"{status}\""))
         );
         assert!(output.rendered.html.contains("First paragraph."));
-        assert!(output.rendered.html.contains("<notist-doc-badge"));
+        assert!(
+            output
+                .rendered
+                .html
+                .contains(&format!("<{} ", output.rendered.used_components[0].tag))
+        );
         assert_eq!(
             output
                 .rendered
@@ -321,7 +410,10 @@ fn docs_status_annotations_keep_native_nodes_and_nested_component_bindings() {
                 .iter()
                 .map(|component| component.id.clone())
                 .collect::<Vec<_>>(),
-            vec![FunctionId::new("notist-doc", "badge")]
+            vec![FunctionId::new(
+                root.join("components/lib.notc").to_str().unwrap(),
+                "badge"
+            )]
         );
     }
 }
@@ -330,7 +422,7 @@ fn docs_status_annotations_keep_native_nodes_and_nested_component_bindings() {
 fn generic_component_fields_use_the_execution_targets_concrete_types() {
     use notist::{Context, FunctionId, Pipeline};
     use notist_html::{HtmlRegistry, Renderer};
-    let module = notist::analyze_module("generic", "fn source<T: Type>(value: Array<T>) -> InlineContent; fn target<U: Type>(value: Array<U>) -> InlineContent;").unwrap();
+    let module = notist_pipeline::Pipeline::default().compile_module("content.not", "generic", "generic/lib.notc", "fn source<T: Type>(value: Array<T>) -> InlineContent; fn target<U: Type>(value: Array<U>) -> InlineContent;").unwrap();
     let context = Context::default()
         .with_module(module)
         .unwrap()
@@ -342,7 +434,7 @@ fn generic_component_fields_use_the_execution_targets_concrete_types() {
         .unwrap();
     let p = Pipeline::default();
     let a = p
-        .analyze("doc.not", "#generic::source((1, 2))", &context)
+        .analyze("doc.not", "#self.source((1, 2))", &context)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let evaluated = p.evaluate(&a, &context);
@@ -369,6 +461,10 @@ fn generic_component_fields_use_the_execution_targets_concrete_types() {
         "{:?}",
         rendered.diagnostics
     );
-    assert!(rendered.html.contains("<generic-target "));
+    assert!(
+        rendered
+            .html
+            .contains(&format!("<{} ", rendered.used_components[0].tag))
+    );
     assert!(rendered.html.contains("notist-value="), "{}", rendered.html);
 }

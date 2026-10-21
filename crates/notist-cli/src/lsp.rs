@@ -11,10 +11,11 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use notist::Resources;
 use notist::item::{Ctor, Item, Value};
 
 /// Run the language server over stdio with the CLI configuration.
-pub async fn serve_with_config(config: Option<std::path::PathBuf>) {
+pub async fn serve(config: Option<std::path::PathBuf>) {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(|client| Backend {
@@ -161,16 +162,16 @@ impl LanguageServer for Backend {
         let offset = lines.offset(&src, position);
         if let Some(name) = call_path_at(uri, &src, offset)
             && let Ok(project) = self.project(uri).await
-            && let Ok(definition) = project.context().registry().resolve(&name)
+            && let Ok(definition) = project.context().resolve(&name).ok_or(())
         {
             return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::PlainText,
                     value: project
-                        .packages()
-                        .get(&definition.id.package)
-                        .and_then(|package| {
-                            package.source.get(
+                        .modules()
+                        .get(&definition.id.module)
+                        .and_then(|module| {
+                            module.source.get(
                                 usize::from(definition.span.start())
                                     ..usize::from(definition.span.end()),
                             )
@@ -226,25 +227,25 @@ impl LanguageServer for Backend {
             let Some(project) = self.project(&uri).await.ok() else {
                 return Ok(None);
             };
-            let Ok(definition) = project.context().registry().resolve(&name) else {
+            let Ok(definition) = project.context().resolve(&name).ok_or(()) else {
                 return Ok(None);
             };
-            let Some(package) = project.packages().get(&definition.id.package) else {
+            let Some(module) = project.modules().get(&definition.id.module) else {
                 return Ok(None);
             };
             let Ok(uri) = Url::from_file_path(
                 project
                     .context()
                     .program()
-                    .source_path(&definition.id.package)
+                    .source_path(&definition.id.module)
                     .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| package.root.join("lib.notc")),
+                    .unwrap_or_else(|| module.path.clone()),
             ) else {
                 return Ok(None);
             };
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri,
-                range: LineIndex::new(&package.source).range(&package.source, definition.span),
+                range: LineIndex::new(&module.source).range(&module.source, definition.span),
             })));
         }
         let Some(target) = smallest_at(&item, offset) else {
@@ -300,11 +301,18 @@ impl Backend {
     async fn project(
         &self,
         uri: &Url,
-    ) -> std::result::Result<notist::Environment, Vec<notist::SourceDiagnostic>> {
+    ) -> std::result::Result<std::sync::Arc<notist::Environment>, Vec<notist::SourceDiagnostic>>
+    {
         self.with_vault(|vault| {
-            vault
-                .environment_for(uri.to_file_path().unwrap_or_else(|_| "document.not".into()))
-                .cloned()
+            let path = uri.to_file_path().unwrap_or_else(|_| "document.not".into());
+            let source = vault.resources().source(&path)?;
+            if path.extension().is_some_and(|ext| ext == "notc") {
+                notist::Environment::load_from(vault.resources(), &path)
+                    .map(std::sync::Arc::new)
+                    .map_err(notist::VaultError::Environment)
+            } else {
+                vault.environment_for(path, &source)
+            }
         })
         .await
         .map_err(|error| source_errors(uri, error))
@@ -349,12 +357,12 @@ impl Backend {
         for uri in self.reported.lock().await.iter() {
             published.entry(uri.clone()).or_default();
         }
-        let mut sources: std::collections::BTreeMap<String, String> = documents
+        let mut sources: notist::Sources = documents
             .iter()
             .filter_map(|(uri, source)| {
                 Some((
                     uri.to_file_path().ok()?.to_string_lossy().into_owned(),
-                    source.clone(),
+                    source.as_str().into(),
                 ))
             })
             .collect();
@@ -373,7 +381,7 @@ impl Backend {
                             .into_iter()
                             .map(|error| {
                                 let path = error.path.to_string_lossy().into_owned();
-                                sources.insert(path.clone(), error.source);
+                                sources.insert(path.clone(), error.source.into());
                                 let mut d = error.diagnostic;
                                 d.source.get_or_insert(path);
                                 d
@@ -394,7 +402,7 @@ impl Backend {
                     Err(error) => {
                         for error in source_errors(uri, error) {
                             let path = error.path.to_string_lossy().into_owned();
-                            sources.insert(path.clone(), error.source);
+                            sources.insert(path.clone(), error.source.into());
                             let mut diagnostic = error.diagnostic;
                             diagnostic.source.get_or_insert(path);
                             pending.push((uri.clone(), diagnostic));
@@ -402,7 +410,7 @@ impl Backend {
                         vec![notist::Diagnostic::new(
                             notist::Phase::Semantic,
                             Default::default(),
-                            "project configuration or package declarations are invalid",
+                            "source imports or output configuration are invalid",
                         )]
                     }
                 }
@@ -419,8 +427,9 @@ impl Backend {
                 .source
                 .as_ref()
                 .and_then(|path| sources.get(path))
-                .or_else(|| documents.get(&uri))
-                .or_else(|| documents.get(&fallback));
+                .map(|source| source.as_ref())
+                .or_else(|| documents.get(&uri).map(String::as_str))
+                .or_else(|| documents.get(&fallback).map(String::as_str));
             if let Some(source) = source {
                 published
                     .entry(uri)
@@ -616,10 +625,10 @@ fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
         .descendants()
         .filter_map(notist::syntax::code::ast::CodeCall::cast)
         .find_map(|call| {
-            let path = call.path()?;
-            path.range()
+            let path = call.callee()?;
+            path.text_range()
                 .contains((offset as u32).into())
-                .then(|| path.text())
+                .then(|| path.text().to_string())
         })
 }
 

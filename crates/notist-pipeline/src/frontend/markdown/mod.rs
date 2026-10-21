@@ -164,9 +164,29 @@ fn lower_parsed(src: &str, arena: &Arena, root: NodeRef, allow_module: bool) -> 
         diagnostics: RefCell::new(Vec::new()),
         module_attrs: RefCell::new(Dict::default()),
         annotations: RefCell::new(Vec::new()),
+        imports: RefCell::new(Vec::new()),
     };
     let forest = lowerer.children(root);
+    let mut aliases = std::collections::BTreeSet::new();
+    let imports = lowerer
+        .imports
+        .into_inner()
+        .into_iter()
+        .filter(|import| {
+            if aliases.insert(import.alias.clone()) {
+                true
+            } else {
+                lowerer.diagnostics.borrow_mut().push(Diagnostic::new(
+                    Phase::Type,
+                    import.span,
+                    "duplicate import alias",
+                ));
+                false
+            }
+        })
+        .collect();
     FrontendOutput {
+        imports,
         forest,
         annotations: lowerer.annotations.into_inner(),
         module_attrs: lowerer.module_attrs.into_inner(),
@@ -223,6 +243,7 @@ struct Lowerer<'a> {
     diagnostics: RefCell<Vec<Diagnostic>>,
     module_attrs: RefCell<Dict>,
     annotations: RefCell<Vec<Annotation>>,
+    imports: RefCell<Vec<notist_core::definitions::Import>>,
 }
 
 /// Rushdown isolates standalone calls to keep their multi-line bodies opaque.
@@ -259,16 +280,15 @@ fn normalize_table_inline(exprs: &mut [Expr]) {
             ..
         } = expr
         {
-            if matches!(callee.as_ref(), Expr::Ref { name, .. } if name == "notist::math") {
+            if callee.name_path().as_deref() == Some("notist.math") {
                 for arg in args {
                     if let notist_core::expr::CallArg::Named {
                         name,
                         value: Expr::Literal(Value::Str(text), _),
                     } = arg
+                        && name == "text"
                     {
-                        if name == "text" {
-                            *text = text.replace("\\|", "|");
-                        }
+                        *text = text.replace("\\|", "|");
                     }
                 }
             }
@@ -312,11 +332,10 @@ impl<'a> Lowerer<'a> {
     fn span_of(&self, node: NodeRef) -> TextRange {
         if matches!(self.node(node).kind_data(), KindData::TableCell(_))
             && self.node(node).pos().is_none()
+            && let Some(parent) = self.node(node).parent()
         {
-            if let Some(parent) = self.node(node).parent() {
-                // rushdown pads short rows with cells that have no source pos.
-                return TextRange::empty(self.span_of(parent).end());
-            }
+            // rushdown pads short rows with cells that have no source pos.
+            return TextRange::empty(self.span_of(parent).end());
         }
         let start = self.node(node).pos().unwrap_or(0) as u32;
         let mut end = self.src.len() as u32;
@@ -326,11 +345,11 @@ impl<'a> Lowerer<'a> {
                 end = heading_end;
                 break;
             }
-            if let Some(next) = self.node(c).next_sibling() {
-                if let Some(pos) = self.node(next).pos() {
-                    end = pos as u32;
-                    break 'walk;
-                }
+            if let Some(next) = self.node(c).next_sibling()
+                && let Some(pos) = self.node(next).pos()
+            {
+                end = pos as u32;
+                break 'walk;
             }
             cur = self.node(c).parent();
         }
@@ -403,6 +422,17 @@ impl<'a> Lowerer<'a> {
                 flush(&mut out, &mut text_start, &mut text_buf, text_end, false);
                 let lowered = markup.lower(&mut self.diagnostics.borrow_mut());
                 match lowered {
+                    markup::Lowered::Imports { imports, span } => {
+                        if !self.allow_module || node != self.root || !markup.is_block() {
+                            self.diagnostics.borrow_mut().push(Diagnostic::new(
+                                Phase::Semantic,
+                                span,
+                                "imports are only valid at the document top level",
+                            ));
+                        } else {
+                            self.imports.borrow_mut().extend(imports);
+                        }
+                    }
                     markup::Lowered::Annotation {
                         attrs,
                         module,
@@ -474,7 +504,7 @@ impl<'a> Lowerer<'a> {
                 text_buf.push_str(if at_line_start {
                     value.trim_start()
                 } else {
-                    &value
+                    value
                 });
                 text_end = n.pos().unwrap_or(0) + text.str(self.src).len();
                 at_line_start = false;
@@ -511,12 +541,12 @@ impl<'a> Lowerer<'a> {
         let span = self.span_of(node);
         match self.node(node).kind_data() {
             KindData::Paragraph(_) => Expr::fragment(self.children(node), span),
-            KindData::Heading(h) => Expr::call("notist::heading", span)
+            KindData::Heading(h) => Expr::call("notist.heading", span)
                 .with_comptime("level", Expr::Literal(Value::Int(h.level() as i64), span))
                 .with_children(self.children(node)),
-            KindData::ThematicBreak(_) => Expr::call("notist::divider", span),
+            KindData::ThematicBreak(_) => Expr::call("notist.divider", span),
             KindData::CodeBlock(b) => {
-                let mut expr = Expr::call("notist::raw", span)
+                let mut expr = Expr::call("notist.raw", span)
                     .with_category(notist_core::definitions::Type::BlockContent)
                     .with_literal_arg(
                         "text",
@@ -530,10 +560,10 @@ impl<'a> Lowerer<'a> {
                 }
                 expr
             }
-            KindData::Blockquote(_) => Expr::call("notist::callout", span)
+            KindData::Blockquote(_) => Expr::call("notist.callout", span)
                 .with_literal_arg("kind", Value::Str("quote".into()))
                 .with_children(self.children(node)),
-            KindData::List(l) => Expr::call("notist::list", span)
+            KindData::List(l) => Expr::call("notist.list", span)
                 .with_literal_arg("ordered", Value::Bool(l.is_ordered()))
                 .with_literal_arg(
                     "start",
@@ -541,24 +571,24 @@ impl<'a> Lowerer<'a> {
                 )
                 .with_children(self.children(node)),
             KindData::ListItem(_) => {
-                Expr::call("notist::item", span).with_children(self.children(node))
+                Expr::call("notist.item", span).with_children(self.children(node))
             }
-            KindData::CodeSpan(c) => Expr::call("notist::raw", span)
+            KindData::CodeSpan(c) => Expr::call("notist.raw", span)
                 .with_literal_arg("text", Value::Str(c.str(self.src).into_owned())),
             KindData::Emphasis(_) => {
-                Expr::call("notist::emph", span).with_children(self.children(node))
+                Expr::call("notist.emph", span).with_children(self.children(node))
             }
             KindData::Strong(_) => {
-                Expr::call("notist::strong", span).with_children(self.children(node))
+                Expr::call("notist.strong", span).with_children(self.children(node))
             }
-            KindData::Link(l) => Expr::call("notist::link", span)
+            KindData::Link(l) => Expr::call("notist.link", span)
                 .with_literal_arg(
                     "target",
                     Value::Str(strings::decode(l.destination().str(self.src))),
                 )
                 .with_children(self.children(node)),
             KindData::Image(i) => {
-                let mut expr = Expr::call("notist::embed", span)
+                let mut expr = Expr::call("notist.embed", span)
                     .with_literal_arg(
                         "target",
                         Value::Str(strings::decode(i.destination().str(self.src))),
@@ -591,12 +621,12 @@ impl<'a> Lowerer<'a> {
                     }
                     container = self.node(c).next_sibling();
                 }
-                Expr::call("notist::table", span)
+                Expr::call("notist.table", span)
                     .with_literal_arg("align", Value::Array(align))
                     .with_children(rows)
             }
             KindData::TableRow(_) => {
-                Expr::call("notist::row", span).with_children(self.children(node))
+                Expr::call("notist.row", span).with_children(self.children(node))
             }
             KindData::TableCell(_) => {
                 let mut inline = self.children(node);
@@ -606,15 +636,15 @@ impl<'a> Lowerer<'a> {
                 } else {
                     vec![Expr::fragment(inline, span)]
                 };
-                Expr::call("notist::cell", span).with_children(children)
+                Expr::call("notist.cell", span).with_children(children)
             }
             KindData::Strikethrough(_) => {
-                Expr::call("notist::strike", span).with_children(self.children(node))
+                Expr::call("notist.strike", span).with_children(self.children(node))
             }
             KindData::Extension(data) if data.as_any().is::<math::Math>() => {
                 let math = data.as_any().downcast_ref::<math::Math>().unwrap();
                 let span = TextRange::new(span.start(), (math.end as u32).into());
-                let expr = Expr::call("notist::math", span);
+                let expr = Expr::call("notist.math", span);
                 let expr = if math.block {
                     expr.with_category(notist_core::definitions::Type::BlockContent)
                 } else {
@@ -626,7 +656,7 @@ impl<'a> Lowerer<'a> {
                 // TableHeader / TableBody / LinkReferenceDefinition / 其他：子节点透传
                 let mut out = Vec::new();
                 out.extend(self.children(node));
-                Expr::call("notist::node", span).with_children(out)
+                Expr::call("notist.node", span).with_children(out)
             }
         }
     }

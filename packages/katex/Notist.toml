@@ -1,7 +1,0 @@
-[package]
-name = "katex"
-
-[[transforms]]
-kind = "replace"
-from = "notist::math"
-to = "katex::math"

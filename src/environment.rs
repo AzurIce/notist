@@ -1,9 +1,14 @@
-//! Declaration environment assembly through host-provided resources.
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
+//! Host assembly of local Code modules and their relative component resources.
 use crate::resources::{ResourceKind, Resources};
-use crate::{Context, Diagnostic, Phase, TextRange};
+use crate::{Context, Diagnostic, TextRange};
+use std::collections::BTreeMap;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+mod config;
+mod loader;
+pub use config::{Configuration, TransformBinding, parse_config};
 
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
@@ -11,135 +16,48 @@ pub struct SourceDiagnostic {
     pub source: String,
     pub diagnostic: Diagnostic,
 }
-
-mod config;
-mod loader;
-pub use config::{Configuration, Dependency, PackageMetadata, parse_config};
-
 #[derive(Debug, Clone)]
-pub struct Package {
-    pub name: String,
-    pub root: PathBuf,
-    pub source: String,
+pub struct ModuleSource {
+    pub path: PathBuf,
+    pub source: Arc<str>,
 }
-
-/// A host-loaded Context and the configuration/package metadata used for resources.
-/// Assembly errors never return a partial environment.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Environment {
     config_path: Option<PathBuf>,
-    packages: BTreeMap<String, Package>,
+    modules: BTreeMap<String, ModuleSource>,
     context: Context,
 }
-
-impl Default for Environment {
-    fn default() -> Self {
-        Self {
-            config_path: None,
-            packages: BTreeMap::new(),
-            context: Context::default(),
-        }
-    }
-}
-
 impl Environment {
     pub fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
     }
-    pub fn packages(&self) -> &BTreeMap<String, Package> {
-        &self.packages
+    pub fn modules(&self) -> &BTreeMap<String, ModuleSource> {
+        &self.modules
     }
-    /// Pure analysis and transform inputs, independent of host resource paths.
     pub fn context(&self) -> &Context {
         &self.context
     }
-    /// Install explicitly supplied declaration sources; performs no IO.
-    pub fn from_packages(
-        packages: impl IntoIterator<Item = Package>,
-    ) -> Result<Self, Vec<SourceDiagnostic>> {
-        let mut context = Context::default();
-        let mut installed = BTreeMap::new();
-        let mut diagnostics = Vec::new();
-        for package in packages {
-            let result = crate::Pipeline::default()
-                .compile_module(
-                    "content.not",
-                    &package.name,
-                    &package.root.join("lib.notc").to_string_lossy(),
-                    &package.source,
-                )
-                .and_then(|module| context.clone().with_module(module));
-            match result {
-                Ok(updated) => {
-                    context = updated;
-                    installed.insert(package.name.clone(), package);
-                }
-                Err(errors) => {
-                    diagnostics.extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: package.root.join("lib.notc"),
-                        source: package.source.clone(),
-                        diagnostic,
-                    }))
-                }
-            }
-        }
-        if diagnostics.is_empty() {
-            Ok(Self {
-                config_path: None,
-                packages: installed,
-                context,
-            })
-        } else {
-            Err(diagnostics)
-        }
-    }
-
-    /// Add an explicitly prepared Code source to this host environment. The
-    /// caller chooses the content dialect and performs any resource reads.
-    pub fn with_code(
-        mut self,
-        package: &str,
+    /// Assemble the document's own import scope and explicit output mappings.
+    pub(crate) fn for_document(
+        resources: &(impl Resources + ?Sized),
+        pipeline: &crate::Pipeline,
         path: &Path,
         source: &str,
-        dialect: &Path,
+        imports: &[crate::Import],
+        config: Option<&Path>,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        let compiled = crate::Pipeline::default()
-            .compile_module(dialect, package, &path.to_string_lossy(), source)
-            .and_then(|module| self.context.clone().with_module(module));
-        match compiled {
-            Ok(context) => {
-                self.context = context;
-                self.packages.insert(
-                    package.into(),
-                    Package {
-                        name: package.into(),
-                        root: path.parent().unwrap_or(Path::new("")).into(),
-                        source: source.into(),
-                    },
-                );
-                Ok(self)
-            }
-            Err(errors) => Err(errors
-                .into_iter()
-                .map(|diagnostic| SourceDiagnostic {
-                    path: path.into(),
-                    source: source.into(),
-                    diagnostic,
-                })
-                .collect()),
-        }
+        loader::document(resources, pipeline, path, source, imports, config)
     }
-
-    /// Assemble declarations through a host-provided read-only resource snapshot.
+    /// Load a Code source and its explicit import graph.
     pub fn load_from(
         resources: &(impl Resources + ?Sized),
-        config_path: impl AsRef<Path>,
+        entry: impl AsRef<Path>,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        loader::load(resources, config_path.as_ref())
+        loader::load(resources, entry.as_ref())
     }
 }
 
-/// Discover one nearest configuration. Access failures are never treated as absence.
+/// Discover the nearest output configuration within the Vault root.
 pub fn discover_config_in(
     resources: &(impl Resources + ?Sized),
     document: &Path,
@@ -151,9 +69,12 @@ pub fn discover_config_in(
         document.parent().unwrap_or(resources.root())
     };
     for directory in directory.ancestors() {
-        let config = directory.join("Notist.toml");
-        if resources.kind(&config)? == Some(ResourceKind::File) {
-            return Ok(Some(config));
+        let path = directory.join("Notist.toml");
+        if resources.kind(&path)? == Some(ResourceKind::File) {
+            return Ok(Some(path));
+        }
+        if directory == resources.root() {
+            break;
         }
     }
     Ok(None)
@@ -170,6 +91,6 @@ pub(crate) fn issue(
     SourceDiagnostic {
         path: path.into(),
         source: source.into(),
-        diagnostic: Diagnostic::new(Phase::Semantic, span, message),
+        diagnostic: Diagnostic::new(crate::Phase::Semantic, span, message),
     }
 }

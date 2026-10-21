@@ -1,83 +1,124 @@
-//! Explicit semantic inputs shared by content analysis and output transforms.
-use notist_core::{builtins, diag::Diagnostic, registry::Registry};
-
+//! Definitions, lexical module scopes and explicitly selected output mappings.
 use crate::transforms::{Replace, TransformPlan};
+use notist_core::{builtins, definitions::FunctionDef, diag::Diagnostic, registry::Registry};
+use std::collections::BTreeMap;
 
-/// Installed function definitions and a transform plan checked against them.
-///
-/// Context construction performs no IO. Hosts load configuration and Code
-/// sources, register their definitions, then provide this value to the pipeline.
-/// The registry is immutable after construction so the plan cannot become stale.
 #[derive(Debug, Clone)]
+/// Immutable definitions, lexical module scopes and checked execution mappings.
+/// Hosts load sources and resources; Context performs no IO.
 pub struct Context {
     registry: Registry,
     transforms: TransformPlan,
     program: crate::definitions::CodeProgram,
+    root: Option<String>,
 }
-
 impl Context {
-    /// Use an explicitly assembled registry with no output transforms.
     pub fn new(registry: Registry) -> Self {
         Self {
             registry,
-            transforms: TransformPlan::default(),
+            transforms: Default::default(),
             program: Default::default(),
+            root: None,
         }
     }
-
+    /// Install a module and select it as the root lexical scope.
     pub fn with_module(
         mut self,
         module: crate::definitions::CodeModule,
     ) -> Result<Self, Vec<Diagnostic>> {
+        self.root = Some(module.definitions.module.clone());
         self.registry.register(module.definitions)?;
         self.program.bodies.extend(module.program.bodies);
         self.program.sources.extend(module.program.sources);
         self.program.modules.extend(module.program.modules);
+        self.program.imports.extend(module.program.imports);
         Ok(self)
     }
-
-    /// Replace a source module for tooling, retaining dependencies and validating
-    /// the transform plan against the updated signatures before returning it.
-    pub fn replace_module(
+    pub fn with_root(mut self, module: impl Into<String>) -> Self {
+        self.root = Some(module.into());
+        self
+    }
+    /// Install a file's static import bindings and select its lexical scope.
+    pub fn with_scope(
         mut self,
-        module: crate::definitions::CodeModule,
-    ) -> Result<Self, Vec<Diagnostic>> {
-        let package = &module.definitions.package;
-        self.registry.replace(module.definitions.clone())?;
-        self.transforms = self.transforms.revalidate(&self.registry)?;
-        self.program.bodies.retain(|id, _| &id.package != package);
-        if let Some(path) = self.program.modules.remove(package) {
-            if !self.program.modules.values().any(|p| p == &path) {
-                self.program.sources.remove(&path);
+        module: impl Into<String>,
+        imports: impl IntoIterator<Item = (String, String)>,
+    ) -> Self {
+        let module = module.into();
+        self.program
+            .imports
+            .insert(module.clone(), imports.into_iter().collect());
+        self.root = Some(module);
+        self
+    }
+    pub fn root(&self) -> Option<&str> {
+        self.root.as_deref()
+    }
+    /// Resolve a name in one lexical module. Loaded modules are never ambient
+    /// globals; imports are exported namespace bindings and can be traversed.
+    pub fn resolve_in(&self, scope: Option<&str>, path: &str) -> Option<&FunctionDef> {
+        self.resolve_from(scope.or(self.root()), None, path)
+    }
+    /// Resolve in a temporary import table, without inheriting the root scope.
+    /// Module definitions and member traversal use the same resolver as Code.
+    pub fn resolve_imports(
+        &self,
+        imports: &BTreeMap<String, String>,
+        path: &str,
+    ) -> Option<&FunctionDef> {
+        self.resolve_from(None, Some(imports), path)
+    }
+    fn resolve_from(
+        &self,
+        scope: Option<&str>,
+        imports: Option<&BTreeMap<String, String>>,
+        path: &str,
+    ) -> Option<&FunctionDef> {
+        let mut parts: Vec<_> = path.split('.').collect();
+        let name = parts.pop()?;
+        let mut module = scope;
+        for (i, part) in parts.iter().enumerate() {
+            if i == 0 && *part == "notist" {
+                module = Some("notist");
+                continue;
             }
+            if i == 0 && *part == "self" {
+                continue;
+            }
+            let bindings = if i == 0 && imports.is_some() {
+                imports?
+            } else {
+                self.program.imports.get(module?)?
+            };
+            module = Some(bindings.get(*part)?);
         }
-        self.program.bodies.extend(module.program.bodies);
-        self.program.sources.extend(module.program.sources);
-        self.program.modules.extend(module.program.modules);
-        Ok(self)
+        if let Some(def) = module.and_then(|id| self.registry.function(id, name)) {
+            return Some(def);
+        }
+        if path == name {
+            self.registry.function("notist", name)
+        } else {
+            None
+        }
+    }
+    pub fn resolve(&self, path: &str) -> Option<&FunctionDef> {
+        self.resolve_in(self.root(), path)
     }
     pub fn program(&self) -> &crate::definitions::CodeProgram {
         &self.program
     }
-
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
-
     pub fn transforms(&self) -> &TransformPlan {
         &self.transforms
     }
-
-    /// Compile output rules against this context's installed definitions.
-    /// Invalid rules return diagnostics instead of a partially updated context.
     pub fn with_transforms(mut self, rules: &[Replace]) -> Result<Self, Vec<Diagnostic>> {
         self.transforms = TransformPlan::compile(rules, &self.registry)?;
         Ok(self)
     }
 }
-
 impl Default for Context {
-    /// Standard built-in definitions and no output transforms.
     fn default() -> Self {
         Self::new(builtins::registry().clone())
     }

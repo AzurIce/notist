@@ -3,7 +3,7 @@ use rowan::TextRange;
 use crate::builtins;
 use crate::definitions::FunctionId;
 
-/// A registered call's public contract snapshot, independent of its package files.
+/// A registered call's public contract snapshot, independent of its module files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExtensionCtor {
@@ -194,6 +194,8 @@ pub enum Value {
     Str(String),
     Array(Vec<Value>),
     Dict(Dict),
+    Some(Box<Value>),
+    None,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -302,6 +304,8 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, ")")
             }
+            Value::Some(value) => write!(f, "some({value})"),
+            Value::None => f.write_str("none"),
         }
     }
 }
@@ -331,7 +335,7 @@ pub enum EvaluationState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Item {
     pub ctor: Ctor,
     /// Checked call, forest interpolation or failure, evaluated in place.
@@ -422,7 +426,7 @@ impl Item {
             _ => self
                 .ctor
                 .source_name()
-                .and_then(|name| builtins::registry().resolve(name).ok())
+                .and_then(|name| builtins::registry().function("notist", name))
                 .map(|definition| definition.returns.level().unwrap_or(Level::Inline))
                 .unwrap_or(Level::Inline),
         };
@@ -441,48 +445,6 @@ impl Item {
     /// The first descendant (self included) matching `pred`.
     pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
         self.descendants().find(|item| pred(item))
-    }
-}
-
-/// Legacy trees lacking a level remain readable. New serialization stores it
-/// explicitly, so deserialized extensions do not need a signature environment.
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Item {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(serde::Deserialize)]
-        struct StoredItem {
-            ctor: Ctor,
-            #[serde(default)]
-            pending: Option<Box<crate::evaluation::PendingEvaluation>>,
-            #[serde(default)]
-            level: Option<builtins::Level>,
-            fields: Dict,
-            children: Vec<Item>,
-            attrs: Dict,
-            #[serde(default)]
-            instance: Option<crate::definitions::FunctionInstance>,
-            #[serde(default)]
-            target: Option<crate::definitions::FunctionInstance>,
-            #[serde(default)]
-            evaluation: Option<EvaluationState>,
-            #[serde(default)]
-            origin: Option<Origin>,
-        }
-        let stored = StoredItem::deserialize(deserializer)?;
-        let mut item = Item::new(stored.ctor, empty_span());
-        item.pending = stored.pending;
-        item.instance = stored.instance;
-        item.target = stored.target;
-        item.evaluation = stored.evaluation;
-        item.origin = stored.origin;
-        item.fields = stored.fields;
-        item.children = stored.children;
-        item.attrs = stored.attrs;
-        item.infer_level();
-        if let Some(level) = stored.level {
-            item.level = level;
-        }
-        Ok(item)
     }
 }
 

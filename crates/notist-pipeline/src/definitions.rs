@@ -1,13 +1,14 @@
-//! Package registration lowers bodies without executing them. Each concrete
-//! instance is checked later, with known comptime arguments and unknown inputs.
+//! Module registration lowers Code bodies and embedded Markup to IR₁.
+//! Each concrete instance runs the shared Markup backend later, with known
+//! comptime arguments and typed ordinary inputs.
 use crate::lowering::{code::expression, content::ContentLowering, literals::syntax_value};
 use notist_core::{
     builtins::Accepts,
     definitions::{
-        ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, ParameterDef,
-        ParameterMode, Type, validate_module,
+        ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, Import,
+        ParameterDef, ParameterMode, Type, validate_module,
     },
-    diag::{Diagnostic, Phase},
+    diag::{Diagnostic, Phase, Sources},
     expr::Expr,
 };
 use notist_syntax::code::ast::{FunctionDecl, Module, Parameter, TypeRef};
@@ -16,20 +17,16 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodeProgram {
     pub(crate) bodies: BTreeMap<FunctionId, CodeBody>,
-    pub(crate) sources: BTreeMap<String, String>,
+    pub(crate) sources: Sources,
     pub(crate) modules: BTreeMap<String, String>,
+    pub(crate) imports: BTreeMap<String, BTreeMap<String, String>>,
 }
 impl CodeProgram {
-    pub fn sources(&self) -> &BTreeMap<String, String> {
+    pub fn sources(&self) -> &Sources {
         &self.sources
     }
-    pub fn source_path(&self, package: &str) -> Option<&str> {
-        self.modules.get(package).map(String::as_str)
-    }
-    pub fn package_for_source(&self, path: &str) -> Option<&str> {
-        self.modules
-            .iter()
-            .find_map(|(package, source)| (source == path).then_some(package.as_str()))
+    pub fn source_path(&self, module: &str) -> Option<&str> {
+        self.modules.get(module).map(String::as_str)
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -42,9 +39,18 @@ pub(crate) struct CodeBody {
 pub struct CodeModule {
     pub definitions: DefinitionModule,
     pub program: CodeProgram,
+    pub imports: Vec<Import>,
 }
 
 impl CodeModule {
+    /// Hosts bind source imports to canonical resource identities after loading.
+    pub fn bind_import(&mut self, alias: &str, module: String) {
+        self.program
+            .imports
+            .entry(self.definitions.module.clone())
+            .or_default()
+            .insert(alias.into(), module);
+    }
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
         self.program
             .bodies
@@ -53,19 +59,8 @@ impl CodeModule {
     }
 }
 
-/// Compile an in-memory native-Markup Code module. Body diagnostics are kept
-/// with the implementation, so unrelated functions remain available.
-pub fn analyze_module(package: &str, source: &str) -> Result<CodeModule, Vec<Diagnostic>> {
-    compile_module(
-        package,
-        &format!("{package}/lib.notc"),
-        source,
-        &crate::frontend::markup::NotistFrontend,
-    )
-}
-
 pub(crate) fn compile_module(
-    package: &str,
+    module: &str,
     path: &str,
     source: &str,
     frontend: &dyn ContentLowering,
@@ -73,11 +68,13 @@ pub(crate) fn compile_module(
     let parsed = notist_syntax::code::parse_module(source, frontend);
     let ast = Module::cast(parsed.syntax()).unwrap();
     let mut diagnostics = Vec::new();
-    let mut definitions = DefinitionModule::new(package);
+    let mut definitions = DefinitionModule::new(module);
     definitions.span = ast.range();
     let mut program = CodeProgram::default();
     program.sources.insert(path.into(), source.into());
-    program.modules.insert(package.into(), path.into());
+    program.modules.insert(module.into(), path.into());
+    let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
+    let aliases: std::collections::BTreeSet<_> = imports.iter().map(|i| i.alias.clone()).collect();
     let mut assigned = vec![false; parsed.diagnostics.len()];
     for function in ast.functions() {
         let body = function.body();
@@ -97,7 +94,7 @@ pub(crate) fn compile_module(
                 assigned[i] = true;
             }
         }
-        if let Some(definition) = lower_function(package, &function, &mut diagnostics) {
+        if let Some(definition) = lower_function(module, &function, &mut diagnostics) {
             let expr = body.and_then(|n| {
                 expression(
                     rowan::NodeOrToken::Node(n),
@@ -128,10 +125,20 @@ pub(crate) fn compile_module(
         }
     }
     diagnostics.extend(validate_module(&definitions));
+    for function in &definitions.functions {
+        if aliases.contains(&function.id.name) {
+            diagnostics.push(Diagnostic::new(
+                Phase::Type,
+                function.span,
+                "function name conflicts with an import alias",
+            ));
+        }
+    }
     if diagnostics.is_empty() {
         Ok(CodeModule {
             definitions,
             program,
+            imports,
         })
     } else {
         Err(diagnostics)
@@ -143,7 +150,7 @@ fn lower_type(
     params: &[ComptimeParameter],
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Type> {
-    let name = t.path()?.text();
+    let name = t.name()?.text().to_string();
     let args: Vec<_> = t.arguments().collect();
     if name == "Array" && args.len() <= 1 {
         return Some(Type::Array(match args.first() {
@@ -151,11 +158,14 @@ fn lower_type(
             None => None,
         }));
     }
+    if name == "Option" && args.len() == 1 {
+        return Some(Type::Option(Box::new(lower_type(&args[0], params, diags)?)));
+    }
     if !args.is_empty() {
         diags.push(Diagnostic::new(
             Phase::Type,
             t.range(),
-            "type constructors only support Array<T>",
+            "type constructors only support Array<T> and Option<T>",
         ));
         return None;
     }
@@ -209,7 +219,7 @@ fn ct_default(p: &Parameter, ty: &Type, diags: &mut Vec<Diagnostic>) -> Option<C
     }
 }
 fn lower_function(
-    package: &str,
+    module: &str,
     f: &FunctionDecl,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<FunctionDef> {
@@ -245,7 +255,7 @@ fn lower_function(
         }
     };
     let mut definition =
-        FunctionDef::new(FunctionId::new(package, f.name()?.text()), accepts, returns);
+        FunctionDef::new(FunctionId::new(module, f.name()?.text()), accepts, returns);
     definition.comptime = comptime;
     definition.children_type = children_type;
     definition.span = f.range();
@@ -255,13 +265,6 @@ fn lower_function(
         let mode = if let Some(default) = p.default_value() {
             ParameterMode::Default(syntax_value(&default.value()?, diags)?)
         } else if p.is_optional() {
-            if definition.code {
-                diags.push(Diagnostic::new(
-                    Phase::Type,
-                    p.range(),
-                    "Code parameters require a value or a concrete default",
-                ));
-            }
             ParameterMode::Optional
         } else {
             ParameterMode::Required

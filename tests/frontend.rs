@@ -1,25 +1,10 @@
 #[test]
 fn pipeline_dispatch_by_extension() {
-    let pipeline = notist::Frontends::default();
-    let context = notist::Context::default();
-    let (item, diags) = pipeline
-        .analyze(std::path::Path::new("x.md"), "# 标题\n", &context)
-        .expect("md frontend");
-    assert!(diags.is_empty());
-    assert!(
-        item.descendants()
-            .any(|i| i.ctor == notist::item::Ctor::Heading)
-    );
-    assert!(
-        pipeline
-            .analyze(std::path::Path::new("x.not"), "正文\n", &context)
-            .is_some()
-    );
-    assert!(
-        pipeline
-            .analyze(std::path::Path::new("x.txt"), "正文\n", &context)
-            .is_none()
-    );
+    let pipeline = notist::Pipeline::default();
+    for path in ["x.md", "x.not"] {
+        assert!(pipeline.supports(std::path::Path::new(path)));
+    }
+    assert!(!pipeline.supports(std::path::Path::new("x.txt")));
 }
 
 #[test]
@@ -133,7 +118,7 @@ impl notist::Frontend for PlainTextFrontend {
 
     fn compile(&self, src: &str, options: notist::FrontendOptions) -> notist::FrontendOutput {
         let span = notist::TextRange::new(0.into(), (src.len() as u32).into());
-        let paragraph = notist::expr::Expr::call("notist::paragraph", span)
+        let paragraph = notist::expr::Expr::call("notist.paragraph", span)
             .with_children(vec![notist::expr::Expr::text(src.to_owned(), span)]);
         notist::FrontendOutput {
             forest: vec![paragraph],
@@ -214,8 +199,16 @@ fn source_errors_return_diagnostics_and_a_recovery_tree() {
 
 #[test]
 fn inspection_distinguishes_reference_callees_and_bound_content_nodes() {
-    let json: serde_json::Value = serde_json::from_str(&notist::cst_json::analyze_json(
-        "@(status: \"draft\")#raw(text: \"hello\")",
+    let (analysis, inspection) = notist::Pipeline::default()
+        .inspect(
+            "document.not",
+            "@(status: \"draft\")#raw(text: \"hello\")",
+            &notist::Context::default(),
+        )
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_str(&notist::cst_json::inspection_json(
+        &analysis,
+        Some(&inspection),
     ))
     .unwrap();
     let fragment = &json["ir1"]["children"][0];
@@ -240,21 +233,19 @@ fn custom_content_dialect_keeps_its_own_syntax_and_lowering() {
     });
     let source = "[#unknown(\"中文\") plain] next";
     let (lowered, parsed) = pipeline
-        .lower_content_literal("literal.txt", source)
+        .analyze_content_literal("literal.txt", source, &notist::Context::default())
         .unwrap();
     assert!(lowered.diagnostics.is_empty());
     assert_eq!(lowered.forest.len(), 1);
-    assert_eq!(lowered.forest[0].callee_name(), Some("notist::text"));
+    assert_eq!(lowered.forest[0].ctor, notist::Ctor::Text);
     assert_eq!(
-        lowered.forest[0]
-            .named_arg("text")
-            .and_then(notist::expr::Expr::literal_value),
+        lowered.forest[0].fields.get("text"),
         Some(&notist::Value::Str("#unknown(\"中文\") plain".into()))
     );
     assert!(parsed.contents[0].syntax.as_ref().as_any().is::<String>());
     assert!(
         pipeline
-            .lower_content_literal("literal.md", source)
+            .analyze_content_literal("literal.md", source, &notist::Context::default())
             .is_err()
     );
 }

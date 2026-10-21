@@ -1,5 +1,4 @@
 //! Source-to-document pipeline. All inputs are explicit; no filesystem or browser IO.
-mod attach;
 mod code;
 mod context;
 pub use code::{Evaluation, Limits};
@@ -8,22 +7,33 @@ mod definitions;
 pub mod frontend;
 pub mod lowering;
 pub mod materialize;
-pub mod resolve;
+mod resolve;
 pub mod shape;
 pub mod transforms;
 
 pub use context::Context;
-pub use definitions::{CodeModule, CodeProgram, analyze_module};
+pub use definitions::{CodeModule, CodeProgram};
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::frontend::{Frontends, PipelineFrontend};
-pub use crate::lowering::content::{ContentLowering, Lowered, LoweredContent};
-use notist_core::diag::Diagnostic;
+pub use crate::lowering::content::{ContentLowering, Lowered};
+use notist_core::diag::{Diagnostic, Sources};
 use notist_core::expr::{Expr, RExpr};
-use notist_core::frontend::{FrontendOptions, FrontendSyntax};
-use notist_core::item::{Dict, Item};
+use notist_core::frontend::{FrontendOptions, FrontendOutput, FrontendSyntax};
+use notist_core::item::Item;
 use rowan::TextRange;
+
+/// A content-literal analysis without a document root or evaluation.
+#[derive(Debug)]
+pub struct ContentAnalysis {
+    pub forest: Vec<Item>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub body: notist_core::expr::BodyFlavor,
+}
 
 /// A configured source-to-IR pipeline.
 ///
@@ -38,6 +48,7 @@ use rowan::TextRange;
 /// assert!(notist.analyze("example.md", "Text", &context).is_ok());
 /// assert!(notist.analyze("example.not", "Text", &context).is_err());
 /// ```
+#[derive(Default)]
 pub struct Pipeline {
     frontends: Frontends,
 }
@@ -60,34 +71,61 @@ impl Pipeline {
         self.frontends.supports(path)
     }
 
-    /// Parse and lower a Code content-literal prefix using the dialect selected
-    /// by `dialect_path` (`.not` or `.md` for the default frontends). The result
-    /// is a forest without a Doc root; the Code CST and frontend tree remain
-    /// available separately. Does not type-check, shape, materialize or evaluate.
-    pub fn lower_content_literal(
+    /// Compile a content-literal prefix to an Item forest without a Doc root.
+    /// Parse / Lower produces IR₁ first; the shared Markup backend then runs
+    /// Resolve through Materialize in the supplied lexical Context.
+    pub fn analyze_content_literal(
         &self,
         dialect_path: impl AsRef<Path>,
         source: &str,
-    ) -> Result<(LoweredContent, notist_syntax::Parse), UnsupportedFormat> {
+        context: &Context,
+    ) -> Result<(ContentAnalysis, notist_syntax::Parse), UnsupportedFormat> {
         let path = dialect_path.as_ref();
         let frontend = self
             .frontends
             .get(path)
             .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
         let parsed = notist_syntax::code::parse_content_literal(source, frontend);
-        let lowered = crate::lowering::content::lower_content_literal(&parsed, frontend);
-        Ok((lowered, parsed))
+        let mut diagnostics: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| Diagnostic::new(notist_core::diag::Phase::Syntax, d.span, d.message.clone()))
+            .collect();
+        let (lowered, body) = if let Some(content) = parsed.contents.first() {
+            let lowered = frontend.lower_content(content, &mut diagnostics);
+            let body = match content.flavor {
+                notist_syntax::content::ContentFlavor::Inline => {
+                    notist_core::expr::BodyFlavor::Inline
+                }
+                notist_syntax::content::ContentFlavor::Block => {
+                    notist_core::expr::BodyFlavor::Block
+                }
+            };
+            (lowered, body)
+        } else {
+            (Lowered::default(), notist_core::expr::BodyFlavor::None)
+        };
+        let mut checker = code::Checker::for_content(context, &path.to_string_lossy());
+        let (forest, _) = checker.content(&lowered.forest, &lowered.annotations, body);
+        diagnostics.extend(checker.diagnostics);
+        Ok((
+            ContentAnalysis {
+                forest,
+                body,
+                diagnostics,
+            },
+            parsed,
+        ))
     }
 
     /// Analyze in-memory source, selecting a frontend by `path`'s extension.
     ///
-    /// `path` is only used for dispatch; this does not read the filesystem.
+    /// `path` selects the frontend and identifies the source; no filesystem IO occurs.
     /// Source errors are collected in [`Analysis::diagnostics`], alongside
     /// the recovered tree. `Err` means no frontend handles the file format.
     /// Diagnostics cover lowering and the shared backend; document indexes
     /// and cross-document link checks are separate operations.
-    /// Context supplies function definitions; output transforms are applied
-    /// separately to the returned analysis tree.
+    /// Context supplies definitions; Evaluate selects output implementations.
     pub fn analyze(
         &self,
         path: impl AsRef<Path>,
@@ -100,7 +138,7 @@ impl Pipeline {
     pub fn compile_module(
         &self,
         dialect_path: impl AsRef<Path>,
-        package: &str,
+        module: &str,
         source_path: &str,
         source: &str,
     ) -> Result<CodeModule, Vec<Diagnostic>> {
@@ -111,7 +149,7 @@ impl Pipeline {
                 "unsupported content dialect",
             )]);
         };
-        definitions::compile_module(package, source_path, source, frontend)
+        definitions::compile_module(module, source_path, source, frontend)
     }
     /// Check all Code definitions whose compile-time parameters have defaults.
     /// Other generic instances are checked when called with concrete arguments.
@@ -119,10 +157,11 @@ impl Pipeline {
         code::Checker::new(context, "<module>").check_definitions()
     }
 
-    /// Check one package in its installed dependency context. Generic bodies
-    /// retain syntax/lowering diagnostics even before a concrete instance exists.
-    pub fn check_module(&self, package: &str, context: &Context) -> Vec<Diagnostic> {
-        code::Checker::new(context, "<module>").check_module(package)
+    /// Check one module in its installed dependency context. Generic bodies
+    /// retain syntax/lowering diagnostics before a concrete instance exists;
+    /// environment-dependent content checking follows the selected concrete body.
+    pub fn check_module(&self, module: &str, context: &Context) -> Vec<Diagnostic> {
+        code::Checker::new(context, "<module>").check_module(module)
     }
 
     /// Evaluate pending calls and forest interpolations directly on the Item tree.
@@ -157,16 +196,40 @@ impl Pipeline {
         context: &Context,
         capture: bool,
     ) -> Result<(Analysis, Inspection), UnsupportedFormat> {
-        let frontend = self
-            .frontends
-            .get(path)
-            .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
-        let output = frontend.compile(
+        let output = self.lower(
+            path,
             src,
             FrontendOptions {
                 capture_syntax: capture,
             },
-        );
+        )?;
+        Ok(self.analyze_lowered(path, Arc::from(src), output, context, capture))
+    }
+
+    /// Parse and lower once, exposing static imports before host module loading.
+    pub fn lower(
+        &self,
+        path: impl AsRef<Path>,
+        src: &str,
+        options: FrontendOptions,
+    ) -> Result<FrontendOutput, UnsupportedFormat> {
+        let path = path.as_ref();
+        let frontend = self
+            .frontends
+            .get(path)
+            .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
+        Ok(frontend.compile(src, options))
+    }
+
+    /// Run shared analysis on a frontend result after the host resolves imports.
+    pub fn analyze_lowered(
+        &self,
+        path: &Path,
+        src: Arc<str>,
+        output: FrontendOutput,
+        context: &Context,
+        capture: bool,
+    ) -> (Analysis, Inspection) {
         let mut diagnostics = output.diagnostics;
         let lowered = if capture {
             output.forest.clone()
@@ -182,32 +245,29 @@ impl Pipeline {
                 output.module_attrs,
             );
         diagnostics.extend(errors);
+        for diagnostic in &mut diagnostics {
+            diagnostic
+                .source
+                .get_or_insert_with(|| path.to_string_lossy().into_owned());
+        }
         let inspection = Inspection {
             syntax: output.syntax,
             lowered,
             shaped: if capture { shaped } else { Vec::new() },
         };
-        Ok((
+        (
             Analysis {
                 root,
                 diagnostics,
                 program,
                 sources: {
                     let mut s = context.program().sources.clone();
-                    s.insert(path.to_string_lossy().into_owned(), src.into());
+                    s.insert(path.to_string_lossy().into_owned(), src);
                     s
                 },
             },
             inspection,
-        ))
-    }
-}
-
-impl Default for Pipeline {
-    fn default() -> Self {
-        Self {
-            frontends: Frontends::default(),
-        }
+        )
     }
 }
 
@@ -220,12 +280,12 @@ pub struct Analysis {
     root: Item,
     diagnostics: Vec<Diagnostic>,
     program: code::CheckedProgram,
-    sources: std::collections::BTreeMap<String, String>,
+    sources: Sources,
 }
 
 impl Analysis {
     /// Sources retained for document/definition diagnostics without host IO.
-    pub fn sources(&self) -> &std::collections::BTreeMap<String, String> {
+    pub fn sources(&self) -> &Sources {
         &self.sources
     }
 
@@ -270,34 +330,4 @@ pub struct Inspection {
     pub syntax: Option<Box<dyn FrontendSyntax>>,
     pub lowered: Vec<Expr>,
     pub shaped: Vec<RExpr>,
-}
-
-/// Shared backend for any frontend's lowered Expr forest.
-pub fn process(
-    forest: Vec<Expr>,
-    annotations: Vec<notist_core::annotation::Annotation>,
-    span: TextRange,
-    attrs: Dict,
-    context: &Context,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Item {
-    process_with_inspection(forest, annotations, span, attrs, context, diagnostics, None)
-}
-
-fn process_with_inspection(
-    forest: Vec<Expr>,
-    annotations: Vec<notist_core::annotation::Annotation>,
-    span: TextRange,
-    attrs: Dict,
-    context: &Context,
-    diagnostics: &mut Vec<Diagnostic>,
-    inspection: Option<&mut Inspection>,
-) -> Item {
-    let forest = crate::resolve::resolve(forest, context, diagnostics);
-    let mut forest = crate::shape::shape(forest);
-    if let Some(inspection) = inspection {
-        inspection.shaped = forest.clone();
-    }
-    crate::attach::attach(&mut forest, &annotations, diagnostics);
-    crate::materialize::materialize_doc(&forest, span, attrs)
 }

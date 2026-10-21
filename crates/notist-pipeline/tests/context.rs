@@ -2,12 +2,16 @@ use notist_core::{
     definitions::FunctionId,
     item::{Ctor, Value},
 };
-use notist_pipeline::{Context, Pipeline, analyze_module, transforms::Replace};
+use notist_pipeline::{Context, Pipeline, transforms::Replace};
 use rowan::TextRange;
 
 fn context(declaration: &str) -> Context {
     Context::default()
-        .with_module(analyze_module("demo", declaration).unwrap())
+        .with_module(
+            notist_pipeline::Pipeline::default()
+                .compile_module("content.not", "demo", "demo/lib.notc", declaration)
+                .unwrap(),
+        )
         .unwrap()
 }
 
@@ -48,7 +52,7 @@ fn one_pipeline_uses_each_explicit_context_for_names_and_shape() {
     let pipeline = Pipeline::default();
     let inline = context("fn token() -> InlineContent;");
     let block = context("fn token() -> BlockContent;");
-    let source = "before #demo::token() after";
+    let source = "before #self.token() after";
     for path in ["doc.not", "doc.md"] {
         let first = pipeline.analyze(path, source, &inline).unwrap();
         let second = pipeline.analyze(path, source, &block).unwrap();
@@ -66,7 +70,7 @@ fn one_pipeline_uses_each_explicit_context_for_names_and_shape() {
             missing
                 .diagnostics()
                 .iter()
-                .any(|d| { d.message == "unknown constructor or function `demo::token`" })
+                .any(|d| { d.message == "unknown constructor or function `self.token`" })
         );
     }
 }

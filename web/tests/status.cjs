@@ -16,7 +16,7 @@ const { join } = require('node:path');
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`${base}${path}`);
-    await page.waitForFunction(() => document.querySelector('mermaid-diagram')?.renderedSvg, null, { timeout: 90000 });
+    await page.waitForFunction(() => document.querySelector('[notist-function*=mermaid]')?.renderedSvg, null, { timeout: 90000 });
     for (const [status, label] of [['draft', 'Draft · 草案'], ['staged', 'Staged · 待实现'], ['outdate', 'Outdate · 已过时']]) {
       const section = page.locator(`div[data-status="${status}"]`);
       assert.equal(await section.count(), 1);
@@ -37,7 +37,7 @@ const { join } = require('node:path');
         return before === withoutStatus;
       }), true);
     }
-    assert.equal(await page.locator('div[data-status="draft"] notist-doc-badge[notist-label="Draft"]').count(), 1);
+    assert.equal(await page.locator('div[data-status="draft"] [notist-function$=badge][notist-label="Draft"]').count(), 1);
     const inline = page.locator('span[data-status="outdate"]');
     assert.equal(await inline.count(), 1);
     assert.equal(await inline.evaluate(node => getComputedStyle(node).display), 'inline');
@@ -87,14 +87,14 @@ const { join } = require('node:path');
     await page.emulateMedia({ media: 'screen' });
     // The staged pipeline keeps its overview heading outside the status frame.
     await page.goto(`${base}${process.env.NOTIST_PIPELINE_PAGE ?? '/target/status-preview/designs/pipeline/markup/'}`);
-    const design = page.locator('div[data-status="staged"]').filter({ has: page.locator('mermaid-diagram') });
+    const design = page.locator('div[data-status="staged"]').filter({ has: page.locator('[notist-function*=mermaid]') });
     assert.equal(await design.count(), 1);
     assert.equal(await design.evaluate(node => node.previousElementSibling?.tagName === 'H2'
       && node.previousElementSibling.textContent === '数据流'), true);
     assert.match(await design.textContent(), /Item 森林/);
-    assert.equal(await design.locator('mermaid-diagram').count(), 1);
-    await page.waitForFunction(() => document.querySelector('div[data-status="staged"] mermaid-diagram')?.renderedSvg, null, { timeout: 90000 });
-    assert.equal(await design.locator('mermaid-diagram').evaluate(node => /Evaluate|Renderer|--eval/.test(node.renderedSvg.textContent)), false);
+    assert.equal(await design.locator('[notist-function*=mermaid]').count(), 1);
+    await page.waitForFunction(() => document.querySelector('div[data-status="staged"] [notist-function*=mermaid]')?.renderedSvg, null, { timeout: 90000 });
+    assert.equal(await design.locator('[notist-function*=mermaid]').evaluate(node => /Evaluate|Renderer|--eval/.test(node.renderedSvg.textContent)), false);
     assert.deepEqual(errors, []);
     const fallback = await browser.newPage({ javaScriptEnabled: false });
     await fallback.goto(`${base}${path}`);

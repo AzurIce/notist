@@ -1,4 +1,5 @@
-//! Lossless Code CST to frontend-independent expressions. Content is delegated.
+//! Lossless Code CST to expressions. Markup content lowers to IR₁ here;
+//! the shared content backend runs later in each concrete lexical environment.
 use super::{
     ContentLowering,
     literals::{key_text, syntax_value},
@@ -46,14 +47,14 @@ pub fn arguments(
     expressions(node)
         .into_iter()
         .filter_map(|e| {
-            if let NodeOrToken::Node(n) = &e {
-                if n.kind() == K::Entry {
-                    let entry = notist_syntax::code::ast::Entry::cast(n.clone())?;
-                    return Some(CallArg::Named {
-                        name: key_text(&entry.key_token()?, diags)?,
-                        value: expression(entry.value()?, parsed, frontend, diags)?,
-                    });
-                }
+            if let NodeOrToken::Node(n) = &e
+                && n.kind() == K::Entry
+            {
+                let entry = notist_syntax::code::ast::Entry::cast(n.clone())?;
+                return Some(CallArg::Named {
+                    name: key_text(&entry.key_token()?, diags)?,
+                    value: expression(entry.value()?, parsed, frontend, diags)?,
+                });
             }
             Some(CallArg::Positional(expression(e, parsed, frontend, diags)?))
         })
@@ -82,6 +83,22 @@ pub fn expression(
                 _ => Expr::reference(name, span),
             }
         }
+        K::MemberExpr => {
+            let base = child(
+                node.children_with_tokens()
+                    .find(|e| e.kind() != K::Whitespace)?,
+                diags,
+            )?;
+            let member = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.kind() == K::Ident)?;
+            Expr::Member {
+                base: Box::new(base),
+                name: member.text().into(),
+                span,
+            }
+        }
         K::ContentLiteral => {
             let Some(parsed) = parsed else {
                 diags.push(Diagnostic::new(
@@ -108,22 +125,22 @@ pub fn expression(
             let mut bindings = Vec::new();
             let mut value = None;
             for e in parts {
-                if let NodeOrToken::Node(n) = &e {
-                    if n.kind() == K::LetBinding {
-                        let name = n
-                            .children_with_tokens()
-                            .filter_map(|e| e.into_token())
-                            .find(|t| t.kind() == K::Ident)?
-                            .text()
-                            .to_string();
-                        let val = n
-                            .children_with_tokens()
-                            .skip_while(|e| e.kind() != K::Eq)
-                            .skip(1)
-                            .find(significant)?;
-                        bindings.push((name, child(val, diags)?));
-                        continue;
-                    }
+                if let NodeOrToken::Node(n) = &e
+                    && n.kind() == K::LetBinding
+                {
+                    let name = n
+                        .children_with_tokens()
+                        .filter_map(|e| e.into_token())
+                        .find(|t| t.kind() == K::Ident)?
+                        .text()
+                        .to_string();
+                    let val = n
+                        .children_with_tokens()
+                        .skip_while(|e| e.kind() != K::Eq)
+                        .skip(1)
+                        .find(significant)?;
+                    bindings.push((name, child(val, diags)?));
+                    continue;
                 }
                 value = Some(child(e, diags)?);
             }
@@ -209,13 +226,16 @@ pub fn expression(
                     K::ArgumentList => args = arguments(&n, parsed, frontend, diags),
                     K::ComptimeArguments => comptime = arguments(&n, parsed, frontend, diags),
                     K::ContentLiteral => {
-                        if let Expr::Content {
-                            forest: f, body: b, ..
-                        } = child(NodeOrToken::Node(n), diags)?
-                        {
-                            forest = f;
-                            body = b;
-                        }
+                        let content = parsed?
+                            .contents
+                            .iter()
+                            .find(|c| c.range == n.text_range())?;
+                        body = if content.flavor == ContentFlavor::Inline {
+                            BodyFlavor::Inline
+                        } else {
+                            BodyFlavor::Block
+                        };
+                        forest.push(child(NodeOrToken::Node(n), diags)?);
                     }
                     _ => {}
                 }

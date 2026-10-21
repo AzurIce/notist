@@ -91,10 +91,10 @@ pub struct Site {
 }
 struct Prepared {
     route: Route,
-    source: String,
+    source: std::sync::Arc<str>,
     root: Item,
     outline: Outline,
-    sources: BTreeMap<String, String>,
+    sources: notist::Sources,
 }
 
 fn content_diagnostic(
@@ -114,7 +114,7 @@ fn locate(
     path: &Path,
     source: &str,
     diagnostic: Diagnostic,
-    sources: &BTreeMap<String, String>,
+    sources: &notist::Sources,
 ) -> SourceDiagnostic {
     let origin = diagnostic
         .source
@@ -125,7 +125,7 @@ fn locate(
             .map(|(p, _)| PathBuf::from(p))
             .unwrap_or_else(|| path.into()),
         source: origin
-            .map(|(_, s)| s.clone())
+            .map(|(_, s)| s.to_string())
             .unwrap_or_else(|| source.into()),
         diagnostic,
     }
@@ -136,7 +136,7 @@ fn append(
     path: &Path,
     source: &str,
     values: &[Diagnostic],
-    sources: &BTreeMap<String, String>,
+    sources: &notist::Sources,
 ) {
     errors.extend(
         values
@@ -271,7 +271,7 @@ fn build_inner<R: Resources>(
         let outline = outline::prepare(&mut content, fallback);
         prepared.push(Prepared {
             route: route.clone(),
-            source,
+            source: analysis.sources()[&route.source.to_string_lossy().into_owned()].clone(),
             root: content,
             outline,
             sources: analysis.sources().clone(),
@@ -392,7 +392,7 @@ fn build_inner<R: Resources>(
                 }
             }
         }
-        let registry = vault.html_registry(&page.route.source)?;
+        let registry = vault.html_registry(&page.route.source, &page.source, &page.root)?;
         let rendered = Renderer::new()
             .with_registry(registry)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
@@ -404,7 +404,7 @@ fn build_inner<R: Resources>(
             &rendered.diagnostics,
             &page.sources,
         );
-        let environment = vault.environment_for(&page.route.source)?.clone();
+        let environment = vault.environment_for(&page.route.source, &page.source)?;
         let component_file = page.route.output.parent().unwrap().join("components.js");
         let registrations = assets.components(
             vault.resources(),

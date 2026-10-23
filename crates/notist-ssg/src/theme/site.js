@@ -95,8 +95,8 @@
       event.preventDefault();
       setNavOpen(false);
     } else if (event.key === 'Tab') {
-      const focusable = [...navigation.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-        .filter(element => element.getClientRects().length && !element.closest('[inert]'));
+      const focusable = [...navigation.querySelectorAll('a[href], summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+        .filter(element => element.checkVisibility() && !element.closest('[inert]'));
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (event.shiftKey && document.activeElement === first) {

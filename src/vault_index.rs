@@ -1,5 +1,5 @@
 use crate::resources::normalize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rowan::TextRange;
@@ -12,6 +12,7 @@ use crate::item::{Ctor, Item, Value};
 pub struct VaultIndex {
     root: PathBuf,
     docs: HashMap<PathBuf, Doc>,
+    directories: BTreeSet<PathBuf>,
 }
 
 struct Doc {
@@ -151,8 +152,16 @@ impl VaultIndex {
     ) -> Self {
         let root = normalize(root.as_ref());
         let mut docs = HashMap::new();
+        let mut directories = BTreeSet::from([root.clone()]);
         for (path, analysis) in documents {
             let path = normalize(&root.join(path));
+            directories.extend(
+                path.parent()
+                    .into_iter()
+                    .flat_map(Path::ancestors)
+                    .take_while(|parent| parent.starts_with(&root))
+                    .map(Path::to_path_buf),
+            );
             let (item, mut diagnostics) = analysis.into_parts();
             // Pure callers may supply Pipeline results; Vault callers already
             // attached the same checks. Keep one diagnostic per reference.
@@ -172,7 +181,17 @@ impl VaultIndex {
                 },
             );
         }
-        Self { root, docs }
+        Self {
+            root,
+            docs,
+            directories,
+        }
+    }
+
+    /// The host also knows directories containing no indexed documents.
+    pub(crate) fn with_directories(mut self, directories: BTreeSet<PathBuf>) -> Self {
+        self.directories.extend(directories);
+        self
     }
 
     /// Pipeline diagnostics per document, then link-resolution diagnostics.
@@ -197,6 +216,10 @@ impl VaultIndex {
                         }
                     }
                     Target::Path { path: target, .. } if !target.starts_with(&self.root) => {}
+                    Target::Path {
+                        path: target,
+                        item: None,
+                    } if self.directories.contains(target) => {}
                     Target::Path { path: target, item } => match self.docs.get(target) {
                         None => out.push((
                             path.clone(),

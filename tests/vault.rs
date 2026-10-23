@@ -378,6 +378,36 @@ fn scans_follow_sibling_documents_within_the_vault_using_their_own_configs() {
     );
 }
 
+#[test]
+fn directory_links_resolve_without_loading_them_as_documents() {
+    let mut resources = MemoryResources::new("/repo");
+    resources.insert("docs/SUMMARY.not", b"- [Logs](_logs/)\n- [Assets](../assets/)\n- [Missing](missing/)\n- [Anchor](_logs/#missing)".to_vec());
+    resources.insert("docs/_logs/entry.not", b"= Entry".to_vec());
+    // A directory outside the scanned subtree, containing no document.
+    resources.insert("assets/image.svg", b"<svg/>".to_vec());
+    let index = Vault::new(resources).index("docs").unwrap();
+    let diagnostics = index.check();
+    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(_, d)| d.message.contains("docs/missing")),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|(_, d)| d.message.contains("docs/_logs")),
+        "{diagnostics:?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|(path, _)| path == Path::new("docs/SUMMARY.not"))
+    );
+    assert_eq!(index.backlinks(Path::new("assets")).len(), 1);
+}
+
 struct NoOutsideReads(MemoryResources);
 impl Resources for NoOutsideReads {
     fn root(&self) -> &Path {

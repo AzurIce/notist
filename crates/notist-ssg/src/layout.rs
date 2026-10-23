@@ -1,6 +1,7 @@
 use crate::{
     Page,
-    routes::{natural_cmp, relative_url},
+    routes::relative_url,
+    structure::{self, Entry},
 };
 use serde::Serialize;
 use std::{
@@ -13,6 +14,8 @@ pub struct Navigation {
     pub title: String,
     pub url: Option<String>,
     pub current: bool,
+    /// Initial expansion state, including automatic expansion of the current path.
+    pub expanded: bool,
     pub children: Vec<Navigation>,
 }
 #[derive(Debug, Clone, Serialize)]
@@ -24,7 +27,33 @@ pub struct PageLink {
 struct Node {
     title: String,
     output: Option<PathBuf>,
-    children: BTreeMap<String, Node>,
+    collapsed: bool,
+    children: Vec<Node>,
+}
+fn order(node: &Node, paths: &mut Vec<PathBuf>) {
+    if let Some(path) = &node.output {
+        paths.push(path.clone());
+    }
+    for child in &node.children {
+        order(child, paths);
+    }
+}
+fn declared_node(entry: &Entry, pages: &BTreeMap<PathBuf, &Page>) -> Node {
+    let page = entry.source.as_ref().map(|source| pages[source]);
+    Node {
+        title: entry
+            .label
+            .clone()
+            .or_else(|| page.map(|page| page.title.clone()))
+            .unwrap_or_default(),
+        output: page.map(|page| page.route.output.clone()),
+        collapsed: entry.collapsed,
+        children: entry
+            .children
+            .iter()
+            .map(|child| declared_node(child, pages))
+            .collect(),
+    }
 }
 pub(crate) struct Layout {
     root: Node,
@@ -32,63 +61,90 @@ pub(crate) struct Layout {
 }
 impl Layout {
     pub fn new(title: &str, pages: &[Page]) -> Self {
+        let mut entry = structure::directory(Path::new(""), pages.iter().map(|page| &page.route));
+        if entry.source.is_none() {
+            entry.label = Some(title.into());
+        }
+        let by_source = pages
+            .iter()
+            .map(|page| (page.route.source.clone(), page))
+            .collect();
+        let root = declared_node(&entry, &by_source);
+        let mut paths = vec![];
+        order(&root, &mut paths);
+        Self { root, order: paths }
+    }
+    /// A declared structure replaces the filesystem-derived tree. A first
+    /// entry targeting the root page merges into the navigation root, so the
+    /// shell keeps its shape.
+    pub fn declared(title: &str, entries: &[Entry], pages: &[Page]) -> Self {
+        let by_source: BTreeMap<PathBuf, &Page> = pages
+            .iter()
+            .map(|page| (page.route.source.clone(), page))
+            .collect();
         let mut root = Node {
             title: title.into(),
             ..Node::default()
         };
-        for page in pages {
-            let mut node = &mut root;
-            for segment in page.route.output.parent().unwrap().iter() {
-                let label = segment.to_string_lossy().into_owned();
-                node = node.children.entry(label.clone()).or_insert_with(|| Node {
-                    title: label,
-                    ..Node::default()
-                });
-            }
-            node.title = page.title.clone();
-            node.output = Some(page.route.output.clone());
+        let mut rest = entries;
+        if let Some(first) = entries.first()
+            && let Some(source) = &first.source
+            && by_source[source].route.output == Path::new("index.html")
+        {
+            root = declared_node(first, &by_source);
+            rest = &entries[1..];
         }
-        fn order(node: &Node, paths: &mut Vec<PathBuf>) {
-            if let Some(path) = &node.output {
-                paths.push(path.clone());
-            }
-            let mut children: Vec<_> = node.children.iter().collect();
-            children.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
-            for (_, child) in children {
-                order(child, paths);
-            }
-        }
+        root.children
+            .extend(rest.iter().map(|entry| declared_node(entry, &by_source)));
         let mut paths = vec![];
         order(&root, &mut paths);
         Self { root, order: paths }
     }
     pub fn navigation(&self, current: &Path) -> Navigation {
-        fn convert(node: &Node, current: &Path) -> Navigation {
-            let mut children: Vec<_> = node.children.iter().collect();
-            children.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
-            Navigation {
-                title: node.title.clone(),
-                url: node
-                    .output
-                    .as_ref()
-                    .map(|path| relative_url(current, path.parent().unwrap(), true)),
-                current: node.output.as_deref() == Some(current),
-                children: children
-                    .into_iter()
-                    .map(|(_, node)| convert(node, current))
-                    .collect(),
-            }
+        fn convert(node: &Node, current: &Path) -> (Navigation, bool) {
+            let mut active = node.output.as_deref() == Some(current);
+            let children = node
+                .children
+                .iter()
+                .map(|child| {
+                    let (navigation, contains_current) = convert(child, current);
+                    active |= contains_current;
+                    navigation
+                })
+                .collect();
+            (
+                Navigation {
+                    title: node.title.clone(),
+                    url: node
+                        .output
+                        .as_ref()
+                        .map(|path| relative_url(current, path.parent().unwrap(), true)),
+                    current: node.output.as_deref() == Some(current),
+                    expanded: !node.collapsed || active,
+                    children,
+                },
+                active,
+            )
         }
-        convert(&self.root, current)
+        convert(&self.root, current).0
     }
     pub fn breadcrumbs(&self, current: &Path) -> Vec<Navigation> {
-        let mut nodes = vec![&self.root];
-        let mut node = &self.root;
-        for segment in current.parent().unwrap().iter() {
-            node = &node.children[segment.to_str().unwrap()];
-            nodes.push(node);
+        fn find<'a>(node: &'a Node, current: &Path, trail: &mut Vec<&'a Node>) -> bool {
+            trail.push(node);
+            if node.output.as_deref() == Some(current) {
+                return true;
+            }
+            for child in &node.children {
+                if find(child, current, trail) {
+                    return true;
+                }
+            }
+            trail.pop();
+            false
         }
-        nodes
+        let mut trail = vec![];
+        find(&self.root, current, &mut trail);
+        trail
             .into_iter()
             .map(|node| Navigation {
                 title: node.title.clone(),
@@ -97,6 +153,7 @@ impl Layout {
                     .as_ref()
                     .map(|path| relative_url(current, path.parent().unwrap(), true)),
                 current: node.output.as_deref() == Some(current),
+                expanded: true,
                 children: vec![],
             })
             .collect()

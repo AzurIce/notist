@@ -23,6 +23,7 @@ const check = (name, value) => { assert.ok(value, name); checks.push(name); };
 
 try {
   await mkdir(join(vault, 'notes'), { recursive: true });
+  await mkdir(join(vault, '_logs'), { recursive: true });
   await writeFile(join(vault, 'Notist.toml'), `[site]\ntitle = "Notist"\n`);
   await writeFile(join(vault, 'lib.notc'), `import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.notc')))} as grammar;`);
   await writeFile(join(vault, 'README.not'), `= 文字、代码与思考
@@ -126,6 +127,15 @@ syntax PlainText -> Token;
 """#)
 `);
   await writeFile(join(vault, 'plain.md'), 'A page without headings still has a complete reading surface.');
+  await writeFile(join(vault, '_logs/entry.md'), '# Archive entry\n\nA short log entry.');
+  await writeFile(join(vault, 'SUMMARY.not'), `- [Home](README.not)
+- [Notes](notes/)
+  - [Essay](notes/essay.md)
+  - [Native](notes/native.not)
+- [Raw](raw.not)
+- [Plain](plain.md)
+- @(collapsed: true)[History](_logs/)
+`);
   const build = spawnSync(process.env.NOTIST_BIN || join(repository, 'target/debug/notist'), ['build', vault, '--out-dir', output], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr || build.error?.message);
 
@@ -220,10 +230,37 @@ syntax PlainText -> Token;
     await writeFile(join(screenshots, `${name}.png`), Buffer.from(data, 'base64'));
   };
   const noOverflow = () => evaluate('document.documentElement.scrollWidth <= window.innerWidth');
+  const pressSpace = async () => {
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  };
 
   await viewport(1440);
   await cdp('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'light' }] });
   await navigate('/');
+  const disclosure = await evaluate('(() => { const rect = document.querySelector("#site-nav summary").getBoundingClientRect(); return { x: rect.right - 22, y: rect.top + rect.height / 2 }; })()');
+  await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...disclosure, button: 'left', clickCount: 1 });
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', ...disclosure, button: 'left', clickCount: 1 });
+  check('clicking the arrow beside a title link collapses without navigating', await evaluate('!document.querySelector("#site-nav details").open && location.pathname === "/"'));
+  await evaluate('document.querySelector("#site-nav summary").focus()');
+  await pressSpace();
+  check('unannotated branches start open and the archive starts closed', await evaluate(`(() => {
+    const branches = [...document.querySelectorAll('#site-nav details')];
+    return branches.find(branch => branch.querySelector(':scope > summary')?.textContent === 'Notes').open &&
+      !branches.find(branch => branch.querySelector(':scope > summary')?.textContent === 'History').open;
+  })()`));
+  await evaluate(`window.archive = [...document.querySelectorAll('#site-nav details')].find(branch => branch.querySelector(':scope > summary')?.textContent === 'History'); archive.querySelector('summary').click()`);
+  check('clicking a group opens its children', await evaluate('archive.open && archive.querySelector("a").checkVisibility()'));
+  await evaluate('archive.querySelector("summary").focus()');
+  await pressSpace();
+  check('keyboard Space collapses a branch', await evaluate('!archive.open'));
+  await pressSpace();
+  check('keyboard Space expands a branch', await evaluate('archive.open'));
+  await evaluate('archive.querySelector("a").click()');
+  await waitFor('location.pathname === "/_logs/entry/" && document.readyState === "complete"');
+  check('visiting an archive page automatically opens its ancestors', await evaluate('[...document.querySelectorAll("#site-nav details")].every(branch => branch.open) && document.querySelector("#site-nav [aria-current=page]").checkVisibility()'));
+  await navigate('/');
+  check('branch state resets to its declaration on navigation', await evaluate('![...document.querySelectorAll("#site-nav details")].at(-1).open'));
   check('native CJK article retains a single title', await evaluate('document.querySelectorAll(".prose h1").length === 1'));
   check('theme chrome is icon-free and controls have visible text', await evaluate('!document.querySelector(".site-header svg, .rail-heading svg, .mobile-outline summary svg, .site-mark") && document.querySelector("#nav-toggle").textContent.trim() === "Contents" && document.querySelector("#nav-close").textContent.trim() === "Close" && document.querySelector("#theme-toggle").textContent.trim() === "Dark"'));
   await screenshot('theme-native-desktop');
@@ -309,9 +346,14 @@ syntax PlainText -> Token;
   await evaluate('window.scrollTo(0, 0)');
   await evaluate('document.querySelector("#nav-toggle").focus(); document.querySelector("#nav-toggle").click()');
   check('drawer opens, locks background and focuses close control', await evaluate('document.body.classList.contains("nav-open") && document.querySelector("#page-content").inert && document.activeElement.id === "nav-close" && document.querySelector("#site-nav").getAttribute("aria-modal") === "true"'));
+  await evaluate('[...document.querySelectorAll("#site-nav summary")].at(-1).focus()');
+  await pressSpace();
+  check('mobile keyboard can expand a branch without closing the drawer', await evaluate('document.body.classList.contains("nav-open") && [...document.querySelectorAll("#site-nav details")].at(-1).open'));
+  await pressSpace();
+  await evaluate('document.querySelector("#nav-close").focus()');
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', modifiers: 8 });
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', modifiers: 8 });
-  check('drawer traps reverse tab at its first control', await evaluate('document.activeElement === [...document.querySelectorAll("#site-nav a")].at(-1)'));
+  check('drawer traps reverse tab at its first control including branch toggles', await evaluate('document.activeElement === [...document.querySelectorAll("#site-nav summary")].at(-1)'));
   await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab' });
   await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab' });
   check('drawer traps forward tab at its last link', await evaluate('document.activeElement.id === "nav-close"'));
@@ -334,6 +376,9 @@ syntax PlainText -> Token;
   await viewport(1440);
 
   await navigate('/notes/native/');
+  // A branch with a page keeps its label link independent of the disclosure.
+  await evaluate('window.homeBranch = document.querySelector("#site-nav details"); window.branchLink = homeBranch.querySelector(":scope > summary a"); branchLink.href = "#page-content"; branchLink.click()');
+  check('clicking a branch title link follows its target without toggling', await evaluate('homeBranch.open && location.hash === "#page-content"'));
   check('special-character Unicode anchor has an active outline link', await evaluate('document.querySelector("#page-outline [aria-current=location]")?.hash === "#%E4%B8%AD%E6%96%87%20&%3F%23%2F"'));
   await viewport(390, 844);
   await screenshot('theme-native-mobile');
@@ -342,6 +387,9 @@ syntax PlainText -> Token;
 
   await viewport(390, 844);
   await navigate('/notes/essay/', false);
+  check('without JavaScript the current branch is open and archive is closed', await evaluate('[...document.querySelectorAll("#site-nav details")].filter(branch => branch.open).length === 2 && ![...document.querySelectorAll("#site-nav details")].at(-1).open'));
+  await evaluate('[...document.querySelectorAll("#site-nav summary")].at(-1).click()');
+  check('native branch controls work without JavaScript', await evaluate('[...document.querySelectorAll("#site-nav details")].at(-1).open'));
   check('without JavaScript mobile contents stay visible and usable', await evaluate('getComputedStyle(document.querySelector("#site-nav")).display !== "none" && !document.documentElement.classList.contains("js")'));
   check('without JavaScript code remains readable', await evaluate('document.querySelector("pre code").textContent.includes("pub fn render") && !document.querySelector(".copy-code")'));
   const { identifier } = await cdp('Page.addScriptToEvaluateOnNewDocument', { source: 'Object.defineProperty(window, "localStorage", { get() { throw new DOMException("Storage denied"); } });' });

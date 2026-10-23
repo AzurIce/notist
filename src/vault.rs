@@ -344,6 +344,7 @@ impl<R: Resources> Vault<R> {
         }
         let mut visited = BTreeSet::new();
         let mut documents = Vec::new();
+        let mut linked_directories = BTreeSet::new();
         while let Some(path) = pending.pop() {
             if !visited.insert(path.clone()) {
                 continue;
@@ -352,20 +353,24 @@ impl<R: Resources> Vault<R> {
             let analysis = self.analyze(&path, &source)?;
             for target in crate::vault_index::linked_paths(&path, analysis.root()) {
                 let resource = self.resources.resolve(&target);
-                if resource.starts_with(self.resources.root())
-                    && !visited.contains(&resource)
-                    && self.pipeline.supports(&resource)
-                    && self.resources.kind(&resource)? == Some(ResourceKind::File)
-                {
-                    pending.push(resource);
+                if resource.starts_with(self.resources.root()) && !visited.contains(&resource) {
+                    match self.resources.kind(&resource)? {
+                        Some(ResourceKind::Directory) => {
+                            linked_directories.insert(resource);
+                        }
+                        Some(ResourceKind::File) if self.pipeline.supports(&resource) => {
+                            pending.push(resource)
+                        }
+                        _ => {}
+                    }
                 }
             }
             documents.push((path, analysis));
         }
-        Ok(crate::VaultIndex::from_documents(
-            self.resources.root(),
-            documents,
-        ))
+        Ok(
+            crate::VaultIndex::from_documents(self.resources.root(), documents)
+                .with_directories(linked_directories),
+        )
     }
 }
 impl Vault<FsResources> {

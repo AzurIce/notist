@@ -17,6 +17,8 @@ mod config;
 mod layout;
 mod outline;
 mod routes;
+mod structure;
+mod summary;
 mod theme;
 use assets::Assets;
 pub use assets::file_url;
@@ -226,13 +228,44 @@ fn build_inner<R: Resources>(
     config: &SiteConfig,
     recover: bool,
 ) -> Result<Site, Error> {
-    let sources = discover(vault, config)?;
+    let mut sources = discover(vault, config)?;
+    let root = vault.resources().root().to_path_buf();
+    let summary_path = root.join(summary::FILE_NAME);
+    sources.retain(|source| *source != summary_path);
     if sources.is_empty() {
         return Err(Error::Message("site contains no selected documents".into()));
     }
-    let root = vault.resources().root().to_path_buf();
     let routes = Routes::new(&root, sources).map_err(Error::Message)?;
     let mut errors = vec![];
+    let summary = if vault.resources().kind(&summary_path)? == Some(ResourceKind::File) {
+        let source = vault.resources().source(&summary_path)?;
+        let analysis = vault.analyze(&summary_path, &source)?;
+        append(
+            &mut errors,
+            &summary_path,
+            &source,
+            analysis.diagnostics(),
+            analysis.sources(),
+        );
+        let entries = summary::interpret(analysis.root()).and_then(|entries| {
+            summary::resolve(&entries, &summary_path, &routes, vault.resources())
+        });
+        match entries {
+            Ok(entries) => Some(entries),
+            Err(diagnostics) => {
+                append(
+                    &mut errors,
+                    &summary_path,
+                    &source,
+                    &diagnostics,
+                    analysis.sources(),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
@@ -300,7 +333,33 @@ fn build_inner<R: Resources>(
         .collect();
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
     let theme = Theme::load(vault.resources(), config, &mut assets)?;
-    let layout = Layout::new(&config.title, &pages);
+    let layout = match &summary {
+        Some(entries) => {
+            let listed = structure::listed(entries);
+            let unlisted: Vec<_> = pages
+                .iter()
+                .filter(|page| !listed.contains(&page.route.source))
+                .map(|page| {
+                    page.route
+                        .source
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                })
+                .collect();
+            if !unlisted.is_empty() {
+                return Err(Error::Message(format!(
+                    "site structure does not list {} page{}: {}",
+                    unlisted.len(),
+                    if unlisted.len() == 1 { "" } else { "s" },
+                    unlisted.join(", ")
+                )));
+            }
+            Layout::declared(&config.title, entries, &pages)
+        }
+        None => Layout::new(&config.title, &pages),
+    };
     for page in &prepared {
         let mut resolved = BTreeMap::new();
         for node in page.root.descendants().filter(|node| {
@@ -473,7 +532,7 @@ pub fn page<R: Resources>(
         assets.generated("components.js".into(), registrations.into_bytes())?;
         Some("./components.js")
     };
-    let context = serde_json::json!({"site":{"title":config.title,"home":"./"},"page":{"title":config.title,"url":"/","source":null,"html":rendered.html},"navigation":{"title":config.title,"url":"./","current":true,"children":[]},"breadcrumbs":[],"outline":[],"previous":null,"next":null,"assets":{"styles":theme.styles(output),"script":theme.script(output),"components":component_url}});
+    let context = serde_json::json!({"site":{"title":config.title,"home":"./"},"page":{"title":config.title,"url":"/","source":null,"html":rendered.html},"navigation":{"title":config.title,"url":"./","current":true,"expanded":true,"children":[]},"breadcrumbs":[],"outline":[],"previous":null,"next":null,"assets":{"styles":theme.styles(output),"script":theme.script(output),"components":component_url}});
     assets.generated(output.into(), theme.render(context)?.into_bytes())?;
     finish(assets, vec![])
 }

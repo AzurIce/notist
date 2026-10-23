@@ -62,9 +62,10 @@ const { chromium } = require("playwright");
     await page.waitForSelector("[notist-function*=grammar] .error");
     const diagnostic = await page.locator("[notist-function*=grammar] .error").textContent();
     assert.match(diagnostic, /1:\d+: expected an expression/);
-    // The host-rendered source block stays visible when diagramming fails.
+    // Changing the graph's parameters does not re-evaluate diagram's raw sibling.
     const sourceBlock = page.locator("[notist-function*=grammar]").first().locator("xpath=..").locator("pre code");
-    assert.match(await sourceBlock.textContent(), /syntax Broken/);
+    assert.equal(await sourceBlock.textContent(), original);
+    assert.equal(await sourceBlock.isVisible(), true);
 
     // Recover from errors and verify that user-controlled text stays SVG text.
     await page.evaluate(() => {

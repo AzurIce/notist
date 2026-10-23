@@ -127,6 +127,11 @@ syntax PlainText -> Token;
 """#)
 `);
   await writeFile(join(vault, 'plain.md'), 'A page without headings still has a complete reading surface.');
+  const grammarImport = `#import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.notc')))} as grammar;`;
+  const brokenGrammar = 'syntax Broken -> (';
+  const unsafeGrammar = 'syntax Safe -> `<script>globalThis.grammarInjected = true</script>`;';
+  await writeFile(join(vault, 'broken.not'), `= Invalid grammar\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(brokenGrammar)})`);
+  await writeFile(join(vault, 'unsafe.not'), `= Literal grammar source\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(unsafeGrammar)})`);
   await writeFile(join(vault, '_logs/entry.md'), '# Archive entry\n\nA short log entry.');
   await writeFile(join(vault, 'SUMMARY.not'), `- [Home](README.not)
 - [Notes](notes/)
@@ -134,6 +139,8 @@ syntax PlainText -> Token;
   - [Native](notes/native.not)
 - [Raw](raw.not)
 - [Plain](plain.md)
+- [Broken](broken.not)
+- [Unsafe](unsafe.not)
 - @(collapsed: true)[History](_logs/)
 `);
   const build = spawnSync(process.env.NOTIST_BIN || join(repository, 'target/debug/notist'), ['build', vault, '--out-dir', output], { encoding: 'utf8' });
@@ -404,17 +411,19 @@ syntax PlainText -> Token;
   await viewport(1440);
   await navigate('/raw/');
   await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelectorAll("svg").length === 2 && document.querySelectorAll(".code-block").length === 2');
-  check('grammar WASM renders diagrams while exposing a single native source block', await evaluate(`(() => {
+  check('grammar diagram renders native raw content beside a graph-only component', await evaluate(`(() => {
     const component = document.querySelector('[notist-function*=grammar]');
-    const source = component.querySelector('pre.source');
-    return component.querySelectorAll('pre.source').length === 1 &&
-      source.querySelector('code').textContent === component.getAttribute('notist-source') &&
-      component.shadowRoot.querySelector('slot[name="source"]').assignedElements()[0] === source.closest('.code-block') &&
-      source.closest('.code-block').slot === 'source' && !source.hasAttribute('slot');
+    window.grammarSourceBlock = component.previousElementSibling;
+    window.grammarSourceNode = grammarSourceBlock.querySelector('pre');
+    window.grammarOriginalSource = component.getAttribute('notist-source');
+    return grammarSourceBlock.matches('.code-block') &&
+      grammarSourceNode.querySelector('code').textContent === grammarOriginalSource &&
+      grammarSourceBlock.querySelectorAll('.copy-code').length === 1 &&
+      !component.querySelector('pre') && !component.shadowRoot.querySelector('pre');
   })()`));
   const matchingRawStyles = `(() => {
     const native = document.querySelector('.prose > section pre') || document.querySelector('.prose pre');
-    const component = document.querySelector('[notist-function*=grammar] pre.source');
+    const component = window.grammarSourceNode;
     const equal = (left, right, properties) => properties.every(name => getComputedStyle(left)[name] === getComputedStyle(right)[name]);
     return equal(native, component, ['padding', 'margin', 'whiteSpace', 'tabSize', 'fontSize', 'lineHeight']) &&
       equal(native.querySelector('code'), component.querySelector('code'), ['fontFamily', 'fontSize', 'lineHeight', 'color']) &&
@@ -423,8 +432,8 @@ syntax PlainText -> Token;
   })()`;
   check('native raw and grammar source share the exact light-theme presentation', await evaluate(matchingRawStyles));
   await screenshot('theme-unified-raw');
-  await evaluate('window.copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => { window.copied = text; } } }); document.querySelector("[notist-function*=grammar] .copy-code").click()');
-  await waitFor('document.querySelector("[notist-function*=grammar] .copy-code").textContent === "Copied"');
+  await evaluate('window.copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => { window.copied = text; } } }); grammarSourceBlock.querySelector(".copy-code").click()');
+  await waitFor('grammarSourceBlock.querySelector(".copy-code").textContent === "Copied"');
   check('grammar copy uses the same toolbar and preserves its exact source', await evaluate('window.copied === document.querySelector("[notist-function*=grammar]").getAttribute("notist-source")'));
   await evaluate('document.querySelector("#theme-toggle").click()');
   check('native raw and grammar source share the exact dark-theme presentation', await evaluate(matchingRawStyles));
@@ -433,21 +442,21 @@ syntax PlainText -> Token;
   check('component source remains locally scrollable on mobile', await noOverflow());
   await evaluate('document.querySelector("#theme-toggle").click()');
   await screenshot('theme-unified-raw-mobile');
-  await evaluate('window.sourceNode = document.querySelector("[notist-function*=grammar] pre.source"); document.querySelector("[notist-function*=grammar]").setAttribute("notist-source", "syntax Updated -> `new`;")');
+  await evaluate('document.querySelector("[notist-function*=grammar]").setAttribute("notist-source", "syntax Updated -> `new`;")');
   await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector("svg title")?.textContent.trim() === "syntax Updated"');
-  check('source updates keep the original node and do not duplicate controls', await evaluate('document.querySelector("[notist-function*=grammar] pre.source") === window.sourceNode && window.sourceNode.querySelector("code").textContent === "syntax Updated -> `new`;" && document.querySelector("[notist-function*=grammar]").querySelectorAll(".code-block").length === 1'));
+  check('graph parameter updates redraw without rewriting host-rendered raw content', await evaluate('document.querySelector("[notist-function*=grammar]").previousElementSibling === grammarSourceBlock && grammarSourceBlock.querySelector("pre") === grammarSourceNode && grammarSourceNode.querySelector("code").textContent === grammarOriginalSource && grammarSourceBlock.querySelectorAll(".copy-code").length === 1 && !document.querySelector("[notist-function*=grammar]").querySelector("pre")'));
   await evaluate('const component = document.querySelector("[notist-function*=grammar]"); const parent = component.parentNode; const next = component.nextSibling; component.remove(); parent.insertBefore(component, next)');
   await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector("svg")');
-  check('reconnection preserves source, slot and a single toolbar', await evaluate('document.querySelector("[notist-function*=grammar] pre.source") === window.sourceNode && document.querySelector("[notist-function*=grammar]").querySelectorAll(".copy-code").length === 1 && document.querySelector("[notist-function*=grammar]").shadowRoot.querySelector("slot").assignedElements()[0].contains(window.sourceNode)'));
+  check('graph reconnection leaves the native raw block and its toolbar intact', await evaluate('document.querySelector("[notist-function*=grammar]").previousElementSibling === grammarSourceBlock && grammarSourceBlock.querySelector("pre") === grammarSourceNode && grammarSourceBlock.querySelectorAll(".copy-code").length === 1'));
   await evaluate('document.querySelector("[notist-function*=grammar]").setAttribute("notist-source", "syntax Broken -> (")');
   await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector(".error")');
-  check('invalid grammar retains the same readable and copyable raw source', await evaluate('document.querySelector("[notist-function*=grammar] pre.source") === window.sourceNode && window.sourceNode.querySelector("code").textContent === "syntax Broken -> (" && document.querySelector("[notist-function*=grammar] .copy-code")'));
-  await evaluate('Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } }); document.querySelector("[notist-function*=grammar] .copy-code").click()');
-  await waitFor('document.querySelector("[notist-function*=grammar] .copy-code").textContent === "Select to copy"');
-  check('component clipboard failure selects its light-DOM source', await evaluate('getSelection().getRangeAt(0).toString() === window.sourceNode.querySelector("code").textContent'));
+  check('graph errors leave the existing native raw content readable and copyable', await evaluate('grammarSourceNode.querySelector("code").textContent === grammarOriginalSource && grammarSourceBlock.querySelector(".copy-code").checkVisibility()'));
+  await evaluate('Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } }); grammarSourceBlock.querySelector(".copy-code").click()');
+  await waitFor('grammarSourceBlock.querySelector(".copy-code").textContent === "Select to copy"');
+  check('grammar raw clipboard failure selects the host-rendered source', await evaluate('getSelection().getRangeAt(0).toString() === grammarOriginalSource'));
   await evaluate('document.querySelector("[notist-function*=grammar]").setAttribute("notist-source", "syntax Safe -> `<script>globalThis.grammarInjected = true</script>`;")');
   await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector("svg title")?.textContent.trim() === "syntax Safe"');
-  check('component source remains literal text when HTML-like grammar is supplied', await evaluate('!globalThis.grammarInjected && !document.querySelector("[notist-function*=grammar] script") && window.sourceNode.querySelector("code").textContent.includes("<script>")'));
+  check('graph parameter updates keep HTML-like grammar inert', await evaluate('!globalThis.grammarInjected && !document.querySelector("[notist-function*=grammar] script") && grammarSourceNode.querySelector("code").textContent === grammarOriginalSource'));
   await evaluate(`(() => {
     const make = optIn => {
       const host = document.createElement('other-code-view');
@@ -465,6 +474,27 @@ syntax PlainText -> Token;
   await waitFor('window.sharedCode.closest(".code-block")');
   check('other components can opt into the same raw presentation', await evaluate('window.sharedCode.closest(".code-block").querySelectorAll(".copy-code").length === 1'));
   check('new component-owned code UI is not hijacked without opt-in', await evaluate('!window.privateCode.closest(".code-block")'));
+  await navigate('/broken/');
+  await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector(".error")');
+  check('an initially invalid diagram retains its exact native raw source and copy control', await evaluate(`(() => {
+    const graph = document.querySelector('[notist-function*=grammar]');
+    const raw = graph.previousElementSibling;
+    return raw.querySelector('pre code').textContent === ${JSON.stringify(brokenGrammar)} &&
+      raw.querySelector('.copy-code').checkVisibility();
+  })()`));
+  await navigate('/unsafe/');
+  await waitFor('document.querySelector("[notist-function*=grammar]")?.shadowRoot?.querySelector("svg")');
+  check('HTML-like source stays literal in both native raw content and the graph', await evaluate(`(() => {
+    const graph = document.querySelector('[notist-function*=grammar]');
+    return !globalThis.grammarInjected && !document.querySelector('.prose script') &&
+      !graph.shadowRoot.querySelector('script') && graph.previousElementSibling.querySelector('pre code').textContent === ${JSON.stringify(unsafeGrammar)};
+  })()`));
+  await navigate('/raw/', false);
+  check('grammar source is readable without JavaScript or WASM initialization', await evaluate(`(() => {
+    const graph = document.querySelector('[notist-function*=grammar]');
+    return !graph.shadowRoot && graph.previousElementSibling.matches('pre') &&
+      graph.previousElementSibling.querySelector('code').textContent === graph.getAttribute('notist-source');
+  })()`));
   check('theme JavaScript raised no uncaught exceptions', exceptions.length === 0);
   console.log(`${checks.length} Chromium theme checks passed:\n${checks.map(name => `  ✓ ${name}`).join('\n')}`);
 } finally {

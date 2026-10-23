@@ -25,9 +25,9 @@ NOTIST_WASM_BINDGEN 可指定 wasm-bindgen 可执行文件。wasm/ 是构建产�
 == BlockContent function
 
 ```notc
-fn graph(source: String, rule?: String, theme: String = "light") -> BlockContent;
+fn graph(source: String, rule?: String, theme: String = "auto") -> BlockContent;
 
-fn diagram(source: String, rule?: String, theme: String = "light") -> BlockContent {
+fn diagram(source: String, rule?: String, theme: String = "auto") -> BlockContent {
     [
         #notist.raw<BlockContent>(source)
 
@@ -39,6 +39,8 @@ fn diagram(source: String, rule?: String, theme: String = "light") -> BlockConte
 graph 是纯渲染边界。source 为统一的匹配与结果构造规则文本，缺省渲染其中所有产生式，rule 指定只绘制一个。主题默认 auto，跟随页面明暗（继承的 color-scheme 与系统偏好）；也可显式指定 light、dark、rust、coal、navy、ayu。图与错误保留在 Shadow DOM 中，参数更新会重新绘图，同一浏览器模块实例共享 WASM 初始化；错误包含一基行号、Unicode 字符列号。
 
 diagram 是常用包装：先用内置 raw 把 source 展示为宿主的普通代码块，再原样转发三个参数调用 graph。rule 的 `?` 边界把省略原样传递给 graph——不写 rule 时 graph 收不到该属性。源码块由宿主渲染，复用宿主 raw/pre 的主题与代码块工具栏，不依赖 WASM；组件初始化或绘图失败时源码仍在。
+
+raw 与 graph 是相邻的独立输出，源码不位于组件内部，也不通过 slot 挂载。直接修改 graph 的浏览器属性只会重新绘图，不会重写宿主已生成的源码块；需要同步更新源码与图时，由宿主重新求值并渲染 diagram。
 
 == 模块使用
 

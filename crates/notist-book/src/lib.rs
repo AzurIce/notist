@@ -2,8 +2,8 @@
 //! the result is an owned publication artifact, not a filesystem mutation.
 use notist::resources::{ResourceError, ResourceKind};
 use notist::{
-    Ctor, Diagnostic, EvaluationState, Item, Phase, Resources, SourceDiagnostic, TextRange, Value,
-    Vault,
+    Ctor, Diagnostic, DiagnosticCode, EvaluationState, Item, Phase, Resources, SourceDiagnostic,
+    TextRange, Value, Vault,
 };
 use notist_html::Renderer;
 use serde::Serialize;
@@ -135,16 +135,16 @@ fn locate(
     }
 }
 
-fn append(
+fn append<'a>(
     errors: &mut Vec<SourceDiagnostic>,
     path: &Path,
     source: &str,
-    values: &[Diagnostic],
+    values: impl IntoIterator<Item = &'a Diagnostic>,
     sources: &notist::Sources,
 ) {
     errors.extend(
         values
-            .iter()
+            .into_iter()
             .cloned()
             .map(|d| locate(path, source, d, sources)),
     );
@@ -288,11 +288,16 @@ fn build_inner<R: Resources>(
     for route in routes.iter() {
         let source = vault.resources().source(&route.source)?;
         let analysis = vault.analyze(&route.source, &source)?;
+        // Publication checks the evaluated references below. Defer the Vault's
+        // source-level boundary checks so hyperlinks can warn and retain URLs.
         append(
             &mut errors,
             &route.source,
             &source,
-            analysis.diagnostics(),
+            analysis
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code != Some(DiagnosticCode::OutsideVault)),
             analysis.sources(),
         );
         let mut index_errors = vec![];
@@ -373,14 +378,20 @@ fn build_inner<R: Resources>(
                     fragment,
                 }) => {
                     if !path.starts_with(&root) {
-                        errors.push(content_diagnostic(
+                        let mut diagnostic = content_diagnostic(
                             page,
                             node,
                             format!(
                                 "local content reference `{value}` is outside Vault root `{}`",
                                 root.display()
                             ),
-                        ));
+                        );
+                        diagnostic.diagnostic.code = Some(DiagnosticCode::OutsideVault);
+                        if node.ctor == Ctor::Link {
+                            warnings.push(diagnostic);
+                        } else {
+                            errors.push(diagnostic);
+                        }
                         continue;
                     }
                     let mut url = if let Some(route) = routes.get(&path) {

@@ -123,6 +123,7 @@ fn lower_blocks(
                         if !block {
                             diags.push(Diagnostic {
                                 source: None,
+                                code: None,
                                 recovered: false,
                                 phase: Phase::Semantic,
                                 span: annotation.range(),
@@ -135,6 +136,7 @@ fn lower_blocks(
                         if seen_content {
                             diags.push(Diagnostic {
                                 source: None,
+                                code: None,
                                 recovered: false,
                                 phase: Phase::Semantic,
                                 span: annotation.range(),
@@ -614,6 +616,7 @@ fn lower_inline(
                     if annotation.is_module() {
                         diags.push(Diagnostic {
                             source: None,
+                            code: None,
                             recovered: false,
                             phase: Phase::Semantic,
                             span: node.text_range(),

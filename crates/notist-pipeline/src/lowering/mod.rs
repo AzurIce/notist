@@ -27,6 +27,7 @@ pub fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> 
             if !matches!(el.kind(), SyntaxKind::Entry | SyntaxKind::Colon) {
                 diags.push(Diagnostic {
                     source: None,
+                    code: None,
                     recovered: false,
                     phase: Phase::Semantic,
                     span: el.text_range(),

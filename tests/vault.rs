@@ -475,6 +475,7 @@ fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
         );
         for diagnostic in analysis.diagnostics() {
             assert_eq!(diagnostic.phase, notist::Phase::Semantic);
+            assert_eq!(diagnostic.code, Some(notist::DiagnosticCode::OutsideVault));
             assert!(
                 diagnostic
                     .message

@@ -27,6 +27,7 @@ pub fn syntax_value(
                     None => {
                         diags.push(Diagnostic {
                             source: None,
+                            code: None,
                             recovered: false,
                             phase: Phase::Semantic,
                             span: token.text_range(),
@@ -42,6 +43,7 @@ pub fn syntax_value(
                 _ => {
                     diags.push(Diagnostic {
                         source: None,
+                        code: None,
                         recovered: false,
                         phase: Phase::Semantic,
                         span: token.text_range(),
@@ -61,6 +63,7 @@ pub fn syntax_value(
                     _ => {
                         diags.push(Diagnostic {
                             source: None,
+                            code: None,
                             recovered: false,
                             phase: Phase::Semantic,
                             span: node.text_range(),
@@ -178,6 +181,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
     {
         diags.push(Diagnostic {
             source: None,
+            code: None,
             recovered: false,
             phase: Phase::Semantic,
             span: range,
@@ -225,6 +229,7 @@ fn unquote(text: &str, range: TextRange, diags: &mut Vec<Diagnostic>) -> Option<
             _ => {
                 diags.push(Diagnostic {
                     source: None,
+                    code: None,
                     recovered: false,
                     phase: Phase::Semantic,
                     span: range,

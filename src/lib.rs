@@ -23,7 +23,7 @@ pub use notist_core::definitions::{
     ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionInstance,
     Import, ParameterDef, ParameterMode, Type, ValueConstraint,
 };
-pub use notist_core::diag::{Diagnostic, Phase, Sources};
+pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
 pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
 pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;

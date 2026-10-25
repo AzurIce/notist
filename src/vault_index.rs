@@ -111,6 +111,7 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
                             root.display()
                         ),
                     );
+                    diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
                     diagnostic.source = Some(source.clone());
                     Some(diagnostic)
                 }

@@ -24,6 +24,12 @@ impl std::fmt::Display for Phase {
     }
 }
 
+/// Stable classification for host policy, independent of diagnostic wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticCode {
+    OutsideVault,
+}
+
 /// The shared diagnostic type of the whole pipeline: `notist-syntax`'s own
 /// `parser::Diagnostic` is converted in at the boundary with `phase: Syntax`.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +37,7 @@ pub struct Diagnostic {
     pub span: TextRange,
     pub message: String,
     pub phase: Phase,
+    pub code: Option<DiagnosticCode>,
     /// Source identity when expansion/checking crosses the document boundary.
     pub source: Option<String>,
     /// A content boundary contains this failure and preserves independent content.
@@ -44,6 +51,7 @@ impl Diagnostic {
             span,
             message: message.into(),
             phase,
+            code: None,
             source: None,
             recovered: false,
         }

@@ -1,4 +1,7 @@
-use notist::{MemoryResources, Vault};
+use notist::{
+    DiagnosticCode, MemoryResources, Resources, Vault,
+    resources::{ResourceError, ResourceKind},
+};
 use notist_book::{BookConfig, BuildOutput, Error, Routes, build};
 use notist_html::components::{component_tag, module_key};
 use std::path::{Path, PathBuf};
@@ -238,8 +241,14 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
         "README.not",
         b"= Documentation\n\n[Widgets](../modules/widgets/README.not)".to_vec(),
     );
-    let error = build(&mut Vault::new(files), &BookConfig::new("target/book")).unwrap_err();
-    assert!(error.to_string().contains("outside Vault"));
+    let site = build(&mut Vault::new(files), &BookConfig::new("target/book")).unwrap();
+    assert_eq!(site.warnings.len(), 1);
+    assert!(
+        site.warnings[0]
+            .diagnostic
+            .message
+            .contains("outside Vault")
+    );
 }
 
 #[test]
@@ -311,8 +320,6 @@ fn explicit_section_ids_and_duplicate_slugs_use_one_outline() {
 #[test]
 fn invalid_references_return_source_diagnostics_and_no_site() {
     for (target, message) in [
-        ("../secret.md", "outside Vault"),
-        ("%2e%2e/secret.svg", "outside Vault"),
         ("_notist/missing.png", "reserved"),
         ("missing%5cfile.png", "invalid local URL"),
     ] {
@@ -335,6 +342,82 @@ fn invalid_references_return_source_diagnostics_and_no_site() {
                 .all(|error| error.path == Path::new("/vault/README.md")
                     && usize::from(error.diagnostic.span.end()) <= source.len())
         );
+    }
+}
+
+struct NoOutsideContentReads(MemoryResources);
+impl Resources for NoOutsideContentReads {
+    fn root(&self) -> &Path {
+        self.0.root()
+    }
+    fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        assert!(
+            self.resolve(path).starts_with(self.root()),
+            "outside read: {path:?}"
+        );
+        self.0.read(path)
+    }
+    fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+        assert!(
+            self.resolve(path).starts_with(self.root()),
+            "outside metadata: {path:?}"
+        );
+        self.0.kind(path)
+    }
+    fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
+        assert!(
+            self.resolve(path).starts_with(self.root()),
+            "outside discovery: {path:?}"
+        );
+        self.0.entries(path)
+    }
+}
+
+#[test]
+fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
+    for target in [
+        "../../outside/secret.md?view=full#anchor",
+        "%2e%2e/%2e%2e/outside/secret.svg",
+        "/outside/secret.md",
+        "/vault-other/secret.md",
+    ] {
+        for extension in ["not", "md"] {
+            for recover in [false, true] {
+                let source = format!("[Outside]({target})");
+                let path = format!("guide/start.{extension}");
+                let mut files = resources(&[("Notist.toml", ""), (&path, &source)]);
+                files.insert("/outside/secret.md", vec![255]);
+                files.insert("/outside/secret.svg", b"private asset".to_vec());
+                files.insert("/vault-other/secret.md", vec![255]);
+                let mut vault = Vault::new(NoOutsideContentReads(files)).with_config("Notist.toml");
+                let config = BookConfig::new("public");
+                let site = if recover {
+                    notist_book::serve(&mut vault, &config)
+                } else {
+                    build(&mut vault, &config)
+                }
+                .unwrap();
+                assert!(site.diagnostics.is_empty());
+                assert_eq!(site.warnings.len(), 1, "{target}: {:?}", site.warnings);
+                let warning = &site.warnings[0];
+                assert_eq!(warning.path, Path::new("/vault").join(&path));
+                assert_eq!(warning.diagnostic.code, Some(DiagnosticCode::OutsideVault));
+                assert!(!warning.diagnostic.recovered);
+                assert!(warning.diagnostic.message.contains("outside Vault"));
+                let output = html(&site, "guide/start/index.html");
+                assert!(
+                    output.contains(&format!("href=\"{target}\"")),
+                    "{target}: {output}"
+                );
+                assert_eq!(site.pages.len(), 1);
+                assert!(
+                    !site
+                        .files
+                        .keys()
+                        .any(|path| path.starts_with("outside") || path.starts_with("vault-other"))
+                );
+            }
+        }
     }
 }
 
@@ -386,8 +469,8 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
 }
 
 #[test]
-fn missing_embedded_content_still_fails_build_and_serve() {
-    for target in ["missing.png", "missing.md"] {
+fn missing_or_outside_embedded_content_still_fails_build_and_serve() {
+    for target in ["missing.png", "missing.md", "../outside/private.png"] {
         for recover in [false, true] {
             let source = format!("# Home\n\n![Picture]({target})");
             let mut vault = Vault::new(resources(&[("README.md", &source)]));
@@ -922,14 +1005,7 @@ fn generated_reference_diagnostics_point_into_the_code_definition() {
             &mut Vault::new(resources(&files)),
             &BookConfig::new("target/book"),
         );
-        let diagnostics = if target.starts_with("../") {
-            let Error::Diagnostics(errors) = result.unwrap_err() else {
-                panic!("expected source diagnostics")
-            };
-            errors
-        } else {
-            result.unwrap().warnings
-        };
+        let diagnostics = result.unwrap().warnings;
         let diagnostic = diagnostics
             .iter()
             .find(|d| d.diagnostic.message.contains(message))

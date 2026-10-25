@@ -388,6 +388,52 @@ fn broken_hyperlinks_warn_without_failing_build_or_live_reload() {
 }
 
 #[test]
+fn outside_hyperlinks_warn_and_stay_out_of_build_and_serve() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path();
+    let root = parent.join("docs");
+    write(&root, "Notist.toml", "[book]\noutput='public'");
+    write(
+        &root,
+        "README.md",
+        "# Home\n\n[Outside](../private/secret.md?view=full#section)",
+    );
+    write(
+        parent,
+        "private/secret.md",
+        "# Private content must stay outside the book",
+    );
+    let result = command(&root).args(["book", "build"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    assert!(stderr.contains("warning[semantic]"), "{stderr}");
+    assert!(stderr.contains("outside Vault"), "{stderr}");
+    assert!(!stderr.contains("error["), "{stderr}");
+    let output = std::fs::read_to_string(root.join("public/index.html")).unwrap();
+    assert!(output.contains("href=\"../private/secret.md?view=full#section\""));
+    assert!(!output.contains("Private content"));
+    assert!(!root.join("public/private").exists());
+
+    let server = Server::start(&root);
+    assert!(server.get("/").starts_with("HTTP/1.1 200"));
+    assert!(server.get("/private/secret.md").starts_with("HTTP/1.1 404"));
+    let mut events = server.events();
+    let baseline = update(&mut events, |_| true);
+    assert!(baseline["error"].is_null());
+    write(
+        &root,
+        "README.md",
+        "# Updated\n\n[Outside](../private/missing.md)",
+    );
+    let changed = update(&mut events, |event| {
+        event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+    });
+    assert!(changed["error"].is_null(), "{changed}");
+    assert!(changed["revision"].as_u64() > baseline["revision"].as_u64());
+    assert!(server.get("/").contains("Updated"));
+}
+
+#[test]
 fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");

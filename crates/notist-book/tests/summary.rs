@@ -495,6 +495,7 @@ fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
 fn structure_entries_validate_targets() {
     for (entry, message) in [
         ("- [Missing](none.not)", "not a published page"),
+        ("- [Outside](../outside.not)", "outside Vault"),
         (
             "- [External](https://example.com)",
             "must reference a local document",

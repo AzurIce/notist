@@ -1,7 +1,7 @@
 use serde::{Deserialize, de::Error as _};
 use std::path::{Path, PathBuf};
 
-/// Book presentation and chapter discovery, independent of document scopes.
+/// Book presentation and eligible chapter sources, independent of document scopes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BookConfig {

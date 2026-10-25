@@ -2,7 +2,7 @@
 use crate::routes::{Route, natural_cmp};
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
@@ -73,18 +73,4 @@ pub(crate) fn directory<'a>(base: &Path, routes: impl IntoIterator<Item = &'a Ro
         branch.source = Some(route.source.clone());
     }
     root.into_entry()
-}
-
-pub(crate) fn listed(entries: &[Entry]) -> BTreeSet<PathBuf> {
-    let mut sources = BTreeSet::new();
-    fn collect(entries: &[Entry], sources: &mut BTreeSet<PathBuf>) {
-        for entry in entries {
-            if let Some(source) = &entry.source {
-                sources.insert(source.clone());
-            }
-            collect(&entry.children, sources);
-        }
-    }
-    collect(entries, &mut sources);
-    sources
 }

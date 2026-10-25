@@ -383,17 +383,111 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
 }
 
 #[test]
-fn unlisted_pages_fail_the_build() {
-    let error = fail(&[
+fn summary_selects_pages_before_analysis_and_route_validation() {
+    let files = [
         ("README.not", "= Home"),
         ("a.not", "= A"),
-        ("b.not", "= B"),
-        ("SUMMARY.not", "- [Home](README.not)\n- [A](a.not)"),
+        ("README.md", "# Unlisted root route collision"),
+        ("a/README.md", "# Unlisted chapter route collision"),
+        (
+            "ai/broken.not",
+            "#import \"missing.notc\" as missing;\n#missing[]",
+        ),
+        ("_notist/private.md", "# Unlisted reserved route"),
+        ("future.not", "#missing[]"),
+        (
+            "SUMMARY.not",
+            "- [Home](README.not)\n- [A](a.not)\n- [Future]()",
+        ),
+    ];
+    for recover in [false, true] {
+        let mut vault = Vault::new(resources(&files));
+        let config = BookConfig::new("target/book");
+        let site = if recover {
+            notist_book::serve(&mut vault, &config)
+        } else {
+            build(&mut vault, &config)
+        }
+        .unwrap();
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Home", "A"]
+        );
+        assert!(site.diagnostics.is_empty());
+        for path in [
+            "ai/broken/index.html",
+            "_notist/private/index.html",
+            "future/index.html",
+        ] {
+            assert!(!site.files.contains_key(Path::new(path)), "{path}");
+        }
+    }
+}
+
+#[test]
+fn selected_routes_still_reject_collisions() {
+    for summary in [
+        "- [Home](README.not)\n- [A](a.not)\n- [Directory home](a/README.md)",
+        "- [All](./)",
+    ] {
+        let error = fail(&[
+            ("README.not", "= Home"),
+            ("a.not", "= A"),
+            ("a/README.md", "# Directory home"),
+            ("SUMMARY.not", summary),
+        ]);
+        assert!(error.to_string().contains("route collision"), "{error}");
+    }
+}
+
+#[test]
+fn content_links_do_not_publish_unlisted_documents() {
+    let error = fail(&[
+        ("README.not", "= Home\n\n[Private](ai/private.md)"),
+        ("ai/private.md", "# Private"),
+        ("SUMMARY.not", "- [Home](README.not)"),
     ]);
-    let Error::Message(message) = error else {
-        panic!("expected a message: {error}")
+    let Error::Diagnostics(errors) = error else {
+        panic!("expected source diagnostics: {error}")
     };
-    assert!(message.contains("does not list 1 page: b.not"), "{message}");
+    assert!(
+        errors.iter().any(|error| {
+            error.path == Path::new("/vault/README.not")
+                && error.diagnostic.message.contains("not published")
+        }),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
+    for config in [
+        BookConfig {
+            include: vec!["README.not".into()],
+            ..BookConfig::new("public")
+        },
+        BookConfig {
+            exclude: vec!["ai/**".into()],
+            ..BookConfig::new("public")
+        },
+    ] {
+        let mut vault = Vault::new(resources(&[
+            ("README.not", "= Home"),
+            ("ai/private.md", "# Private"),
+            (
+                "SUMMARY.not",
+                "- [Home](README.not)\n- [Private](ai/private.md)",
+            ),
+        ]));
+        let error = build(&mut vault, &config).unwrap_err();
+        assert!(
+            error.to_string().contains("not a published page"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -678,26 +772,33 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
 }
 
 #[test]
-fn pages_outside_directory_entries_still_require_coverage_in_build_and_serve() {
+fn directory_entries_select_their_subtree_in_build_and_serve() {
     let files = [
         ("README.not", "= Home"),
         ("_logs/a.not", "= A"),
-        ("_logs-other/b.not", "= B"),
+        ("_logs-other/b.not", "#missing[]"),
+        ("_logs-other/b.md", "# Unlisted route collision"),
         ("SUMMARY.not", "- [Home](README.not)\n- [History](_logs/)"),
     ];
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
-        let error = if recover {
+        let site = if recover {
             notist_book::serve(&mut vault, &BookConfig::new("target/book"))
         } else {
             build(&mut vault, &BookConfig::new("target/book"))
         }
-        .unwrap_err();
+        .unwrap();
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Home", "A"]
+        );
         assert!(
-            error
-                .to_string()
-                .contains("does not list 1 page: _logs-other/b.not"),
-            "{error}"
+            !site
+                .files
+                .contains_key(Path::new("_logs-other/b/index.html"))
         );
     }
 }

@@ -8,7 +8,7 @@ use notist::{
 use notist_html::Renderer;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -147,7 +147,10 @@ fn append(
     );
 }
 
-fn discover<R: Resources>(vault: &Vault<R>, config: &BookConfig) -> Result<Vec<PathBuf>, Error> {
+fn discover<R: Resources>(
+    vault: &Vault<R>,
+    config: &BookConfig,
+) -> Result<BTreeSet<PathBuf>, Error> {
     let globs = |patterns: &[String]| {
         let mut builder = globset::GlobSetBuilder::new();
         for pattern in patterns {
@@ -175,7 +178,7 @@ fn discover<R: Resources>(vault: &Vault<R>, config: &BookConfig) -> Result<Vec<P
     }
     let theme = config.theme.as_ref().map(|path| resources.resolve(path));
     let mut pending = vec![resources.root().to_path_buf()];
-    let mut pages = vec![];
+    let mut pages = BTreeSet::new();
     while let Some(directory) = pending.pop() {
         for entry in resources.entries(&directory)? {
             if entry.starts_with(&output)
@@ -200,13 +203,12 @@ fn discover<R: Resources>(vault: &Vault<R>, config: &BookConfig) -> Result<Vec<P
                 Some(ResourceKind::File)
                     if include.is_match(relative) && vault.supports(&entry) =>
                 {
-                    pages.push(entry)
+                    pages.insert(entry);
                 }
                 _ => {}
             }
         }
     }
-    pages.sort();
     Ok(pages)
 }
 
@@ -236,11 +238,7 @@ fn build_inner<R: Resources>(
     let mut sources = discover(vault, config)?;
     let root = vault.resources().root().to_path_buf();
     let summary_path = root.join(summary::FILE_NAME);
-    sources.retain(|source| *source != summary_path);
-    if sources.is_empty() {
-        return Err(Error::Message("site contains no selected documents".into()));
-    }
-    let routes = Routes::new(&root, sources).map_err(Error::Message)?;
+    sources.remove(&summary_path);
     let mut errors = vec![];
     let summary = if vault.resources().kind(&summary_path)? == Some(ResourceKind::File) {
         let source = vault.resources().source(&summary_path)?;
@@ -253,7 +251,7 @@ fn build_inner<R: Resources>(
             analysis.sources(),
         );
         let entries = summary::interpret(analysis.root()).and_then(|entries| {
-            summary::resolve(&entries, &summary_path, &routes, vault.resources())
+            summary::resolve(&entries, &summary_path, &sources, vault.resources())
         });
         match entries {
             Ok(entries) => Some(entries),
@@ -271,6 +269,17 @@ fn build_inner<R: Resources>(
     } else {
         None
     };
+    if !errors.is_empty() {
+        return Err(Error::Diagnostics(errors));
+    }
+    if let Some(plan) = &summary {
+        sources.retain(|source| plan.includes(source));
+    }
+    if sources.is_empty() {
+        return Err(Error::Message("book contains no selected documents".into()));
+    }
+    let routes = Routes::new(&root, sources).map_err(Error::Message)?;
+    let summary = summary.map(|plan| plan.expand(&root, &routes));
     let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
@@ -339,30 +348,7 @@ fn build_inner<R: Resources>(
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
     let theme = Theme::load(vault.resources(), config, &mut assets)?;
     let layout = match &summary {
-        Some(entries) => {
-            let listed = structure::listed(entries);
-            let unlisted: Vec<_> = pages
-                .iter()
-                .filter(|page| !listed.contains(&page.route.source))
-                .map(|page| {
-                    page.route
-                        .source
-                        .strip_prefix(&root)
-                        .unwrap()
-                        .display()
-                        .to_string()
-                })
-                .collect();
-            if !unlisted.is_empty() {
-                return Err(Error::Message(format!(
-                    "site structure does not list {} page{}: {}",
-                    unlisted.len(),
-                    if unlisted.len() == 1 { "" } else { "s" },
-                    unlisted.join(", ")
-                )));
-            }
-            Layout::declared(entries, &pages)
-        }
+        Some(entries) => Layout::declared(entries, &pages),
         None => Layout::new(&config.title, &pages),
     };
     for page in &prepared {

@@ -51,6 +51,23 @@ struct Claims {
     directories: BTreeSet<PathBuf>,
 }
 
+/// Validated declarations select sources before any publication routes exist.
+pub(crate) struct Plan {
+    entries: Vec<Resolved>,
+    claims: Claims,
+}
+
+impl Plan {
+    pub fn includes(&self, source: &Path) -> bool {
+        self.claims.pages.contains(source)
+            || self
+                .claims
+                .directories
+                .iter()
+                .any(|directory| source.starts_with(directory))
+    }
+}
+
 fn diagnostic(span: TextRange, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(Phase::Semantic, span, message)
 }
@@ -336,19 +353,19 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
     }
 }
 
-/// Resolve entry targets against the published routes, rejecting external
-/// URLs, queries, fragments, unpublished documents and duplicates. Resolve all
+/// Resolve entry targets against eligible sources, rejecting external
+/// URLs, queries, fragments, ineligible documents and duplicates. Resolve all
 /// explicit claims before discovery so their position never affects priority.
 pub(crate) fn resolve<R: Resources>(
     entries: &[Entry],
     summary: &Path,
-    routes: &Routes,
+    sources: &BTreeSet<PathBuf>,
     resources: &R,
-) -> Result<Vec<structure::Entry>, Vec<Diagnostic>> {
+) -> Result<Plan, Vec<Diagnostic>> {
     fn resolve_entry<R: Resources>(
         entry: &Entry,
         summary: &Path,
-        routes: &Routes,
+        sources: &BTreeSet<PathBuf>,
         resources: &R,
         claims: &mut Claims,
         errors: &mut Vec<Diagnostic>,
@@ -400,7 +417,7 @@ pub(crate) fn resolve<R: Resources>(
                             }
                         }
                         Target::Directory(path)
-                    } else if routes.get(&path).is_none() {
+                    } else if !sources.contains(&path) {
                         errors.push(diagnostic(
                             entry.span,
                             format!("structure entry `{value}` is not a published page"),
@@ -431,66 +448,80 @@ pub(crate) fn resolve<R: Resources>(
             children: entry
                 .children
                 .iter()
-                .map(|child| resolve_entry(child, summary, routes, resources, claims, errors))
+                .map(|child| resolve_entry(child, summary, sources, resources, claims, errors))
                 .collect(),
-        }
-    }
-    fn expand(entry: Resolved, root: &Path, routes: &Routes, claims: &Claims) -> structure::Entry {
-        let mut children: Vec<_> = entry
-            .children
-            .into_iter()
-            .map(|child| expand(child, root, routes, claims))
-            .collect();
-        match entry.target {
-            Target::Directory(path) => {
-                let selected = routes.iter().filter(|route| {
-                    route.source.starts_with(&path)
-                        && !claims.pages.contains(&route.source)
-                        // The most specific directory owns overlapping pages.
-                        && !claims.directories.iter().any(|other| {
-                            other != &path && other.starts_with(&path) && route.source.starts_with(other)
-                        })
-                });
-                let mut discovered =
-                    structure::directory(path.strip_prefix(root).unwrap(), selected);
-                discovered.collapsed = entry.collapsed;
-                discovered.label = entry.label.or_else(|| {
-                    discovered.source.is_none().then(|| {
-                        path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                });
-                children.append(&mut discovered.children);
-                discovered.children = children;
-                discovered
-            }
-            target => structure::Entry {
-                kind: entry.kind,
-                numbered: entry.numbered,
-                label: entry.label,
-                collapsed: entry.collapsed,
-                source: match target {
-                    Target::Page(path) => Some(path),
-                    _ => None,
-                },
-                children,
-            },
         }
     }
     let mut errors = vec![];
     let mut claims = Claims::default();
-    let entries: Vec<_> = entries
+    let entries = entries
         .iter()
-        .map(|entry| resolve_entry(entry, summary, routes, resources, &mut claims, &mut errors))
+        .map(|entry| resolve_entry(entry, summary, sources, resources, &mut claims, &mut errors))
         .collect();
     if errors.is_empty() {
-        Ok(entries
-            .into_iter()
-            .map(|entry| expand(entry, resources.root(), routes, &claims))
-            .collect())
+        Ok(Plan { entries, claims })
     } else {
         Err(errors)
+    }
+}
+
+impl Plan {
+    /// Expand directory declarations using only the selected publication routes.
+    pub fn expand(self, root: &Path, routes: &Routes) -> Vec<structure::Entry> {
+        fn expand(
+            entry: Resolved,
+            root: &Path,
+            routes: &Routes,
+            claims: &Claims,
+        ) -> structure::Entry {
+            let mut children: Vec<_> = entry
+                .children
+                .into_iter()
+                .map(|child| expand(child, root, routes, claims))
+                .collect();
+            match entry.target {
+                Target::Directory(path) => {
+                    let selected = routes.iter().filter(|route| {
+                        route.source.starts_with(&path)
+                            && !claims.pages.contains(&route.source)
+                            // The most specific directory owns overlapping pages.
+                            && !claims.directories.iter().any(|other| {
+                                other != &path
+                                    && other.starts_with(&path)
+                                    && route.source.starts_with(other)
+                            })
+                    });
+                    let mut discovered =
+                        structure::directory(path.strip_prefix(root).unwrap(), selected);
+                    discovered.collapsed = entry.collapsed;
+                    discovered.label = entry.label.or_else(|| {
+                        discovered.source.is_none().then(|| {
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                    });
+                    children.append(&mut discovered.children);
+                    discovered.children = children;
+                    discovered
+                }
+                target => structure::Entry {
+                    kind: entry.kind,
+                    numbered: entry.numbered,
+                    label: entry.label,
+                    collapsed: entry.collapsed,
+                    source: match target {
+                        Target::Page(path) => Some(path),
+                        _ => None,
+                    },
+                    children,
+                },
+            }
+        }
+        self.entries
+            .into_iter()
+            .map(|entry| expand(entry, root, routes, &self.claims))
+            .collect()
     }
 }

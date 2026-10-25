@@ -1,7 +1,7 @@
 //! SUMMARY.not or SUMMARY.md: an optional declarative book structure at the Vault root.
 //!
 //! The file is interpreted as data, never evaluated or rendered: an optional
-//! document title, unnumbered prefix/suffix links, part headings, chapter lists
+//! document title, prefix/suffix links, part headings, chapter lists
 //! and separators follow mdBook's SUMMARY structure. Directory discovery,
 //! unlinked chapters and collapsed branches extend the chapter-list syntax.
 use notist::{Ctor, Diagnostic, Item, Phase, Resources, TextRange, Value, resources::ResourceKind};
@@ -22,7 +22,6 @@ pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
 #[derive(Debug)]
 pub(crate) struct Entry {
     pub kind: NavigationKind,
-    pub numbered: bool,
     pub label: Option<String>,
     pub target: Option<String>,
     pub collapsed: bool,
@@ -38,7 +37,6 @@ enum Target {
 
 struct Resolved {
     kind: NavigationKind,
-    numbered: bool,
     label: Option<String>,
     target: Target,
     collapsed: bool,
@@ -167,7 +165,10 @@ fn interpret_label(
 
 fn chapter_list(list: &Item, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
     if matches!(list.fields.get("ordered"), Some(Value::Bool(true))) {
-        errors.push(diagnostic(list.span, "structure chapter lists use the `-` marker; chapter numbers are assigned automatically"));
+        errors.push(diagnostic(
+            list.span,
+            "structure chapter lists use unordered markers; write chapter numbers in the label",
+        ));
     }
     list.children
         .iter()
@@ -229,7 +230,6 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
             Some("") => NavigationKind::Draft,
             Some(_) => NavigationKind::Chapter,
         },
-        numbered: true,
         label,
         target,
         collapsed,
@@ -246,7 +246,7 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
     }
     let mut errors = vec![];
     let mut entries = vec![];
-    let mut numbered = false;
+    let mut chapters_started = false;
     let mut suffix = false;
     for (index, block) in blocks.iter().enumerate() {
         match block.ctor {
@@ -264,7 +264,6 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                     }
                     entries.push(Entry {
                         kind: NavigationKind::Part,
-                        numbered: false,
                         label: Some(label),
                         target: None,
                         collapsed: false,
@@ -275,7 +274,6 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
             }
             Ctor::Divider => entries.push(Entry {
                 kind: NavigationKind::Separator,
-                numbered: false,
                 label: None,
                 target: None,
                 collapsed: false,
@@ -286,10 +284,10 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                 if suffix {
                     errors.push(diagnostic(
                         block.span,
-                        "numbered chapters cannot follow suffix chapters",
+                        "chapter lists cannot follow suffix chapters",
                     ));
                 }
-                numbered = true;
+                chapters_started = true;
                 entries.extend(chapter_list(block, &mut errors));
             }
             Ctor::Paragraph => {
@@ -305,7 +303,7 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                     ));
                     continue;
                 }
-                suffix |= numbered;
+                suffix |= chapters_started;
                 for link in links {
                     let target = match link.fields.get("target") {
                         Some(Value::Str(target)) => target.clone(),
@@ -321,7 +319,6 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                         } else {
                             NavigationKind::Chapter
                         },
-                        numbered: false,
                         label: (!label.is_empty()).then_some(label),
                         target: Some(target),
                         collapsed: false,
@@ -441,7 +438,6 @@ pub(crate) fn resolve<R: Resources>(
         };
         Resolved {
             kind: entry.kind,
-            numbered: entry.numbered,
             label: entry.label.clone(),
             target,
             collapsed: entry.collapsed,
@@ -508,7 +504,6 @@ impl Plan {
                 }
                 target => structure::Entry {
                     kind: entry.kind,
-                    numbered: entry.numbered,
                     label: entry.label,
                     collapsed: entry.collapsed,
                     source: match target {

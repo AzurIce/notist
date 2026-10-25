@@ -12,7 +12,6 @@ use std::{
 #[derive(Debug, Clone, Serialize)]
 pub struct Navigation {
     pub kind: NavigationKind,
-    pub number: Option<String>,
     pub title: String,
     pub url: Option<String>,
     pub current: bool,
@@ -27,8 +26,6 @@ pub struct PageLink {
 }
 struct Node {
     kind: NavigationKind,
-    numbered: bool,
-    number: Option<String>,
     title: String,
     output: Option<PathBuf>,
     collapsed: bool,
@@ -46,8 +43,6 @@ fn declared_node(entry: &Entry, pages: &BTreeMap<PathBuf, &Page>) -> Node {
     let page = entry.source.as_ref().map(|source| pages[source]);
     Node {
         kind: entry.kind,
-        numbered: entry.numbered,
-        number: None,
         title: entry
             .label
             .clone()
@@ -70,7 +65,6 @@ impl Layout {
     pub fn new(title: &str, pages: &[Page]) -> Self {
         let mut entry = structure::directory(Path::new(""), pages.iter().map(|page| &page.route));
         if entry.source.is_none() {
-            entry.numbered = false;
             entry.label = Some(title.into());
         }
         let by_source = pages
@@ -93,29 +87,7 @@ impl Layout {
                 .collect(),
         )
     }
-    fn from_roots(mut roots: Vec<Node>) -> Self {
-        fn number(nodes: &mut [Node], prefix: &[usize], next: &mut usize) {
-            for node in nodes {
-                if node.numbered
-                    && matches!(node.kind, NavigationKind::Chapter | NavigationKind::Draft)
-                {
-                    *next += 1;
-                    let mut path = prefix.to_vec();
-                    path.push(*next);
-                    node.number = Some(
-                        path.iter()
-                            .map(usize::to_string)
-                            .collect::<Vec<_>>()
-                            .join("."),
-                    );
-                    number(&mut node.children, &path, &mut 0);
-                } else {
-                    // Visual markers and unnumbered book entries do not consume a number.
-                    number(&mut node.children, prefix, next);
-                }
-            }
-        }
-        number(&mut roots, &[], &mut 0);
+    fn from_roots(roots: Vec<Node>) -> Self {
         let mut paths = vec![];
         for root in &roots {
             order(root, &mut paths);
@@ -140,7 +112,6 @@ impl Layout {
             (
                 Navigation {
                     kind: node.kind,
-                    number: node.number.clone(),
                     title: node.title.clone(),
                     url: node
                         .output
@@ -180,7 +151,6 @@ impl Layout {
             .into_iter()
             .map(|node| Navigation {
                 kind: node.kind,
-                number: node.number.clone(),
                 title: node.title.clone(),
                 url: node
                     .output

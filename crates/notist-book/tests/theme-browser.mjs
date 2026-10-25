@@ -277,10 +277,8 @@ syntax PlainText -> Token;
     await evaluate(`(() => {
       const summary = document.querySelector('#book-nav summary');
       const title = summary.querySelector('.nav-title');
-      const number = summary.querySelector('.nav-number');
-      window.disclosureSample = {summary, title, number, text: title.textContent, digits: number.textContent};
-      number.textContent = '11.3.';
-      title.textContent = '文档管线';
+      window.disclosureSample = {summary, title, text: title.textContent};
+      title.textContent = '11.3. 文档管线';
     })()`);
     const measure = () => evaluate(`(() => {
       const {summary, title} = window.disclosureSample;
@@ -293,12 +291,12 @@ syntax PlainText -> Token;
     })()`);
     const single = await measure();
     await screenshot(`theme-nav-${name}-single`, single.clip);
-    await evaluate('window.disclosureSample.title.textContent = "文档管线：用于文档分析、求值和输出的完整流程"');
+    await evaluate('window.disclosureSample.title.textContent = "11.3. 文档管线：用于文档分析、求值和输出的完整流程"');
     const wrapped = await measure();
     await screenshot(`theme-nav-${name}-wrapped`, wrapped.clip);
     check(`${name} disclosure aligns with the first text line for short and wrapped titles`,
       single.lines === 1 && wrapped.lines > 1 && single.delta < 2 && wrapped.delta < 2);
-    await evaluate('const sample = window.disclosureSample; sample.title.textContent = sample.text; sample.number.textContent = sample.digits; delete window.disclosureSample');
+    await evaluate('const sample = window.disclosureSample; sample.title.textContent = sample.text; delete window.disclosureSample');
   };
   const checkNavigationPageStates = async name => {
     check(`${name} navigation uses muted text for chapters without pages and reserves emphasis for the current page`, await evaluate(`(() => {
@@ -315,7 +313,7 @@ syntax PlainText -> Token;
       const tone = element => getComputedStyle(element).color;
       return page.matches('a[href]') && directory.matches('.nav-chapter') &&
         draft.matches('[role=link][aria-disabled=true]') &&
-        text(directory) === '7. History' && text(empty) === '8. Empty' && text(draft) === '6. Future chapter' &&
+        text(directory) === 'History' && text(empty) === 'Empty' && text(draft) === 'Future chapter' &&
         tone(page) !== tone(directory) && tone(directory) === tone(empty) && tone(empty) === tone(draft) &&
         tone(child) === tone(page) && tone(current) !== tone(page) &&
         getComputedStyle(current).backgroundColor !== 'rgba(0, 0, 0, 0)';
@@ -335,26 +333,24 @@ syntax PlainText -> Token;
     return parts.map(part => part.textContent.trim()).join(',') === 'Writing,Reference,Archive' &&
       parts.every(part => part.querySelector('[role=heading]') && !part.querySelector('a, details, ul'));
   })()`));
-  check('prefix is unnumbered and chapter numbering continues across parts', await evaluate(`(() => {
+  check('navigation renders chapter labels verbatim across parts and nested lists', await evaluate(`(() => {
     const labels = [...document.querySelectorAll('#book-nav .nav-title')];
-    const number = title => labels.find(label => label.textContent === title).parentElement.querySelector('.nav-number')?.textContent;
-    return number('Home') === undefined && number('Notes') === '1.' && number('Essay') === '1.1.' &&
-      number('Examples') === '1.2.' && number('Native') === '1.2.1.' && number('Raw') === '2.' && number('Future chapter') === '6.';
+    return labels.length > 0 && labels.every(label => label.parentElement.textContent.trim() === label.textContent);
   })()`));
-  check('plain list entries are numbered muted chapters with regular weight, distinct from part headings', await evaluate(`(() => {
+  check('plain list entries are muted chapters with regular weight, distinct from part headings', await evaluate(`(() => {
     const title = [...document.querySelectorAll('#book-nav .nav-title')].find(label => label.textContent === 'Examples');
     const chapter = title.parentElement;
     const part = document.querySelector('#book-nav .nav-part');
     const directory = [...document.querySelectorAll('#book-nav .nav-chapter')].find(label => label.textContent.includes('History'));
-    return chapter.matches('.nav-chapter') && chapter.querySelector('.nav-number').textContent === '1.2.' &&
+    return chapter.matches('.nav-chapter') && chapter.textContent === 'Examples' &&
       getComputedStyle(chapter).fontWeight === '400' && getComputedStyle(part).fontWeight === '700' &&
       getComputedStyle(chapter).color === getComputedStyle(directory).color && !chapter.querySelector('a, [role=heading]');
   })()`));
   check('drafts are disabled links and separators render a rule', await evaluate('document.querySelector("#book-nav .nav-draft[role=link][aria-disabled=true]").textContent.includes("Future chapter") && document.querySelectorAll(".navigation-tree > .nav-separator > hr").length === 1'));
-  check('discovered directories are numbered chapter parents without requiring a home page', await evaluate(`(() => {
+  check('discovered directories are chapter parents without requiring a home page', await evaluate(`(() => {
     const archive = [...document.querySelectorAll('#book-nav details')].at(-1);
-    return archive.querySelector(':scope > summary .nav-chapter .nav-number').textContent === '7.' &&
-      archive.querySelector('.nav-children .nav-number').textContent === '7.1.';
+    return archive.querySelector(':scope > summary .nav-title').textContent === 'History' &&
+      archive.querySelector('.nav-children .nav-title').textContent === 'Archive entry';
   })()`));
   await checkNavigationPageStates('desktop');
   await checkDisclosureAlignment('desktop');

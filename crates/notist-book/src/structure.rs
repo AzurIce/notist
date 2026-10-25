@@ -9,7 +9,6 @@ use std::{
 #[derive(Debug)]
 pub(crate) struct Entry {
     pub kind: NavigationKind,
-    pub numbered: bool,
     pub label: Option<String>,
     pub source: Option<PathBuf>,
     pub collapsed: bool,
@@ -41,7 +40,6 @@ impl Branch {
         children.sort_by(|(a, _), (b, _)| natural_cmp(a, b));
         Entry {
             kind: NavigationKind::Chapter,
-            numbered: true,
             label: self.label,
             source: self.source,
             collapsed: false,

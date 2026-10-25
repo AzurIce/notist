@@ -1,5 +1,5 @@
 {{#if url}}
-<a href="{{url}}"{{#if current}} aria-current="page"{{/if}}>{{#if number}}<span class="nav-number" aria-hidden="true">{{number}}.</span> {{/if}}<span class="nav-title">{{title}}</span></a>
+<a href="{{url}}"{{#if current}} aria-current="page"{{/if}}><span class="nav-title">{{title}}</span></a>
 {{else}}
-<span class="nav-{{kind}}"{{#if (eq kind "draft")}} role="link" aria-disabled="true"{{/if}}>{{#if number}}<span class="nav-number" aria-hidden="true">{{number}}.</span> {{/if}}<span class="nav-title">{{title}}</span></span>
+<span class="nav-{{kind}}"{{#if (eq kind "draft")}} role="link" aria-disabled="true"{{/if}}><span class="nav-title">{{title}}</span></span>
 {{/if}}

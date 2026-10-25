@@ -283,7 +283,7 @@ fn declared_structure_orders_pages_and_chapters_without_pages() {
     assert!(navigation.contains("aria-current=\"page\""));
     assert!(navigation.contains(">Bee</span>"), "{navigation}");
     assert!(
-        navigation.contains("<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">3.</span> <span class=\"nav-title\">Group</span>")
+        navigation.contains("<span class=\"nav-chapter\"><span class=\"nav-title\">Group</span>")
     );
     assert!(navigation.contains("class=\"nav-draft\" role=\"link\" aria-disabled=\"true\""));
     assert!(home.contains("rel=\"next\" href=\"b/\""), "{home}");
@@ -297,7 +297,7 @@ fn declared_structure_orders_pages_and_chapters_without_pages() {
 }
 
 #[test]
-fn plain_list_entries_keep_chapter_numbering_and_hierarchy_in_both_summary_formats() {
+fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
     let native = "= 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.not)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n= 附录\n\n- @(collapsed: true)#node[Notist 组件]\n  - [组件](components/widget.not)\n- 空章节\n- [草稿]()";
     let markdown = native
         .replace("= 目录", "# 目录")
@@ -313,19 +313,19 @@ fn plain_list_entries_keep_chapter_numbering_and_hierarchy_in_both_summary_forma
             ("testing/check.md", "# Check"),
             ("components/widget.not", "= Widget"),
             (name, summary),
-            ("theme/index.hbs", "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{title}}:{{number}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
-            ("theme/tree.hbs", "[{{kind}}:{{title}}:{{number}}:{{expanded}}{{#each children}}{{> tree this}}{{/each}}]"),
+            ("theme/index.hbs", "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
+            ("theme/tree.hbs", "[{{kind}}:{{title}}:{{expanded}}{{#each children}}{{> tree this}}{{/each}}]"),
         ])), &config).unwrap();
         let architecture = html(&site, "architecture/index.html");
-        assert!(architecture.starts_with("[chapter:架构:1:true][chapter:玩法设计:2:true[chapter:Demo 策划案:2.1:true][chapter:多层地形与物流规则:2.2:true]][chapter:资产与表现:3:true[chapter:模型:3.1:true[chapter:建筑模型管线:3.1.1:true]]][chapter:测试与发布:4:true[chapter:综合工厂验收:4.1:true]][separator:::true][part:附录::true][chapter:Notist 组件:5:false[chapter:组件:5.1:true]][chapter:空章节:6:true][draft:草稿:7:true]"), "{name}: {architecture}");
+        assert!(architecture.starts_with("[chapter:架构:true][chapter:玩法设计:true[chapter:Demo 策划案:true][chapter:多层地形与物流规则:true]][chapter:资产与表现:true[chapter:模型:true[chapter:建筑模型管线:true]]][chapter:测试与发布:true[chapter:综合工厂验收:true]][separator::true][part:附录:true][chapter:Notist 组件:false[chapter:组件:true]][chapter:空章节:true][draft:草稿:true]"), "{name}: {architecture}");
         let rules = html(&site, "gameplay/rules/index.html");
         assert!(
-            rules.ends_with("|[玩法设计:2][多层地形与物流规则:2.2]|Demo>Models"),
+            rules.ends_with("|[玩法设计][多层地形与物流规则]|Demo>Models"),
             "{name}: {rules}"
         );
         let widget = html(&site, "components/widget/index.html");
         assert!(
-            widget.contains("[chapter:Notist 组件:5:true[chapter:组件:5.1:true]]"),
+            widget.contains("[chapter:Notist 组件:true[chapter:组件:true]]"),
             "{name}: {widget}"
         );
         assert_eq!(
@@ -389,7 +389,7 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
 }
 
 #[test]
-fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
+fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
     let native = "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---";
     let markdown = native.replace("== ", "## ").replace("= ", "# ");
     for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
@@ -405,10 +405,10 @@ fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
         ("thanks.not", "= Contributors body"),
         ("license.not", "= License body"),
         (name, summary),
-        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}:{{number}}{{#each children}}({{kind}}:{{title}}:{{number}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
+        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}{{#each children}}({{kind}}:{{title}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
     ])), &config).unwrap();
         let home = html(&site, "index.html");
-        let expected = "[chapter:Introduction:][chapter:Preface:][separator::][part:User guide:][chapter:Installation:1][chapter:Guide:2(chapter:Advanced:2.1)(draft:Draft:2.2)][separator::][part:Reference guide:][chapter:Reference:3][separator::][chapter:Contributors:][chapter:License:][separator::]";
+        let expected = "[chapter:Introduction][chapter:Preface][separator:][part:User guide][chapter:Installation][chapter:Guide(chapter:Advanced)(draft:Draft)][separator:][part:Reference guide][chapter:Reference][separator:][chapter:Contributors][chapter:License][separator:]";
         assert!(home.starts_with(expected), "{home}");
         assert!(!home.contains("Summary"));
         assert!(!home.contains("Ignored heading"));
@@ -438,7 +438,7 @@ fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
 }
 
 #[test]
-fn chapter_numbering_continues_through_lists_parts_and_directory_discovery() {
+fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
     let mut config = BookConfig::new("public");
     config.theme = Some("theme".into());
     let site = build(&mut Vault::new(resources(&[
@@ -448,16 +448,16 @@ fn chapter_numbering_continues_through_lists_parts_and_directory_discovery() {
         ("guide/b.not", "= B"),
         ("end.not", "= End"),
         ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n\n= Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n= Reference\n\n- [End](end.not)"),
-        ("theme/index.hbs", "{{#each navigation}}[{{title}}:{{number}}{{#each children}}({{title}}:{{number}}){{/each}}]{{/each}}"),
+        ("theme/index.hbs", "{{#each navigation}}[{{title}}{{#each children}}({{title}}){{/each}}]{{/each}}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "index.html"),
-        "[Introduction:][Guide:][Guide:1(A:1.1)(B:1.2)][:][Draft:2][Reference:][End:3]"
+        "[Introduction][Guide][Guide(A)(B)][][Draft][Reference][End]"
     );
 }
 
 #[test]
-fn directory_chapters_keep_their_numbering_with_or_without_home_pages() {
+fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
     for has_home in [false, true] {
         let mut files = vec![
             ("README.not", "= Home"),
@@ -471,11 +471,11 @@ fn directory_chapters_keep_their_numbering_with_or_without_home_pages() {
             ),
             (
                 "theme/index.hbs",
-                "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{kind}}:{{title}}:{{number}}]{{/each}}",
+                "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{kind}}:{{title}}]{{/each}}",
             ),
             (
                 "theme/tree.hbs",
-                "[{{kind}}:{{title}}:{{number}}:{{#if url}}linked{{else}}unlinked{{/if}}{{#each children}}{{> tree this}}{{/each}}]",
+                "[{{kind}}:{{title}}:{{#if url}}linked{{else}}unlinked{{/if}}{{#each children}}{{> tree this}}{{/each}}]",
             ),
         ];
         if has_home {
@@ -489,13 +489,13 @@ fn directory_chapters_keep_their_numbering_with_or_without_home_pages() {
         let site = build(&mut Vault::new(resources(&files)), &config).unwrap();
         let link = if has_home { "linked" } else { "unlinked" };
         let expected = format!(
-            "[chapter:Home::linked][chapter:History:1:{link}[chapter:2026:1.1:{link}[chapter:New:1.1.1:linked]][chapter:Old:1.2:linked]][chapter:Empty:2:unlinked][chapter:After:3:linked]"
+            "[chapter:Home:linked][chapter:History:{link}[chapter:2026:{link}[chapter:New:linked]][chapter:Old:linked]][chapter:Empty:unlinked][chapter:After:linked]"
         );
         let home = html(&site, "index.html");
         assert!(home.starts_with(&expected), "{home}");
         let child = html(&site, "_logs/2026/new/index.html");
         assert!(
-            child.ends_with("|[chapter:History:1][chapter:2026:1.1][chapter:New:1.1.1]"),
+            child.ends_with("|[chapter:History][chapter:2026][chapter:New]"),
             "{child}"
         );
         assert_eq!(
@@ -511,7 +511,7 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
     for (summary, message) in [
         (
             "- [Home](README.not)\n\n[After](after.not)\n\n- [Again](again.not)",
-            "numbered chapters cannot follow suffix chapters",
+            "chapter lists cannot follow suffix chapters",
         ),
         (
             "- [Home](README.not)\n\n[After](after.not)\n\n= Too late",
@@ -521,7 +521,7 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
             "[Directory](guide/)\n\n- [Home](README.not)",
             "must reference a single document",
         ),
-        ("+ [Home](README.not)", "use the `-` marker"),
+        ("+ [Home](README.not)", "use unordered markers"),
         (
             "= Summary\n\n```text\nUnexpected\n```\n\n- [Home](README.not)",
             "structure allows only",
@@ -838,7 +838,7 @@ fn explicit_pages_win_before_after_and_inside_directory_entries() {
 }
 
 #[test]
-fn an_explicit_directory_home_elsewhere_keeps_a_numbered_chapter() {
+fn an_explicit_directory_home_elsewhere_keeps_an_unlinked_chapter() {
     let site = render(&[
         ("README.not", "= Home"),
         ("_logs/README.not", "= Log home"),
@@ -858,8 +858,7 @@ fn an_explicit_directory_home_elsewhere_keeps_a_numbered_chapter() {
     let home = html(&site, "index.html");
     let navigation = section(&home, "id=\"book-nav\"");
     assert!(
-        navigation
-            .contains("<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">2.</span> <span class=\"nav-title\">History</span>"),
+        navigation.contains("<span class=\"nav-chapter\"><span class=\"nav-title\">History</span>"),
         "{navigation}"
     );
     assert!(
@@ -936,9 +935,8 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
         let home = html(&site, "index.html");
         let navigation = section(&home, "id=\"book-nav\"");
         assert!(
-            navigation.contains(
-                "<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">3.</span> <span class=\"nav-title\">Empty</span>"
-            ),
+            navigation
+                .contains("<span class=\"nav-chapter\"><span class=\"nav-title\">Empty</span>"),
             "{navigation}"
         );
     }
@@ -1020,6 +1018,48 @@ fn directory_targets_report_source_diagnostics() {
                 .all(|error| error.path == Path::new("/vault/SUMMARY.not")
                     && usize::from(error.diagnostic.span.end()) <= source.len()),
             "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn handwritten_numbers_are_preserved_in_navigation_and_breadcrumbs() {
+    for name in ["SUMMARY.not", "SUMMARY.md"] {
+        let title = if name.ends_with(".md") { "#" } else { "=" };
+        let summary = format!(
+            "{title} Summary\n\n[首页](README.not)\n\n- [2. 指南](guide.not)\n  - [2.7. 深入](deep.not)\n- [附录 B]()\n- [](archive/)"
+        );
+        let site = render(&[
+            ("README.not", "= Home"),
+            ("guide.not", "= Guide body"),
+            ("deep.not", "= Deep body"),
+            ("archive/README.not", "= 9. Archive"),
+            (name, &summary),
+        ]);
+        let deep = html(&site, "deep/index.html");
+        let navigation = section(&deep, "id=\"book-nav\"");
+        for label in ["首页", "2. 指南", "2.7. 深入", "附录 B", "9. Archive"] {
+            assert!(
+                navigation.contains(&format!(">{label}</span>")),
+                "{name}: {navigation}"
+            );
+        }
+        assert!(!navigation.contains("nav-number"), "{name}: {navigation}");
+        let breadcrumbs = section(&deep, "class=\"breadcrumbs\"");
+        assert!(
+            breadcrumbs.contains(">2. 指南</a>"),
+            "{name}: {breadcrumbs}"
+        );
+        assert!(
+            breadcrumbs.contains(">2.7. 深入</span>"),
+            "{name}: {breadcrumbs}"
+        );
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Home", "Guide body", "Deep body", "9. Archive"]
         );
     }
 }

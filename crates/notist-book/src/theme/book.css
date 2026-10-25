@@ -121,7 +121,6 @@ svg { max-width: 100%; }
 .nav-part:first-child { margin-top: 0; }
 .nav-separator { margin: 14px 10px; }
 .nav-separator hr { margin: 0; border: 0; border-top: 1px solid var(--line); }
-.nav-number { font-variant-numeric: tabular-nums; }
 .nav-item { margin-block: 2px; }
 .nav-item > a, .nav-label > a, .nav-chapter, .nav-draft { display: block; padding: var(--nav-label-padding) 10px; border-radius: 5px; border-left: 1px solid transparent; color: var(--muted); overflow-wrap: anywhere; }
 .nav-item > a, .nav-label > a { color: var(--fg); }

@@ -286,18 +286,18 @@ fn titles_do_not_change_routes_and_unlinked_directory_chapters_do_not_create_pag
 }
 
 #[test]
-fn a_default_book_without_a_home_page_keeps_its_container_unnumbered() {
+fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
     let mut config = BookConfig::new("public");
     config.title = "Handbook".into();
     config.theme = Some("theme".into());
     let site = build(&mut Vault::new(resources(&[
-        ("a.md", "# A"),
+        ("a.md", "# 5. A"),
         ("b.md", "# B"),
-        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}:{{number}}{{#each children}}[{{kind}}:{{title}}:{{number}}]{{/each}}]{{/each}}"),
+        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}{{#each children}}[{{kind}}:{{title}}]{{/each}}]{{/each}}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "a/index.html"),
-        "[chapter:Handbook:[chapter:A:1][chapter:B:2]]"
+        "[chapter:Handbook[chapter:5. A][chapter:B]]"
     );
     assert!(!site.files.contains_key(Path::new("index.html")));
 }

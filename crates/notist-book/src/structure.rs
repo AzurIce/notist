@@ -20,7 +20,6 @@ pub(crate) struct Entry {
 #[serde(rename_all = "snake_case")]
 pub enum NavigationKind {
     Chapter,
-    Group,
     Draft,
     Part,
     Separator,

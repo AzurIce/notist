@@ -193,7 +193,7 @@ fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_
 }
 
 #[test]
-fn collapsing_applies_to_explicit_pages_groups_and_drafts_without_changing_page_order() {
+fn collapsing_applies_to_explicit_pages_unlinked_chapters_and_drafts_without_changing_page_order() {
     let files = [
         ("README.not", "= Home"),
         ("a.not", "= A"),
@@ -258,7 +258,7 @@ fn collapsed_annotations_require_booleans() {
 }
 
 #[test]
-fn declared_structure_orders_pages_and_groups_without_pages() {
+fn declared_structure_orders_pages_and_chapters_without_pages() {
     let site = render(&[
         ("README.not", "= Home"),
         ("b.not", "= B"),
@@ -283,7 +283,7 @@ fn declared_structure_orders_pages_and_groups_without_pages() {
     assert!(navigation.contains("aria-current=\"page\""));
     assert!(navigation.contains(">Bee</span>"), "{navigation}");
     assert!(
-        navigation.contains("<span class=\"nav-group\"><span class=\"nav-title\">Group</span>")
+        navigation.contains("<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">3.</span> <span class=\"nav-title\">Group</span>")
     );
     assert!(navigation.contains("class=\"nav-draft\" role=\"link\" aria-disabled=\"true\""));
     assert!(home.contains("rel=\"next\" href=\"b/\""), "{home}");
@@ -294,6 +294,49 @@ fn declared_structure_orders_pages_and_groups_without_pages() {
     let breadcrumbs = section(&page, "class=\"breadcrumbs\"");
     assert!(!breadcrumbs.contains(">Home</a>"), "{breadcrumbs}");
     assert!(breadcrumbs.contains(">Group</span>"), "{breadcrumbs}");
+}
+
+#[test]
+fn plain_list_entries_keep_chapter_numbering_and_hierarchy_in_both_summary_formats() {
+    let native = "= 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.not)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n= 附录\n\n- @(collapsed: true)#node[Notist 组件]\n  - [组件](components/widget.not)\n- 空章节\n- [草稿]()";
+    let markdown = native
+        .replace("= 目录", "# 目录")
+        .replace("= 附录", "# 附录");
+    for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
+        let mut config = BookConfig::new("public");
+        config.theme = Some("theme".into());
+        let site = build(&mut Vault::new(resources(&[
+            ("architecture.md", "# Architecture"),
+            ("gameplay/demo.md", "# Demo"),
+            ("gameplay/rules.not", "= Rules"),
+            ("assets/models.md", "# Models"),
+            ("testing/check.md", "# Check"),
+            ("components/widget.not", "= Widget"),
+            (name, summary),
+            ("theme/index.hbs", "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{title}}:{{number}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
+            ("theme/tree.hbs", "[{{kind}}:{{title}}:{{number}}:{{expanded}}{{#each children}}{{> tree this}}{{/each}}]"),
+        ])), &config).unwrap();
+        let architecture = html(&site, "architecture/index.html");
+        assert!(architecture.starts_with("[chapter:架构:1:true][chapter:玩法设计:2:true[chapter:Demo 策划案:2.1:true][chapter:多层地形与物流规则:2.2:true]][chapter:资产与表现:3:true[chapter:模型:3.1:true[chapter:建筑模型管线:3.1.1:true]]][chapter:测试与发布:4:true[chapter:综合工厂验收:4.1:true]][separator:::true][part:附录::true][chapter:Notist 组件:5:false[chapter:组件:5.1:true]][chapter:空章节:6:true][draft:草稿:7:true]"), "{name}: {architecture}");
+        let rules = html(&site, "gameplay/rules/index.html");
+        assert!(
+            rules.ends_with("|[玩法设计:2][多层地形与物流规则:2.2]|Demo>Models"),
+            "{name}: {rules}"
+        );
+        let widget = html(&site, "components/widget/index.html");
+        assert!(
+            widget.contains("[chapter:Notist 组件:5:true[chapter:组件:5.1:true]]"),
+            "{name}: {widget}"
+        );
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Architecture", "Demo", "Rules", "Models", "Check", "Widget"]
+        );
+        assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
+    }
 }
 
 #[test]

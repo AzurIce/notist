@@ -3,7 +3,7 @@
 //! The file is interpreted as data, never evaluated or rendered: an optional
 //! document title, unnumbered prefix/suffix links, part headings, chapter lists
 //! and separators follow mdBook's SUMMARY structure. Directory discovery,
-//! plain groups and collapsed branches extend the chapter-list syntax.
+//! unlinked chapters and collapsed branches extend the chapter-list syntax.
 use notist::{Ctor, Diagnostic, Item, Phase, Resources, TextRange, Value, resources::ResourceKind};
 use std::{
     collections::BTreeSet,
@@ -17,8 +17,8 @@ use crate::{
 
 pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
 
-/// A declared entry before target resolution. A `None` target is a plain
-/// group label; an empty target is a draft entry.
+/// A declared entry before target resolution. A `None` target is an unlinked
+/// chapter; an empty target is a draft entry.
 #[derive(Debug)]
 pub(crate) struct Entry {
     pub kind: NavigationKind,
@@ -225,7 +225,7 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
         .unwrap_or_default();
     Some(Entry {
         kind: match target.as_deref() {
-            None => NavigationKind::Group,
+            None => NavigationKind::Chapter,
             Some("") => NavigationKind::Draft,
             Some(_) => NavigationKind::Chapter,
         },

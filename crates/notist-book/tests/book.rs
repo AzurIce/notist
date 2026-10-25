@@ -286,6 +286,23 @@ fn titles_do_not_change_routes_and_unlinked_directory_chapters_do_not_create_pag
 }
 
 #[test]
+fn a_default_book_without_a_home_page_keeps_its_container_unnumbered() {
+    let mut config = BookConfig::new("public");
+    config.title = "Handbook".into();
+    config.theme = Some("theme".into());
+    let site = build(&mut Vault::new(resources(&[
+        ("a.md", "# A"),
+        ("b.md", "# B"),
+        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}:{{number}}{{#each children}}[{{kind}}:{{title}}:{{number}}]{{/each}}]{{/each}}"),
+    ])), &config).unwrap();
+    assert_eq!(
+        html(&site, "a/index.html"),
+        "[chapter:Handbook:[chapter:A:1][chapter:B:2]]"
+    );
+    assert!(!site.files.contains_key(Path::new("index.html")));
+}
+
+#[test]
 fn colliding_readmes_and_file_directory_routes_fail() {
     for sources in [["README.not", "README.md"], ["foo.not", "foo/README.md"]] {
         let error = Routes::new(

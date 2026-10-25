@@ -70,7 +70,7 @@ impl Layout {
     pub fn new(title: &str, pages: &[Page]) -> Self {
         let mut entry = structure::directory(Path::new(""), pages.iter().map(|page| &page.route));
         if entry.source.is_none() {
-            entry.kind = NavigationKind::Group;
+            entry.numbered = false;
             entry.label = Some(title.into());
         }
         let by_source = pages
@@ -110,7 +110,7 @@ impl Layout {
                     );
                     number(&mut node.children, &path, &mut 0);
                 } else {
-                    // Visual markers and plain groups do not consume a chapter number.
+                    // Visual markers and unnumbered book entries do not consume a number.
                     number(&mut node.children, prefix, next);
                 }
             }

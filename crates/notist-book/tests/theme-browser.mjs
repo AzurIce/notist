@@ -152,7 +152,8 @@ syntax PlainText -> Token;
 
 - [Notes](notes/)
   - [Essay](notes/essay.md)
-  - [Native](notes/native.not)
+  - Examples
+    - [Native](notes/native.not)
 
 = Reference
 
@@ -338,7 +339,16 @@ syntax PlainText -> Token;
     const labels = [...document.querySelectorAll('#book-nav .nav-title')];
     const number = title => labels.find(label => label.textContent === title).parentElement.querySelector('.nav-number')?.textContent;
     return number('Home') === undefined && number('Notes') === '1.' && number('Essay') === '1.1.' &&
-      number('Native') === '1.2.' && number('Raw') === '2.' && number('Future chapter') === '6.';
+      number('Examples') === '1.2.' && number('Native') === '1.2.1.' && number('Raw') === '2.' && number('Future chapter') === '6.';
+  })()`));
+  check('plain list entries are numbered muted chapters with regular weight, distinct from part headings', await evaluate(`(() => {
+    const title = [...document.querySelectorAll('#book-nav .nav-title')].find(label => label.textContent === 'Examples');
+    const chapter = title.parentElement;
+    const part = document.querySelector('#book-nav .nav-part');
+    const directory = [...document.querySelectorAll('#book-nav .nav-chapter')].find(label => label.textContent.includes('History'));
+    return chapter.matches('.nav-chapter') && chapter.querySelector('.nav-number').textContent === '1.2.' &&
+      getComputedStyle(chapter).fontWeight === '400' && getComputedStyle(part).fontWeight === '700' &&
+      getComputedStyle(chapter).color === getComputedStyle(directory).color && !chapter.querySelector('a, [role=heading]');
   })()`));
   check('drafts are disabled links and separators render a rule', await evaluate('document.querySelector("#book-nav .nav-draft[role=link][aria-disabled=true]").textContent.includes("Future chapter") && document.querySelectorAll(".navigation-tree > .nav-separator > hr").length === 1'));
   check('discovered directories are numbered chapter parents without requiring a home page', await evaluate(`(() => {
@@ -380,7 +390,7 @@ syntax PlainText -> Token;
       const item = document.createElement('li');
       item.className = 'nav-item';
       const label = document.createElement('span');
-      label.className = 'nav-group';
+      label.className = 'nav-chapter';
       label.textContent = 'Older entry ' + index;
       item.append(label);
       children.append(item);
@@ -521,7 +531,7 @@ syntax PlainText -> Token;
   await viewport(1440);
   await waitFor('!document.body.classList.contains("nav-open")');
   check('desktop resize clears modal and scroll lock', await evaluate('!document.querySelector("#page-content").inert && !document.querySelector("#book-nav").hasAttribute("aria-modal") && getComputedStyle(document.body).overflow !== "hidden"'));
-  await evaluate('for (let i = 0; i < 40; i++) { const item = document.createElement("li"); item.className = "nav-item"; const label = document.createElement("span"); label.className = "nav-group"; label.textContent = "Earlier chapter " + i; item.append(label); document.querySelector(".navigation-tree").prepend(item); }');
+  await evaluate('for (let i = 0; i < 40; i++) { const item = document.createElement("li"); item.className = "nav-item"; const label = document.createElement("span"); label.className = "nav-chapter"; label.textContent = "Earlier chapter " + i; item.append(label); document.querySelector(".navigation-tree").prepend(item); }');
   await viewport(390, 844);
   await evaluate('document.querySelector("#nav-toggle").click()');
   const contentsState = await evaluate('({ scroll: document.querySelector("#book-nav").scrollTop, bottom: document.querySelector("#book-nav [aria-current=page]").getBoundingClientRect().bottom, close: document.querySelector("#nav-close").getBoundingClientRect().top, focused: document.activeElement.id, height: window.innerHeight })');

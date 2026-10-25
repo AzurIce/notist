@@ -311,10 +311,10 @@ fn explicit_section_ids_and_duplicate_slugs_use_one_outline() {
 #[test]
 fn invalid_references_return_source_diagnostics_and_no_site() {
     for (target, message) in [
-        ("other.md#absent", "missing anchor"),
-        ("missing.png", "missing local resource"),
         ("../secret.md", "outside Vault"),
         ("%2e%2e/secret.svg", "outside Vault"),
+        ("_notist/missing.png", "reserved"),
+        ("missing%5cfile.png", "invalid local URL"),
     ] {
         let source = format!("# Home\n\n[Target]({target})");
         let mut files = resources(&[("README.md", &source), ("other.md", "# Other")]);
@@ -339,6 +339,73 @@ fn invalid_references_return_source_diagnostics_and_no_site() {
 }
 
 #[test]
+fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
+    for (target, expected, message) in [
+        (
+            "../missing.md?mode=full#section",
+            "../../missing/?mode=full#section",
+            "not published",
+        ),
+        ("../missing/README.not", "../../missing/", "not published"),
+        ("missing%20page.not", "../missing%20page/", "not published"),
+        ("missing.png", "../missing.png", "missing local resource"),
+        ("other.md#absent", "../other/#absent", "missing anchor"),
+        ("#absent", "#absent", "missing anchor"),
+    ] {
+        for recover in [false, true] {
+            let source = format!("# Start\n\n[Target]({target})");
+            let mut vault = Vault::new(resources(&[
+                ("guide/start.md", &source),
+                ("guide/other.md", "# Other"),
+            ]));
+            let config = BookConfig::new("public");
+            let site = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            }
+            .unwrap();
+            assert!(site.diagnostics.is_empty());
+            assert_eq!(site.warnings.len(), 1, "{target}: {:?}", site.warnings);
+            let warning = &site.warnings[0];
+            assert_eq!(warning.path, Path::new("/vault/guide/start.md"));
+            assert_eq!(warning.source, source);
+            assert!(warning.diagnostic.message.contains(message), "{warning:?}");
+            let span = warning.diagnostic.span;
+            assert!(source[usize::from(span.start())..usize::from(span.end())].contains(target));
+            let output = html(&site, "guide/start/index.html");
+            assert!(
+                output.contains(&format!("href=\"{expected}\"")),
+                "{target}: {output}"
+            );
+            assert_eq!(site.pages.len(), 2);
+            assert!(!site.files.contains_key(Path::new("guide/missing.png")));
+            assert!(!site.files.contains_key(Path::new("missing/index.html")));
+        }
+    }
+}
+
+#[test]
+fn missing_embedded_content_still_fails_build_and_serve() {
+    for target in ["missing.png", "missing.md"] {
+        for recover in [false, true] {
+            let source = format!("# Home\n\n![Picture]({target})");
+            let mut vault = Vault::new(resources(&[("README.md", &source)]));
+            let config = BookConfig::new("public");
+            let result = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            };
+            assert!(
+                matches!(result, Err(Error::Diagnostics(_))),
+                "{target}: {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn excluded_documents_remain_inside_vault_but_are_unpublished() {
     let config = BookConfig {
         exclude: vec!["draft/**".into()],
@@ -348,12 +415,19 @@ fn excluded_documents_remain_inside_vault_but_are_unpublished() {
         ("README.md", "# Home\n\n[Draft](draft/secret.md)"),
         ("draft/secret.md", "# Secret"),
     ]));
+    let site = build(&mut vault, &config).unwrap();
+    assert_eq!(site.pages.len(), 1);
     assert!(
-        build(&mut vault, &config)
-            .unwrap_err()
-            .to_string()
-            .contains("not published")
+        !site
+            .files
+            .contains_key(Path::new("draft/secret/index.html"))
     );
+    assert!(
+        site.warnings
+            .iter()
+            .any(|warning| warning.diagnostic.message.contains("not published"))
+    );
+    assert!(html(&site, "index.html").contains("href=\"draft/secret/\""));
 }
 
 #[test]
@@ -844,15 +918,19 @@ fn generated_reference_diagnostics_point_into_the_code_definition() {
             ("README.not", document),
             ("other.not", "= Other"),
         ];
-        let error = build(
+        let result = build(
             &mut Vault::new(resources(&files)),
             &BookConfig::new("target/book"),
-        )
-        .unwrap_err();
-        let Error::Diagnostics(errors) = error else {
-            panic!("expected source diagnostics: {error}")
+        );
+        let diagnostics = if target.starts_with("../") {
+            let Error::Diagnostics(errors) = result.unwrap_err() else {
+                panic!("expected source diagnostics")
+            };
+            errors
+        } else {
+            result.unwrap().warnings
         };
-        let diagnostic = errors
+        let diagnostic = diagnostics
             .iter()
             .find(|d| d.diagnostic.message.contains(message))
             .unwrap();

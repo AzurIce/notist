@@ -35,7 +35,7 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
     let page = root.join("public/index.html");
     let original = std::fs::read(&page).unwrap();
     assert!(root.join("public/guide/index.html").is_file());
-    write(root, "README.not", "= Home\n\n[Missing](bad.md)");
+    write(root, "README.not", "= Home\n\n![Missing](bad.png)");
     let result = command(root).args(["book", "build"]).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(std::fs::read(&page).unwrap(), original);
@@ -282,7 +282,7 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     });
     assert!(changed["error"].is_null());
     assert!(server.get("/").contains("Updated"));
-    write(root, "README.md", "# Broken\n\n[Missing](missing.md)");
+    write(root, "README.md", "# Broken\n\n![Missing](missing.png)");
     let failed = update(&mut events, |event| event["error"].is_string());
     assert_eq!(failed["revision"], changed["revision"]);
     assert!(server.get("/").contains("Updated"));
@@ -344,6 +344,47 @@ fn summary_limits_build_output_and_served_pages() {
     assert!(server.get("/").starts_with("HTTP/1.1 200"));
     assert!(server.get("/_logs/entry/").contains("Log entry"));
     assert!(server.get("/ai/broken/").starts_with("HTTP/1.1 404"));
+}
+
+#[test]
+fn broken_hyperlinks_warn_without_failing_build_or_live_reload() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", "[book]\noutput='public'");
+    write(
+        root,
+        "README.md",
+        "# Home\n\n[Missing](missing.md?view=full#section)",
+    );
+    let result = command(root).args(["book", "build"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    assert!(stderr.contains("warning[semantic]"), "{stderr}");
+    assert!(!stderr.contains("error["), "{stderr}");
+    assert!(
+        std::fs::read_to_string(root.join("public/index.html"))
+            .unwrap()
+            .contains("href=\"missing/?view=full#section\"")
+    );
+    assert!(!root.join("public/missing").exists());
+
+    let server = Server::start(root);
+    assert!(server.get("/").starts_with("HTTP/1.1 200"));
+    assert!(server.get("/missing/").starts_with("HTTP/1.1 404"));
+    let mut events = server.events();
+    let baseline = update(&mut events, |_| true);
+    assert!(baseline["error"].is_null());
+    write(root, "README.md", "# Updated\n\n[Missing](another.md)");
+    let changed = update(&mut events, |event| {
+        event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+    });
+    assert!(
+        changed["revision"].as_u64() > baseline["revision"].as_u64(),
+        "{changed}"
+    );
+    assert!(changed["error"].is_null(), "{changed}");
+    assert!(server.get("/").contains("Updated"));
+    assert!(server.get("/another/").starts_with("HTTP/1.1 404"));
 }
 
 #[test]

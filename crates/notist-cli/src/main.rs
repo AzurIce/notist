@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use codespan_reporting::diagnostic::{Diagnostic, Label};
+use codespan_reporting::diagnostic::{Diagnostic, Label, Severity};
 use codespan_reporting::files::{SimpleFile, SimpleFiles};
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self, Config};
@@ -215,11 +215,11 @@ fn main() -> ExitCode {
                     }
                 };
             if !output.analysis.diagnostics().is_empty() {
-                emit_source(&file, &src, output.analysis.diagnostics());
+                emit_source(&file, &src, output.analysis.diagnostics(), Severity::Error);
                 return ExitCode::FAILURE;
             }
             if !output.evaluation.diagnostics.is_empty() {
-                emit_source(&file, &src, &output.evaluation.diagnostics);
+                emit_source(&file, &src, &output.evaluation.diagnostics, Severity::Error);
                 return ExitCode::FAILURE;
             }
             let environment = vault
@@ -398,7 +398,12 @@ fn emit_vault_error(error: notist::VaultError) -> ExitCode {
     match error {
         notist::VaultError::Environment(errors) => {
             for error in errors {
-                emit_source(&error.path, &error.source, &[error.diagnostic]);
+                emit_source(
+                    &error.path,
+                    &error.source,
+                    &[error.diagnostic],
+                    Severity::Error,
+                );
             }
         }
         error => eprintln!("{error}"),
@@ -406,11 +411,11 @@ fn emit_vault_error(error: notist::VaultError) -> ExitCode {
     ExitCode::FAILURE
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
+fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic], severity: Severity) {
     let files = SimpleFile::new(path.display().to_string(), source);
     let writer = StandardStream::stderr(ColorChoice::Auto);
     for error in diagnostics {
-        let diagnostic = Diagnostic::error()
+        let diagnostic = Diagnostic::new(severity)
             .with_code(error.phase.to_string())
             .with_message(&error.message)
             .with_labels(vec![Label::primary(
@@ -436,6 +441,11 @@ fn emit_diagnostics(
             .and_then(|s| sources.get(s))
             .map(|source| source.as_ref())
             .unwrap_or(source);
-        emit_source(path, source, std::slice::from_ref(diagnostic));
+        emit_source(
+            path,
+            source,
+            std::slice::from_ref(diagnostic),
+            Severity::Error,
+        );
     }
 }

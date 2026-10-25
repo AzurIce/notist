@@ -88,7 +88,10 @@ pub struct Page {
 pub struct BuildOutput {
     pub files: BTreeMap<PathBuf, Vec<u8>>,
     pub pages: Vec<Page>,
+    /// Content failures recovered during serve.
     pub diagnostics: Vec<SourceDiagnostic>,
+    /// Broken hyperlinks that do not prevent publication.
+    pub warnings: Vec<SourceDiagnostic>,
 }
 struct Prepared {
     route: Route,
@@ -346,6 +349,7 @@ fn build_inner<R: Resources>(
         .map(|page| (page.route.source.clone(), &page.outline.ids))
         .collect();
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
+    let mut warnings = vec![];
     let theme = Theme::load(vault.resources(), config, &mut assets)?;
     let layout = match &summary {
         Some(entries) => Layout::declared(entries, &pages),
@@ -384,7 +388,12 @@ fn build_inner<R: Resources>(
                             && !anchor.is_empty()
                             && !ids[&path].contains(anchor)
                         {
-                            errors.push(content_diagnostic(
+                            let diagnostics = if node.ctor == Ctor::Link {
+                                &mut warnings
+                            } else {
+                                &mut errors
+                            };
+                            diagnostics.push(content_diagnostic(
                                 page,
                                 node,
                                 format!("missing anchor `#{anchor}` in `{}`", path.display()),
@@ -400,24 +409,32 @@ fn build_inner<R: Resources>(
                             )
                         }
                     } else if vault.supports(&path) {
-                        errors.push(content_diagnostic(
+                        let diagnostic = content_diagnostic(
                             page,
                             node,
                             format!(
                                 "document `{}` is not published by this site",
                                 path.display()
                             ),
-                        ));
-                        continue;
-                    } else {
-                        if vault.resources().kind(&path)? != Some(ResourceKind::File) {
-                            errors.push(content_diagnostic(
-                                page,
-                                node,
-                                format!("missing local resource `{value}`"),
-                            ));
+                        );
+                        if node.ctor != Ctor::Link {
+                            errors.push(diagnostic);
                             continue;
                         }
+                        warnings.push(diagnostic);
+                        let route = match Route::new(&root, path.clone()) {
+                            Ok(route) => route,
+                            Err(message) => {
+                                errors.push(content_diagnostic(page, node, message));
+                                continue;
+                            }
+                        };
+                        notist::publication::url::relative_url(
+                            &page.route.output,
+                            route.output.parent().unwrap(),
+                            true,
+                        )
+                    } else {
                         let destination = path.strip_prefix(&root).unwrap();
                         if destination.starts_with("_notist") {
                             errors.push(content_diagnostic(
@@ -427,7 +444,20 @@ fn build_inner<R: Resources>(
                             ));
                             continue;
                         }
-                        assets.copy(vault.resources(), &path, destination)?;
+                        if vault.resources().kind(&path)? != Some(ResourceKind::File) {
+                            let diagnostic = content_diagnostic(
+                                page,
+                                node,
+                                format!("missing local resource `{value}`"),
+                            );
+                            if node.ctor != Ctor::Link {
+                                errors.push(diagnostic);
+                                continue;
+                            }
+                            warnings.push(diagnostic);
+                        } else {
+                            assets.copy(vault.resources(), &path, destination)?;
+                        }
                         notist::publication::url::relative_url(
                             &page.route.output,
                             destination,
@@ -491,6 +521,7 @@ fn build_inner<R: Resources>(
     }
     let mut site = finish(assets, layout.ordered_pages(pages))?;
     site.diagnostics = recovered;
+    site.warnings = warnings;
     Ok(site)
 }
 
@@ -499,6 +530,7 @@ fn finish(assets: Assets, pages: Vec<Page>) -> Result<BuildOutput, Error> {
         files: assets.finish()?,
         pages,
         diagnostics: Vec::new(),
+        warnings: Vec::new(),
     })
 }
 

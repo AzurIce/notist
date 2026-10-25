@@ -1,5 +1,6 @@
 //! Book assembly and command host; resources and disk publication are shared.
 use crate::publication::{Files, publish};
+use codespan_reporting::diagnostic::Severity;
 use notist::{
     Resources, Vault,
     resources::{ResourceError, normalize},
@@ -62,11 +63,19 @@ pub fn assemble(
 pub fn report(error: Error) {
     match error {
         Error::Diagnostics(errors) => {
-            for error in errors {
-                crate::emit_source(&error.path, &error.source, &[error.diagnostic]);
-            }
+            report_diagnostics(&errors, Severity::Error);
         }
         error => eprintln!("{error}"),
+    }
+}
+pub fn report_diagnostics(diagnostics: &[notist::SourceDiagnostic], severity: Severity) {
+    for diagnostic in diagnostics {
+        crate::emit_source(
+            &diagnostic.path,
+            &diagnostic.source,
+            std::slice::from_ref(&diagnostic.diagnostic),
+            severity,
+        );
     }
 }
 pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
@@ -74,6 +83,7 @@ pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::
         let root = std::fs::canonicalize(root).map_err(io)?;
         let result = assemble(&root, config, output, false).map_err(|(error, _)| error)?;
         publish(&result.artifact.files, &result.output, &root)?;
+        report_diagnostics(&result.artifact.warnings, Severity::Warning);
         println!(
             "{} pages → {}",
             result.artifact.pages.len(),

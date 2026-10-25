@@ -145,7 +145,9 @@ link 与 embed 的本地目标相对于源文档解析。指向已发布文档�
 
 输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
 
-本地正文与资源必须在 Vault 内。排除或未选中的正文不能成为发布链接目标，缺失资源和不存在的锚点产生源码诊断。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
+本地正文与资源必须在 Vault 内。普通 link 指向不存在或未发布的文档、缺失文件或不存在的锚点时产生 warning，build 与 serve 仍输出完整书籍并保留链接。未发布的文档链接沿用源文件的章节路由，例如 missing.md 指向 missing/、guide/README.not 指向 guide/；query 与 fragment 保留，不为缺失目标创建页面。点击不存在的页面或文件时由服务器返回 404；缺失锚点保留 fragment，但页面无法定位对应位置。链接不会使被 exclude 或 SUMMARY 排除的文档重新发布。
+
+embed 的缺失目标仍报错；非法 URL、越出 Vault 的本地引用、保留资源路径及 SUMMARY 中的无效章节目标也仍阻止构建。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的现有资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
 
 导入的 Code 模块及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/modules/；各页面只注册自己使用的组件。资源计划与资源 URL 编码由 notist.publication 提供，单文档导出与书籍构建共享这套能力。资源按规范模块身份分目录；不同目录的同名模块可以共存。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
 
@@ -236,7 +238,7 @@ notist-book 通过 Resources 读取逻辑输入，生成拥有全部字节的 Bu
 4. 从声明结构或目录结构建立导航树，同时提供面包屑、上一篇 / 下一篇与 BuildOutput.pages 顺序。
 5. 校验跨页链接、fragment 与资源，为求值后的树绑定 HTML 实现并渲染，再用主题模板生成完整页面，收集组件与静态资源。
 
-返回的 BuildOutput.files 包含页面、主题资源、组件资源和 _notist/publication.json 发布清单。任何错误都不返回部分站点。
+返回的 BuildOutput.files 包含页面、主题资源、组件资源和 _notist/publication.json 发布清单。BuildOutput.warnings 保存普通超链接的非阻断诊断，CLI 以 warning 输出；BuildOutput.diagnostics 保存 serve 恢复的内容错误。阻断错误不返回部分站点，warning 不影响发布或 serve 的成功刷新。
 
 serve 保留已被内容边界恢复的错误及其诊断，呈现错误节点和其余独立内容；恢复状态不取决于诊断产生阶段。环境、路由、资源及其他未恢复错误仍阻止站点生成。
 

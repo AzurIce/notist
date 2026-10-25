@@ -445,21 +445,22 @@ fn selected_routes_still_reject_collisions() {
 
 #[test]
 fn content_links_do_not_publish_unlisted_documents() {
-    let error = fail(&[
+    let site = render(&[
         ("README.not", "= Home\n\n[Private](ai/private.md)"),
         ("ai/private.md", "# Private"),
         ("SUMMARY.not", "- [Home](README.not)"),
     ]);
-    let Error::Diagnostics(errors) = error else {
-        panic!("expected source diagnostics: {error}")
-    };
     assert!(
-        errors.iter().any(|error| {
+        site.warnings.iter().any(|error| {
             error.path == Path::new("/vault/README.not")
                 && error.diagnostic.message.contains("not published")
         }),
-        "{errors:?}"
+        "{:?}",
+        site.warnings
     );
+    assert_eq!(site.pages.len(), 1);
+    assert!(!site.files.contains_key(Path::new("ai/private/index.html")));
+    assert!(html(&site, "index.html").contains("href=\"ai/private/\""));
 }
 
 #[test]
@@ -567,12 +568,17 @@ fn structure_is_data_not_code() {
 
 #[test]
 fn the_structure_file_is_not_a_page() {
-    let error = fail(&[
+    let site = render(&[
         ("README.md", "# Home\n\n[S](SUMMARY.not)"),
         ("a.md", "# A"),
         ("SUMMARY.not", "- [Home](README.md)\n- [A](a.md)"),
     ]);
-    assert!(error.to_string().contains("not published"), "{error}");
+    assert!(
+        site.warnings
+            .iter()
+            .any(|warning| warning.diagnostic.message.contains("not published"))
+    );
+    assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
 }
 
 #[test]

@@ -13,6 +13,37 @@ pub struct Route {
     pub url: String,
     pub output: PathBuf,
 }
+impl Route {
+    pub(crate) fn new(root: &Path, source: PathBuf) -> Result<Self, String> {
+        let relative = source
+            .strip_prefix(root)
+            .map_err(|_| format!("page is outside Vault: {}", source.display()))?;
+        if relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err("invalid page path".into());
+        }
+        let mut directory = relative.with_extension("");
+        if relative.file_stem().is_some_and(|stem| stem == "README") {
+            directory = relative.parent().unwrap().into();
+        }
+        if directory.starts_with("_notist") {
+            return Err("_notist is reserved for generated site assets".into());
+        }
+        let output = directory.join("index.html");
+        let url = if directory.as_os_str().is_empty() {
+            "/".into()
+        } else {
+            format!("/{}/", encode_path(&directory))
+        };
+        Ok(Self {
+            source,
+            url,
+            output,
+        })
+    }
+}
 /// Complete source identities and their canonical directory URLs.
 #[derive(Debug, Clone, Default)]
 pub struct Routes {
@@ -23,48 +54,16 @@ impl Routes {
         let mut entries = BTreeMap::new();
         let mut outputs = BTreeMap::<PathBuf, PathBuf>::new();
         for source in sources {
-            let relative = source
-                .strip_prefix(root)
-                .map_err(|_| format!("page is outside Vault: {}", source.display()))?;
-            if relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err("invalid page path".into());
-            }
-            let mut directory = relative.with_extension("");
-            if relative.file_stem().is_some_and(|stem| stem == "README") {
-                directory = relative.parent().unwrap().into();
-            }
-            if directory.starts_with("_notist") {
-                return Err("_notist is reserved for generated site assets".into());
-            }
-            let output = directory.join("index.html");
-            if let Some(previous) = outputs.insert(output.clone(), source.clone()) {
+            let route = Route::new(root, source)?;
+            if let Some(previous) = outputs.insert(route.output.clone(), route.source.clone()) {
                 return Err(format!(
-                    "route collision: `{}` and `{}` both map to `/{}index.html`",
+                    "route collision: `{}` and `{}` both map to `{}index.html`",
                     previous.display(),
-                    source.display(),
-                    if directory.as_os_str().is_empty() {
-                        String::new()
-                    } else {
-                        format!("{}/", encode_path(&directory))
-                    }
+                    route.source.display(),
+                    route.url
                 ));
             }
-            let url = if directory.as_os_str().is_empty() {
-                "/".into()
-            } else {
-                format!("/{}/", encode_path(&directory))
-            };
-            entries.insert(
-                source.clone(),
-                Route {
-                    source,
-                    url,
-                    output,
-                },
-            );
+            entries.insert(route.source.clone(), route);
         }
         Ok(Self { entries })
     }

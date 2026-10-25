@@ -135,6 +135,10 @@ fn rebuild(
             if !result.artifact.diagnostics.is_empty() {
                 book::report(Error::Diagnostics(result.artifact.diagnostics.clone()));
             }
+            book::report_diagnostics(
+                &result.artifact.warnings,
+                codespan_reporting::diagnostic::Severity::Warning,
+            );
             published.site = Some(Arc::new(result.artifact));
             published.revision += 1;
             published.error = None;

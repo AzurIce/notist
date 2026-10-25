@@ -44,6 +44,125 @@ fn branch_open(output: &str, title: &str) -> bool {
 }
 
 #[test]
+fn markdown_summary_discovers_directories_and_supports_collapsed_branches() {
+    for marker in ["-", "*", "+"] {
+        let summary = format!(
+            "# Summary\n\n[Home](README.md)\n\n# Archive\n\n{marker} @(collapsed: true)[History](_logs/)\n{marker} [Pinned](_logs/entry10.md)\n"
+        );
+        let site = render(&[
+            ("README.md", "# Home"),
+            ("_logs/entry10.md", "# Ten"),
+            ("_logs/entry2.not", "= Two"),
+            ("_logs/entry3.md", "# Three"),
+            ("unlisted.not", "#missing[]"),
+            ("SUMMARY.md", &summary),
+        ]);
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Home", "Two", "Three", "Ten"]
+        );
+        assert!(!branch_open(&html(&site, "index.html"), "History"));
+        assert!(branch_open(
+            &html(&site, "_logs/entry2/index.html"),
+            "History"
+        ));
+        assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
+    }
+}
+
+#[test]
+fn markdown_summary_is_loaded_outside_page_filters_in_build_and_serve() {
+    for config in [
+        BookConfig {
+            include: vec!["README.md".into()],
+            ..BookConfig::new("public")
+        },
+        BookConfig {
+            exclude: vec!["SUMMARY.md".into()],
+            ..BookConfig::new("public")
+        },
+    ] {
+        for recover in [false, true] {
+            let mut vault = Vault::new(resources(&[
+                ("README.md", "# Body title"),
+                ("unlisted.not", "#missing[]"),
+                ("SUMMARY.md", "# Summary\n\n- [Declared title](README.md)"),
+            ]));
+            let site = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            }
+            .unwrap();
+            assert_eq!(site.pages.len(), 1);
+            assert!(html(&site, "index.html").contains(">Declared title</span>"));
+            assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
+        }
+    }
+}
+
+#[test]
+fn two_root_summary_files_are_ambiguous_even_when_excluded() {
+    for exclude in [
+        vec![],
+        vec!["SUMMARY.not".into()],
+        vec!["SUMMARY.md".into()],
+    ] {
+        for recover in [false, true] {
+            let mut vault = Vault::new(resources(&[
+                ("README.md", "# Home"),
+                ("SUMMARY.not", "- [Home](README.md)"),
+                ("SUMMARY.md", "- [Home](README.md)"),
+            ]));
+            let config = BookConfig {
+                exclude: exclude.clone(),
+                ..BookConfig::new("public")
+            };
+            let error = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            }
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("both SUMMARY.not and SUMMARY.md"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn markdown_summary_reports_structural_errors_at_its_own_source() {
+    for summary in [
+        "# Summary\n\n- [Missing](missing.md)",
+        "# Summary\n\n- [Home](README.md)\n- [Again](README.md)",
+        "# Summary\n\nUnrelated paragraph\n\n- [Home](README.md)",
+        "# Summary\n\n1. [Home](README.md)",
+        "# Summary\n\n- [Outside](../outside.md)",
+    ] {
+        let error = fail(&[("README.md", "# Home"), ("SUMMARY.md", summary)]);
+        let Error::Diagnostics(errors) = error else {
+            panic!("expected source diagnostics: {error}")
+        };
+        assert!(!errors.is_empty());
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.path == Path::new("/vault/SUMMARY.md")
+                    && error.source == summary
+                    && usize::from(error.diagnostic.span.end()) <= summary.len()),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_open() {
     let site = render(&[
         ("README.not", "= Home"),
@@ -228,9 +347,12 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
 
 #[test]
 fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
-    let mut config = BookConfig::new("public");
-    config.theme = Some("theme".into());
-    let site = build(&mut Vault::new(resources(&[
+    let native = "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---";
+    let markdown = native.replace("== ", "## ").replace("= ", "# ");
+    for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
+        let mut config = BookConfig::new("public");
+        config.theme = Some("theme".into());
+        let site = build(&mut Vault::new(resources(&[
         ("README.not", "= Introduction body"),
         ("preface.not", "= Preface body"),
         ("install.not", "= Installation body"),
@@ -239,36 +361,37 @@ fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
         ("reference.not", "= Reference body"),
         ("thanks.not", "= Contributors body"),
         ("license.not", "= License body"),
-        ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---"),
+        (name, summary),
         ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}:{{number}}{{#each children}}({{kind}}:{{title}}:{{number}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
     ])), &config).unwrap();
-    let home = html(&site, "index.html");
-    let expected = "[chapter:Introduction:][chapter:Preface:][separator::][part:User guide:][chapter:Installation:1][chapter:Guide:2(chapter:Advanced:2.1)(draft:Draft:2.2)][separator::][part:Reference guide:][chapter:Reference:3][separator::][chapter:Contributors:][chapter:License:][separator::]";
-    assert!(home.starts_with(expected), "{home}");
-    assert!(!home.contains("Summary"));
-    assert!(!home.contains("Ignored heading"));
-    let advanced = html(&site, "advanced/index.html");
-    assert!(advanced.contains("|[Guide][Advanced]|"), "{advanced}");
-    assert!(
-        advanced.ends_with("|Guide body>Reference body"),
-        "{advanced}"
-    );
-    assert_eq!(
-        site.pages
-            .iter()
-            .map(|page| page.title.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "Introduction body",
-            "Preface body",
-            "Installation body",
-            "Guide body",
-            "Advanced body",
-            "Reference body",
-            "Contributors body",
-            "License body"
-        ]
-    );
+        let home = html(&site, "index.html");
+        let expected = "[chapter:Introduction:][chapter:Preface:][separator::][part:User guide:][chapter:Installation:1][chapter:Guide:2(chapter:Advanced:2.1)(draft:Draft:2.2)][separator::][part:Reference guide:][chapter:Reference:3][separator::][chapter:Contributors:][chapter:License:][separator::]";
+        assert!(home.starts_with(expected), "{home}");
+        assert!(!home.contains("Summary"));
+        assert!(!home.contains("Ignored heading"));
+        let advanced = html(&site, "advanced/index.html");
+        assert!(advanced.contains("|[Guide][Advanced]|"), "{advanced}");
+        assert!(
+            advanced.ends_with("|Guide body>Reference body"),
+            "{advanced}"
+        );
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Introduction body",
+                "Preface body",
+                "Installation body",
+                "Guide body",
+                "Advanced body",
+                "Reference body",
+                "Contributors body",
+                "License body"
+            ]
+        );
+    }
 }
 
 #[test]

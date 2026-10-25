@@ -240,10 +240,21 @@ fn build_inner<R: Resources>(
 ) -> Result<BuildOutput, Error> {
     let mut sources = discover(vault, config)?;
     let root = vault.resources().root().to_path_buf();
-    let summary_path = root.join(summary::FILE_NAME);
-    sources.remove(&summary_path);
+    let mut summary_path = None;
+    for name in summary::FILE_NAMES {
+        let path = root.join(name);
+        sources.remove(&path);
+        if vault.resources().kind(&path)? == Some(ResourceKind::File) {
+            if summary_path.is_some() {
+                return Err(Error::Message(
+                    "both SUMMARY.not and SUMMARY.md exist; keep one book structure file".into(),
+                ));
+            }
+            summary_path = Some(path);
+        }
+    }
     let mut errors = vec![];
-    let summary = if vault.resources().kind(&summary_path)? == Some(ResourceKind::File) {
+    let summary = if let Some(summary_path) = summary_path {
         let source = vault.resources().source(&summary_path)?;
         let analysis = vault.analyze(&summary_path, &source)?;
         append(

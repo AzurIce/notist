@@ -318,32 +318,46 @@ fn serve_requires_output_and_recovers_when_it_is_configured() {
 
 #[test]
 fn summary_limits_build_output_and_served_pages() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    write(root, "Notist.toml", "[book]\noutput='public'");
-    write(root, "README.not", "= Home");
-    write(root, "README.md", "# Unlisted route collision");
-    write(root, "ai/broken.not", "#missing[]");
-    write(root, "_logs/entry.md", "# Log entry");
-    write(
-        root,
-        "SUMMARY.not",
-        "- [Home](README.not)\n- [Logs](_logs/)",
-    );
-    let result = command(root).args(["book", "build"]).output().unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert!(root.join("public/index.html").is_file());
-    assert!(root.join("public/_logs/entry/index.html").is_file());
-    assert!(!root.join("public/ai").exists());
+    for summary in ["SUMMARY.not", "SUMMARY.md"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(root, "Notist.toml", "[book]\noutput='public'");
+        write(root, "README.not", "= Home");
+        write(root, "README.md", "# Unlisted route collision");
+        write(root, "ai/broken.not", "#missing[]");
+        write(root, "_logs/entry.md", "# Log entry");
+        write(root, "later.md", "# Later");
+        write(root, summary, "- [Home](README.not)\n- [Logs](_logs/)");
+        let result = command(root).args(["book", "build"]).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(root.join("public/index.html").is_file());
+        assert!(root.join("public/_logs/entry/index.html").is_file());
+        assert!(!root.join("public/ai").exists());
 
-    let server = Server::start(root);
-    assert!(server.get("/").starts_with("HTTP/1.1 200"));
-    assert!(server.get("/_logs/entry/").contains("Log entry"));
-    assert!(server.get("/ai/broken/").starts_with("HTTP/1.1 404"));
+        let server = Server::start(root);
+        assert!(server.get("/").starts_with("HTTP/1.1 200"));
+        assert!(server.get("/_logs/entry/").contains("Log entry"));
+        assert!(server.get("/ai/broken/").starts_with("HTTP/1.1 404"));
+        assert!(server.get("/later/").starts_with("HTTP/1.1 404"));
+        let mut events = server.events();
+        let baseline = update(&mut events, |_| true);
+        write(
+            root,
+            summary,
+            "- [Home](README.not)\n- [Logs](_logs/)\n- [Later](later.md)",
+        );
+        let changed = update(&mut events, |event| {
+            event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+        });
+        assert!(changed["error"].is_null(), "{changed}");
+        let page = server.get("/later/");
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(page.contains(">Later</h1>"), "{page}");
+    }
 }
 
 #[test]

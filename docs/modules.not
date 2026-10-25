@@ -53,8 +53,9 @@ imports = { typst = "../modules/typst/lib.notc" }
 from = "notist.math"
 to = "typst.math"
 
-[site]
+[book]
 title = "My Notes"
+output = "public"
 ```
 
 每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析并校验。文档无须导入输出目标；文档、不同规则之间的同名别名相互独立，同一规范模块只加载一次。规则不读取导入模块目录的配置。源码 import 只提供定义，不自动启用 transform。执行契约见 [函数映射](designs/transforms.not)。Code 文件检查只加载自身的 import 图。

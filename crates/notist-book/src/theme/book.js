@@ -31,11 +31,25 @@
 
   // The mobile contents behave as a modal drawer, including for keyboard users.
   const mobile = matchMedia('(max-width: 760px)');
-  const navigation = document.querySelector('#site-nav');
+  const navigation = document.querySelector('#book-nav');
+  const scrollKey = `notist-book-scroll:${document.querySelector('.book-brand')?.href || location.href}`;
+  let navigationScroll = null;
+  try {
+    const stored = sessionStorage.getItem(scrollKey);
+    const value = Number(stored);
+    if (stored !== null && Number.isFinite(value) && value >= 0) navigationScroll = value;
+  } catch (_) {}
+  const saveNavigationScroll = () => {
+    if (!navigation?.getClientRects().length) return;
+    navigationScroll = navigation.scrollTop;
+    try { sessionStorage.setItem(scrollKey, String(navigationScroll)); } catch (_) {}
+  };
+  navigation?.addEventListener('scroll', saveNavigationScroll, { passive: true });
+  window.addEventListener('pagehide', saveNavigationScroll);
   const navToggle = document.querySelector('#nav-toggle');
   const navClose = document.querySelector('#nav-close');
   const backdrop = document.querySelector('#nav-backdrop');
-  const background = [...document.querySelectorAll('.site-header, #page-content, .page-outline, .site-footer')];
+  const background = [...document.querySelectorAll('.book-header, #page-content, .page-outline, .book-footer')];
   const previousInert = new Map();
   let returnFocus = null;
   let originalRole = null;
@@ -44,14 +58,20 @@
     if (!current || !navigation.getClientRects().length) return;
     const link = current.getBoundingClientRect();
     const rail = navigation.getBoundingClientRect();
-    const start = rail.top + (navigation.querySelector('.rail-heading')?.getBoundingClientRect().height || 0) + 24;
-    if (link.bottom > rail.bottom - 24) navigation.scrollTop += link.bottom - rail.bottom + 24;
-    else if (link.top < start) navigation.scrollTop += link.top - start;
+    const start = rail.top + (navigation.querySelector('.rail-heading')?.getBoundingClientRect().height || 0);
+    if (link.bottom > rail.bottom) navigation.scrollTop += link.bottom - rail.bottom + 24;
+    else if (link.top < start) navigation.scrollTop += link.top - start - 24;
+  };
+  const restoreNavigationScroll = () => {
+    if (!navigation?.getClientRects().length) return;
+    if (navigationScroll !== null) navigation.scrollTop = navigationScroll;
+    revealCurrentPage();
   };
   const setNavOpen = (open, restoreFocus = true) => {
     if (!navigation || !navToggle) return;
     open = open && mobile.matches;
     if (open === document.body.classList.contains('nav-open')) return;
+    if (!open) saveNavigationScroll();
     document.body.classList.toggle('nav-open', open);
     navToggle.setAttribute('aria-expanded', String(open));
     navToggle.setAttribute('aria-label', open ? 'Close contents' : 'Open contents');
@@ -65,8 +85,8 @@
         previousInert.set(element, element.inert);
         element.inert = true;
       }
-      (navClose || navigation.querySelector('a, button'))?.focus();
-      revealCurrentPage();
+      (navClose || navigation.querySelector('a, button'))?.focus({ preventScroll: true });
+      restoreNavigationScroll();
     } else {
       if (originalRole === null) navigation.removeAttribute('role');
       else navigation.setAttribute('role', originalRole);
@@ -80,15 +100,18 @@
   navClose?.addEventListener('click', () => setNavOpen(false));
   backdrop?.addEventListener('click', () => setNavOpen(false));
   navigation?.addEventListener('click', event => {
-    if (event.target.closest('a')) setNavOpen(false, false);
+    if (event.target.closest('a')) {
+      saveNavigationScroll();
+      setNavOpen(false, false);
+    }
   });
   mobile.addEventListener('change', () => {
     const wasCloseFocused = document.activeElement === navClose;
     setNavOpen(false, false);
-    if (wasCloseFocused) navigation?.querySelector('[aria-current="page"], a')?.focus();
-    revealCurrentPage();
+    if (wasCloseFocused) navigation?.querySelector('[aria-current="page"], a')?.focus({ preventScroll: true });
+    restoreNavigationScroll();
   });
-  revealCurrentPage();
+  restoreNavigationScroll();
   document.addEventListener('keydown', event => {
     if (!document.body.classList.contains('nav-open')) return;
     if (event.key === 'Escape') {
@@ -131,7 +154,7 @@
   const updateReading = () => {
     scheduled = false;
     if (!article) return;
-    const headerHeight = document.querySelector('.site-header')?.getBoundingClientRect().height || 0;
+    const headerHeight = document.querySelector('.book-header')?.getBoundingClientRect().height || 0;
     const bounds = article.getBoundingClientRect();
     const distance = bounds.height - (window.innerHeight - headerHeight);
     const fraction = distance <= 0 ? 0 : Math.min(1, Math.max(0, (headerHeight - bounds.top) / distance));

@@ -1,5 +1,5 @@
 use notist::{MemoryResources, Vault};
-use notist_ssg::{Error, Site, SiteConfig, build};
+use notist_book::{BookConfig, BuildOutput, Error, build};
 use std::path::Path;
 
 fn resources(files: &[(&str, &str)]) -> MemoryResources {
@@ -9,13 +9,21 @@ fn resources(files: &[(&str, &str)]) -> MemoryResources {
     }
     resources
 }
-fn render(files: &[(&str, &str)]) -> Site {
-    build(&mut Vault::new(resources(files)), &SiteConfig::default()).unwrap()
+fn render(files: &[(&str, &str)]) -> BuildOutput {
+    build(
+        &mut Vault::new(resources(files)),
+        &BookConfig::new("target/book"),
+    )
+    .unwrap()
 }
 fn fail(files: &[(&str, &str)]) -> Error {
-    build(&mut Vault::new(resources(files)), &SiteConfig::default()).unwrap_err()
+    build(
+        &mut Vault::new(resources(files)),
+        &BookConfig::new("target/book"),
+    )
+    .unwrap_err()
 }
-fn html(site: &Site, path: &str) -> String {
+fn html(site: &BuildOutput, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
 }
 fn section<'a>(output: &'a str, marker: &str) -> &'a str {
@@ -29,7 +37,7 @@ fn section<'a>(output: &'a str, marker: &str) -> &'a str {
 }
 
 fn branch_open(output: &str, title: &str) -> bool {
-    let navigation = section(output, "id=\"site-nav\"");
+    let navigation = section(output, "id=\"book-nav\"");
     let label = navigation.find(&format!(">{title}</")).unwrap();
     let opening = navigation[..label].rsplit_once("<details").unwrap().1;
     opening.split('>').next().unwrap().contains(" open")
@@ -50,7 +58,6 @@ fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_
         ),
     ]);
     let home = html(&site, "index.html");
-    assert!(branch_open(&home, "Home"));
     assert!(branch_open(&home, "Guide"));
     assert!(!branch_open(&home, "History"));
     assert!(!branch_open(&home, "Year"));
@@ -61,7 +68,6 @@ fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_
     assert!(branch_open(&old, "History"));
     assert!(!branch_open(&old, "Year"));
     let new = html(&site, "_logs/2026/new/index.html");
-    assert!(branch_open(&new, "Home"));
     assert!(branch_open(&new, "History"));
     assert!(branch_open(&new, "Year"));
     assert!(branch_open(&new, "Guide"));
@@ -154,19 +160,226 @@ fn declared_structure_orders_pages_and_groups_without_pages() {
     assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
 
     let home = html(&site, "index.html");
-    let navigation = section(&home, "id=\"site-nav\"");
+    let navigation = section(&home, "id=\"book-nav\"");
     assert!(navigation.contains("aria-current=\"page\""));
-    assert!(navigation.contains(">Bee</a>"), "{navigation}");
-    assert!(navigation.contains("<span class=\"nav-group\">Group</span>"));
-    assert!(navigation.contains("<span class=\"nav-group\">Draft</span>"));
+    assert!(navigation.contains(">Bee</span>"), "{navigation}");
+    assert!(
+        navigation.contains("<span class=\"nav-group\"><span class=\"nav-title\">Group</span>")
+    );
+    assert!(navigation.contains("class=\"nav-draft\" role=\"link\" aria-disabled=\"true\""));
     assert!(home.contains("rel=\"next\" href=\"b/\""), "{home}");
 
     let page = html(&site, "c/d/index.html");
     assert!(page.contains("rel=\"prev\" href=\"../../b/\""), "{page}");
     assert!(page.contains("rel=\"next\" href=\"../../a/\""));
     let breadcrumbs = section(&page, "class=\"breadcrumbs\"");
-    assert!(breadcrumbs.contains(">Home</a>"), "{breadcrumbs}");
+    assert!(!breadcrumbs.contains(">Home</a>"), "{breadcrumbs}");
     assert!(breadcrumbs.contains(">Group</span>"), "{breadcrumbs}");
+}
+
+#[test]
+fn root_page_keeps_its_declared_peers_children_and_position() {
+    for (summary, navigation, titles) in [
+        (
+            "- @(collapsed: true)[Home](README.not)\n  - [Intro](intro.not)\n- Guide\n  - [Start](guide/start.not)\n- [Last](last.not)",
+            "[Home:(Intro)][Guide:(Start)][Last:]",
+            vec!["Home body", "Intro body", "Start body", "Last body"],
+        ),
+        (
+            "- Guide\n  - [Start](guide/start.not)\n- @(collapsed: true)[Home](README.not)\n  - [Intro](intro.not)\n- [Last](last.not)",
+            "[Guide:(Start)][Home:(Intro)][Last:]",
+            vec!["Start body", "Home body", "Intro body", "Last body"],
+        ),
+    ] {
+        let mut config = BookConfig::new("public");
+        config.title = "Book title".into();
+        config.theme = Some("theme".into());
+        let site = build(&mut Vault::new(resources(&[
+            ("README.not", "= Home body"),
+            ("intro.not", "= Intro body"),
+            ("guide/start.not", "= Start body"),
+            ("last.not", "= Last body"),
+            ("SUMMARY.not", summary),
+            ("theme/index.hbs", "{{#each navigation}}[{{title}}:{{#each children}}({{title}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#each navigation}}{{#if url}}{{title}}={{expanded}};{{/if}}{{/each}}"),
+        ])), &config).unwrap();
+        assert_eq!(
+            site.pages
+                .iter()
+                .map(|page| page.title.as_str())
+                .collect::<Vec<_>>(),
+            titles
+        );
+        let start = html(&site, "guide/start/index.html");
+        assert!(
+            start.starts_with(&format!("{navigation}|[Guide][Start]|")),
+            "{start}"
+        );
+        assert!(start.contains("Home=false;"), "{start}");
+        let intro = html(&site, "intro/index.html");
+        assert!(
+            intro.starts_with(&format!("{navigation}|[Home][Intro]|")),
+            "{intro}"
+        );
+        assert!(intro.contains("Home=true;"), "{intro}");
+        let last = html(&site, "last/index.html");
+        assert!(last.starts_with(&format!("{navigation}|[Last]|")), "{last}");
+    }
+}
+
+#[test]
+fn mdbook_summary_supports_parts_prefix_suffix_numbers_drafts_and_separators() {
+    let mut config = BookConfig::new("public");
+    config.theme = Some("theme".into());
+    let site = build(&mut Vault::new(resources(&[
+        ("README.not", "= Introduction body"),
+        ("preface.not", "= Preface body"),
+        ("install.not", "= Installation body"),
+        ("guide.not", "= Guide body"),
+        ("advanced.not", "= Advanced body"),
+        ("reference.not", "= Reference body"),
+        ("thanks.not", "= Contributors body"),
+        ("license.not", "= License body"),
+        ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---"),
+        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}:{{number}}{{#each children}}({{kind}}:{{title}}:{{number}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
+    ])), &config).unwrap();
+    let home = html(&site, "index.html");
+    let expected = "[chapter:Introduction:][chapter:Preface:][separator::][part:User guide:][chapter:Installation:1][chapter:Guide:2(chapter:Advanced:2.1)(draft:Draft:2.2)][separator::][part:Reference guide:][chapter:Reference:3][separator::][chapter:Contributors:][chapter:License:][separator::]";
+    assert!(home.starts_with(expected), "{home}");
+    assert!(!home.contains("Summary"));
+    assert!(!home.contains("Ignored heading"));
+    let advanced = html(&site, "advanced/index.html");
+    assert!(advanced.contains("|[Guide][Advanced]|"), "{advanced}");
+    assert!(
+        advanced.ends_with("|Guide body>Reference body"),
+        "{advanced}"
+    );
+    assert_eq!(
+        site.pages
+            .iter()
+            .map(|page| page.title.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Introduction body",
+            "Preface body",
+            "Installation body",
+            "Guide body",
+            "Advanced body",
+            "Reference body",
+            "Contributors body",
+            "License body"
+        ]
+    );
+}
+
+#[test]
+fn chapter_numbering_continues_through_lists_parts_and_directory_discovery() {
+    let mut config = BookConfig::new("public");
+    config.theme = Some("theme".into());
+    let site = build(&mut Vault::new(resources(&[
+        ("README.not", "= Introduction"),
+        ("guide/README.not", "= Guide"),
+        ("guide/a.not", "= A"),
+        ("guide/b.not", "= B"),
+        ("end.not", "= End"),
+        ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n\n= Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n= Reference\n\n- [End](end.not)"),
+        ("theme/index.hbs", "{{#each navigation}}[{{title}}:{{number}}{{#each children}}({{title}}:{{number}}){{/each}}]{{/each}}"),
+    ])), &config).unwrap();
+    assert_eq!(
+        html(&site, "index.html"),
+        "[Introduction:][Guide:][Guide:1(A:1.1)(B:1.2)][:][Draft:2][Reference:][End:3]"
+    );
+}
+
+#[test]
+fn directory_chapters_keep_their_numbering_with_or_without_home_pages() {
+    for has_home in [false, true] {
+        let mut files = vec![
+            ("README.not", "= Home"),
+            ("_logs/old.not", "= Old"),
+            ("_logs/2026/new.not", "= New"),
+            ("empty/placeholder.txt", "Not a chapter"),
+            ("after.not", "= After"),
+            (
+                "SUMMARY.not",
+                "= Summary\n\n[Home](README.not)\n\n- [History](_logs/)\n- [Empty](empty/)\n- [After](after.not)",
+            ),
+            (
+                "theme/index.hbs",
+                "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{kind}}:{{title}}:{{number}}]{{/each}}",
+            ),
+            (
+                "theme/tree.hbs",
+                "[{{kind}}:{{title}}:{{number}}:{{#if url}}linked{{else}}unlinked{{/if}}{{#each children}}{{> tree this}}{{/each}}]",
+            ),
+        ];
+        if has_home {
+            files.extend([
+                ("_logs/README.not", "= Logs home"),
+                ("_logs/2026/README.not", "= 2026"),
+            ]);
+        }
+        let mut config = BookConfig::new("public");
+        config.theme = Some("theme".into());
+        let site = build(&mut Vault::new(resources(&files)), &config).unwrap();
+        let link = if has_home { "linked" } else { "unlinked" };
+        let expected = format!(
+            "[chapter:Home::linked][chapter:History:1:{link}[chapter:2026:1.1:{link}[chapter:New:1.1.1:linked]][chapter:Old:1.2:linked]][chapter:Empty:2:unlinked][chapter:After:3:linked]"
+        );
+        let home = html(&site, "index.html");
+        assert!(home.starts_with(&expected), "{home}");
+        let child = html(&site, "_logs/2026/new/index.html");
+        assert!(
+            child.ends_with("|[chapter:History:1][chapter:2026:1.1][chapter:New:1.1.1]"),
+            "{child}"
+        );
+        assert_eq!(
+            site.files.contains_key(Path::new("_logs/index.html")),
+            has_home
+        );
+        assert!(!site.files.contains_key(Path::new("empty/index.html")));
+    }
+}
+
+#[test]
+fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
+    for (summary, message) in [
+        (
+            "- [Home](README.not)\n\n[After](after.not)\n\n- [Again](again.not)",
+            "numbered chapters cannot follow suffix chapters",
+        ),
+        (
+            "- [Home](README.not)\n\n[After](after.not)\n\n= Too late",
+            "part titles cannot follow suffix chapters",
+        ),
+        (
+            "[Directory](guide/)\n\n- [Home](README.not)",
+            "must reference a single document",
+        ),
+        ("+ [Home](README.not)", "use the `-` marker"),
+        (
+            "= Summary\n\n```text\nUnexpected\n```\n\n- [Home](README.not)",
+            "structure allows only",
+        ),
+        ("= Summary\n\n= Only a part\n\n---", "declares no entries"),
+    ] {
+        let error = fail(&[
+            ("README.not", "= Home"),
+            ("after.not", "= After"),
+            ("again.not", "= Again"),
+            ("guide/README.not", "= Guide"),
+            ("SUMMARY.not", summary),
+        ]);
+        let Error::Diagnostics(errors) = error else {
+            panic!("expected diagnostics: {error}")
+        };
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.path == Path::new("/vault/SUMMARY.not")
+                    && error.diagnostic.message.contains(message)),
+            "{summary}: {errors:?}"
+        );
+    }
 }
 
 #[test]
@@ -223,11 +436,9 @@ fn structure_entries_validate_targets() {
 #[test]
 fn structure_is_data_not_code() {
     for (source, message) in [
-        ("= S\n\nSome text\n\n- [Home](README.not)", "a single list"),
-        ("= S\n\n= Again\n\n- [Home](README.not)", "a single list"),
         (
-            "- [Home](README.not)\n\n---\n\n- [A](a.not)",
-            "a single list",
+            "= S\n\nSome text\n\n- [Home](README.not)",
+            "standalone links",
         ),
         (
             "- [A](a.not) extra\n\n- [Home](README.not)",
@@ -290,12 +501,12 @@ fn directories_discover_recursive_natural_order_and_directory_home_pages() {
         ]
     );
     let home = html(&site, "index.html");
-    let navigation = section(&home, "id=\"site-nav\"");
+    let navigation = section(&home, "id=\"book-nav\"");
     assert!(
-        navigation.contains("href=\"_logs/\">History</a>"),
+        navigation.contains("href=\"_logs/\"") && navigation.contains(">History</span>"),
         "{navigation}"
     );
-    assert!(!navigation.contains(">Log home</a>"), "{navigation}");
+    assert!(!navigation.contains(">Log home</span>"), "{navigation}");
     let archived = html(&site, "_logs/no-home/one/index.html");
     let breadcrumbs = section(&archived, "class=\"breadcrumbs\"");
     assert!(breadcrumbs.contains(">History</a>"), "{breadcrumbs}");
@@ -350,9 +561,9 @@ fn explicit_pages_win_before_after_and_inside_directory_entries() {
             expected
         );
         let home = html(&site, "index.html");
-        let navigation = section(&home, "id=\"site-nav\"");
+        let navigation = section(&home, "id=\"book-nav\"");
         assert_eq!(
-            navigation.matches(">Featured</a>").count(),
+            navigation.matches(">Featured</span>").count(),
             1,
             "{navigation}"
         );
@@ -360,7 +571,7 @@ fn explicit_pages_win_before_after_and_inside_directory_entries() {
 }
 
 #[test]
-fn an_explicit_directory_home_elsewhere_leaves_a_group() {
+fn an_explicit_directory_home_elsewhere_keeps_a_numbered_chapter() {
     let site = render(&[
         ("README.not", "= Home"),
         ("_logs/README.not", "= Log home"),
@@ -378,13 +589,14 @@ fn an_explicit_directory_home_elsewhere_leaves_a_group() {
         ["Home", "A", "Log home"]
     );
     let home = html(&site, "index.html");
-    let navigation = section(&home, "id=\"site-nav\"");
+    let navigation = section(&home, "id=\"book-nav\"");
     assert!(
-        navigation.contains("<span class=\"nav-group\">History</span>"),
+        navigation
+            .contains("<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">2.</span> <span class=\"nav-title\">History</span>"),
         "{navigation}"
     );
     assert!(
-        navigation.contains("href=\"_logs/\">Overview</a>"),
+        navigation.contains("href=\"_logs/\"") && navigation.contains(">Overview</span>"),
         "{navigation}"
     );
 }
@@ -420,7 +632,7 @@ fn nested_directory_claims_win_regardless_of_declaration_order() {
 }
 
 #[test]
-fn directory_discovery_uses_selected_pages_and_allows_empty_groups() {
+fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
     let files = [
         ("README.not", "= Home"),
         ("_logs/a.md", "# A"),
@@ -434,15 +646,15 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_groups() {
             "- [Home](README.not)\n- [History](_logs/)\n- [Empty](_logs/excluded/)",
         ),
     ];
-    let config = SiteConfig {
+    let config = BookConfig {
         include: vec!["README.not".into(), "_logs/**".into()],
         exclude: vec!["_logs/excluded/**".into(), "_logs/skip.not".into()],
-        ..SiteConfig::default()
+        ..BookConfig::new("target/book")
     };
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
         let site = if recover {
-            notist_ssg::preview(&mut vault, &config)
+            notist_book::serve(&mut vault, &config)
         } else {
             build(&mut vault, &config)
         }
@@ -455,16 +667,18 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_groups() {
             ["Home", "A"]
         );
         let home = html(&site, "index.html");
-        let navigation = section(&home, "id=\"site-nav\"");
+        let navigation = section(&home, "id=\"book-nav\"");
         assert!(
-            navigation.contains("<span class=\"nav-group\">Empty</span>"),
+            navigation.contains(
+                "<span class=\"nav-chapter\"><span class=\"nav-number\" aria-hidden=\"true\">3.</span> <span class=\"nav-title\">Empty</span>"
+            ),
             "{navigation}"
         );
     }
 }
 
 #[test]
-fn pages_outside_directory_entries_still_require_coverage_in_build_and_preview() {
+fn pages_outside_directory_entries_still_require_coverage_in_build_and_serve() {
     let files = [
         ("README.not", "= Home"),
         ("_logs/a.not", "= A"),
@@ -474,9 +688,9 @@ fn pages_outside_directory_entries_still_require_coverage_in_build_and_preview()
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
         let error = if recover {
-            notist_ssg::preview(&mut vault, &SiteConfig::default())
+            notist_book::serve(&mut vault, &BookConfig::new("target/book"))
         } else {
-            build(&mut vault, &SiteConfig::default())
+            build(&mut vault, &BookConfig::new("target/book"))
         }
         .unwrap_err();
         assert!(

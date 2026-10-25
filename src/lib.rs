@@ -44,6 +44,7 @@ pub mod preview;
 pub use prepared::PreparedInputs;
 pub mod environment;
 pub use notist_pipeline::transforms;
+pub mod publication;
 pub mod query;
 pub mod resources;
 pub mod vault;

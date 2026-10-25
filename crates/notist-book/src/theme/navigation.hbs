@@ -1,0 +1,16 @@
+{{#if (eq kind "part")}}
+<li class="nav-part"><span role="heading" aria-level="2">{{title}}</span></li>
+{{else}}{{#if (eq kind "separator")}}
+<li class="nav-separator" role="presentation"><hr></li>
+{{else}}
+<li class="nav-item">
+  {{#if children}}
+  <details class="nav-branch"{{#if expanded}} open{{/if}}>
+    <summary class="nav-label">{{> navigation-label this}}</summary>
+    <ul class="nav-children">{{#each children}}{{> navigation this}}{{/each}}</ul>
+  </details>
+  {{else}}
+  {{> navigation-label this}}
+  {{/if}}
+</li>
+{{/if}}{{/if}}

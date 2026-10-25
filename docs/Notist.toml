@@ -1,8 +1,7 @@
-[site]
+[book]
 title = "Notist"
-exclude = ["AGENTS.md", "designs/AGENTS.md"]
-output = "../target/site"
-
+exclude = ["**/AGENTS.md"]
+output = "../target/book"
 
 [[transforms]]
 kind = "replace"

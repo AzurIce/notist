@@ -10,11 +10,11 @@ workspace 围绕共享内容模型组织：前端产生 Expr 森林，管线生�
 #components.diagram(r#"""
 %%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
 flowchart TB
-    cli["notist-cli"] --> ssg["notist-ssg"]
+    cli["notist-cli"] --> book["notist-book"]
     cli --> host["notist · 资源与环境"]
     cli --> html["notist-html"]
-    ssg --> host
-    ssg --> html
+    book --> host
+    book --> html
     host --> pipeline["notist-pipeline"]
     host --> html
     host --> core["notist-core"]
@@ -30,8 +30,8 @@ flowchart TB
 - `notist-pipeline`：依赖 core 与 syntax，提供 Context（Registry、CodeProgram 与 TransformPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口。
-- `notist-ssg`：依赖 notist 与 html，在 Vault 之上处理站点路由、主题、跨页链接和发布产物。
-- `notist-cli`：依赖 notist、html 与 ssg，提供终端命令、构建、预览与 LSP 入口。
+- `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
+- `notist-cli`：依赖 notist、html 与 book，提供终端命令、构建、预览与 LSP 入口。
 - `notist-grammar`：位于 modules/grammar，独立解析文法记法并生成 SVG 铁路图，不依赖其他 workspace crate。
 
 == 接口与实现边界
@@ -92,6 +92,8 @@ Pipeline.analyze / inspect 是完整分析入口，宿主可拆成 lower 与 ana
 
 Resources 表达宿主的资源输入视图。Environment 在 Parse / Lower 之后沿源码 import 图构建 Context，分别解析各条输出规则的局部 import 表，共享按规范路径加载的模块。它保留配置路径与模块源码，通过 context() 只读提供 Context；Vault 按规范路径与文档源码快照缓存 Arc<Environment>，将 Context 借用给分析和输出阶段。模块文本与分析来源使用共享的 Sources 存储。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境。本地和浏览器宿主共用管线与内容模型。
 
-notist-ssg 接收 Vault 与站点配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
+notist-book 接收 Vault 与书籍配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 
-HTML 接口见 [HTML Rendering](../html.not)，站点配置与构建见 [Static Site Generation](../ssg.not)，Vault 内容边界与索引规则见 [文档管线](pipeline.not)。
+notist.publication 提供资源复制、组件注册与发布 URL 计划，供书籍构建和单文档 HTML 导出共同使用。CLI 的 publication 宿主负责输出目录归属校验、暂存与替换；单文档导出不依赖书籍模型或主题。
+
+HTML 接口见 [HTML Rendering](../html.not)，书籍配置与构建见 [Notist Book](../book.not)，Vault 内容边界与索引规则见 [文档管线](pipeline.not)。

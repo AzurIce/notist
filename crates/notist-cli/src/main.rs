@@ -1,10 +1,14 @@
+#[cfg(not(target_arch = "wasm32"))]
+mod book;
+#[cfg(not(target_arch = "wasm32"))]
+mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
 #[cfg(not(target_arch = "wasm32"))]
-mod preview;
+mod publication;
 mod query;
 #[cfg(not(target_arch = "wasm32"))]
-mod site;
+mod serve;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -50,23 +54,33 @@ enum Command {
         #[arg(long, default_value = "target/notist-html")]
         out_dir: PathBuf,
     },
-    /// Publish all selected Vault documents as a static site
+    /// Build and serve a documentation book
+    Book {
+        #[command(subcommand)]
+        command: BookCommand,
+    },
+    /// Run the language server over stdio
+    #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
+    Lsp,
+}
+
+#[derive(Subcommand)]
+enum BookCommand {
+    /// Build the book's chapters, navigation, theme and resources
     Build {
         #[arg(default_value = ".")]
         root: PathBuf,
+        /// Output directory (relative to cwd); required unless [book].output is set
         #[arg(long)]
         out_dir: Option<PathBuf>,
     },
-    /// Serve the site with file watching and live reload
-    Preview {
+    /// Serve the book with file watching and live reload
+    Serve {
         #[arg(default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8000")]
         address: String,
     },
-    /// Run the language server over stdio
-    #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
-    Lsp,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,8 +89,10 @@ fn main() -> ExitCode {
     let config = cli.config.as_deref();
     let evaluate = cli.eval;
     match cli.command {
-        Command::Build { root, out_dir } => site::build(&root, config, out_dir.as_deref()),
-        Command::Preview { root, address } => preview::serve(&root, config, &address),
+        Command::Book { command } => match command {
+            BookCommand::Build { root, out_dir } => book::build(&root, config, out_dir.as_deref()),
+            BookCommand::Serve { root, address } => serve::serve(&root, config, &address),
+        },
         Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
             format!(
@@ -209,20 +225,11 @@ fn main() -> ExitCode {
             let environment = vault
                 .environment_for(&file, &src)
                 .expect("assembled environment");
-            let resources = site::Files::new(vault.resources().root());
-            let publication = notist_ssg::page(
-                output.rendered,
-                &environment,
-                &resources,
-                &notist_ssg::SiteConfig {
-                    output: notist::resources::normalize(
-                        &std::env::current_dir().unwrap().join(&out_dir),
-                    ),
-                    ..notist_ssg::SiteConfig::default()
-                },
-            );
+            let resources = publication::Files::new(vault.resources().root());
+            let publication =
+                html::assemble(output.rendered, &environment, &resources, &file, &out_dir);
             match publication.and_then(|publication| {
-                site::publish(&publication, &out_dir, vault.resources().root())?;
+                publication::publish(&publication, &out_dir, vault.resources().root())?;
                 Ok(out_dir.join("index.html"))
             }) {
                 Ok(result) => {

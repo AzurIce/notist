@@ -1,15 +1,25 @@
 = 站点结构
 
-- [Notist Documentation](README.not)
+[Notist Documentation](README.not)
+
+= 开始阅读
+
 - [Cook Book](cookbook/README.not)
-- markup
-  - [Markup · .not & .md](markup/syntax.not)
-  - [Builtin Content Functions & Sugar Grammar](markup/builtin.not)
-- code
-  - [Code · .notc](code/syntax.not)
-  - [Code 函数系统](code/functions.not)
-  - [Option 类型](code/option.not)
-  - [Types & Literals](code/types.not)
+
+= Markup
+
+- [Markup · .not & .md](markup/syntax.not)
+- [Builtin Content Functions & Sugar Grammar](markup/builtin.not)
+
+= Code
+
+- [Code · .notc](code/syntax.not)
+- [Code 函数系统](code/functions.not)
+- [Option 类型](code/option.not)
+- [Types & Literals](code/types.not)
+
+= 参考与设计
+
 - [Grammar Notation](notation.not)
 - [本地模块](modules.not)
 - [Vault 组件示例](components/README.not)
@@ -22,6 +32,9 @@
   - [内容函数与输出绑定](designs/content-functions.not)
   - [IR Transforms](designs/transforms.not)
 - [HTML Rendering](html.not)
-- [Static Site Generation](ssg.not)
+- [Notist Book](book.not)
 - [Draft](draft.not)
+
+---
+
 - @(collapsed: true)[历史记录](_logs/)

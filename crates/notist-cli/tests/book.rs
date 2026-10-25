@@ -23,10 +23,10 @@ fn write(root: &Path, path: &str, source: &str) {
 fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "Notist.toml", "[site]\ntitle='Book'\noutput='public'");
+    write(root, "Notist.toml", "[book]\ntitle='Book'\noutput='public'");
     write(root, "README.not", "= Home\n\n[Guide](guide/README.md)");
     write(root, "guide/README.md", "# Guide\n\nContent");
-    let result = command(root).args(["build"]).output().unwrap();
+    let result = command(root).args(["book", "build"]).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -36,12 +36,12 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
     let original = std::fs::read(&page).unwrap();
     assert!(root.join("public/guide/index.html").is_file());
     write(root, "README.not", "= Home\n\n[Missing](bad.md)");
-    let result = command(root).args(["build"]).output().unwrap();
+    let result = command(root).args(["book", "build"]).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(std::fs::read(&page).unwrap(), original);
     write(root, "README.not", "= Updated");
     std::fs::remove_dir_all(root.join("guide")).unwrap();
-    let result = command(root).args(["build"]).output().unwrap();
+    let result = command(root).args(["book", "build"]).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -51,7 +51,7 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
     assert!(std::fs::read_to_string(page).unwrap().contains("Updated"));
     write(root, "unowned/keep.txt", "Preserve me");
     let result = command(root)
-        .args(["build", "--out-dir", "unowned"])
+        .args(["book", "build", "--out-dir", "unowned"])
         .output()
         .unwrap();
     assert!(!result.status.success());
@@ -60,11 +60,45 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
         "Preserve me"
     );
     let result = command(root)
-        .args(["build", "--out-dir", "."])
+        .args(["book", "build", "--out-dir", "."])
         .output()
         .unwrap();
     assert!(!result.status.success());
     assert!(root.join("README.not").is_file());
+}
+
+#[test]
+fn book_build_requires_output_and_resolves_cli_output_from_working_directory() {
+    for config in [None, Some(""), Some("[book]\ntitle='Handbook'")] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(root, "vault/README.md", "# Home");
+        if let Some(config) = config {
+            write(root, "vault/Notist.toml", config);
+        }
+        let result = command(root)
+            .args(["book", "build", "vault"])
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("set [book].output or pass --out-dir")
+        );
+        assert!(!root.join("vault/target").exists());
+        assert!(!root.join("vault/book").exists());
+
+        let result = command(root)
+            .args(["book", "build", "vault", "--out-dir", "published"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(root.join("published/index.html").is_file());
+        assert!(!root.join("vault/published").exists());
+    }
 }
 
 #[cfg(unix)]
@@ -94,7 +128,7 @@ fn html_and_site_publication_reject_symlink_component_resources() {
     std::os::unix::fs::symlink(root.join("component.js"), root.join("widgets/badge.js")).unwrap();
     for args in [
         vec!["html", "README.not", "--out-dir", "published"],
-        vec!["build", "--out-dir", "published"],
+        vec!["book", "build", "--out-dir", "published"],
     ] {
         let result = command(root).args(args).output().unwrap();
         assert!(!result.status.success());
@@ -103,14 +137,43 @@ fn html_and_site_publication_reject_symlink_component_resources() {
     }
 }
 
-struct Preview {
+#[test]
+fn html_export_is_independent_of_book_structure_and_theme() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        "[book]\ntheme='missing-theme'\nadditional-css=['missing.css']",
+    );
+    write(root, "README.not", "= Standalone\n\nBody");
+    write(root, "SUMMARY.not", "Not a valid book structure.");
+    let exported = command(root)
+        .args(["html", "README.not", "--out-dir", "document"])
+        .output()
+        .unwrap();
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let page = std::fs::read_to_string(root.join("document/index.html")).unwrap();
+    assert!(page.contains("<h1>Standalone</h1>"));
+    assert!(!page.contains("book-nav"));
+    assert!(root.join("document/_notist/document.css").is_file());
+    assert!(!root.join("document/_notist/theme").exists());
+    let built = command(root).args(["book", "build"]).output().unwrap();
+    assert!(!built.status.success());
+}
+
+struct Server {
     child: Child,
     address: String,
 }
-impl Preview {
+impl Server {
     fn start(root: &Path) -> Self {
         let mut child = command(root)
-            .args(["preview", "--address", "127.0.0.1:0"])
+            .args(["book", "serve", "--address", "127.0.0.1:0"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -126,12 +189,12 @@ impl Preview {
             Ok(line) => line,
             Err(error) => {
                 let _ = child.kill();
-                panic!("preview did not start: {error}");
+                panic!("serve did not start: {error}");
             }
         };
         let address = line
             .trim()
-            .strip_prefix("preview http://")
+            .strip_prefix("serve http://")
             .unwrap()
             .trim_end_matches('/')
             .into();
@@ -156,7 +219,7 @@ impl Preview {
         text
     }
     fn events(&self) -> BufReader<TcpStream> {
-        let mut reader = BufReader::new(self.connect("/_notist/preview/events"));
+        let mut reader = BufReader::new(self.connect("/_notist/serve/events"));
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
@@ -167,7 +230,7 @@ impl Preview {
         reader
     }
 }
-impl Drop for Preview {
+impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -188,53 +251,80 @@ fn update(reader: &mut BufReader<TcpStream>, predicate: impl Fn(&Value) -> bool)
 }
 
 #[test]
-fn preview_serves_clean_urls_reload_events_and_last_successful_build() {
+fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
+    write(root, "Notist.toml", "[book]\noutput='public'");
     write(root, "README.md", "# Home");
     write(root, "guide/README.not", "= Guide");
-    let preview = Preview::start(root);
-    let page = preview.get("/guide/");
+    let server = Server::start(root);
+    let page = server.get("/guide/");
     assert!(page.starts_with("HTTP/1.1 200"));
-    assert!(page.contains("../_notist/preview/client.js?v=1"));
-    assert!(preview.get("/guide").starts_with("HTTP/1.1 308"));
-    assert!(preview.get("/missing/").starts_with("HTTP/1.1 404"));
-    assert!(preview.get("/%2e%2e/private").starts_with("HTTP/1.1 400"));
+    assert!(page.contains("../_notist/serve/client.js?v=1"));
     assert!(
-        preview
-            .get("/_notist/theme/site.css")
+        server
+            .get("/_notist/serve/client.js")
+            .contains("new EventSource")
+    );
+    assert!(server.get("/guide").starts_with("HTTP/1.1 308"));
+    assert!(server.get("/missing/").starts_with("HTTP/1.1 404"));
+    assert!(server.get("/%2e%2e/private").starts_with("HTTP/1.1 400"));
+    assert!(
+        server
+            .get("/_notist/theme/book.css")
             .contains("Content-Type: text/css")
     );
-    let mut events = preview.events();
+    let mut events = server.events();
     let baseline = update(&mut events, |_| true);
     write(root, "README.md", "# Updated");
     let changed = update(&mut events, |event| {
         event["revision"].as_u64() > baseline["revision"].as_u64()
     });
     assert!(changed["error"].is_null());
-    assert!(preview.get("/").contains("Updated"));
+    assert!(server.get("/").contains("Updated"));
     write(root, "README.md", "# Broken\n\n[Missing](missing.md)");
     let failed = update(&mut events, |event| event["error"].is_string());
     assert_eq!(failed["revision"], changed["revision"]);
-    assert!(preview.get("/").contains("Updated"));
+    assert!(server.get("/").contains("Updated"));
     write(root, "new/README.not", "= New page");
     write(root, "README.md", "# Recovered\n\n[New](new/README.not)");
     update(&mut events, |event| {
         event["revision"].as_u64() > changed["revision"].as_u64()
     });
-    assert!(preview.get("/new/").contains("New page"));
-    assert!(preview.get("/").contains("href=\"new/\""));
+    assert!(server.get("/new/").contains("New page"));
+    assert!(server.get("/").contains("href=\"new/\""));
     assert!(
-        !root.join("target/site").exists(),
-        "preview serves memory artifacts"
+        !root.join("public").exists(),
+        "the server serves memory artifacts"
     );
 }
 
 #[test]
-fn preview_recovers_from_initial_template_errors_and_watches_external_modules() {
+fn serve_requires_output_and_recovers_when_it_is_configured() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "README.md", "# Home");
+    let server = Server::start(root);
+    assert!(server.get("/").starts_with("HTTP/1.1 503"));
+    let mut events = server.events();
+    let failed = update(&mut events, |event| event["error"].is_string());
+    assert_eq!(failed["revision"], 0);
+    assert!(failed["error"].as_str().unwrap().contains("book output"));
+    write(root, "Notist.toml", "[book]\noutput='published'");
+    update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
+    assert!(server.get("/").contains("Home"));
+    assert!(!root.join("published").exists());
+}
+
+#[test]
+fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("vault");
-    write(&root, "Notist.toml", "[site]\ntheme='theme'");
+    write(
+        &root,
+        "Notist.toml",
+        "[book]\noutput='public'\ntheme='theme'",
+    );
     write(
         &root,
         "lib.notc",
@@ -257,9 +347,9 @@ fn preview_recovers_from_initial_template_errors_and_watches_external_modules() 
         "widgets/badge.js",
         "export default class extends HTMLElement { /* before */ }",
     );
-    let preview = Preview::start(&root);
-    assert!(preview.get("/").starts_with("HTTP/1.1 503"));
-    let mut events = preview.events();
+    let server = Server::start(&root);
+    assert!(server.get("/").starts_with("HTTP/1.1 503"));
+    let mut events = server.events();
     update(&mut events, |event| event["error"].is_string());
     write(&root, "theme/index.hbs", "{{page.title}} {{{page.html}}}");
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
@@ -267,7 +357,7 @@ fn preview_recovers_from_initial_template_errors_and_watches_external_modules() 
         "/_notist/modules/{}/badge.js",
         notist_html::components::module_key(temp.path().join("widgets/lib.notc").to_str().unwrap())
     );
-    assert!(preview.get(&path).contains("before"));
+    assert!(server.get(&path).contains("before"));
     write(
         temp.path(),
         "widgets/badge.js",
@@ -276,5 +366,5 @@ fn preview_recovers_from_initial_template_errors_and_watches_external_modules() 
     update(&mut events, |event| {
         event["revision"].as_u64() > good["revision"].as_u64()
     });
-    assert!(preview.get(&path).contains("after"));
+    assert!(server.get(&path).contains("after"));
 }

@@ -1,22 +1,51 @@
-use crate::{
-    Error,
-    routes::{encode_path, relative_url},
-};
-use notist::{Environment, FunctionId, Resources};
+//! Resource planning shared by HTML document exports and book publication.
+//! This module returns owned files; filesystem mutation belongs to the host.
+use self::url::relative_url;
+use crate::{Environment, FunctionId, Resources, resources::ResourceError};
 use notist_html::Component;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
+use std::fmt;
+
+pub mod url;
+
+#[derive(Debug)]
+pub enum Error {
+    Message(String),
+    Resource(ResourceError),
+}
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Message(message) => f.write_str(message),
+            Self::Resource(error) => error.fmt(f),
+        }
+    }
+}
+impl std::error::Error for Error {}
+impl From<ResourceError> for Error {
+    fn from(error: ResourceError) -> Self {
+        Self::Resource(error)
+    }
+}
 /// Exact source identities for published resources, with shared destinations.
 #[derive(Default)]
-pub(crate) struct Assets {
-    pub files: BTreeMap<PathBuf, Vec<u8>>,
+pub struct Assets {
+    files: BTreeMap<PathBuf, Vec<u8>>,
     sources: BTreeMap<PathBuf, PathBuf>,
     output: PathBuf,
 }
 impl Assets {
+    pub fn finish(mut self) -> Result<BTreeMap<PathBuf, Vec<u8>>, Error> {
+        self.generated(
+            "_notist/publication.json".into(),
+            br#"{"format":"notist-publication","version":1}"#.to_vec(),
+        )?;
+        Ok(self.files)
+    }
     pub fn new(output: PathBuf) -> Self {
         Self {
             output,
@@ -61,7 +90,7 @@ impl Assets {
             )));
         }
         match resources.kind(source)? {
-            Some(notist::resources::ResourceKind::Directory) => {
+            Some(crate::resources::ResourceKind::Directory) => {
                 for entry in resources.entries(source)? {
                     self.copy(
                         resources,
@@ -70,7 +99,7 @@ impl Assets {
                     )?;
                 }
             }
-            Some(notist::resources::ResourceKind::File) => {
+            Some(crate::resources::ResourceKind::File) => {
                 let bytes = resources.read(source)?;
                 self.generated(destination.into(), bytes)?;
                 self.sources.insert(destination.into(), source.into());
@@ -140,9 +169,4 @@ impl Assets {
         }
         Ok(registrations)
     }
-}
-
-/// Stable file URL encoding for publication hosts.
-pub fn file_url(path: &Path) -> String {
-    encode_path(path)
 }

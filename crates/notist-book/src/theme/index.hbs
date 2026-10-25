@@ -4,26 +4,26 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>{{page.title}} · {{site.title}}</title>
+  <title>{{page.title}} · {{book.title}}</title>
   <script>try{const t=localStorage.getItem('notist-theme');document.documentElement.dataset.theme=t==='light'||t==='dark'?t:'auto'}catch(e){}</script>
   {{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
-  <script src="{{assets.script}}" defer></script>
+  {{#each assets.scripts}}<script src="{{this}}" defer></script>{{/each}}
 </head>
 <body>
   <a class="skip-link" href="#page-content">Skip to content</a>
   <div id="reading-progress" class="reading-progress" aria-hidden="true"><span></span></div>
-  <header class="site-header">
+  <header class="book-header">
     <div class="header-inner">
-      <a class="site-brand" href="{{site.home}}">{{site.title}}</a>
-      <button id="nav-toggle" class="text-button" type="button" aria-label="Open contents" aria-controls="site-nav" aria-expanded="false">Contents</button>
+      <a class="book-brand" href="{{book.home}}">{{book.title}}</a>
+      <button id="nav-toggle" class="text-button" type="button" aria-label="Open contents" aria-controls="book-nav" aria-expanded="false">Contents</button>
       <button id="theme-toggle" class="text-button" type="button" aria-label="Toggle color theme" title="Toggle color theme"><span class="theme-label">Theme</span></button>
     </div>
   </header>
   <div id="nav-backdrop" class="nav-backdrop" hidden aria-hidden="true"></div>
-  <div class="site-layout">
-    <nav id="site-nav" class="site-navigation" aria-label="Contents">
+  <div class="book-layout">
+    <nav id="book-nav" class="book-navigation" aria-label="Contents">
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
-      <ul class="navigation-tree">{{> navigation navigation}}</ul>
+      <ul class="navigation-tree">{{#each navigation}}{{> navigation this}}{{/each}}</ul>
     </nav>
     <main id="page-content" tabindex="-1">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>
@@ -48,7 +48,7 @@
       <nav id="page-outline" aria-label="Page outline"><p class="rail-label">On this page</p><ol class="outline-list">{{#each outline}}<li data-level="{{level}}"><a data-outline-link href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol></nav>
     </aside>
     {{/if}}
-    <footer class="site-footer"><span>Built with <span class="footer-brand">Notist</span></span><a href="#page-content">Back to top</a></footer>
+    <footer class="book-footer"><span>{{book.title}}</span><a href="#page-content">Back to top</a></footer>
   </div>
   {{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
 </body>

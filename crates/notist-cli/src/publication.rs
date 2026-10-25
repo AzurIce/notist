@@ -1,11 +1,11 @@
-//! Filesystem publication and source tracking shared by build, html and preview.
+//! Filesystem resources and safe publication shared by HTML and books.
 use notist::{
-    FsResources, Resources, Vault,
+    FsResources, Resources,
+    publication::Error,
     resources::{ResourceError, ResourceKind, normalize},
 };
-use notist_ssg::{Error, Site, SiteConfig};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
     sync::Mutex,
 };
@@ -65,61 +65,16 @@ impl Resources for Files {
     }
 }
 
-pub(crate) struct Build {
-    pub site: Site,
-    pub output: PathBuf,
-    pub observed: BTreeSet<PathBuf>,
-}
-pub fn assemble(
-    root: &Path,
-    config: Option<&Path>,
-    output: Option<&Path>,
-    recovery: bool,
-) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    let files = Files::new(root);
-    let mut vault = Vault::new(files);
-    if let Some(config) = config {
-        vault = vault.with_config(normalize(&std::env::current_dir().unwrap().join(config)));
-    }
-
-    let result = (|| {
-        let path = config
-            .map(|path| normalize(&std::env::current_dir().unwrap().join(path)))
-            .unwrap_or_else(|| root.join("Notist.toml"));
-        let mut options = match vault.resources().kind(&path)? {
-            Some(_) => SiteConfig::parse(&vault.resources().source(&path)?)
-                .map_err(|error| Error::Message(format!("{}: {error}", path.display())))?,
-            None if config.is_none() => SiteConfig::default(),
-            None => return Err(ResourceError::NotFound(path).into()),
-        };
-        if let Some(output) = output {
-            options.output = normalize(&std::env::current_dir().unwrap().join(output));
-        }
-        let output = vault.resources().resolve(&options.output);
-        let site = if recovery {
-            notist_ssg::preview(&mut vault, &options)
-        } else {
-            notist_ssg::build(&mut vault, &options)
-        }?;
-        Ok((site, output))
-    })();
-    let observed = vault.resources().observed();
-    match result {
-        Ok((site, output)) => Ok(Build {
-            site,
-            output,
-            observed,
-        }),
-        Err(error) => Err((error, observed)),
-    }
-}
-
 fn io(error: impl std::fmt::Display) -> Error {
     Error::Message(error.to_string())
 }
 /// Stage every file before replacing an owned output directory. A failed build
 /// or publication leaves the previous site intact.
-pub fn publish(site: &Site, output: &Path, root: &Path) -> Result<(), Error> {
+pub fn publish(
+    files: &BTreeMap<PathBuf, Vec<u8>>,
+    output: &Path,
+    root: &Path,
+) -> Result<(), Error> {
     let output = normalize(&std::env::current_dir().map_err(io)?.join(output));
     if root.starts_with(&output) {
         return Err(Error::Message(
@@ -141,11 +96,11 @@ pub fn publish(site: &Site, output: &Path, root: &Path) -> Result<(), Error> {
             return Err(Error::Message("site output must be a directory".into()));
         }
         let empty = std::fs::read_dir(&output).map_err(io)?.next().is_none();
-        let owned = std::fs::read(output.join("_notist/site.json"))
+        let owned = std::fs::read(output.join("_notist/publication.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .is_some_and(|manifest| {
-                manifest["format"] == "notist-site" && manifest["version"] == 1
+                manifest["format"] == "notist-publication" && manifest["version"] == 1
             });
         if !empty && !owned {
             return Err(Error::Message(format!(
@@ -162,7 +117,7 @@ pub fn publish(site: &Site, output: &Path, root: &Path) -> Result<(), Error> {
         .prefix(".notist-stage-")
         .tempdir_in(parent)
         .map_err(io)?;
-    for (relative, bytes) in &site.files {
+    for (relative, bytes) in files {
         if relative.as_os_str().is_empty()
             || relative
                 .components()
@@ -195,34 +150,4 @@ pub fn publish(site: &Site, output: &Path, root: &Path) -> Result<(), Error> {
         return Err(io(error));
     }
     Ok(())
-}
-pub fn report(error: Error) {
-    match error {
-        Error::Diagnostics(errors) => {
-            for error in errors {
-                crate::emit_source(&error.path, &error.source, &[error.diagnostic]);
-            }
-        }
-        error => eprintln!("{error}"),
-    }
-}
-pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
-    let result = (|| {
-        let root = std::fs::canonicalize(root).map_err(io)?;
-        let result = assemble(&root, config, output, false).map_err(|(error, _)| error)?;
-        publish(&result.site, &result.output, &root)?;
-        println!(
-            "{} pages → {}",
-            result.site.pages.len(),
-            result.output.display()
-        );
-        Ok::<_, Error>(())
-    })();
-    match result {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            report(error);
-            std::process::ExitCode::FAILURE
-        }
-    }
 }

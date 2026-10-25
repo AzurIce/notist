@@ -19,7 +19,7 @@
 - [内容函数与输出绑定](designs/content-functions.not)：原生内容函数的 HTML 绑定、组件参数协议与呈现生命周期。
 - [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
-- [Static Site Generation](ssg.not)：站点配置、README 路由、SUMMARY.not 阅读结构、主题、构建流程与本地预览。
+- [Notist Book](book.not)：书籍配置、README 路由、SUMMARY.not 阅读结构、主题、构建流程与本地预览。
 - [Draft](draft.not)：尚未确定的设计。
 
 语法规则使用 Grammar Notation 表达；类型与字面量归 Types，具体函数及其语法糖归 Builtin，其他共用规则归 Syntax。函数小节引用共用规则，不重复定义。

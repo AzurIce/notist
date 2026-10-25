@@ -1,7 +1,7 @@
-//! HTTP preview serves the same publication artifact produced by static builds.
-use crate::site;
+//! HTTP server for the same publication artifact produced by static builds.
+use crate::book;
 use notify::{RecursiveMode, Watcher};
-use notist_ssg::{Error, Site};
+use notist_book::{BuildOutput, Error};
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -13,19 +13,19 @@ use std::{
 use tiny_http::{Header, Method, Request, Response, Server};
 
 struct Published {
-    site: Option<Arc<Site>>,
+    site: Option<Arc<BuildOutput>>,
     revision: u64,
     event: u64,
     error: Option<String>,
 }
 type State = Arc<RwLock<Published>>;
-const CLIENT: &str = include_str!("preview.js");
+const CLIENT: &str = include_str!("serve.js");
 
 pub fn serve(root: &Path, config: Option<&Path>, address: &str) -> std::process::ExitCode {
     match run(root, config, address) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            site::report(error);
+            book::report(error);
             std::process::ExitCode::FAILURE
         }
     }
@@ -51,7 +51,7 @@ fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
         .map_err(|error| Error::Message(error.to_string()))?;
     let mut observed = BTreeSet::new();
     let mut watched = BTreeSet::new();
-    let mut output = root.join("target/site");
+    let mut output = None;
     rebuild(&root, config.as_deref(), &state, &mut observed, &mut output);
     watch_external(&mut watcher, &root, &observed, &mut watched)?;
     let shared = state.clone();
@@ -63,7 +63,10 @@ fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
                 Ok(event) => {
                     !matches!(event.kind, notify::EventKind::Access(_))
                         && event.paths.iter().any(|path| {
-                            if path.starts_with(&output) {
+                            if output
+                                .as_ref()
+                                .is_some_and(|output| path.starts_with(output))
+                            {
                                 return false;
                             }
                             if let Ok(relative) = path.strip_prefix(&watcher_root) {
@@ -101,11 +104,11 @@ fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
             );
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
-                site::report(error);
+                book::report(error);
             }
         }
     });
-    println!("preview http://{}/", server.server_addr());
+    println!("serve http://{}/", server.server_addr());
     std::io::stdout()
         .flush()
         .map_err(|error| Error::Message(error.to_string()))?;
@@ -120,26 +123,26 @@ fn rebuild(
     config: Option<&Path>,
     state: &State,
     observed: &mut BTreeSet<PathBuf>,
-    output: &mut PathBuf,
+    output: &mut Option<PathBuf>,
 ) {
-    let result = site::assemble(root, config, None, true);
+    let result = book::assemble(root, config, None, true);
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {
         Ok(result) => {
             *observed = result.observed;
-            *output = result.output;
-            if !result.site.diagnostics.is_empty() {
-                site::report(Error::Diagnostics(result.site.diagnostics.clone()));
+            *output = Some(result.output);
+            if !result.artifact.diagnostics.is_empty() {
+                book::report(Error::Diagnostics(result.artifact.diagnostics.clone()));
             }
-            published.site = Some(Arc::new(result.site));
+            published.site = Some(Arc::new(result.artifact));
             published.revision += 1;
             published.error = None;
         }
         Err((error, inputs)) => {
             *observed = inputs;
             published.error = Some(error.to_string());
-            site::report(error);
+            book::report(error);
         }
     }
 }
@@ -202,11 +205,11 @@ fn respond(request: Request, state: State) {
         simple(request, 400, b"Invalid URL".to_vec(), "text/plain");
         return;
     }
-    if path == Path::new("_notist/preview/events") && request.method() == &Method::Get {
+    if path == Path::new("_notist/serve/events") && request.method() == &Method::Get {
         events(request, state);
         return;
     }
-    if path == Path::new("_notist/preview/client.js") {
+    if path == Path::new("_notist/serve/client.js") {
         simple(
             request,
             200,
@@ -220,8 +223,8 @@ fn respond(request: Request, state: State) {
         let revision = published.revision;
         drop(published);
         let html = format!(
-            "<!doctype html><title>Notist preview</title><p>Waiting for a successful build…</p><script type=\"module\" src=\"{}\"></script>",
-            preview_url(
+            "<!doctype html><title>Notist serve</title><p>Waiting for a successful build…</p><script type=\"module\" src=\"{}\"></script>",
+            serve_url(
                 &if decoded.ends_with('/') {
                     path.join("index.html")
                 } else {
@@ -237,7 +240,7 @@ fn respond(request: Request, state: State) {
     if decoded.ends_with('/') {
         file.push("index.html");
     } else if site.files.contains_key(&file.join("index.html")) {
-        let url = format!("/{}/", notist_ssg::file_url(&file));
+        let url = format!("/{}/", notist::publication::url::encode_path(&file));
         let _ = request.respond(Response::empty(308).with_header(header("Location", &url)));
         return;
     }
@@ -269,7 +272,7 @@ fn respond(request: Request, state: State) {
         let html = String::from_utf8_lossy(&bytes);
         let script = format!(
             "<script type=\"module\" src=\"{}\"></script>",
-            preview_url(&file, revision)
+            serve_url(&file, revision)
         );
         bytes = if let Some(offset) = html.rfind("</body>") {
             format!("{}{}{}", &html[..offset], script, &html[offset..]).into_bytes()
@@ -279,9 +282,9 @@ fn respond(request: Request, state: State) {
     }
     simple(request, 200, bytes, mime(&file));
 }
-fn preview_url(file: &Path, revision: u64) -> String {
+fn serve_url(file: &Path, revision: u64) -> String {
     format!(
-        "{}{}_notist/preview/client.js?v={revision}",
+        "{}{}_notist/serve/client.js?v={revision}",
         "../".repeat(file.parent().unwrap_or(Path::new("")).components().count()),
         if file
             .parent()

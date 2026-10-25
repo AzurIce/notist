@@ -1,11 +1,9 @@
 //! SUMMARY.not: an optional declarative site structure at the Vault root.
 //!
 //! The file is interpreted as data, never evaluated or rendered: an optional
-//! title heading followed by a single list. A list item is either a link to a
-//! published document (its text overrides the navigation title) or a plain
-//! label forming a group; a nested list declares children. A link with an
-//! empty target declares a draft entry without a page; a trailing slash
-//! discovers published pages recursively under a directory.
+//! document title, unnumbered prefix/suffix links, part headings, chapter lists
+//! and separators follow mdBook's SUMMARY structure. Directory discovery,
+//! plain groups and collapsed branches extend the chapter-list syntax.
 use notist::{Ctor, Diagnostic, Item, Phase, Resources, TextRange, Value, resources::ResourceKind};
 use std::{
     collections::BTreeSet,
@@ -14,7 +12,7 @@ use std::{
 
 use crate::{
     routes::{self, Routes},
-    structure,
+    structure::{self, NavigationKind},
 };
 
 pub(crate) const FILE_NAME: &str = "SUMMARY.not";
@@ -23,6 +21,8 @@ pub(crate) const FILE_NAME: &str = "SUMMARY.not";
 /// group label; an empty target is a draft entry.
 #[derive(Debug)]
 pub(crate) struct Entry {
+    pub kind: NavigationKind,
+    pub numbered: bool,
     pub label: Option<String>,
     pub target: Option<String>,
     pub collapsed: bool,
@@ -37,6 +37,8 @@ enum Target {
 }
 
 struct Resolved {
+    kind: NavigationKind,
+    numbered: bool,
     label: Option<String>,
     target: Target,
     collapsed: bool,
@@ -146,6 +148,16 @@ fn interpret_label(
     }
 }
 
+fn chapter_list(list: &Item, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
+    if matches!(list.fields.get("ordered"), Some(Value::Bool(true))) {
+        errors.push(diagnostic(list.span, "structure chapter lists use the `-` marker; chapter numbers are assigned automatically"));
+    }
+    list.children
+        .iter()
+        .filter_map(|item| entry(item, errors))
+        .collect()
+}
+
 fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
     if item.ctor != Ctor::ListItem {
         errors.push(diagnostic(
@@ -192,14 +204,15 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
     };
     let (label, target) = interpret_label(label, errors)?;
     let children = nested
-        .map(|list| {
-            list.children
-                .iter()
-                .filter_map(|item| entry(item, errors))
-                .collect()
-        })
+        .map(|list| chapter_list(list, errors))
         .unwrap_or_default();
     Some(Entry {
+        kind: match target.as_deref() {
+            None => NavigationKind::Group,
+            Some("") => NavigationKind::Draft,
+            Some(_) => NavigationKind::Chapter,
+        },
+        numbered: true,
         label,
         target,
         collapsed,
@@ -215,31 +228,107 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
         flatten(child, &mut blocks);
     }
     let mut errors = vec![];
-    let mut list = None;
+    let mut entries = vec![];
+    let mut numbered = false;
+    let mut suffix = false;
     for (index, block) in blocks.iter().enumerate() {
         match block.ctor {
-            Ctor::Heading if index == 0 => {}
-            Ctor::List if list.is_none() => list = Some(*block),
+            Ctor::Heading => {
+                if matches!(block.fields.get("level"), Some(Value::Int(1))) && index != 0 {
+                    if suffix {
+                        errors.push(diagnostic(
+                            block.span,
+                            "part titles cannot follow suffix chapters",
+                        ));
+                    }
+                    let label = text_of(block);
+                    if label.is_empty() {
+                        errors.push(diagnostic(block.span, "part titles must not be empty"));
+                    }
+                    entries.push(Entry {
+                        kind: NavigationKind::Part,
+                        numbered: false,
+                        label: Some(label),
+                        target: None,
+                        collapsed: false,
+                        span: block.span,
+                        children: vec![],
+                    });
+                }
+            }
+            Ctor::Divider => entries.push(Entry {
+                kind: NavigationKind::Separator,
+                numbered: false,
+                label: None,
+                target: None,
+                collapsed: false,
+                span: block.span,
+                children: vec![],
+            }),
+            Ctor::List => {
+                if suffix {
+                    errors.push(diagnostic(
+                        block.span,
+                        "numbered chapters cannot follow suffix chapters",
+                    ));
+                }
+                numbered = true;
+                entries.extend(chapter_list(block, &mut errors));
+            }
+            Ctor::Paragraph => {
+                let links: Vec<_> = block
+                    .children
+                    .iter()
+                    .filter(|child| !blank(child))
+                    .collect();
+                if links.is_empty() || links.iter().any(|link| link.ctor != Ctor::Link) {
+                    errors.push(diagnostic(
+                        block.span,
+                        "prefix and suffix chapters must contain only standalone links",
+                    ));
+                    continue;
+                }
+                suffix |= numbered;
+                for link in links {
+                    let target = match link.fields.get("target") {
+                        Some(Value::Str(target)) => target.clone(),
+                        _ => String::new(),
+                    };
+                    if target.ends_with('/') {
+                        errors.push(diagnostic(link.span, "prefix and suffix chapters must reference a single document, not a directory"));
+                    }
+                    let label = text_of(link);
+                    entries.push(Entry {
+                        kind: if target.is_empty() {
+                            NavigationKind::Draft
+                        } else {
+                            NavigationKind::Chapter
+                        },
+                        numbered: false,
+                        label: (!label.is_empty()).then_some(label),
+                        target: Some(target),
+                        collapsed: false,
+                        span: link.span,
+                        children: vec![],
+                    });
+                }
+            }
             _ => errors.push(diagnostic(
                 block.span,
-                "site structure allows only an optional title heading and a single list",
+                "structure allows only headings, chapter links, chapter lists and separators",
             )),
         }
     }
-    let Some(list) = list else {
-        if errors.is_empty() {
-            errors.push(diagnostic(
-                document.span,
-                "site structure declares no entries",
-            ));
-        }
-        return Err(errors);
-    };
-    let entries = list
-        .children
+    if entries
         .iter()
-        .filter_map(|item| entry(item, &mut errors))
-        .collect();
+        .all(|entry| matches!(entry.kind, NavigationKind::Part | NavigationKind::Separator))
+        && errors.is_empty()
+    {
+        errors.push(diagnostic(
+            document.span,
+            "site structure declares no entries",
+        ));
+    }
     if errors.is_empty() {
         Ok(entries)
     } else {
@@ -334,6 +423,8 @@ pub(crate) fn resolve<R: Resources>(
             },
         };
         Resolved {
+            kind: entry.kind,
+            numbered: entry.numbered,
             label: entry.label.clone(),
             target,
             collapsed: entry.collapsed,
@@ -376,6 +467,8 @@ pub(crate) fn resolve<R: Resources>(
                 discovered
             }
             target => structure::Entry {
+                kind: entry.kind,
+                numbered: entry.numbered,
                 label: entry.label,
                 collapsed: entry.collapsed,
                 source: match target {

@@ -796,12 +796,28 @@ dependencies = [
  "notist-html",
  "notist-pipeline",
  "notist-syntax",
+ "percent-encoding",
  "rowan",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "notist-book"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "handlebars",
+ "notist",
+ "notist-html",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -812,8 +828,8 @@ dependencies = [
  "codespan-reporting",
  "notify",
  "notist",
+ "notist-book",
  "notist-html",
- "notist-ssg",
  "percent-encoding",
  "serde_json",
  "tempfile",
@@ -855,21 +871,6 @@ dependencies = [
  "notist-syntax",
  "rowan",
  "rushdown",
-]
-
-[[package]]
-name = "notist-ssg"
-version = "0.1.0"
-dependencies = [
- "globset",
- "handlebars",
- "notist",
- "notist-html",
- "percent-encoding",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
 ]
 
 [[package]]

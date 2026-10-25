@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; font: 16px/1.65 system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.prose { max-width: 800px; margin: 0 auto; padding: 40px 24px 64px; overflow-wrap: anywhere; }
+h1, h2, h3, h4 { line-height: 1.3; }
+a { color: light-dark(#245ac0, #8fbaff); text-underline-offset: .2em; }
+pre { padding: 18px; overflow: auto; background: light-dark(#f4f5f7, #202329); border-radius: 6px; }
+pre code { white-space: pre; }
+code { font: .875em/1.6 ui-monospace, monospace; }
+img, video, svg { max-width: 100%; height: auto; }
+table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+th, td { padding: 8px 12px; border: 1px solid light-dark(#dfe2e7, #353a43); }
+blockquote { margin-inline: 0; padding-inline-start: 20px; border-inline-start: 3px solid #8b9099; }
+@media print { :root { color-scheme: light; } pre, pre code { white-space: pre-wrap; overflow-wrap: anywhere; } }

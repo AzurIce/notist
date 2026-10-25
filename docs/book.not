@@ -1,0 +1,249 @@
+= Notist Book
+
+notist-book 将 Vault 中的文档组织为章节，并构建可阅读的 HTML 书籍。它负责阅读结构、章节路由、跨章链接与主题，资源与环境装配由 notist 提供，HTML 内容渲染由 notist-html 提供。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、函数映射与求值、HTML 渲染的职责分别见 [Markup 管线](designs/pipeline/markup.not)、[函数映射与求值](designs/transforms.not) 与 [HTML Rendering](html.not)。
+
+书籍发布有三个独立的组织维度：[book] 的 include / exclude 选择发布哪些页面，源文件路径决定页面 URL，SUMMARY.not 声明阅读层级与顺序。调整阅读顺序只需修改 SUMMARY.not；移动源文件则会改变 URL，也需要更新指向它的链接。
+
+== 命令与配置
+
+```sh
+notist book build path/to/vault
+notist book build path/to/vault --out-dir path/to/output
+notist book serve path/to/vault --address 127.0.0.1:8000
+```
+
+Vault 默认为当前目录。build 写入完整站点；serve 在内存中生成相同产物，通过 HTTP 提供页面与资源，并监听输入变化。预览构建失败时保留上一次成功页面，同时显示诊断；修复后自动刷新。首次构建失败时提供等待页面。
+
+Vault 根目录的 Notist.toml 可包含书籍配置：
+
+#raw<BlockContent>(r#"""
+[book]
+title = "My Book"
+include = ["**"]
+exclude = ["drafts/**", "**/AGENTS.md"]
+output = "target/book"
+theme = "theme"
+"""#, lang: "toml")
+
+include 默认为所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 没有默认值：必须配置 [book].output，或在 build 时通过 --out-dir 显式指定；serve 需要 [book].output。theme 默认使用内置主题。配置路径相对于 Vault；命令行 --out-dir 相对于当前工作目录，并覆盖配置中的 output。
+
+include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md 匹配任意目录（包含根目录）。不使用 gitignore 的无斜杠简写或 ! 重新包含规则。无效 glob 使构建失败。
+
+[book] 配置章节发现与展示；Notist.toml 的每条 transforms 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
+
+build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/publication.json（format 为 notist-publication，version 为 1）；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
+
+== 路由与导航
+
+以下源路径相对于 Vault 根目录：
+
+| 源文件 | URL | 输出文件 |
+| --- | --- | --- |
+| README.not | / | index.html |
+| guide/README.md | /guide/ | guide/index.html |
+| guide/start.not | /guide/start/ | guide/start/index.html |
+
+README 的匹配区分大小写。所有已注册文档前端使用相同规则；路径段进行 URL 编码。标题不改变 URL。同一个输出路径出现多个文档时报告冲突，例如 README.not 与 README.md，或 guide.not 与 guide/README.md。
+
+没有 SUMMARY.not 时，导航按目录层次与文件名自然排序，目录首页先于其子页面；目录均为带编号的章节节点，没有 README 时保留无链接的章节标题。页面标题取首个 heading，无 heading 时使用文件名，根首页回退到站点标题。
+
+默认主题采用品牌中性的白色／深灰色背景、蓝色链接与系统无衬线字体，提供响应式导航、面包屑、上一篇 / 下一篇、随滚动高亮的页内目录、阅读进度和代码复制；明暗主题在用户明确选择前跟随系统。serve 在缺少根首页时将 / 重定向到第一个实际页面。
+
+== SUMMARY.not：阅读结构
+
+在 Vault 根目录手工创建 SUMMARY.not，即可用显式声明取代目录派生导航。文件名固定，build 与 serve 都不会自动创建它；不存在时使用上述默认排序。Notist Book 单独读取这个文件，即使 include / exclude 没有选中它也会生效；它始终从正文页面中排除，不能作为站内页面链接的目标。
+
+结构语义对齐 [mdBook SUMMARY](https://rust-lang.github.io/mdBook/format/summary.html)，使用 .not 的标题、列表、链接与分隔线语法：
+
+```not
+= 目录
+
+[首页](README.not)
+
+= 入门
+
+- [开始使用](guide/start.not)
+  - [进阶](guide/advanced.md)
+
+= 参考
+
+- [参考](reference.not)
+- [计划中的章节]()
+
+---
+
+[贡献者](contributors.not)
+```
+
+支持以下结构元素：
+
+- 文件标题：开头可写一个 `= 目录`，仅说明结构文件，不设置书名；省略也可。后续的一级标题作为分节标题，其他标题级别忽略。
+- 前置章节：首个章节列表之前的独立链接，例如 `[首页](README.not)`，只在顶层显示，不编号。
+- 分节标题：`= 入门` 为后续章节添加不可点击的视觉分隔，章节仍保持原来的层级，编号跨分节连续，分节标题不进入面包屑。
+- 编号章节：`- [开始使用](guide/start.not)`，嵌套列表声明子章节。编号自动生成，例如 1、1.1、2；.not 的章节列表统一使用减号，无须手写编号。
+- 后置章节：章节列表之后的独立链接，不编号。进入后置章节后只能继续写独立链接和分隔线。
+- 草稿章节：空目标链接，例如 `- [计划中的章节]()`，在导航中显示为不可用链接，保留其编号，不生成页面或源文件，也不参与上一篇 / 下一篇。
+- 分隔线：独占一行的至少三个减号 `---`，可以放在顶层元素之前、之间或之后，在导航中显示横线。
+
+章节链接指向相对于 SUMMARY.not 的已发布源文件，可以混合 .not 与 Markdown。链接文字覆盖导航和面包屑标题；文字为空时使用页面标题。页面正文和上一篇 / 下一篇保留页面自身标题。
+
+导航与面包屑严格跟随章节列表的缩进，顶层条目互为同级；首页也遵循相同规则。上一篇 / 下一篇按深度优先前序遍历实际页面，跳过分节、分隔线、分组、草稿及无内容的目录章节。上例的页面顺序为：首页 → 开始使用 → 进阶 → 参考 → 贡献者；编号为：开始使用 1、进阶 1.1、参考 2、计划中的章节 3。进阶页的面包屑为：开始使用 → 进阶，URL 保持 /guide/advanced/。
+
+Notist Book 在编号章节列表中支持两种扩展：纯文字标签声明分组，其子章节继续编号；目录链接如 `[历史记录](_logs/)` 自动发现已选中的页面。分组自身不占编号。目录自动发现和 collapsed 注解见下文。前后置章节只接受单文档链接。
+
+所有选中发布的页面必须恰好出现一次，可以显式登记，也可以由目录条目覆盖；尚不准备发布的文档通过 [book] 的 include / exclude 排除。空目标草稿不会排除同名源文件。未覆盖或重复页面、重复目录、无效目标、外部 URL、query / fragment、普通段落、不支持的结构或后置章节之后出现编号章节都会使构建失败；serve 执行相同校验。
+
+=== 目录自动发现
+
+适合持续增长的归档或参考资料目录，可以与手工编排的章节混用：
+
+```not
+- [首页](README.not)
+- 入门
+  - [开始使用](guide/start.not)
+- [历史记录](_logs/)
+```
+
+目录条目沿用默认导航的目录层级与文件名自然排序，例如 entry2 排在 entry10 前。目录中的已发布 README 合并为该分支首页，其子页面随后排列；没有 README 时保留无链接的章节节点，同样占用编号，子章节在其编号下继续，例如 12、12.1、12.2。补上 README 后绑定内容与页面 URL，原编号层级保持不变。链接文字覆盖分支标题；文字为空时使用首页标题，没有首页则使用目录名。新增目录内的页面后，无需再修改 SUMMARY.not。
+
+目录发现仅消费 [book] 已选中的发布页面，不会重新纳入被 include / exclude 排除的文档，也不会纳入隐藏文件、输出产物或 SUMMARY.not。目录外的新页面仍需由其他条目覆盖；发现不会改变页面 URL。
+
+显式页面条目优先：无论出现在目录条目之前、之后还是嵌套在其中，页面都留在显式声明的位置，自动发现时跳过。同一页面显式声明两次仍报错。目录条目附带的手工子条目排在自动子树之前；若其 README 已显式放到别处，该目录条目保留为无链接的编号章节，子章节仍在其编号下排列。
+
+不同目录条目范围重叠时，更具体的目录优先，例如 `_logs/2026/` 接管其页面，`_logs/` 发现其余页面，与声明先后无关。同一规范目录不能重复声明；需要覆盖 Vault 其余页面时可使用 `./`。目录条目只支持目录路径，不提供 glob 或单独的排序配置。
+
+=== 分支折叠
+
+默认主题中，有子项的分支都可以手动折叠，初始状态默认展开。在条目的标签前紧邻添加 `@(collapsed: true)`，可让该分支默认折叠，例如：
+
+```not
+- [入门](guide/)
+- @(collapsed: true)[历史记录](_logs/)
+```
+
+折叠与目录发现相互独立：注解也适用于有手工子条目的页面、分组或草稿。纯文字分组使用独占行的块注解：
+
+```not
+- @(collapsed: true)
+  参考资料
+  - [语法](syntax.not)
+```
+
+`collapsed` 必须是 Bool，省略或为 false 时默认展开；没有子项时不显示折叠控件。
+
+每次加载页面时，当前页面及其祖先分支自动展开，覆盖默认折叠设置；其他分支使用各自的声明默认值。读者随后可以自由展开或收起，不跨页面记忆操作状态。带链接的标题负责跳转，旁边箭头负责切换；无链接的目录章节与纯分组整行可以切换。折叠采用原生 HTML 控件，支持键盘操作，关闭 JavaScript 后仍可使用。
+
+有内容页的章节使用正常文字颜色，无页面的编号章节与草稿使用较淡文字；各状态使用相同的章节排版。当前页面通过强调色与背景突出，鼠标悬停使用浅背景反馈。
+
+侧栏滚动位置按书籍在当前标签页内保存，跳转章节、刷新或重新打开移动端目录时恢复。当前章节已经可见时保持原位置；否则只滚动到可见区域。浏览器存储不可用时仍会定位当前章节。
+
+SUMMARY.not 经过文档分析后按结构数据解释，不进入求值、输出转换或 HTML 渲染。因此直接写列表即可，无需 `#toc`、额外函数声明或 Web Component，也不支持用代码求值动态生成目录。当前仓库的 docs/SUMMARY.not 展示了完整的站点阅读结构。
+
+== 链接、锚点与资源
+
+link 与 embed 的本地目标相对于源文档解析。指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。远程 URL 保留，URL 安全检查仍由 renderer 执行。求值后的错误节点保留原身份与字段，Notist Book 按错误表示呈现，跳过其链接、资源及标题解释。
+
+输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
+
+本地正文与资源必须在 Vault 内。排除或未选中的正文不能成为发布链接目标，缺失资源和不存在的锚点产生源码诊断。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
+
+导入的 Code 模块及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/modules/；各页面只注册自己使用的组件。资源计划与资源 URL 编码由 notist.publication 提供，单文档导出与书籍构建共享这套能力。资源按规范模块身份分目录；不同目录的同名模块可以共存。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
+
+== Handlebars 主题
+
+主题支持三层定制：通过 CSS 变量调整配色、字体与阅读宽度；通过 additional-css / additional-js 追加文件；通过 theme 目录覆盖模板与默认资源。
+
+```toml
+[book]
+title = "Project Handbook"
+output = "public"
+additional-css = ["styles/palette.css", "styles/content.css"]
+additional-js = ["scripts/reader.js"]
+# theme = "theme"
+```
+
+附加路径相对于 Vault 根目录，必须指向 Vault 内的文件；文件按相同相对路径复制到发布目录。CSS 在默认样式与主题目录样式之后按声明顺序加载，JS 在默认 book.js 之后按声明顺序以 defer 加载。预览监听这些文件的变化。源路径与输出目录不得重叠；依赖的图片、字体等资源可放入主题的 assets/ 中统一发布。
+
+轻量定制可只写一个样式表，例如 styles/palette.css：
+
+```css
+:root {
+  --accent: #6d28d9;
+  --font-reading: system-ui, sans-serif;
+  --reading-width: 780px;
+}
+:root[data-theme="dark"] { --accent: #c4b5fd; }
+```
+
+配色变量还包括 --bg、--fg、--muted、--line、--code、--surface、--selection；--font-ui 与 --font-code 分别控制界面和代码字体。默认明暗配色基于系统偏好；覆写深色配色时，可结合 prefers-color-scheme 与 data-theme 显式选择规则。
+
+模板引擎使用 Handlebars。自定义主题目录可以覆盖 index.hbs、navigation.hbs、navigation-label.hbs，或添加其他 .hbs partial；模板名是相对路径去掉 .hbs。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
+
+默认资源包含独立的 status.css，为 draft、staged 与 outdate 注解提供样式。主题可通过同名资源覆盖，规则见 [HTML 内容状态](html.not#内容状态)。
+
+```text
+theme/
+├── index.hbs
+├── title.hbs
+└── assets/
+    ├── book.css
+    └── extra.css
+```
+
+模板上下文固定包含以下字段；无目标时 url、previous、next、assets.components 使用 null，数组可以为空：
+
+| 字段 | 内容 |
+| --- | --- |
+| book | title、home（当前页面相对首页 URL） |
+| page | title、url（规范目录 URL）、source（Vault 相对源路径）、html（渲染正文） |
+| navigation | 顶层节点数组，每个节点包含 kind（chapter / group / draft / part / separator）、number（如 1.2，或 null）、title、url、current、expanded、children；expanded 结合默认设置与当前路径决定 |
+| breadcrumbs | 同样的节点字段组成的祖先序列；expanded 为 true，children 为空；分节与分隔线不进入此序列 |
+| outline | title、id、anchor（编码后的 fragment）、level 组成的标题序列 |
+| previous / next | title、url，或 null |
+| assets | styles（CSS URL 数组）、scripts（主题与附加脚本 URL 数组）、components（页面注册脚本 URL，或 null） |
+
+```handlebars
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}} · {{book.title}}</title>
+{{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
+{{#each assets.scripts}}<script src="{{this}}" defer></script>{{/each}}
+</head><body>
+{{> title page}}
+<article>{{{page.html}}}</article>
+{{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
+</body></html>
+```
+
+普通插值转义 HTML，渲染后的 page.html 使用三重花括号。未定义字段与模板语法错误使构建失败。模板上下文属于 Notist；入口名沿用 mdBook 的 index.hbs，mdBook 的主题上下文不直接兼容。
+
+== Library 接口
+
+```rust
+let mut vault = notist::Vault::new(resources);
+let config = notist_book::BookConfig::new("public");
+let output = notist_book::build(&mut vault, &config)?;
+// output.pages 按阅读顺序保存页面来源、路由、标题和 headings；
+// output.files 保存相对输出路径及完整字节，可交给任意发布宿主。
+```
+
+serve 使用与 build 相同的参数和返回类型，在内存中构建并将可恢复的 Code 错误呈现为诊断节点；HTTP 服务与文件监听由 CLI 提供。
+
+notist-book 通过 Resources 读取逻辑输入，生成拥有全部字节的 BuildOutput，不直接写文件或启动服务器。build 的主要步骤为：
+
+1. 根据站点配置发现正文，移除根目录 SUMMARY.not，并从源路径建立路由，检查输出冲突。
+2. 若存在 SUMMARY.not，单独分析并解释其列表，将目标解析到已发布页面或目录；先登记全部显式条目，再从已发布路由展开目录子树。
+3. 对每篇正文执行一次分析，校验索引与显式 id；按文档环境中的函数映射选择实现，求值得到独立的表示树，再准备页面标题、锚点与页内目录。
+4. 从声明结构或目录结构建立导航树；存在声明结构时检查页面是否全部列入。树同时提供面包屑、上一篇 / 下一篇与 BuildOutput.pages 顺序。
+5. 校验跨页链接、fragment 与资源，为求值后的树绑定 HTML 实现并渲染，再用主题模板生成完整页面，收集组件与静态资源。
+
+返回的 BuildOutput.files 包含页面、主题资源、组件资源和 _notist/publication.json 发布清单。任何错误都不返回部分站点。
+
+serve 保留已被内容边界恢复的错误及其诊断，呈现错误节点和其余独立内容；恢复状态不取决于诊断产生阶段。环境、路由、资源及其他未恢复错误仍阻止站点生成。
+
+CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部模块 / 配置资源；搜索索引、整书打印页等书籍能力可在本层扩展；当前按整书重新构建。
+
+== GitHub Pages
+
+仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块 的 recipe 构建 WASM，再运行 notist book build docs，上传 target/book 并部署到 GitHub Pages。docs/ 是 Vault 根目录，配置位于 docs/Notist.toml，output = "../target/book"；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+
+push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

@@ -64,13 +64,13 @@ jobs:
           NOTIST_WASM_BINDGEN: ${{ runner.temp }}/wasm-bindgen/bin/wasm-bindgen
         run: nix develop -c just --justfile modules/grammar/justfile build
 
-      - name: Build site
-        run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- build docs
+      - name: Build book
+        run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- book build docs
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: target/site
+          path: target/book
 
   deploy:
     name: Deploy documentation

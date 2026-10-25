@@ -1,4 +1,4 @@
-//! Vault-scoped static site planning and rendering. IO is supplied by Resources;
+//! Chapter discovery, navigation and HTML book rendering over a Vault.
 //! the result is an owned publication artifact, not a filesystem mutation.
 use notist::resources::{ResourceError, ResourceKind};
 use notist::{
@@ -12,7 +12,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod assets;
 mod config;
 mod layout;
 mod outline;
@@ -20,14 +19,14 @@ mod routes;
 mod structure;
 mod summary;
 mod theme;
-use assets::Assets;
-pub use assets::file_url;
-pub use config::SiteConfig;
+pub use config::BookConfig;
 use layout::Layout;
 pub use layout::{Navigation, PageLink};
+use notist::publication::{self, Assets};
 pub use outline::Heading;
 use outline::Outline;
 pub use routes::{Route, Routes};
+pub use structure::NavigationKind;
 use theme::Theme;
 
 #[derive(Debug)]
@@ -86,7 +85,7 @@ pub struct Page {
 }
 /// Fully validated files. A failed build returns no partial publication.
 #[derive(Debug)]
-pub struct Site {
+pub struct BuildOutput {
     pub files: BTreeMap<PathBuf, Vec<u8>>,
     pub pages: Vec<Page>,
     pub diagnostics: Vec<SourceDiagnostic>,
@@ -148,7 +147,7 @@ fn append(
     );
 }
 
-fn discover<R: Resources>(vault: &Vault<R>, config: &SiteConfig) -> Result<Vec<PathBuf>, Error> {
+fn discover<R: Resources>(vault: &Vault<R>, config: &BookConfig) -> Result<Vec<PathBuf>, Error> {
     let globs = |patterns: &[String]| {
         let mut builder = globset::GlobSetBuilder::new();
         for pattern in patterns {
@@ -157,7 +156,7 @@ fn discover<R: Resources>(vault: &Vault<R>, config: &SiteConfig) -> Result<Vec<P
                     .literal_separator(true)
                     .build()
                     .map_err(|error| {
-                        Error::Message(format!("invalid site glob `{pattern}`: {error}"))
+                        Error::Message(format!("invalid book glob `{pattern}`: {error}"))
                     })?,
             );
         }
@@ -213,21 +212,27 @@ fn discover<R: Resources>(vault: &Vault<R>, config: &SiteConfig) -> Result<Vec<P
 
 /// Analyze each selected document once, validate routes/references, then render
 /// transformed trees with one shared outline and resource publication plan.
-pub fn build<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<Site, Error> {
+pub fn build<R: Resources>(
+    vault: &mut Vault<R>,
+    config: &BookConfig,
+) -> Result<BuildOutput, Error> {
     build_inner(vault, config, false)
 }
 
 /// Render recoverable Code failures as error nodes while retaining strict
 /// routing, resource, configuration and publication checks.
-pub fn preview<R: Resources>(vault: &mut Vault<R>, config: &SiteConfig) -> Result<Site, Error> {
+pub fn serve<R: Resources>(
+    vault: &mut Vault<R>,
+    config: &BookConfig,
+) -> Result<BuildOutput, Error> {
     build_inner(vault, config, true)
 }
 
 fn build_inner<R: Resources>(
     vault: &mut Vault<R>,
-    config: &SiteConfig,
+    config: &BookConfig,
     recover: bool,
-) -> Result<Site, Error> {
+) -> Result<BuildOutput, Error> {
     let mut sources = discover(vault, config)?;
     let root = vault.resources().root().to_path_buf();
     let summary_path = root.join(summary::FILE_NAME);
@@ -356,7 +361,7 @@ fn build_inner<R: Resources>(
                     unlisted.join(", ")
                 )));
             }
-            Layout::declared(&config.title, entries, &pages)
+            Layout::declared(entries, &pages)
         }
         None => Layout::new(&config.title, &pages),
     };
@@ -402,7 +407,7 @@ fn build_inner<R: Resources>(
                         if path == page.route.source {
                             String::new()
                         } else {
-                            routes::relative_url(
+                            notist::publication::url::relative_url(
                                 &page.route.output,
                                 route.output.parent().unwrap(),
                                 true,
@@ -437,12 +442,16 @@ fn build_inner<R: Resources>(
                             continue;
                         }
                         assets.copy(vault.resources(), &path, destination)?;
-                        routes::relative_url(&page.route.output, destination, false)
+                        notist::publication::url::relative_url(
+                            &page.route.output,
+                            destination,
+                            false,
+                        )
                     };
                     url.push_str(&query);
                     if let Some(anchor) = fragment {
                         url.push('#');
-                        url.push_str(&routes::fragment(&anchor));
+                        url.push_str(&notist::publication::url::fragment(&anchor));
                     }
                     if url.is_empty() {
                         url.push_str("./");
@@ -479,12 +488,12 @@ fn build_inner<R: Resources>(
         };
         let (previous, next) = layout.adjacent(&page.route.output, &pages);
         let context = serde_json::json!({
-            "site":{"title":config.title,"home":layout.home_url(&page.route.output)},
+            "book":{"title":config.title,"home":layout.home_url(&page.route.output)},
             "page":{"title":page.outline.title,"url":page.route.url,"source":page.route.source.strip_prefix(&root).unwrap(),"html":rendered.html},
             "navigation":layout.navigation(&page.route.output),"breadcrumbs":layout.breadcrumbs(&page.route.output),
-            "outline":page.outline.headings.iter().map(|heading| serde_json::json!({"title":heading.title,"id":heading.id,"anchor":routes::fragment(&heading.id),"level":heading.level})).collect::<Vec<_>>(),
+            "outline":page.outline.headings.iter().map(|heading| serde_json::json!({"title":heading.title,"id":heading.id,"anchor":notist::publication::url::fragment(&heading.id),"level":heading.level})).collect::<Vec<_>>(),
             "previous":previous,"next":next,
-            "assets":{"styles":theme.styles(&page.route.output),"script":theme.script(&page.route.output),"components":component_url}
+            "assets":{"styles":theme.styles(&page.route.output),"scripts":theme.scripts(&page.route.output),"components":component_url}
         });
         assets.generated(
             page.route.output.clone(),
@@ -499,53 +508,19 @@ fn build_inner<R: Resources>(
     Ok(site)
 }
 
-/// Publish a previously rendered single document through the same resource
-/// and theme machinery. Site route/link validation belongs to `build`.
-pub fn page<R: Resources>(
-    rendered: notist_html::RenderResult,
-    environment: &notist::Environment,
-    resources: &R,
-    config: &SiteConfig,
-) -> Result<Site, Error> {
-    if !rendered.diagnostics.is_empty() {
-        return Err(Error::Message(
-            rendered
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.message.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
-    }
-    let mut assets = Assets::new(resources.resolve(&config.output));
-    let theme = Theme::load(resources, config, &mut assets)?;
-    let output = Path::new("index.html");
-    let registrations = assets.components(
-        resources,
-        environment,
-        &rendered.used_components,
-        Path::new("components.js"),
-    )?;
-    let component_url = if registrations.is_empty() {
-        None
-    } else {
-        assets.generated("components.js".into(), registrations.into_bytes())?;
-        Some("./components.js")
-    };
-    let context = serde_json::json!({"site":{"title":config.title,"home":"./"},"page":{"title":config.title,"url":"/","source":null,"html":rendered.html},"navigation":{"title":config.title,"url":"./","current":true,"expanded":true,"children":[]},"breadcrumbs":[],"outline":[],"previous":null,"next":null,"assets":{"styles":theme.styles(output),"script":theme.script(output),"components":component_url}});
-    assets.generated(output.into(), theme.render(context)?.into_bytes())?;
-    finish(assets, vec![])
-}
-
-fn finish(mut assets: Assets, pages: Vec<Page>) -> Result<Site, Error> {
-    let manifest = serde_json::json!({"format":"notist-site", "version":1, "pages":pages.iter().map(|page| &page.route.url).collect::<Vec<_>>()});
-    assets.generated(
-        "_notist/site.json".into(),
-        serde_json::to_vec(&manifest).unwrap(),
-    )?;
-    Ok(Site {
-        files: assets.files,
+fn finish(assets: Assets, pages: Vec<Page>) -> Result<BuildOutput, Error> {
+    Ok(BuildOutput {
+        files: assets.finish()?,
         pages,
         diagnostics: Vec::new(),
     })
+}
+
+impl From<publication::Error> for Error {
+    fn from(error: publication::Error) -> Self {
+        match error {
+            publication::Error::Message(message) => Self::Message(message),
+            publication::Error::Resource(error) => Self::Resource(error),
+        }
+    }
 }

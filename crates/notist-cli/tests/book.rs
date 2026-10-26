@@ -254,13 +254,19 @@ fn html_export_is_independent_of_book_structure_and_theme() {
 struct Server {
     child: Child,
     address: String,
+    log: tempfile::NamedTempFile,
 }
 impl Server {
     fn start(root: &Path) -> Self {
+        Self::with_options(root, &[])
+    }
+    fn with_options(root: &Path, options: &[&str]) -> Self {
+        let log = tempfile::NamedTempFile::new().unwrap();
         let mut child = command(root)
             .args(["book", "serve", "--address", "127.0.0.1:0"])
+            .args(options)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(log.reopen().unwrap())
             .spawn()
             .unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -283,7 +289,25 @@ impl Server {
             .unwrap()
             .trim_end_matches('/')
             .into();
-        Self { child, address }
+        Self {
+            child,
+            address,
+            log,
+        }
+    }
+    fn wait_for_log(&self, message: &str) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let log = std::fs::read_to_string(self.log.path()).unwrap();
+            if log.contains(message) {
+                return log;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {message:?} in {log}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     fn connect(&self, path: &str) -> TcpStream {
         let mut stream = TcpStream::connect(&self.address).unwrap();
@@ -355,13 +379,13 @@ fn serve_watches_mounted_pages_resources_and_new_subdirectories() {
     let changed = update(&mut events, |event| {
         event["revision"].as_u64() > baseline["revision"].as_u64()
     });
-    assert!(changed["error"].is_null());
+    assert!(changed["report"]["errors"].as_array().unwrap().is_empty());
     assert!(server.get("/art/image.png").ends_with("after"));
     write(root, "art/new/deep/README.md", "# New mounted chapter");
     let added = update(&mut events, |event| {
         event["revision"].as_u64() > changed["revision"].as_u64()
     });
-    assert!(added["error"].is_null());
+    assert!(added["report"]["errors"].as_array().unwrap().is_empty());
     assert!(server.get("/art/new/deep/").contains("New mounted chapter"));
     write(root, "art/new/deep/README.md", "# Updated mounted chapter");
     update(&mut events, |event| {
@@ -404,10 +428,10 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     let changed = update(&mut events, |event| {
         event["revision"].as_u64() > baseline["revision"].as_u64()
     });
-    assert!(changed["error"].is_null());
+    assert!(changed["report"]["errors"].as_array().unwrap().is_empty());
     assert!(server.get("/").contains("Updated"));
     write(root, "README.md", "# Broken\n\n![Missing](missing.png)");
-    let failed = update(&mut events, |event| event["error"].is_string());
+    let failed = update(&mut events, |event| event["report"]["status"] == "failed");
     assert_eq!(failed["revision"], changed["revision"]);
     assert!(server.get("/").contains("Updated"));
     write(root, "new/README.not", "= New page");
@@ -431,13 +455,162 @@ fn serve_requires_output_and_recovers_when_it_is_configured() {
     let server = Server::start(root);
     assert!(server.get("/").starts_with("HTTP/1.1 503"));
     let mut events = server.events();
-    let failed = update(&mut events, |event| event["error"].is_string());
+    let failed = update(&mut events, |event| event["report"]["status"] == "failed");
     assert_eq!(failed["revision"], 0);
-    assert!(failed["error"].as_str().unwrap().contains("book output"));
+    assert!(
+        failed["report"]["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("book output")
+    );
     write(root, "Notist.toml", "[book]\noutput='published'");
     update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
     assert!(server.get("/").contains("Home"));
     assert!(!root.join("published").exists());
+}
+
+#[test]
+fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", "[book]\noutput='public'");
+    write(
+        root,
+        "README.not",
+        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()",
+    );
+    write(
+        root,
+        "lib.notc",
+        "fn content() -> InlineContent { [before] } fn other() -> InlineContent { [other] }",
+    );
+    let server = Server::start(root);
+    let mut events = server.events();
+    let ready = update(&mut events, |_| true);
+    assert_eq!(ready["report"]["status"], "ready");
+
+    write(
+        root,
+        "lib.notc",
+        "fn content() -> InlineContent { compile_error(\"first error\") } fn other() -> InlineContent { compile_error(\"second error\") }",
+    );
+    let first = update(&mut events, |event| event["report"]["status"] == "errors");
+    assert!(first["revision"].as_u64() > ready["revision"].as_u64());
+    assert!(
+        first["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Preview updated with")
+    );
+    let detail = first["report"]["errors"][0]["detail"].as_str().unwrap();
+    assert!(detail.contains("lib.notc:1:"), "{detail}");
+    assert!(detail.contains("compile_error"), "{detail}");
+    assert!(
+        !detail.contains('\x1b'),
+        "browser code frames must be plain text"
+    );
+    let initial_errors = first["report"]["errors"].as_array().unwrap().len();
+    assert!(initial_errors >= 2);
+    assert_eq!(first["report"]["resolved"], false);
+    assert!(server.get("/").contains("first error"));
+
+    write(
+        root,
+        "lib.notc",
+        "fn content() -> InlineContent { [partly fixed] } fn other() -> InlineContent { compile_error(\"second error\") }",
+    );
+    let second = update(&mut events, |event| {
+        event["report"]["status"] == "errors"
+            && event["report"]["errors"]
+                .to_string()
+                .contains("second error")
+    });
+    assert!(
+        !second["report"]["errors"]
+            .to_string()
+            .contains("first error")
+    );
+    let remaining_errors = second["report"]["errors"].as_array().unwrap().len();
+    assert!(remaining_errors > 0 && remaining_errors < initial_errors);
+    assert_eq!(second["report"]["resolved"], false);
+    let latest = update(&mut server.events(), |_| true);
+    assert_eq!(
+        latest["report"], second["report"],
+        "new connections receive current diagnostics"
+    );
+
+    // A partial fix and a warning must not imply that all errors are resolved.
+    write(
+        root,
+        "README.not",
+        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()\n\n[Missing](missing.not)",
+    );
+    update(&mut events, |event| {
+        event["report"]["status"] == "errors"
+            && !event["report"]["warnings"].as_array().unwrap().is_empty()
+    });
+    write(
+        root,
+        "lib.notc",
+        "fn content() -> InlineContent { [fixed] } fn other() -> InlineContent { [other] }",
+    );
+    let warning = update(&mut events, |event| event["report"]["status"] == "warnings");
+    assert_eq!(warning["report"]["resolved"], true);
+    assert!(warning["report"]["errors"].as_array().unwrap().is_empty());
+    assert!(!warning["report"]["warnings"].as_array().unwrap().is_empty());
+    assert!(
+        warning["report"]["warnings"][0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("README.not:")
+    );
+    assert!(server.get("/").contains("fixed"));
+
+    write(
+        root,
+        "README.not",
+        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()",
+    );
+    let clean = update(&mut events, |event| event["report"]["status"] == "ready");
+    assert!(clean["report"]["errors"].as_array().unwrap().is_empty());
+    assert!(clean["report"]["warnings"].as_array().unwrap().is_empty());
+    assert!(clean["report"]["build"].as_u64() > second["report"]["build"].as_u64());
+    let log = server.wait_for_log("All errors resolved");
+    assert!(log.contains("Preview updated with"));
+    assert!(log.contains("[notist #"));
+    assert!(
+        !log.contains('\x1b'),
+        "redirected output must not contain terminal escapes"
+    );
+}
+
+#[test]
+fn serve_no_clear_screen_keeps_failed_and_resolved_build_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", "[book]\noutput='public'");
+    write(root, "README.md", "# Home");
+    let server = Server::with_options(root, &["--no-clear-screen"]);
+    let mut events = server.events();
+    let ready = update(&mut events, |_| true);
+    write(root, "README.md", "# Broken\n\n![Missing](missing.png)");
+    let failed = update(&mut events, |event| event["report"]["status"] == "failed");
+    assert_eq!(failed["revision"], ready["revision"]);
+    assert!(
+        failed["summary"]
+            .as_str()
+            .unwrap()
+            .contains("showing previous preview")
+    );
+    assert!(server.get("/").contains("Home"));
+    write(root, "README.md", "# Fixed");
+    let fixed = update(&mut events, |event| event["report"]["status"] == "ready");
+    assert_eq!(fixed["report"]["resolved"], true);
+    assert!(fixed["report"]["errors"].as_array().unwrap().is_empty());
+    let log = server.wait_for_log("All errors resolved");
+    assert!(log.contains("Build failed"));
+    assert!(log.contains("Updated"));
+    assert!(!log.contains('\x1b'));
 }
 
 #[test]
@@ -475,9 +648,13 @@ fn summary_limits_build_output_and_served_pages() {
             "- [Home](README.not)\n- [Logs](_logs/)\n- [Later](later.md)",
         );
         let changed = update(&mut events, |event| {
-            event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+            event["revision"].as_u64() > baseline["revision"].as_u64()
+                || event["report"]["status"] == "failed"
         });
-        assert!(changed["error"].is_null(), "{changed}");
+        assert!(
+            changed["report"]["errors"].as_array().unwrap().is_empty(),
+            "{changed}"
+        );
         let page = server.get("/later/");
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains(">Later</h1>"), "{page}");
@@ -511,16 +688,20 @@ fn broken_hyperlinks_warn_without_failing_build_or_live_reload() {
     assert!(server.get("/missing/").starts_with("HTTP/1.1 404"));
     let mut events = server.events();
     let baseline = update(&mut events, |_| true);
-    assert!(baseline["error"].is_null());
+    assert!(baseline["report"]["errors"].as_array().unwrap().is_empty());
     write(root, "README.md", "# Updated\n\n[Missing](another.md)");
     let changed = update(&mut events, |event| {
-        event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+        event["revision"].as_u64() > baseline["revision"].as_u64()
+            || event["report"]["status"] == "failed"
     });
     assert!(
         changed["revision"].as_u64() > baseline["revision"].as_u64(),
         "{changed}"
     );
-    assert!(changed["error"].is_null(), "{changed}");
+    assert!(
+        changed["report"]["errors"].as_array().unwrap().is_empty(),
+        "{changed}"
+    );
     assert!(server.get("/").contains("Updated"));
     assert!(server.get("/another/").starts_with("HTTP/1.1 404"));
 }
@@ -557,16 +738,20 @@ fn outside_hyperlinks_warn_and_stay_out_of_build_and_serve() {
     assert!(server.get("/private/secret.md").starts_with("HTTP/1.1 404"));
     let mut events = server.events();
     let baseline = update(&mut events, |_| true);
-    assert!(baseline["error"].is_null());
+    assert!(baseline["report"]["errors"].as_array().unwrap().is_empty());
     write(
         &root,
         "README.md",
         "# Updated\n\n[Outside](../private/missing.md)",
     );
     let changed = update(&mut events, |event| {
-        event["revision"].as_u64() > baseline["revision"].as_u64() || event["error"].is_string()
+        event["revision"].as_u64() > baseline["revision"].as_u64()
+            || event["report"]["status"] == "failed"
     });
-    assert!(changed["error"].is_null(), "{changed}");
+    assert!(
+        changed["report"]["errors"].as_array().unwrap().is_empty(),
+        "{changed}"
+    );
     assert!(changed["revision"].as_u64() > baseline["revision"].as_u64());
     assert!(server.get("/").contains("Updated"));
 }
@@ -605,7 +790,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     let server = Server::start(&root);
     assert!(server.get("/").starts_with("HTTP/1.1 503"));
     let mut events = server.events();
-    update(&mut events, |event| event["error"].is_string());
+    update(&mut events, |event| event["report"]["status"] == "failed");
     write(&root, "theme/index.hbs", "{{page.title}} {{{page.html}}}");
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
     let path = format!(

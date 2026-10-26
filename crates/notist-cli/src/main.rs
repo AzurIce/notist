@@ -80,6 +80,9 @@ enum BookCommand {
         root: PathBuf,
         #[arg(long, default_value = "127.0.0.1:8000")]
         address: String,
+        /// Preserve previous build output instead of clearing the terminal
+        #[arg(long)]
+        no_clear_screen: bool,
     },
 }
 
@@ -91,7 +94,11 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Book { command } => match command {
             BookCommand::Build { root, out_dir } => book::build(&root, config, out_dir.as_deref()),
-            BookCommand::Serve { root, address } => serve::serve(&root, config, &address),
+            BookCommand::Serve {
+                root,
+                address,
+                no_clear_screen,
+            } => serve::serve(&root, config, &address, no_clear_screen),
         },
         Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
@@ -412,8 +419,19 @@ fn emit_vault_error(error: notist::VaultError) -> ExitCode {
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic], severity: Severity) {
-    let files = SimpleFile::new(path.display().to_string(), source);
     let writer = StandardStream::stderr(ColorChoice::Auto);
+    write_source(&mut writer.lock(), path, source, diagnostics, severity);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_source(
+    writer: &mut impl codespan_reporting::term::termcolor::WriteColor,
+    path: &Path,
+    source: &str,
+    diagnostics: &[notist::Diagnostic],
+    severity: Severity,
+) {
+    let files = SimpleFile::new(path.display().to_string(), source);
     for error in diagnostics {
         let diagnostic = Diagnostic::new(severity)
             .with_code(error.phase.to_string())
@@ -422,7 +440,7 @@ fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic], se
                 (),
                 usize::from(error.span.start())..usize::from(error.span.end()),
             )]);
-        let _ = term::emit(&mut writer.lock(), &Config::default(), &files, &diagnostic);
+        let _ = term::emit(writer, &Config::default(), &files, &diagnostic);
     }
 }
 

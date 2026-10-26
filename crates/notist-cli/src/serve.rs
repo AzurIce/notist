@@ -12,17 +12,27 @@ use std::{
 };
 use tiny_http::{Header, Method, Request, Response, Server};
 
+mod report;
+mod terminal;
+use report::Report;
+use terminal::Terminal;
+
 struct Published {
     site: Option<Arc<BuildOutput>>,
     revision: u64,
     event: u64,
-    error: Option<String>,
+    report: Report,
 }
 type State = Arc<RwLock<Published>>;
 const CLIENT: &str = include_str!("serve.js");
 
-pub fn serve(root: &Path, config: Option<&Path>, address: &str) -> std::process::ExitCode {
-    match run(root, config, address) {
+pub fn serve(
+    root: &Path,
+    config: Option<&Path>,
+    address: &str,
+    no_clear_screen: bool,
+) -> std::process::ExitCode {
+    match run(root, config, address, no_clear_screen) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             book::report(error);
@@ -30,16 +40,22 @@ pub fn serve(root: &Path, config: Option<&Path>, address: &str) -> std::process:
         }
     }
 }
-fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
+fn run(
+    root: &Path,
+    config: Option<&Path>,
+    address: &str,
+    no_clear_screen: bool,
+) -> Result<(), Error> {
     let root = std::fs::canonicalize(root).map_err(|error| Error::Message(error.to_string()))?;
     let config = config
         .map(|path| notist::resources::normalize(&std::env::current_dir().unwrap().join(path)));
     let server = Server::http(address).map_err(|error| Error::Message(error.to_string()))?;
+    let terminal = Terminal::new(format!("http://{}/", server.server_addr()), no_clear_screen);
     let state = Arc::new(RwLock::new(Published {
         site: None,
         revision: 0,
         event: 0,
-        error: None,
+        report: Report::default(),
     }));
     let (sender, receiver) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
@@ -52,7 +68,14 @@ fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
     let mut observed = BTreeSet::new();
     let mut watched = BTreeSet::new();
     let mut output = None;
-    rebuild(&root, config.as_deref(), &state, &mut observed, &mut output);
+    rebuild(
+        &root,
+        config.as_deref(),
+        &state,
+        &mut observed,
+        &mut output,
+        &terminal,
+    );
     watch_external(&mut watcher, &root, &observed, &mut watched)?;
     let shared = state.clone();
     let watcher_root = root.clone();
@@ -101,6 +124,7 @@ fn run(root: &Path, config: Option<&Path>, address: &str) -> Result<(), Error> {
                 &shared,
                 &mut observed,
                 &mut output,
+                &terminal,
             );
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
@@ -124,7 +148,16 @@ fn rebuild(
     state: &State,
     observed: &mut BTreeSet<PathBuf>,
     output: &mut Option<PathBuf>,
+    terminal: &Terminal,
 ) {
+    let (previous, has_preview) = {
+        let mut published = state.write().unwrap();
+        published.report.begin();
+        published.event += 1;
+        (published.report.clone(), published.site.is_some())
+    };
+    terminal.render(&previous, has_preview);
+    let started = Instant::now();
     let result = book::assemble(root, config, None, true);
     let mut published = state.write().unwrap();
     published.event += 1;
@@ -132,23 +165,19 @@ fn rebuild(
         Ok(result) => {
             *observed = result.observed;
             *output = Some(result.output);
-            if !result.artifact.diagnostics.is_empty() {
-                book::report(Error::Diagnostics(result.artifact.diagnostics.clone()));
-            }
-            book::report_diagnostics(
-                &result.artifact.warnings,
-                codespan_reporting::diagnostic::Severity::Warning,
-            );
+            published.report = previous.success(&result.artifact, started.elapsed());
             published.site = Some(Arc::new(result.artifact));
             published.revision += 1;
-            published.error = None;
         }
         Err((error, inputs)) => {
             *observed = inputs;
-            published.error = Some(error.to_string());
-            book::report(error);
+            published.report = previous.failure(&error, started.elapsed());
         }
     }
+    let report = published.report.clone();
+    let has_preview = published.site.is_some();
+    drop(published);
+    terminal.render(&report, has_preview);
 }
 fn watch_external(
     watcher: &mut impl Watcher,
@@ -227,7 +256,7 @@ fn respond(request: Request, state: State) {
         let revision = published.revision;
         drop(published);
         let html = format!(
-            "<!doctype html><title>Notist serve</title><p>Waiting for a successful build…</p><script type=\"module\" src=\"{}\"></script>",
+            "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Notist serve</title><h1>No preview available yet</h1><p>Fix the errors below. This page reloads automatically when a preview is available.</p><script type=\"module\" src=\"{}\"></script>",
             serve_url(
                 &if decoded.ends_with('/') {
                     path.join("index.html")
@@ -333,16 +362,20 @@ fn events(request: Request, state: State) {
     loop {
         let published = state.read().unwrap();
         let event = published.event;
-        let data = serde_json::json!({"revision":published.revision,"error":published.error});
-        drop(published);
         let message = if previous != Some(event) {
             previous = Some(event);
+            let data = serde_json::json!({
+                "revision": published.revision,
+                "report": published.report,
+                "summary": published.report.summary(published.site.is_some()),
+            });
             Some(format!("event: update\ndata: {data}\n\n"))
         } else if heartbeat.elapsed() > Duration::from_secs(10) {
             Some(": heartbeat\n\n".into())
         } else {
             None
         };
+        drop(published);
         if let Some(message) = message {
             heartbeat = Instant::now();
             if writer

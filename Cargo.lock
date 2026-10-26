@@ -831,6 +831,7 @@ dependencies = [
  "notist-book",
  "notist-html",
  "percent-encoding",
+ "serde",
  "serde_json",
  "tempfile",
  "tiny_http",

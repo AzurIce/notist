@@ -4,7 +4,7 @@ use notist::{
     Resources, Vault,
     resources::{ResourceKind, normalize},
 };
-use notist_ssg::{BuildOutput, Error, SiteConfig};
+use notist_ssg::{BuildOutput, Builder, Error, SiteConfig};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -51,7 +51,7 @@ pub(crate) fn assemble(
             options.base_url = "/".into();
         }
         let output = vault.resources().resolve(&options.output);
-        Ok((notist_ssg::build(&mut vault, &options)?, output))
+        Ok((Builder::default().build(&mut vault, &options)?, output))
     })();
     let observed = vault.resources().observed();
     match result {

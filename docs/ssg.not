@@ -25,7 +25,7 @@ sass = "sass"
 # theme = "theme"
 ```
 
-路径相对于站点资源根目录。Notist.toml 中的 extensions 仍由文档宿主加载，[ssg] 只负责站点配置。
+路径相对于站点资源根目录。顶层 extensions 配置文档级扩展，ssg.extensions 配置站点级扩展；两者在不同的输入与阶段上执行。
 
 == 内容与路径
 
@@ -65,7 +65,7 @@ title 默认为第一个标题，没有标题时使用文件名。template 选�
 | 名称 | 内容 |
 | --- | --- |
 | page | route、title、attrs、html、headings、directory、ancestors |
-| page.route | source（物理身份）、path（内容相对路径）、output、url |
+| page.route | source（绝对源身份，生成页面可以是虚拟路径）、path（内容相对路径）、output、url |
 | page.headings | title、id、anchor（编码后的 fragment）、level |
 | site | title、base_url、pages、directories、data |
 | directory | 当前文档所在目录的数据 |
@@ -101,4 +101,108 @@ site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径�
 
 主题目录可以包含 templates、static 和 sass。站点 static 覆盖主题的同名 static 资源，但不允许覆盖内容文档或内容资源。站点同名 Sass 入口覆盖主题入口；非 partial 的 .scss / .sass 文件按相对路径编译为 .css。以 _ 开头的 partial 只参与导入。Sass 使用宿主的 Resources 读取输入。
 
-构建库接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文件系统。CLI 在所有步骤成功后暂存并替换属于 Notist 的输出目录，自动清理过期文件；失败不会替换现有站点。
+Builder 接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文档或数据源文件。CLI 在所有步骤成功后暂存并替换属于 Notist 的输出目录，自动清理过期文件；失败不会替换现有站点。
+
+== 站点扩展（Experimental）
+
+站点扩展在发现文档和加载 data 后、路由校验与文档编译前运行。它接收整站的 SiteInput，直接增删改文档源码和模板数据，结果按相同目录映射进入正常编译与呈现流程。该 API 与 stdio 协议处于实验阶段，以 Cargo example 页面生成场景验证边界。
+
+```text
+发现 content / 加载 data → SiteExtension.prepare
+                       → 路由校验 → 文档分析 / 求值 → 链接检查 / 模板渲染
+```
+
+| SiteInput 字段 | 表示 | 修改方式 |
+| --- | --- | --- |
+| documents | 内容相对路径到源码字符串的映射 | 添加、替换、删除键；扩展名选择文档前端 |
+| data | 数据键到 JSON 值的映射 | 添加、替换、删除键；作为 site.data 交给模板 |
+
+文档修改针对源码文本，因此 .not 和 Markdown 都可以直接生成。它不依赖文档级 Expr / Item 协议。生成文档的绝对源身份为 content 目录拼接其相对路径，imports、相对链接与诊断以此为基准；生成页面之间可以相互链接。文档属性由源码中的根注解定义。
+
+新增目录自动加入 site.directories。物理内容目录仍保留，包括仅包含资源或没有入口页的目录。扩展不自动创建目录首页；需要首页时显式添加 index.not 或 index.md。配置了扩展时，content 可以尚不存在，扩展可以在内存中提供全部页面。文档及数据不写回源目录，后续构建重新发现输入，因此删除的生成页面不会残留。
+
+文档路径必须是使用 / 的规范相对路径，不含空段、.、..、隐藏路径或反斜杠，不能占用 _notist，且必须使用已注册前端。每次 hook 的候选结果成功并通过校验后提交；失败终止整个构建，后续扩展不执行。所有正常路由、资源冲突、文档检查和链接规则继续适用。CLI 不发布失败的构建，预览保留上次成功结果。扩展进程自己的外部副作用由扩展负责。
+
+=== CLI 与 stdio
+
+```toml
+[[ssg.extensions]]
+kind = "command"
+command = ["python3", "scripts/examples.py", "../Cargo.toml"]
+watch = ["../Cargo.toml", "../examples"]
+```
+
+ssg.extensions 按配置顺序运行，一次构建中每条命令启动一次进程。程序、参数和 watch 路径相对于站点根目录，CWD 始终为站点根目录，即使使用 --config 指向其他位置也保持这个规则。程序名称可通过 PATH 查找；参数不经过 shell。watch 为脚本读取的外部文件或目录声明依赖，目录递归监听；依赖在启动扩展前登记，所以失败的扩展也能在文件修复后触发重建。脚本直接读取的路径不会自动被宿主观察，尤其是站点根目录以外的输入，应显式列入 watch。
+
+stdin 接收一个 JSON 请求和 EOF：
+
+```json
+{
+  "version": 1,
+  "stage": "prepare",
+  "root": "/project/website",
+  "config": {"title": "My Site"},
+  "input": {
+    "documents": {"index.not": "= Home"},
+    "data": {"settings": {"language": "zh"}}
+  }
+}
+```
+
+以上 config 为示意，实际包含完整 SiteConfig。stdout 返回一个 JSON 响应，日志写 stderr。成功响应中的 input 是完整的新输入快照，不是增量补丁：
+
+```json
+{
+  "version": 1,
+  "input": {
+    "documents": {
+      "index.not": "= Home\n\n[Demo](examples/demo.md)",
+      "examples/demo.md": "# Demo\n\nGenerated from Cargo.toml."
+    },
+    "data": {"demo": {"name": "demo"}}
+  }
+}
+```
+
+省略 input 或设为 null 保持当前输入。非零退出、通信错误、无效 JSON、版本不符或非空 errors 数组均终止构建，例如 `{"version":1,"errors":["missing Cargo.toml"]}`。Native 与 stdio 扩展共用同一 SiteInput 及后续校验。
+
+=== Rust 接入
+
+```rust
+use notist_ssg::{Builder, Error};
+use notist_ssg::extensions::{SiteContext, SiteExtension, SiteInput};
+
+#[derive(Debug)]
+struct Catalog;
+impl SiteExtension for Catalog {
+    fn name(&self) -> &str { "catalog" }
+
+    fn prepare(
+        &self,
+        _: &SiteContext<'_>,
+        input: &mut SiteInput,
+    ) -> Result<(), Error> {
+        input.documents.insert(
+            "examples/demo.md".into(),
+            "# Demo\n\nGenerated source.".into(),
+        );
+        Ok(())
+    }
+}
+
+let output = Builder::default()
+    .with_extension(Catalog)
+    .build(&mut vault, &config)?;
+```
+
+Builder 按注册顺序先运行 Rust 扩展，再运行配置中的命令。SiteContext 提供 Resources 与只读 SiteConfig；Rust 扩展通过 Resources 读取输入时，CLI 宿主会记录依赖。扩展可添加或修改页面及数据，当前阶段不编辑最终 HTML、静态资源或配置本身。站点源文件准备完成后才运行各文档的实验性扩展，两层互不替代。
+
+=== Cargo examples 示例
+
+仓库 examples/ssg-extensions 提供可运行的 Python 3.11+ 示例：读取 Cargo.toml 的 `[[example]]`、Rust 源文件，为每个 example 在内存中生成 Markdown 页面、根注解和 site.data，不创建每个 example 的源文档或 TOML 数据文件。
+
+```sh
+cargo run -p notist-cli -- ssg build examples/ssg-extensions
+```
+
+输出位于 target/ssg-extension-example。示例按 examples/<group>/<name>/main.rs 组织分组，也读取相邻的 scenes.rs，匹配 ranim 的 example 源码布局。它负责 examples/ 文档命名空间，已有数据中的媒体 URL 与渲染 hash 保留，代码列表从当前 Rust 文件重新生成。它不负责渲染、上传或替代 ranim 的发布工作流。

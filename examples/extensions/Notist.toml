@@ -1,3 +1,4 @@
+# Experimental document extension API and stdio protocol.
 [[extensions]]
 kind = "command"
 command = ["python3", "metadata.py"]

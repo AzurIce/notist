@@ -1,4 +1,7 @@
-//! Document extension contracts. Stage inputs are explicit and contain no host IO.
+//! Experimental document extension contracts. Stage inputs contain no host IO.
+//!
+//! The stages, Rust API and serialized models are provisional. Concrete use
+//! cases have not yet established their design; compatibility is not promised.
 use crate::{
     annotation::Annotation,
     definitions::FunctionId,
@@ -38,6 +41,8 @@ pub struct Replacement {
     pub span: TextRange,
 }
 
+/// **Experimental:** the API and stage contracts may change.
+///
 /// Extensions execute once per stage, in registration order. Mutating stages
 /// commit only on success; failure preserves the previous stage value and stops
 /// subsequent hooks for this document. A checked tree is read-only because it carries checked

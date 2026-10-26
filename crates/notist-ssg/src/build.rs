@@ -242,9 +242,10 @@ fn image(node: &Item, url: &str) -> Option<String> {
     ))
 }
 
-pub fn build<R: Resources>(
+pub(crate) fn build<R: Resources>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
+    extensions: &[Box<dyn crate::extensions::SiteExtension>],
 ) -> Result<BuildOutput, Error> {
     let content = vault.resources().resolve(&config.content);
     let output = vault.resources().resolve(&config.output);
@@ -278,7 +279,10 @@ pub fn build<R: Resources>(
             )));
         }
     }
-    if vault.resources().kind(&content)? != Some(ResourceKind::Directory) {
+    let content_kind = vault.resources().kind(&content)?;
+    let generated_only =
+        content_kind.is_none() && (!extensions.is_empty() || !config.extensions.is_empty());
+    if content_kind != Some(ResourceKind::Directory) && !generated_only {
         return Err(Error::Message(format!(
             "content directory `{}` does not exist",
             content.display()
@@ -287,26 +291,51 @@ pub fn build<R: Resources>(
     let mut sources = vec![];
     let mut content_assets = vec![];
     let mut source_dirs = vec![];
-    discover(
-        vault,
-        &content,
-        &mut sources,
-        &mut content_assets,
-        &mut source_dirs,
-    )?;
-    sources.sort();
+    if generated_only {
+        source_dirs.push(content.clone());
+    } else {
+        discover(
+            vault,
+            &content,
+            &mut sources,
+            &mut content_assets,
+            &mut source_dirs,
+        )?;
+    }
+    let mut input = crate::extensions::SiteInput {
+        documents: sources
+            .into_iter()
+            .map(|source| {
+                Ok((
+                    source.strip_prefix(&content).unwrap().to_path_buf(),
+                    vault.resources().source(&source)?,
+                ))
+            })
+            .collect::<Result<_, Error>>()?,
+        data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
+    };
+    crate::extensions::prepare(vault, config, extensions, &mut input)?;
+    let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
+    for path in input.documents.keys() {
+        for parent in content.join(path).parent().unwrap().ancestors() {
+            source_dirs.insert(parent.into());
+            if parent == content {
+                break;
+            }
+        }
+    }
+    let source_dirs: Vec<_> = source_dirs.into_iter().collect();
     let mut documents = vec![];
     let mut errors = vec![];
     let mut outputs = BTreeSet::new();
-    for source in sources {
-        let route = Route::new(source, &content)?;
+    for (path, text) in input.documents {
+        let route = Route::new(content.join(path), &content)?;
         if !outputs.insert(route.output.clone()) {
             return Err(Error::Message(format!(
                 "route collision at `{}`",
                 route.output.display()
             )));
         }
-        let text = vault.resources().source(&route.source)?;
         let analysis = vault.analyze(&route.source, &text)?;
         errors.extend(
             analysis
@@ -341,7 +370,7 @@ pub fn build<R: Resources>(
         &mut assets,
     )?);
     let engine = templates::load(vault.resources(), config)?;
-    let data = assets::data(vault.resources(), &vault.resources().resolve(&config.data))?;
+    let data = input.data;
     let by_source: BTreeMap<_, _> = documents
         .iter()
         .map(|d| (d.page.route.source.clone(), d))

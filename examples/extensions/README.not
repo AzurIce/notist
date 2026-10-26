@@ -1,4 +1,6 @@
-= Document extension example
+= Experimental document extension example
+
+The document extension API and stdio protocol are experimental and may change. This example demonstrates the current draft; production use cases have not yet established the design.
 
 This paragraph is authored in the document. The extension appends package information read directly from the repository's Cargo.toml.
 

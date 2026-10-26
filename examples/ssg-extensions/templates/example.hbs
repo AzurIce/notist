@@ -1,0 +1,7 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}}</title></head>
+<body><main>
+  <a href="{{url 'examples/'}}">Examples</a>
+  {{{page.html}}}
+  {{#with (lookup site.data page.attrs.example)}}{{{markdown code}}}{{/with}}
+</main></body></html>

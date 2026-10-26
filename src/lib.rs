@@ -45,6 +45,8 @@ pub use prepared::PreparedInputs;
 #[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
 pub mod command_extension;
 pub mod environment;
+#[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
+pub mod stdio;
 pub use notist_core::extensions;
 pub mod publication;
 pub mod query;

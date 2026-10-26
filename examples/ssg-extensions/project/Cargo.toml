@@ -1,0 +1,11 @@
+[package]
+name = "example-project"
+version = "0.1.0"
+
+[[example]]
+name = "hello"
+path = "examples/hello/main.rs"
+
+[[example]]
+name = "circle"
+path = "examples/shapes/circle/main.rs"

@@ -1,16 +1,38 @@
 //! Directory-preserving document publication with replaceable site templates.
 mod assets;
 mod build;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod command;
 mod config;
 mod document;
+pub mod extensions;
 mod highlight;
 mod routes;
 mod templates;
 
-pub use build::{BuildOutput, build};
+pub use build::BuildOutput;
 pub use config::SiteConfig;
 pub use document::{Heading, Page};
 pub use routes::Route;
+
+/// Site build driver, with native extensions followed by configured commands.
+#[derive(Debug, Default)]
+pub struct Builder {
+    extensions: Vec<Box<dyn extensions::SiteExtension>>,
+}
+impl Builder {
+    pub fn with_extension(mut self, extension: impl extensions::SiteExtension + 'static) -> Self {
+        self.extensions.push(Box::new(extension));
+        self
+    }
+    pub fn build<R: notist::Resources>(
+        &self,
+        vault: &mut notist::Vault<R>,
+        config: &SiteConfig,
+    ) -> Result<BuildOutput, Error> {
+        build::build(vault, config, &self.extensions)
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {

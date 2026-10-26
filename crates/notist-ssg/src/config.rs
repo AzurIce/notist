@@ -1,9 +1,9 @@
 use crate::Error;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Paths are relative to the resource root. Content paths map directly to HTML.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SiteConfig {
     pub title: String,
@@ -21,6 +21,8 @@ pub struct SiteConfig {
     /// Top-level .scss/.sass files are compiled; partials remain inputs only.
     pub sass: PathBuf,
     pub template: String,
+    /// Experimental site input extensions, in execution order.
+    pub extensions: Vec<crate::extensions::ExtensionConfig>,
 }
 impl Default for SiteConfig {
     fn default() -> Self {
@@ -35,6 +37,7 @@ impl Default for SiteConfig {
             data: "data".into(),
             sass: "sass".into(),
             template: "page".into(),
+            extensions: Vec::new(),
         }
     }
 }
@@ -62,6 +65,14 @@ impl SiteConfig {
         }
         if config.template.is_empty() {
             return Err(Error::Message("ssg template must not be empty".into()));
+        }
+        for extension in &config.extensions {
+            let crate::extensions::ExtensionConfig::Command { command, .. } = extension;
+            if command.first().is_none_or(|program| program.is_empty()) {
+                return Err(Error::Message(
+                    "ssg extension command requires a nonempty program".into(),
+                ));
+            }
         }
         if !config.base_url.starts_with('/') || config.base_url.starts_with("//") {
             let url = url::Url::parse(&config.base_url)

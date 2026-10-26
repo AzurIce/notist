@@ -1,4 +1,4 @@
-//! Ordered document extension execution and stage validation.
+//! Experimental ordered document extension execution and stage validation.
 mod replacements;
 use notist_core::{
     builtins::Level,

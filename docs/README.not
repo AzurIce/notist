@@ -17,10 +17,10 @@
 - [本地模块](modules.not)：相对路径 import、词法命名空间、输出配置与资源布局。
 - [Vault 组件示例](components/README.not)：在同一目录声明并实现 panel、badge，直接导入其他本地模块的图形组件，并使用输出数学映射。
 - [内容函数与输出绑定](designs/content-functions.not)：原生内容函数的 HTML 绑定、组件参数协议与呈现生命周期。
-- [文档扩展](designs/extensions.not)：分阶段修改文档、Rust / stdio 接入、语义校验、输出编辑与 replace 执行映射。
+- [文档扩展（Experimental）](designs/extensions.not)：分阶段修改文档、Rust / stdio 接入、语义校验、输出编辑与 replace 执行映射。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
 - [Notist Book](book.not)：书籍配置、README 路由、SUMMARY.not 阅读结构、主题、构建流程与本地预览。
-- [Notist SSG](ssg.not)：保持内容目录结构的 HTML 发布、站点模板、主题资源、数据与本地预览。
+- [Notist SSG](ssg.not)：保持内容目录结构的 HTML 发布、站点模板、主题资源、数据、站点扩展与本地预览。
 - [Draft](draft.not)：尚未确定的设计。
 
 语法规则使用 Grammar Notation 表达；类型与字面量归 Types，具体函数及其语法糖归 Builtin，其他共用规则归 Syntax。函数小节引用共用规则，不重复定义。

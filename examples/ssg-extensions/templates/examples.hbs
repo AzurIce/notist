@@ -1,0 +1,6 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}}</title></head>
+<body><main>
+  {{{page.html}}}
+  {{#each site.pages}}{{#if attrs.example}}<p><a href="{{url route.url}}">{{title}}</a></p>{{/if}}{{/each}}
+</main></body></html>

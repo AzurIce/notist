@@ -1,0 +1,5 @@
+= Rust example catalog
+
+[Browse the generated examples](examples/index.md).
+
+The extension reads Cargo.toml and Rust source files. Example pages and template data are generated in memory during each build.

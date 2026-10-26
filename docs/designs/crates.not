@@ -34,7 +34,7 @@ flowchart TB
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口，并通过 command_extension 将 stdio 外部命令适配为文档扩展。
 - `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
-- `notist-ssg`：依赖 notist 与 html，将内容目录直接映射为 HTML，负责站点模板、目录呈现数据、资源、Sass 和完整构建产物；独立于 book。
+- `notist-ssg`：依赖 notist 与 html，将内容目录直接映射为 HTML，负责站点模板、目录呈现数据、资源、Sass 和完整构建产物；独立于 book。Builder 在编译前调度 SiteExtension，接收可编辑的整站文档源码与模板数据；CLI stdio 命令适配同一接口。
 - `notist-cli`：依赖 notist、html、book 与 ssg，提供终端命令、构建、共享的发布与预览宿主及 LSP 入口。
 - `notist-grammar`：位于 modules/grammar，独立解析文法记法并生成 SVG 铁路图，不依赖其他 workspace crate。
 

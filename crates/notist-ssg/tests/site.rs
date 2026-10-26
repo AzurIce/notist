@@ -1,5 +1,5 @@
 use notist::{MemoryResources, Vault};
-use notist_ssg::{SiteConfig, build};
+use notist_ssg::{Builder, SiteConfig};
 use std::path::Path;
 
 fn vault(files: &[(&str, &str)]) -> Vault<MemoryResources> {
@@ -29,7 +29,9 @@ fn maps_sources_without_inventing_directory_pages_and_resolves_links() {
         ("content/guide/.private", "private"),
         ("content/README.not", "= Readme"),
     ]);
-    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
     assert_eq!(site.pages.len(), 3);
     assert!(site.warnings.is_empty());
     assert!(html(&site, "index.html").contains("guide/start.html?mode=1#topic"));
@@ -64,7 +66,7 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
     ]);
     let config =
         SiteConfig::parse("[ssg]\nbase_url='https://example.com/project'\ntheme='theme'").unwrap();
-    let site = build(&mut vault, &config).unwrap();
+    let site = Builder::default().build(&mut vault, &config).unwrap();
     let home = html(&site, "index.html");
     assert!(home.contains("Home &amp; more|Example|https://example.com/project/style.css"));
     assert!(home.contains("folder;"));
@@ -81,7 +83,9 @@ fn sass_uses_the_supplied_resources_including_partials() {
         ("sass/index.scss", "@import 'colors'; body { color: $ink; }"),
         ("sass/_colors.scss", "$ink: #123456;"),
     ]);
-    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
     assert!(html(&site, "index.css").contains("color: #123456"));
     assert!(!site.files.contains_key(Path::new("_colors.css")));
 }
@@ -100,7 +104,9 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
             ("content/_notist/data.txt", "reserved"),
         ],
     ] {
-        let error = build(&mut vault(&files), &SiteConfig::default()).unwrap_err();
+        let error = Builder::default()
+            .build(&mut vault(&files), &SiteConfig::default())
+            .unwrap_err();
         assert!(
             error.to_string().contains("collision") || error.to_string().contains("reserved"),
             "{error}"
@@ -111,7 +117,8 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
         ..SiteConfig::default()
     };
     assert!(
-        build(&mut vault(&[("content/a.not", "= A")]), &config)
+        Builder::default()
+            .build(&mut vault(&[("content/a.not", "= A")]), &config)
             .unwrap_err()
             .to_string()
             .contains("overlap")
@@ -120,35 +127,39 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
 
 #[test]
 fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
-    let site = build(
-        &mut vault(&[("content/index.not", "= Home\n\n[Missing](missing.not)")]),
-        &SiteConfig::default(),
-    )
-    .unwrap();
+    let site = Builder::default()
+        .build(
+            &mut vault(&[("content/index.not", "= Home\n\n[Missing](missing.not)")]),
+            &SiteConfig::default(),
+        )
+        .unwrap();
     assert_eq!(site.warnings.len(), 1);
     assert!(
-        build(
-            &mut vault(&[("content/index.not", "= Home\n\n![Missing](missing.svg)")]),
-            &SiteConfig::default()
-        )
-        .is_err()
+        Builder::default()
+            .build(
+                &mut vault(&[("content/index.not", "= Home\n\n![Missing](missing.svg)")]),
+                &SiteConfig::default()
+            )
+            .is_err()
     );
     assert!(
-        build(
-            &mut vault(&[("content/index.not", "@!(template: \"missing\")\n= Home")]),
-            &SiteConfig::default()
-        )
-        .is_err()
+        Builder::default()
+            .build(
+                &mut vault(&[("content/index.not", "@!(template: \"missing\")\n= Home")]),
+                &SiteConfig::default()
+            )
+            .is_err()
     );
     assert!(
-        build(
-            &mut vault(&[(
-                "content/index.not",
-                "@(id: \"x\")\n= One\n\n@(id: \"x\")\n== Two"
-            )]),
-            &SiteConfig::default()
-        )
-        .is_err()
+        Builder::default()
+            .build(
+                &mut vault(&[(
+                    "content/index.not",
+                    "@(id: \"x\")\n= One\n\n@(id: \"x\")\n== Two"
+                )]),
+                &SiteConfig::default()
+            )
+            .is_err()
     );
 }
 
@@ -168,7 +179,9 @@ fn native_components_publish_their_resources_and_registration_script() {
             "export default class extends HTMLElement {}",
         ),
     ]);
-    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
     let page = html(&site, "index.html");
     assert!(page.contains("notist-protocol=\"2\""));
     assert!(page.contains("src=\"_notist/pages/index.js\""));
@@ -194,7 +207,9 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
         ),
         ("data/code.toml", "source='''```rust\nfn main() {}\n```'''"),
     ]);
-    let site = build(&mut vault, &SiteConfig::default()).unwrap();
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
     let page = html(&site, "index.html");
     assert_eq!(page.matches("id=\"explicit\"").count(), 1);
     assert!(page.contains("id=\"one\""));

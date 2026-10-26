@@ -1,9 +1,8 @@
 //! HTTP server for the same publication artifact produced by static builds.
 use crate::book;
 use notify::{RecursiveMode, Watcher};
-use std::collections::BTreeMap;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
@@ -156,7 +155,7 @@ fn run(
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|error| Error::Message(error.to_string()))?;
     let mut observed = BTreeSet::new();
-    let mut watched = BTreeSet::new();
+    let mut watched = BTreeMap::new();
     let mut output = None;
     rebuild(
         &root,
@@ -276,10 +275,14 @@ fn watch_external(
     watcher: &mut impl Watcher,
     root: &Path,
     observed: &BTreeSet<PathBuf>,
-    watched: &mut BTreeSet<PathBuf>,
+    watched: &mut BTreeMap<PathBuf, bool>,
 ) -> Result<(), Error> {
+    // Backends drop directory watches when the directory is deleted. Permit
+    // registration again if an external input directory is later recreated.
+    watched.retain(|directory, _| directory.is_dir());
     for input in observed.iter().filter(|path| !path.starts_with(root)) {
-        let mut directory = if input.is_dir() {
+        let recursive = input.is_dir();
+        let mut directory = if recursive {
             input.as_path()
         } else {
             input.parent().unwrap()
@@ -287,11 +290,28 @@ fn watch_external(
         while !directory.is_dir() {
             directory = directory.parent().unwrap();
         }
-        if !watched.contains(directory) {
+        // File dependencies only need their parent. Recursing a fallback
+        // ancestor (possibly /) would watch unrelated trees and delay startup.
+        if watched
+            .get(directory)
+            .is_none_or(|previous| recursive && !previous)
+        {
+            if watched.contains_key(directory) {
+                watcher
+                    .unwatch(directory)
+                    .map_err(|error| Error::Message(error.to_string()))?;
+            }
             watcher
-                .watch(directory, RecursiveMode::NonRecursive)
+                .watch(
+                    directory,
+                    if recursive {
+                        RecursiveMode::Recursive
+                    } else {
+                        RecursiveMode::NonRecursive
+                    },
+                )
                 .map_err(|error| Error::Message(error.to_string()))?;
-            watched.insert(directory.into());
+            watched.insert(directory.into(), recursive);
         }
     }
     Ok(())

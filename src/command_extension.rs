@@ -1,14 +1,11 @@
-//! Native stdio adapter for the core document extension stages.
+//! Experimental native stdio adapter for document extension stages.
+//!
+//! Protocol version 1 identifies this draft format; it is not a stability guarantee.
 use crate::environment::DocumentStage;
 use crate::extensions::{DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument};
 use crate::{Diagnostic, FunctionDef, Item, Phase};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io::Write,
-    path::PathBuf,
-    process::{Command, Stdio},
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// One JSON request and response per process invocation. Stdout contains only
 /// the response; stderr is forwarded to the calling host for command logs.
@@ -72,32 +69,8 @@ impl CommandExtension {
             functions: context.registry.functions().cloned().collect(),
             document,
         };
-        let input = serde_json::to_vec(&request)
-            .map_err(|e| failure(format!("cannot encode request: {e}")))?;
-        let mut child = Command::new(&self.command[0])
-            .args(&self.command[1..])
-            .current_dir(&self.directory)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| failure(format!("cannot start command: {e}")))?;
-        let mut stdin = child.stdin.take().unwrap();
-        // Drain stdout while writing stdin; large requests/responses cannot fill
-        // both pipes and deadlock each other.
-        let (output, written) = std::thread::scope(|scope| {
-            let writer = scope.spawn(move || stdin.write_all(&input));
-            (child.wait_with_output(), writer.join())
-        });
-        let output = output.map_err(|e| failure(format!("cannot wait for command: {e}")))?;
-        if !output.status.success() {
-            return Err(failure(format!("command exited with {}", output.status)));
-        }
-        written
-            .map_err(|_| failure("request writer failed".into()))?
-            .map_err(|e| failure(format!("cannot write request: {e}")))?;
-        let response: Response = serde_json::from_slice(&output.stdout)
-            .map_err(|e| failure(format!("invalid JSON response: {e}")))?;
+        let response: Response = crate::stdio::exchange(&self.command, &self.directory, &request)
+            .map_err(|e| failure(e.to_string()))?;
         if response.version != PROTOCOL_VERSION {
             return Err(failure(format!(
                 "unsupported response version {}",

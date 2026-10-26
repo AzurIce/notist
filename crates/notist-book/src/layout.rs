@@ -15,7 +15,7 @@ pub struct Navigation {
     pub title: String,
     pub url: Option<String>,
     pub current: bool,
-    /// Initial expansion state, including automatic expansion of the current path.
+    /// Initial expansion state, opening ancestors to reveal the current page.
     pub expanded: bool,
     pub children: Vec<Navigation>,
 }
@@ -99,13 +99,13 @@ impl Layout {
     }
     pub fn navigation(&self, current: &Path) -> Vec<Navigation> {
         fn convert(node: &Node, current: &Path) -> (Navigation, bool) {
-            let mut active = node.output.as_deref() == Some(current);
+            let mut contains_current = false;
             let children = node
                 .children
                 .iter()
                 .map(|child| {
-                    let (navigation, contains_current) = convert(child, current);
-                    active |= contains_current;
+                    let (navigation, active) = convert(child, current);
+                    contains_current |= active;
                     navigation
                 })
                 .collect();
@@ -118,10 +118,10 @@ impl Layout {
                         .as_ref()
                         .map(|path| relative_url(current, path.parent().unwrap(), true)),
                     current: node.output.as_deref() == Some(current),
-                    expanded: !node.collapsed || active,
+                    expanded: !node.collapsed || contains_current,
                     children,
                 },
-                active,
+                contains_current || node.output.as_deref() == Some(current),
             )
         }
         self.roots

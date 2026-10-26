@@ -39,7 +39,7 @@ fn section<'a>(output: &'a str, marker: &str) -> &'a str {
 fn branch_open(output: &str, title: &str) -> bool {
     let navigation = section(output, "id=\"book-nav\"");
     let label = navigation.find(&format!(">{title}</")).unwrap();
-    let opening = navigation[..label].rsplit_once("<details").unwrap().1;
+    let opening = navigation[label..].split_once("<details").unwrap().1;
     opening.split('>').next().unwrap().contains(" open")
 }
 
@@ -163,7 +163,7 @@ fn markdown_summary_reports_structural_errors_at_its_own_source() {
 }
 
 #[test]
-fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_open() {
+fn collapsed_branches_open_only_for_current_descendants_and_other_branches_default_open() {
     let site = render(&[
         ("README.not", "= Home"),
         ("guide/README.not", "= Guide"),
@@ -181,7 +181,7 @@ fn collapsed_branches_open_only_for_the_current_path_and_other_branches_default_
     assert!(!branch_open(&home, "History"));
     assert!(!branch_open(&home, "Year"));
     let log_home = html(&site, "_logs/index.html");
-    assert!(branch_open(&log_home, "History"));
+    assert!(!branch_open(&log_home, "History"));
     assert!(!branch_open(&log_home, "Year"));
     let old = html(&site, "_logs/old/index.html");
     assert!(branch_open(&old, "History"));
@@ -219,8 +219,8 @@ fn collapsing_applies_to_explicit_pages_unlinked_chapters_and_drafts_without_cha
         assert!(!branch_open(&home, title), "{title}");
     }
     assert!(branch_open(&home, "Open group"));
+    assert!(!branch_open(&html(&site, "a/index.html"), "A"));
     for (path, title) in [
-        ("a/index.html", "A"),
         ("b/index.html", "A"),
         ("c/index.html", "Group"),
         ("d/index.html", "Draft"),

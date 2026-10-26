@@ -278,7 +278,7 @@ syntax PlainText -> Token;
   const checkDisclosureAlignment = async name => {
     await evaluate(`(() => {
       const summary = document.querySelector('#book-nav summary');
-      const title = summary.querySelector('.nav-title');
+      const title = summary.closest('.nav-item').querySelector(':scope > .nav-label .nav-title');
       window.disclosureSample = {summary, title, text: title.textContent};
       title.textContent = '11.3. 文档管线';
     })()`);
@@ -288,8 +288,9 @@ syntax PlainText -> Token;
       const text = title.getClientRects();
       const box = summary.getBoundingClientRect();
       const iconCenter = box.top + parseFloat(icon.marginTop) + parseFloat(icon.height) / 2;
+      const row = summary.closest('.nav-item').querySelector('.nav-label').getBoundingClientRect();
       return {delta: Math.abs(iconCenter - (text[0].top + text[0].height / 2)), lines: text.length,
-        clip: {x: box.x, y: box.y, width: box.width, height: box.height}};
+        clip: {x: row.x, y: row.y, width: row.width, height: row.height}};
     })()`);
     const single = await measure();
     await screenshot(`theme-nav-${name}-single`, single.clip);
@@ -310,7 +311,7 @@ syntax PlainText -> Token;
       const empty = label('Empty');
       const draft = label('Future chapter');
       const current = navigation.querySelector('[aria-current=page]');
-      const child = directory.closest('details').querySelector('.nav-children a');
+      const child = directory.closest('.nav-item').querySelector('.nav-children a');
       const text = element => element.textContent.replace(/\\s+/g, ' ').trim();
       const tone = element => getComputedStyle(element).color;
       return page.matches('a[href]') && directory.matches('.nav-chapter') &&
@@ -351,7 +352,7 @@ syntax PlainText -> Token;
   check('drafts are disabled links and separators render a rule', await evaluate('document.querySelector("#book-nav .nav-draft[role=link][aria-disabled=true]").textContent.includes("Future chapter") && document.querySelectorAll(".navigation-tree > .nav-separator > hr").length === 1'));
   check('discovered directories are chapter parents without requiring a home page', await evaluate(`(() => {
     const archive = [...document.querySelectorAll('#book-nav details')].at(-1);
-    return archive.querySelector(':scope > summary .nav-title').textContent === 'History' &&
+    return archive.closest('.nav-item').querySelector(':scope > .nav-label .nav-title').textContent === 'History' &&
       archive.querySelector('.nav-children .nav-title').textContent === 'Archive entry';
   })()`));
   await checkNavigationPageStates('desktop');
@@ -364,11 +365,13 @@ syntax PlainText -> Token;
   await pressSpace();
   check('unannotated branches start open and the archive starts closed', await evaluate(`(() => {
     const branches = [...document.querySelectorAll('#book-nav details')];
-    return branches.find(branch => branch.querySelector(':scope > summary .nav-title')?.textContent === 'Notes').open &&
-      !branches.find(branch => branch.querySelector(':scope > summary .nav-title')?.textContent === 'History').open;
+    return branches.find(branch => branch.closest('.nav-item').querySelector(':scope > .nav-label .nav-title')?.textContent === 'Notes').open &&
+      !branches.find(branch => branch.closest('.nav-item').querySelector(':scope > .nav-label .nav-title')?.textContent === 'History').open;
   })()`));
-  await evaluate(`window.archive = [...document.querySelectorAll('#book-nav details')].find(branch => branch.querySelector(':scope > summary .nav-title')?.textContent === 'History'); archive.querySelector('summary').click()`);
-  check('clicking an unlinked directory chapter opens its children', await evaluate('archive.open && archive.querySelector("a").checkVisibility()'));
+  await evaluate(`window.archive = [...document.querySelectorAll('#book-nav details')].find(branch => branch.closest('.nav-item').querySelector(':scope > .nav-label .nav-title')?.textContent === 'History'); archive.closest('.nav-item').querySelector('.nav-title').click()`);
+  check('clicking an unlinked chapter title leaves its children collapsed', await evaluate('!archive.open'));
+  await evaluate('archive.querySelector("summary").click()');
+  check('clicking the arrow beside an unlinked chapter opens its children', await evaluate('archive.open && archive.querySelector("a").checkVisibility()'));
   await evaluate('archive.querySelector("summary").focus()');
   await pressSpace();
   check('keyboard Space collapses a branch', await evaluate('!archive.open'));
@@ -423,7 +426,7 @@ syntax PlainText -> Token;
   check('breadcrumbs follow declared ancestry without adding Home', await evaluate('[...document.querySelectorAll(".breadcrumbs li")].map(item => item.textContent).join(",") === "Notes,Essay"'));
   check('nested chapter links are visibly indented beneath their parent', await evaluate(`(() => {
     const item = document.querySelector('#book-nav [aria-current=page]');
-    const parent = item.closest('.nav-children').previousElementSibling.querySelector('a');
+    const parent = item.closest('.nav-children').closest('.nav-item').querySelector(':scope > .nav-label a');
     return item.getBoundingClientRect().left > parent.getBoundingClientRect().left;
   })()`));
   check('desktop has no page-wide overflow', await noOverflow());
@@ -635,8 +638,10 @@ syntax PlainText -> Token;
 
   await navigate('/notes/native/');
   // A branch with a page keeps its label link independent of the disclosure.
-  await evaluate('window.chapterBranch = document.querySelector("#book-nav details"); window.branchLink = chapterBranch.querySelector(":scope > summary a"); branchLink.href = "#page-content"; branchLink.click()');
+  await evaluate('window.chapterBranch = document.querySelector("#book-nav details"); window.branchLink = chapterBranch.closest(".nav-item").querySelector(":scope > .nav-label a"); branchLink.href = "#page-content"; branchLink.click()');
   check('clicking a branch title link follows its target without toggling', await evaluate('chapterBranch.open && location.hash === "#page-content"'));
+  await evaluate('chapterBranch.open = false; branchLink.click()');
+  check('clicking a collapsed branch title follows its target without expanding', await evaluate('!chapterBranch.open && location.hash === "#page-content"'));
   check('special-character Unicode anchor has an active outline link', await evaluate('document.querySelector("#page-outline [aria-current=location]")?.hash === "#%E4%B8%AD%E6%96%87%20&%3F%23%2F"'));
   await viewport(390, 844);
   await screenshot('theme-native-mobile');
@@ -711,6 +716,8 @@ syntax PlainText -> Token;
   await viewport(390, 844);
   await navigate('/notes/essay/', false);
   check('without JavaScript the current branch is open and archive is closed', await evaluate('document.querySelector("#book-nav [aria-current=page]").closest("details").open && ![...document.querySelectorAll("#book-nav details")].at(-1).open'));
+  await evaluate('[...document.querySelectorAll("#book-nav details")].at(-1).closest(".nav-item").querySelector(".nav-title").click()');
+  check('without JavaScript clicking an unlinked title leaves its branch collapsed', await evaluate('![...document.querySelectorAll("#book-nav details")].at(-1).open'));
   await evaluate('[...document.querySelectorAll("#book-nav summary")].at(-1).click()');
   check('native branch controls work without JavaScript', await evaluate('[...document.querySelectorAll("#book-nav details")].at(-1).open'));
   check('without JavaScript mobile contents stay visible and usable', await evaluate('getComputedStyle(document.querySelector("#book-nav")).display !== "none" && !document.documentElement.classList.contains("js")'));

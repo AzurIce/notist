@@ -13,6 +13,7 @@ use std::{
 };
 
 mod config;
+mod embeds;
 mod layout;
 mod mounts;
 mod outline;
@@ -552,6 +553,7 @@ fn build_inner<R: Resources>(
         let rendered = Renderer::new()
             .with_registry(registry)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
+            .with_embed_renderer(|item| embeds::image(item, &resolved))
             .render_with_diagnostics(&page.root);
         append(
             &mut errors,

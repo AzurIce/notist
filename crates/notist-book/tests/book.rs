@@ -187,7 +187,7 @@ fn mixed_frontends_share_directory_routes_anchors_and_assets() {
     assert!(html(&site, "index.html").contains("href=\"guide/?mode=1#topic\""));
     let guide = html(&site, "guide/index.html");
     assert!(guide.contains("href=\"../\""));
-    assert!(guide.contains("href=\"../media/a%20b.svg\""));
+    assert!(guide.contains("<img src=\"../media/a%20b.svg\" alt=\"Picture\">"));
     assert!(guide.contains("id=\"topic\""));
     assert!(guide.contains("href=\"#topic\""));
     assert_eq!(site.files[Path::new("media/a b.svg")], b"<svg/>");
@@ -481,6 +481,84 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
             assert_eq!(site.pages.len(), 2);
             assert!(!site.files.contains_key(Path::new("guide/missing.png")));
             assert!(!site.files.contains_key(Path::new("missing/index.html")));
+        }
+    }
+}
+
+#[test]
+fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
+    for extension in ["md", "not"] {
+        for recover in [false, true] {
+            let root = format!("README.{extension}");
+            let nested = format!("guide/start.{extension}");
+            let source = r#"![A & "B"](assets/a%20b.SVG?raw=1&v=2#icon "Title & caption")
+
+![](https://example.com/image.PNG?size=2&v=3#detail)
+
+![Document](file.pdf)
+
+![Endpoint](https://example.com/image?format=png)"#;
+            let mut vault = Vault::new(resources(&[
+                (&root, source),
+                (
+                    &nested,
+                    &source
+                        .replace("assets/", "../assets/")
+                        .replace("file.pdf", "../file.pdf"),
+                ),
+                ("assets/a b.SVG", "<svg/>"),
+                ("file.pdf", "document"),
+            ]));
+            let config = BookConfig::new("public");
+            let site = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            }
+            .unwrap();
+            assert!(site.diagnostics.is_empty(), "{:?}", site.diagnostics);
+            assert!(site.warnings.is_empty(), "{:?}", site.warnings);
+            for (page, prefix) in [("index.html", ""), ("guide/start/index.html", "../../")] {
+                let output = html(&site, page);
+                assert!(output.contains(&format!(
+                    "<span class=\"notist-embed\" title=\"Title &amp; caption\"><img src=\"{prefix}assets/a%20b.SVG?raw=1&amp;v=2#icon\" alt=\"A &amp; &quot;B&quot;\"></span>"
+                )), "{extension} {page}: {output}");
+                assert!(output.contains(
+                    "<img src=\"https://example.com/image.PNG?size=2&amp;v=3#detail\" alt=\"\">"
+                ));
+                assert!(output.contains(&format!("<a href=\"{prefix}file.pdf\">Document</a>")));
+                assert!(
+                    output
+                        .contains("<a href=\"https://example.com/image?format=png\">Endpoint</a>")
+                );
+            }
+            assert_eq!(site.files[Path::new("assets/a b.SVG")], b"<svg/>");
+            assert_eq!(site.files[Path::new("file.pdf")], b"document");
+        }
+    }
+}
+
+#[test]
+fn image_embeds_preserve_unsafe_url_diagnostics() {
+    for extension in ["md", "not"] {
+        for recover in [false, true] {
+            let path = format!("README.{extension}");
+            let mut vault = Vault::new(resources(&[(&path, "![Picture](javascript:bad.png)")]));
+            let config = BookConfig::new("public");
+            let result = if recover {
+                notist_book::serve(&mut vault, &config)
+            } else {
+                build(&mut vault, &config)
+            };
+            let Err(Error::Diagnostics(errors)) = result else {
+                panic!("expected unsafe URL diagnostics: {result:?}");
+            };
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.diagnostic.message.contains("URL")),
+                "{errors:?}"
+            );
         }
     }
 }

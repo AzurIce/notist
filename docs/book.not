@@ -202,6 +202,8 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 
 == 链接、锚点与资源
 
+Book 将 `![描述](assets/example.png "标题")`（Markdown 与 Markup 均支持）及 `#embed` 引用的图片渲染为 img，description 作为 alt，title 保留在外层 span。按 URL 路径扩展名识别 PNG、JPEG（jpg / jpeg）、GIF、SVG、WebP、AVIF、APNG、BMP 和 ICO，忽略大小写及 query / fragment；本地与远程图片均适用。其他资源仍显示为链接；无图片扩展名的远程 URL 也使用链接。build 与 serve 预览使用相同呈现。
+
 link 与 embed 的本地目标相对于源文档解析。指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。远程 URL 保留，URL 安全检查仍由 renderer 执行。求值后的错误节点保留原身份与字段，Notist Book 按错误表示呈现，跳过其链接、资源及标题解释。
 
 输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。

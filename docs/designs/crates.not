@@ -11,6 +11,9 @@ workspace 围绕共享内容模型组织：前端产生 Expr 森林，管线生�
 %%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
 flowchart TB
     cli["notist-cli"] --> book["notist-book"]
+    cli --> ssg["notist-ssg"]
+    ssg --> host
+    ssg --> html
     cli --> host["notist · 资源与环境"]
     cli --> html["notist-html"]
     book --> host
@@ -31,7 +34,8 @@ flowchart TB
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口。
 - `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
-- `notist-cli`：依赖 notist、html 与 book，提供终端命令、构建、预览与 LSP 入口。
+- `notist-ssg`：依赖 notist 与 html，将内容目录直接映射为 HTML，负责站点模板、目录呈现数据、资源、Sass 和完整构建产物；独立于 book。
+- `notist-cli`：依赖 notist、html、book 与 ssg，提供终端命令、构建、共享的发布与预览宿主及 LSP 入口。
 - `notist-grammar`：位于 modules/grammar，独立解析文法记法并生成 SVG 铁路图，不依赖其他 workspace crate。
 
 == 接口与实现边界

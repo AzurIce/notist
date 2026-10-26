@@ -74,6 +74,7 @@ pub fn render(item: &Item) -> String {
 pub struct Renderer<'a> {
     embed: Option<Hook<'a>>,
     math: Option<Hook<'a>>,
+    code: Option<Hook<'a>>,
     source_map: bool,
     registry: HtmlRegistry,
     url_resolver: Option<UrlResolver<'a>>,
@@ -124,6 +125,14 @@ impl<'a> Renderer<'a> {
     /// callback, returned HTML is trusted application output.
     pub fn with_math_renderer(mut self, render: impl Fn(&Item) -> Option<String> + 'a) -> Self {
         self.math = Some(Box::new(render));
+        self
+    }
+
+    /// Supply trusted HTML for the text inside a block code element, such as
+    /// escaped syntax highlighting spans. The renderer owns the pre/code shell.
+    /// Returning `None` retains the ordinary escaped text.
+    pub fn with_code_renderer(mut self, render: impl Fn(&Item) -> Option<String> + 'a) -> Self {
+        self.code = Some(Box::new(render));
         self
     }
 
@@ -344,7 +353,14 @@ impl State<'_, '_> {
                     self.open("code", item, &class);
                 }
                 self.output.push('>');
-                self.text(string_field(item, "text").unwrap_or(""));
+                if let Some(html) = block
+                    .then(|| self.renderer.code.as_ref().and_then(|f| f(item)))
+                    .flatten()
+                {
+                    self.output.push_str(&html);
+                } else {
+                    self.text(string_field(item, "text").unwrap_or(""));
+                }
                 self.close("code");
                 if block {
                     self.close("pre");

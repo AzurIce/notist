@@ -33,6 +33,7 @@
   - [IR Transforms](designs/transforms.not)
 - [HTML Rendering](html.not)
 - [Notist Book](book.not)
+- [Notist SSG](ssg.not)
 - [Draft](draft.not)
 
 ---

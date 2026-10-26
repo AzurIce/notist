@@ -1,0 +1,104 @@
+= Notist SSG
+
+Notist SSG 将内容目录中的文档直接发布为 HTML，站点模板决定完整页面的布局与导航。它独立于 Notist Book，不读取 SUMMARY，也不提供章节排序、分类或分页规则。
+
+== 构建与预览
+
+```sh
+notist ssg build website
+notist ssg serve website --address 127.0.0.1:8000
+```
+
+build 默认发布到站点根目录下的 public；--out-dir 相对于当前工作目录，并覆盖配置。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 /，静态构建使用配置的 base_url。
+
+```toml
+[ssg]
+title = "My Site"
+base_url = "https://example.com/project/"
+content = "content"
+output = "public"
+template = "page"
+templates = "templates"
+static_dir = "static"
+data = "data"
+sass = "sass"
+# theme = "theme"
+```
+
+路径相对于站点资源根目录。Notist.toml 中的 transforms 仍由文档宿主加载，[ssg] 只负责站点配置。
+
+== 内容与路径
+
+```text
+content/index.not          -> index.html
+content/about.md           -> about.html
+content/guide/index.not    -> guide/index.html
+content/guide/start.not    -> guide/start.html
+content/guide/image.svg    -> guide/image.svg
+```
+
+文档保持相对路径，仅替换扩展名。index 文档是普通页面，目录没有入口文档时不自动生成首页。README 与 _index 没有特殊映射。支持的文档格式由 Vault 的前端注册决定。
+
+普通资源原样复制；隐藏文件与目录、Notist.toml 和 .notc 模块不作为内容资源发布。组件模块及其资源按实际使用情况发布到 _notist，该命名空间由生成器保留。
+
+文档之间的本地链接按源身份解析，再映射到 HTML 输出路径；query 与 fragment 保留，标题锚点自动生成并消除重复。以 / 开头的本地路径相对于内容及发布根目录。缺失超链接产生警告，缺失嵌入资源阻止构建。输出路径冲突、文件与目录冲突、内容与输出重叠都会阻止发布。
+
+== 文档属性
+
+.not 与 Markdown 共用根注解：
+
+```not
+@!(title: "About", template: "article", description: "About this project")
+= About
+
+Page content.
+```
+
+title 默认为第一个标题，没有标题时使用文件名。template 选择模板名，不带 .hbs 扩展名；缺席时使用配置中的 template。二者必须是字符串。其他属性作为 page.attrs 提供给模板，不改变输出路径，也不会隐式筛选页面。
+
+== 站点模板
+
+模板采用 Handlebars。加载顺序为内置 page、theme/templates、站点 templates；同名模板由后者覆盖。所有模板同时可作为局部模板引用，子目录保留在名称中，例如 layouts/base。
+
+每个页面的上下文包括：
+
+| 名称 | 内容 |
+| --- | --- |
+| page | route、title、attrs、html、headings、directory、ancestors |
+| page.route | source（物理身份）、path（内容相对路径）、output、url |
+| page.headings | title、id、anchor（编码后的 fragment）、level |
+| site | title、base_url、pages、directories、data |
+| directory | 当前文档所在目录的数据 |
+| assets.components | 当前页面的组件注册脚本，相对于输出页面；未使用组件时为 null |
+
+site.directories 是以内容相对目录路径为键的映射，根目录的键是空字符串。每个目录有 path、name、index（可选入口页）、pages（其他直属页面）和 directories（直属子目录的键）。页面与目录按源路径排列，模板可以选择自己的展示方式。目录数据包括没有入口页的目录。
+
+site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径为键。例如 data/example.toml 对应 site.data.example；嵌套路径通过 lookup 访问。相同键的多个文件会报错。
+
+```handlebars
+<!doctype html>
+<html>
+  <head>
+    <title>{{page.title}} · {{site.title}}</title>
+    <link rel="stylesheet" href="{{url 'index.css'}}">
+  </head>
+  <body>
+    <main>{{{page.html}}}</main>
+    {{#if assets.components}}
+      <script type="module" src="{{assets.components}}"></script>
+    {{/if}}
+  </body>
+</html>
+```
+
+普通插值默认转义，正文 HTML 使用三重大括号输出。组件注册脚本需要由模板显式加载。
+
+辅助函数 url 将发布路径连接到 base_url，并保持外部 URL；eq 比较值，concat 拼接字符串，starts_with 判断前缀。markdown 把模板数据中的 Markdown 编译为 HTML，通过三重大括号输出；它使用独立的内置文档管线，不读取文件或加载外部模块。
+
+正文中的代码块与 markdown 辅助函数使用相同的语法高亮，输出带 z- 前缀的作用域 class；主题负责对应样式。未知语言保持转义后的普通代码。
+
+== 主题资源
+
+主题目录可以包含 templates、static 和 sass。站点 static 覆盖主题的同名 static 资源，但不允许覆盖内容文档或内容资源。站点同名 Sass 入口覆盖主题入口；非 partial 的 .scss / .sass 文件按相对路径编译为 .css。以 _ 开头的 partial 只参与导入。Sass 使用宿主的 Resources 读取输入。
+
+构建库接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文件系统。CLI 在所有步骤成功后暂存并替换属于 Notist 的输出目录，自动清理过期文件；失败不会替换现有站点。

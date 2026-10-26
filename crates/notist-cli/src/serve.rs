@@ -1,7 +1,7 @@
 //! HTTP server for the same publication artifact produced by static builds.
 use crate::book;
 use notify::{RecursiveMode, Watcher};
-use notist_book::{BuildOutput, Error};
+use std::collections::BTreeMap;
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -17,6 +17,94 @@ mod terminal;
 use report::Report;
 use terminal::Terminal;
 
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Book,
+    Site,
+}
+
+struct BuildOutput {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    pages: usize,
+    home: Option<String>,
+    diagnostics: Vec<notist::SourceDiagnostic>,
+    warnings: Vec<notist::SourceDiagnostic>,
+}
+enum Error {
+    Diagnostics(Vec<notist::SourceDiagnostic>),
+    Message(String),
+}
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message(s) => f.write_str(s),
+            Self::Diagnostics(d) => {
+                for d in d {
+                    writeln!(f, "{}: {}", d.path.display(), d.diagnostic.message)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+struct Build {
+    artifact: BuildOutput,
+    output: PathBuf,
+    observed: BTreeSet<PathBuf>,
+}
+impl Kind {
+    fn assemble(
+        self,
+        root: &Path,
+        config: Option<&Path>,
+    ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
+        match self {
+            Self::Book => book::assemble(root, config, None, true)
+                .map(|b| Build {
+                    artifact: BuildOutput {
+                        pages: b.artifact.pages.len(),
+                        home: b.artifact.pages.first().map(|p| p.route.url.clone()),
+                        files: b.artifact.files,
+                        diagnostics: b.artifact.diagnostics,
+                        warnings: b.artifact.warnings,
+                    },
+                    output: b.output,
+                    observed: b.observed,
+                })
+                .map_err(|(e, inputs)| {
+                    (
+                        match e {
+                            notist_book::Error::Diagnostics(d) => Error::Diagnostics(d),
+                            e => Error::Message(e.to_string()),
+                        },
+                        inputs,
+                    )
+                }),
+            Self::Site => crate::ssg::assemble(root, config, None, true)
+                .map(|b| Build {
+                    artifact: BuildOutput {
+                        pages: b.artifact.pages.len(),
+                        home: None,
+                        files: b.artifact.files,
+                        diagnostics: vec![],
+                        warnings: b.artifact.warnings,
+                    },
+                    output: b.output,
+                    observed: b.observed,
+                })
+                .map_err(|(e, inputs)| {
+                    (
+                        match e {
+                            notist_ssg::Error::Diagnostics(d) => Error::Diagnostics(d),
+                            e => Error::Message(e.to_string()),
+                        },
+                        inputs,
+                    )
+                }),
+        }
+    }
+}
+
 struct Published {
     site: Option<Arc<BuildOutput>>,
     revision: u64,
@@ -31,11 +119,12 @@ pub fn serve(
     config: Option<&Path>,
     address: &str,
     no_clear_screen: bool,
+    kind: Kind,
 ) -> std::process::ExitCode {
-    match run(root, config, address, no_clear_screen) {
+    match run(root, config, address, no_clear_screen, kind) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            book::report(error);
+            eprintln!("{error}");
             std::process::ExitCode::FAILURE
         }
     }
@@ -45,6 +134,7 @@ fn run(
     config: Option<&Path>,
     address: &str,
     no_clear_screen: bool,
+    kind: Kind,
 ) -> Result<(), Error> {
     let root = std::fs::canonicalize(root).map_err(|error| Error::Message(error.to_string()))?;
     let config = config
@@ -75,6 +165,7 @@ fn run(
         &mut observed,
         &mut output,
         &terminal,
+        kind,
     );
     watch_external(&mut watcher, &root, &observed, &mut watched)?;
     let shared = state.clone();
@@ -125,10 +216,11 @@ fn run(
                 &mut observed,
                 &mut output,
                 &terminal,
+                kind,
             );
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
-                book::report(error);
+                eprintln!("{error}");
             }
         }
     });
@@ -149,6 +241,7 @@ fn rebuild(
     observed: &mut BTreeSet<PathBuf>,
     output: &mut Option<PathBuf>,
     terminal: &Terminal,
+    kind: Kind,
 ) {
     let (previous, has_preview) = {
         let mut published = state.write().unwrap();
@@ -158,7 +251,7 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = book::assemble(root, config, None, true);
+    let result = kind.assemble(root, config);
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {
@@ -279,29 +372,31 @@ fn respond(request: Request, state: State) {
     }
     if file == Path::new("index.html")
         && !site.files.contains_key(&file)
-        && let Some(first) = site.pages.first()
+        && let Some(home) = &site.home
     {
-        let _ =
-            request.respond(Response::empty(302).with_header(header("Location", &first.route.url)));
+        let _ = request.respond(Response::empty(302).with_header(header("Location", home)));
         return;
     }
-    let Some(bytes) = site.files.get(&file) else {
-        drop(published);
-        simple(
-            request,
-            404,
-            b"Page not found".to_vec(),
-            "text/plain; charset=utf-8",
-        );
-        return;
+    let (bytes, status, content_type) = match site.files.get(&file) {
+        Some(bytes) => (bytes, 200, mime(&file)),
+        None => match site.files.get(Path::new("404.html")) {
+            Some(bytes) => (bytes, 404, "text/html; charset=utf-8"),
+            None => {
+                drop(published);
+                simple(
+                    request,
+                    404,
+                    b"Page not found".to_vec(),
+                    "text/plain; charset=utf-8",
+                );
+                return;
+            }
+        },
     };
     let mut bytes = bytes.clone();
     let revision = published.revision;
     drop(published);
-    if file
-        .extension()
-        .is_some_and(|extension| extension == "html")
-    {
+    if content_type == "text/html; charset=utf-8" {
         let html = String::from_utf8_lossy(&bytes);
         let script = format!(
             "<script type=\"module\" src=\"{}\"></script>",
@@ -313,7 +408,7 @@ fn respond(request: Request, state: State) {
             format!("{html}{script}").into_bytes()
         };
     }
-    simple(request, 200, bytes, mime(&file));
+    simple(request, status, bytes, content_type);
 }
 fn serve_url(file: &Path, revision: u64) -> String {
     format!(
@@ -341,6 +436,7 @@ fn mime(path: &Path) -> &'static str {
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
         "json" => "application/json",
+        "webmanifest" => "application/manifest+json",
         "wasm" => "application/wasm",
         "svg" => "image/svg+xml",
         "png" => "image/png",
@@ -349,6 +445,13 @@ fn mime(path: &Path) -> &'static str {
         "webp" => "image/webp",
         "ico" => "image/x-icon",
         "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "txt" => "text/plain; charset=utf-8",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         _ => "application/octet-stream",

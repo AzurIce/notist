@@ -9,6 +9,8 @@ mod publication;
 mod query;
 #[cfg(not(target_arch = "wasm32"))]
 mod serve;
+#[cfg(not(target_arch = "wasm32"))]
+mod ssg;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -59,6 +61,11 @@ enum Command {
         #[command(subcommand)]
         command: BookCommand,
     },
+    /// Build and serve a site preserving the content directory structure
+    Ssg {
+        #[command(subcommand)]
+        command: SsgCommand,
+    },
     /// Run the language server over stdio
     #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
     Lsp,
@@ -86,6 +93,26 @@ enum BookCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum SsgCommand {
+    /// Convert documents to HTML using the site's templates and assets
+    Build {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+    },
+    /// Preview the site with file watching and live reload
+    Serve {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:8000")]
+        address: String,
+        #[arg(long)]
+        no_clear_screen: bool,
+    },
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -98,7 +125,15 @@ fn main() -> ExitCode {
                 root,
                 address,
                 no_clear_screen,
-            } => serve::serve(&root, config, &address, no_clear_screen),
+            } => serve::serve(&root, config, &address, no_clear_screen, serve::Kind::Book),
+        },
+        Command::Ssg { command } => match command {
+            SsgCommand::Build { root, out_dir } => ssg::build(&root, config, out_dir.as_deref()),
+            SsgCommand::Serve {
+                root,
+                address,
+                no_clear_screen,
+            } => serve::serve(&root, config, &address, no_clear_screen, serve::Kind::Site),
         },
         Command::Check { file } => check(&file, config),
         Command::Cst { file } => print_with(&file, |src| {
@@ -417,6 +452,18 @@ fn emit_vault_error(error: notist::VaultError) -> ExitCode {
     }
     ExitCode::FAILURE
 }
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_source_diagnostics(diagnostics: &[notist::SourceDiagnostic], severity: Severity) {
+    for diagnostic in diagnostics {
+        emit_source(
+            &diagnostic.path,
+            &diagnostic.source,
+            std::slice::from_ref(&diagnostic.diagnostic),
+            severity,
+        );
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic], severity: Severity) {
     let writer = StandardStream::stderr(ColorChoice::Auto);

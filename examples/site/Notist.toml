@@ -1,0 +1,4 @@
+[ssg]
+title = "Notist Site"
+base_url = "/"
+output = "../../target/notist-site"

@@ -4,6 +4,7 @@ Notist 是基于内容树的文档工具链，支持 .not 与 Markdown，共享�
 
 - [Documentation](docs/README.not)：语法、内置函数、IR、模块与工具使用。
 - [Notist Book](docs/book.not)：书籍配置、README 路由、SUMMARY.not 阅读结构、主题与本地预览。
+- [Notist SSG](docs/ssg.not)：目录映射、站点模板、主题资源与网站构建。
 - [本地模块](docs/modules.not)：相对路径 import、词法命名空间与组件资源。
 
 ```sh

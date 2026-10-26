@@ -73,7 +73,7 @@ impl Terminal {
             ] {
                 for issue in issues {
                     if let Some(source) = &issue.source {
-                        crate::book::report_diagnostics(std::slice::from_ref(source), severity);
+                        crate::emit_source_diagnostics(std::slice::from_ref(source), severity);
                     } else {
                         eprintln!("{}", issue.detail);
                     }

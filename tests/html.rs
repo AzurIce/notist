@@ -2,6 +2,28 @@ use notist::{Ctor, Item, Pipeline, Value};
 use notist_html::{Renderer, escape_attribute, escape_text, is_safe_url, render};
 
 #[test]
+fn code_renderer_preserves_the_shell_and_escapes_fallbacks() {
+    let root = analyze(
+        "md",
+        "`<inline>`\n\n```rust\nlet x = 1 < 2;\n```\n\n```unknown\n<script>\n```",
+    );
+    let before = root.clone();
+    let rendered = Renderer::new()
+        .with_code_renderer(|item| {
+            (item.fields.get("lang") == Some(&Value::Str("rust".into())))
+                .then(|| "<span class=\"keyword\">let</span> x = 1 &lt; 2;".into())
+        })
+        .render(&root);
+    assert!(
+        rendered.contains("<pre><code class=\"language-rust\"><span class=\"keyword\">let</span>")
+    );
+    assert!(rendered.contains("<code>&lt;inline&gt;</code>"));
+    assert!(rendered.contains("&lt;script&gt;"));
+    assert!(!rendered.contains("<script>"));
+    assert_eq!(root, before);
+}
+
+#[test]
 fn publication_url_resolver_preserves_url_safety_and_source_tree() {
     let root = analyze("not", "[Guide](guide.not) ![Picture](picture.svg)");
     let before = root.clone();

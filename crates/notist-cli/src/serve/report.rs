@@ -1,7 +1,7 @@
 //! One build's diagnostics, shared by the terminal and live preview.
+use super::{BuildOutput, Error};
 use codespan_reporting::{diagnostic::Severity, term::termcolor::Buffer};
 use notist::SourceDiagnostic;
-use notist_book::{BuildOutput, Error};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -87,7 +87,7 @@ impl Report {
             build: self.build,
             status,
             elapsed_ms: elapsed.as_millis(),
-            pages: site.pages.len(),
+            pages: site.pages,
             errors: site
                 .diagnostics
                 .iter()

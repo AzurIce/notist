@@ -1,0 +1,7 @@
+@!(title: "Notist Site")
+= Notist Site
+
+This site follows its source directory structure.
+
+- [About](about.md)
+- [Guide](guide/index.not)

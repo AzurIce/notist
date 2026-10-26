@@ -20,6 +20,8 @@ struct Config {
     transforms: Vec<toml::Spanned<Rule>>,
     #[serde(default)]
     book: Option<toml::Value>,
+    #[serde(default)]
+    ssg: Option<toml::Value>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +47,7 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
         )]
     })?;
     let _ = config.book;
+    let _ = config.ssg;
     let mut diagnostics = Vec::new();
     let transforms = config
         .transforms

@@ -63,19 +63,9 @@ pub fn assemble(
 pub fn report(error: Error) {
     match error {
         Error::Diagnostics(errors) => {
-            report_diagnostics(&errors, Severity::Error);
+            crate::emit_source_diagnostics(&errors, Severity::Error);
         }
         error => eprintln!("{error}"),
-    }
-}
-pub fn report_diagnostics(diagnostics: &[notist::SourceDiagnostic], severity: Severity) {
-    for diagnostic in diagnostics {
-        crate::emit_source(
-            &diagnostic.path,
-            &diagnostic.source,
-            std::slice::from_ref(&diagnostic.diagnostic),
-            severity,
-        );
     }
 }
 pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
@@ -83,7 +73,7 @@ pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::
         let root = std::fs::canonicalize(root).map_err(io)?;
         let result = assemble(&root, config, output, false).map_err(|(error, _)| error)?;
         publish(&result.artifact.files, &result.output, &root)?;
-        report_diagnostics(&result.artifact.warnings, Severity::Warning);
+        crate::emit_source_diagnostics(&result.artifact.warnings, Severity::Warning);
         println!(
             "{} pages → {}",
             result.artifact.pages.len(),

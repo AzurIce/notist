@@ -177,7 +177,9 @@ syntax PlainText -> Token;
   server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-      const file = resolve(output, `.${pathname}${pathname.endsWith('/') ? 'index.html' : ''}`);
+      // Publish the same fixture at another book root to check per-book preferences.
+      const bookPath = pathname.replace(/^\/other-book(?=\/)/, '');
+      const file = resolve(output, `.${bookPath}${bookPath.endsWith('/') ? 'index.html' : ''}`);
       if (!file.startsWith(`${output}${sep}`)) throw new Error('Invalid path');
       const mime = file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : file.endsWith('.wasm') ? 'application/wasm' : 'text/html';
       const bytes = await readFile(file);
@@ -486,7 +488,102 @@ syntax PlainText -> Token;
   await navigate('/notes/essay/');
   check('explicit light choice survives navigation and overrides system dark', await evaluate('document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).backgroundColor === "rgb(255, 255, 255)"'));
 
-  for (const width of [320, 390, 760, 768, 1024, 1120]) {
+  const navigationWidth = () => evaluate('document.querySelector("#book-nav").getBoundingClientRect().width');
+  const savedNavigationWidth = () => evaluate('localStorage.getItem(`notist-book-width:${document.querySelector(".book-brand").href}`)');
+  const resizePosition = () => evaluate(`(() => {
+    const bounds = document.querySelector('#nav-resize').getBoundingClientRect();
+    return {x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2};
+  })()`);
+  const dragNavigation = async (delta, finish = 'release') => {
+    const { x, y } = await resizePosition();
+    await evaluate('document.querySelector("#nav-resize").addEventListener("pointerdown", event => window.resizePointer = event.pointerId, {once: true})');
+    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x + delta, y, button: 'left', buttons: 1 });
+    if (finish === 'cancel') await evaluate('document.querySelector("#nav-resize").dispatchEvent(new PointerEvent("pointercancel", {pointerId: window.resizePointer}))');
+    if (finish !== 'hold') await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + delta, y, button: 'left', clickCount: 1 });
+  };
+  const resizeKey = async key => {
+    await evaluate('document.querySelector("#nav-resize").focus()');
+    await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key });
+    await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key });
+  };
+  const reloadWidth = async value => {
+    await evaluate(`localStorage.setItem(\`notist-book-width:\${document.querySelector('.book-brand').href}\`, ${JSON.stringify(value)}); window.widthBeforeReload = true`);
+    await cdp('Page.reload');
+    await waitFor('window.widthBeforeReload === undefined && document.readyState === "complete"');
+  };
+  check('desktop navigation starts at 280px with a keyboard-accessible resize handle', await evaluate(`(() => {
+    const handle = document.querySelector('#nav-resize');
+    return document.querySelector('#book-nav').getBoundingClientRect().width === 280 &&
+      handle.checkVisibility() && handle.tabIndex === 0 && handle.getAttribute('role') === 'separator' &&
+      handle.getAttribute('aria-valuenow') === '280';
+  })()`));
+  await viewport(1114);
+  check('compact desktop spends recovered margins on navigation while preserving the reading width', await evaluate(`(() => {
+    const nav = document.querySelector('#book-nav').getBoundingClientRect();
+    const main = document.querySelector('#page-content').getBoundingClientRect();
+    return nav.width === 280 && nav.left === 24 && main.width >= 740 && main.left - nav.right === 24 &&
+      !document.querySelector('.page-outline').checkVisibility() && document.querySelector('.mobile-outline').checkVisibility();
+  })()`));
+  for (const width of [1120, 1121, 1319, 1320]) {
+    await viewport(width);
+    check(`reading stays wide across responsive boundaries at ${width}px`, await evaluate(`document.querySelector('#page-content').getBoundingClientRect().width >= 740 && document.querySelector('#book-nav').getBoundingClientRect().width === 280`));
+  }
+  check('wide desktop restores the separate page outline', await evaluate('document.querySelector(".page-outline").checkVisibility() && !document.querySelector(".mobile-outline").checkVisibility()'));
+  await viewport(1440);
+  await dragNavigation(80);
+  check('pointer drag updates the width, accessible value and persistent preference', await navigationWidth() === 360 &&
+    await savedNavigationWidth() === '360' && await evaluate('document.querySelector("#nav-resize").getAttribute("aria-valuenow") === "360" && !document.documentElement.classList.contains("nav-resizing")'));
+  await navigate('/notes/native/');
+  check('sidebar width follows the book across chapters', await navigationWidth() === 360);
+  await reloadWidth('360');
+  check('sidebar width survives reload', await navigationWidth() === 360);
+  await navigate('/other-book/notes/essay/');
+  check('a second book on the same origin starts with its own default', await navigationWidth() === 280 && await savedNavigationWidth() === null);
+  await dragNavigation(48);
+  await navigate('/notes/essay/');
+  check('books retain independent sidebar widths', await navigationWidth() === 360 && await savedNavigationWidth() === '360');
+  await viewport(900);
+  check('a narrow desktop clamps the sidebar without overwriting its saved preference', await navigationWidth() < 360 && await savedNavigationWidth() === '360' &&
+    await evaluate('document.querySelector("#page-content").getBoundingClientRect().width >= 480'));
+  await viewport(1440);
+  check('widening the viewport restores the preferred sidebar width', await navigationWidth() === 360);
+  await dragNavigation(600);
+  check('dragging is capped at 420px without page-wide overflow', await navigationWidth() === 420 && await noOverflow());
+  await dragNavigation(-200);
+  check('dragging stops at the 240px minimum', await navigationWidth() === 240);
+  await resizeKey('Home');
+  check('Home restores the default and removes the stored override', await navigationWidth() === 280 && await savedNavigationWidth() === null);
+  await resizeKey('ArrowRight');
+  check('keyboard resizing advances by 16px and persists', await navigationWidth() === 296 && await savedNavigationWidth() === '296');
+  await resizeKey('ArrowLeft');
+  check('keyboard resizing works in both directions', await navigationWidth() === 280);
+  await evaluate('document.documentElement.style.setProperty("--navigation-width", "300px")');
+  const resetPoint = await resizePosition();
+  for (const clickCount of [1, 2]) {
+    await cdp('Input.dispatchMouseEvent', { type: 'mousePressed', ...resetPoint, button: 'left', clickCount });
+    await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', ...resetPoint, button: 'left', clickCount });
+  }
+  check('double-click restores the theme default rather than a hardcoded width', await navigationWidth() === 300 && await savedNavigationWidth() === null);
+  await evaluate('document.documentElement.style.removeProperty("--navigation-width")');
+  await dragNavigation(40, 'cancel');
+  check('cancelled pointer drags restore the previous preference and clear resize state', await navigationWidth() === 280 && await savedNavigationWidth() === null &&
+    await evaluate('!document.documentElement.classList.contains("nav-resizing")'));
+  await dragNavigation(40, 'hold');
+  await viewport(390, 844);
+  await cdp('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 100, y: 200, button: 'left', clickCount: 1 });
+  check('switching to mobile during a drag clears capture and moves focus to the contents control', await evaluate('!document.documentElement.classList.contains("nav-resizing") && !document.querySelector("#nav-resize").checkVisibility() && document.activeElement.id === "nav-toggle"'));
+  await viewport(1440);
+  check('an interrupted desktop drag does not replace the previous width', await navigationWidth() === 280 && await savedNavigationWidth() === null);
+  for (const value of ['invalid', 'Infinity', '-20']) {
+    await reloadWidth(value);
+    check(`invalid stored width ${value} falls back to the default`, await navigationWidth() === 280);
+  }
+  await reloadWidth('10000');
+  check('out-of-range stored widths stay within the supported range', await navigationWidth() === 420 && await noOverflow());
+  await resizeKey('Home');
+
+  for (const width of [320, 390, 760, 761, 768, 900, 1024, 1120, 1121, 1319, 1320]) {
     await viewport(width, 844);
     check(`no page-wide overflow at ${width}px`, await noOverflow());
   }
@@ -545,6 +642,9 @@ syntax PlainText -> Token;
   await screenshot('theme-native-mobile');
   await navigate('/plain/');
   check('headingless page omits outline rather than showing an empty rail', await evaluate('!document.querySelector(".page-outline") && !document.querySelector(".mobile-outline")'));
+  await viewport(1114);
+  check('headingless pages use the recovered outline space for reading', await evaluate('document.querySelector("#page-content").getBoundingClientRect().width >= 740'));
+  check('the resize handle does not make short pages taller than the viewport', await evaluate('document.documentElement.scrollHeight <= innerHeight'));
 
   // Use real, identical long navigation trees on both sides of each navigation.
   await viewport(1440, 640);
@@ -614,6 +714,7 @@ syntax PlainText -> Token;
   await evaluate('[...document.querySelectorAll("#book-nav summary")].at(-1).click()');
   check('native branch controls work without JavaScript', await evaluate('[...document.querySelectorAll("#book-nav details")].at(-1).open'));
   check('without JavaScript mobile contents stay visible and usable', await evaluate('getComputedStyle(document.querySelector("#book-nav")).display !== "none" && !document.documentElement.classList.contains("js")'));
+  check('without JavaScript the resize handle is hidden', await evaluate('!document.querySelector("#nav-resize").checkVisibility()'));
   check('without JavaScript code remains readable', await evaluate('document.querySelector("pre code").textContent.includes("pub fn render") && !document.querySelector(".copy-code")'));
   const { identifier } = await cdp('Page.addScriptToEvaluateOnNewDocument', { source: 'for (const key of ["localStorage", "sessionStorage"]) Object.defineProperty(window, key, { get() { throw new DOMException("Storage denied"); } });' });
   await navigate('/notes/essay/');
@@ -621,6 +722,9 @@ syntax PlainText -> Token;
   await viewport(1440, 640);
   await navigate('/_logs/more45/');
   check('blocked session storage still reveals deep current chapters', await evaluate('document.querySelector("#book-nav").scrollTop > 0 && document.querySelector("#book-nav [aria-current=page]").checkVisibility()'));
+  await dragNavigation(40);
+  check('blocked local storage still allows dragging and resetting the sidebar', await navigationWidth() === 320);
+  await resizeKey('Home');
   await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier });
   await navigate('/notes/essay/');
   await evaluate('document.querySelector("#theme-toggle").click()');

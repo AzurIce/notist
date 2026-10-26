@@ -198,6 +198,10 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 
 侧栏滚动位置按书籍在当前标签页内保存，跳转章节、刷新或重新打开移动端目录时恢复。当前章节已经可见时保持原位置；否则只滚动到可见区域。浏览器存储不可用时仍会定位当前章节。
 
+桌面侧栏默认宽 280px。拖动目录右侧的手柄可调整宽度；聚焦手柄后，左右方向键每次调整 16px，双击或按 Home 恢复主题默认宽度。宽度按书籍保存在浏览器本地，跳转章节、刷新及重新打开书籍时恢复；存储不可用时仍可在当前页面调整。可调范围为 240–420px，窗口较窄时进一步限制上限，为正文保留空间；窗口重新变宽后恢复读者选择的宽度。移动端继续使用抽屉目录，不显示调宽手柄。
+
+桌面页面两侧各留 24px，目录与正文间距为 24px，正文最大宽度默认 750px。在 1320px 以下，页内目录移入正文顶部；没有页内目录时不预留右侧栏。移动端在 760px 及以下切换为单栏，两侧各留 20px。
+
 两种 SUMMARY 都经过对应前端的文档分析，再按结构数据解释，不进入求值、输出转换或 HTML 渲染。因此直接写列表即可，无需 `#toc`、额外函数声明或 Web Component，也不支持用代码求值动态生成目录。当前仓库的 docs/SUMMARY.not 展示了完整的站点阅读结构。
 
 == 链接、锚点与资源
@@ -236,11 +240,14 @@ additional-js = ["scripts/reader.js"]
   --accent: #6d28d9;
   --font-reading: system-ui, sans-serif;
   --reading-width: 780px;
+  --navigation-width: 300px;
 }
 :root[data-theme="dark"] { --accent: #c4b5fd; }
 ```
 
 配色变量还包括 --bg、--fg、--muted、--line、--code、--surface、--selection；--font-ui 与 --font-code 分别控制界面和代码字体。默认明暗配色基于系统偏好；覆写深色配色时，可结合 prefers-color-scheme 与 data-theme 显式选择规则。
+
+--navigation-width 设置侧栏默认宽度，--book-width 设置整体布局的最大宽度（默认 1440px）。读者保存的侧栏宽度优先于主题默认值；重置后重新使用 --navigation-width。
 
 模板引擎使用 Handlebars。自定义主题目录可以覆盖 index.hbs、navigation.hbs、navigation-label.hbs，或添加其他 .hbs partial；模板名是相对路径去掉 .hbs。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
 

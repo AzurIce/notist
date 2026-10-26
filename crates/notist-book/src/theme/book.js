@@ -32,7 +32,131 @@
   // The mobile contents behave as a modal drawer, including for keyboard users.
   const mobile = matchMedia('(max-width: 760px)');
   const navigation = document.querySelector('#book-nav');
-  const scrollKey = `notist-book-scroll:${document.querySelector('.book-brand')?.href || location.href}`;
+  const bookIdentity = document.querySelector('.book-brand')?.href || location.href;
+  const scrollKey = `notist-book-scroll:${bookIdentity}`;
+
+  // Keep the reader's preferred width even when a smaller viewport temporarily clamps it.
+  const resizeHandle = document.querySelector('#nav-resize');
+  const layout = document.querySelector('.book-layout');
+  if (navigation && resizeHandle && layout) {
+    const widthKey = `notist-book-width:${bookIdentity}`;
+    let preferredWidth = null;
+    let drag = null;
+    let resizeFocused = false;
+    const widthLimits = () => {
+      const style = getComputedStyle(layout);
+      const min = parseFloat(style.getPropertyValue('--navigation-min-width'));
+      const max = parseFloat(style.getPropertyValue('--navigation-max-width'));
+      const reserve = parseFloat(style.getPropertyValue('--navigation-content-space'));
+      return { min, max, available: Math.max(min, Math.min(max, layout.clientWidth - reserve)) };
+    };
+    const updateResizeHandle = () => {
+      if (mobile.matches) return;
+      const { min, available } = widthLimits();
+      resizeHandle.setAttribute('aria-valuemin', String(min));
+      resizeHandle.setAttribute('aria-valuemax', String(Math.floor(available)));
+      resizeHandle.setAttribute('aria-valuenow', String(Math.round(navigation.getBoundingClientRect().width)));
+    };
+    const applyWidth = () => {
+      if (preferredWidth === null) root.style.removeProperty('--navigation-user-width');
+      else root.style.setProperty('--navigation-user-width', `${preferredWidth}px`);
+      updateResizeHandle();
+    };
+    const loadWidth = () => {
+      preferredWidth = null;
+      try {
+        const stored = localStorage.getItem(widthKey);
+        const value = Number(stored);
+        if (stored !== null && Number.isFinite(value) && value > 0) {
+          const { min, max } = widthLimits();
+          preferredWidth = Math.max(min, Math.min(max, value));
+        }
+      } catch (_) {}
+      applyWidth();
+    };
+    const saveWidth = () => {
+      try {
+        if (preferredWidth === null) localStorage.removeItem(widthKey);
+        else localStorage.setItem(widthKey, String(preferredWidth));
+      } catch (_) {}
+    };
+    const setWidth = width => {
+      const { min, available } = widthLimits();
+      preferredWidth = Math.round(Math.max(min, Math.min(available, width)));
+      applyWidth();
+    };
+    const finishDrag = (commit = true) => {
+      if (!drag) return;
+      const previous = drag;
+      drag = null;
+      root.classList.remove('nav-resizing');
+      if (resizeHandle.hasPointerCapture(previous.id)) resizeHandle.releasePointerCapture(previous.id);
+      if (commit) saveWidth();
+      else {
+        preferredWidth = previous.preferredWidth;
+        applyWidth();
+      }
+    };
+    const resetWidth = () => {
+      finishDrag(false);
+      preferredWidth = null;
+      applyWidth();
+      saveWidth();
+    };
+    resizeHandle.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !event.isPrimary || mobile.matches) return;
+      drag = { id: event.pointerId, x: event.clientX, width: navigation.getBoundingClientRect().width, preferredWidth };
+      resizeHandle.setPointerCapture(event.pointerId);
+      resizeHandle.focus({ preventScroll: true });
+      root.classList.add('nav-resizing');
+      event.preventDefault();
+    });
+    resizeHandle.addEventListener('pointermove', event => {
+      if (drag?.id === event.pointerId) setWidth(drag.width + event.clientX - drag.x);
+    });
+    resizeHandle.addEventListener('pointerup', event => {
+      if (drag?.id === event.pointerId) finishDrag();
+    });
+    resizeHandle.addEventListener('pointercancel', event => {
+      if (drag?.id === event.pointerId) finishDrag(false);
+    });
+    resizeHandle.addEventListener('lostpointercapture', () => finishDrag(!mobile.matches));
+    resizeHandle.addEventListener('dblclick', resetWidth);
+    resizeHandle.addEventListener('focus', () => { resizeFocused = true; });
+    resizeHandle.addEventListener('blur', () => {
+      // A media-query display change can blur the handle before its change event runs.
+      if (!mobile.matches) resizeFocused = false;
+    });
+    resizeHandle.addEventListener('keydown', event => {
+      if (event.key === 'Home') {
+        event.preventDefault();
+        resetWidth();
+      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        setWidth(navigation.getBoundingClientRect().width + (event.key === 'ArrowRight' ? 16 : -16));
+        saveWidth();
+      }
+    });
+    mobile.addEventListener('change', () => {
+      finishDrag(false);
+      if (mobile.matches && resizeFocused) {
+        document.querySelector('#nav-toggle')?.focus({ preventScroll: true });
+        resizeFocused = false;
+      }
+      updateResizeHandle();
+    });
+    window.addEventListener('storage', event => {
+      if (event.key === widthKey || event.key === null) {
+        finishDrag(false);
+        loadWidth();
+      }
+    });
+    const widthObserver = new ResizeObserver(updateResizeHandle);
+    widthObserver.observe(layout);
+    widthObserver.observe(navigation);
+    loadWidth();
+  }
+
   let navigationScroll = null;
   try {
     const stored = sessionStorage.getItem(scrollKey);

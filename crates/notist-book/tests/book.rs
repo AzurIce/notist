@@ -58,6 +58,11 @@ fn default_theme_renders_semantic_shell_for_both_frontends() {
         assert!(toggle.contains("aria-controls=\"book-nav\""));
         assert!(toggle.contains("aria-expanded=\"false\""));
         assert!(tag_with(&output, "button", "id=\"nav-close\"").is_some());
+        let resize = tag_with(&output, "div", "id=\"nav-resize\"").unwrap();
+        assert!(resize.contains("role=\"separator\""));
+        assert!(resize.contains("tabindex=\"0\""));
+        assert!(resize.contains("aria-orientation=\"vertical\""));
+        assert!(resize.contains("aria-controls=\"book-nav\""));
         let theme_toggle = tag_with(&output, "button", "id=\"theme-toggle\"").unwrap();
         assert!(theme_toggle.contains("aria-label=\""));
         assert!(output.contains(">Contents</button>"));

@@ -25,6 +25,7 @@
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
       <ul class="navigation-tree">{{#each navigation}}{{> navigation this}}{{/each}}</ul>
     </nav>
+    <div id="nav-resize" class="navigation-resize" role="separator" tabindex="0" aria-label="Resize contents" aria-orientation="vertical" aria-controls="book-nav" title="Drag or use arrow keys to resize contents; double-click or press Home to reset"></div>
     <main id="page-content" tabindex="-1">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>
       {{#if outline}}

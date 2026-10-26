@@ -1,6 +1,5 @@
 (() => {
   const root = document.documentElement;
-  root.classList.add('js');
 
   // Follow the system until the reader makes an explicit choice. Storage is optional.
   const systemTheme = matchMedia('(prefers-color-scheme: dark)');
@@ -33,7 +32,6 @@
   const mobile = matchMedia('(max-width: 760px)');
   const navigation = document.querySelector('#book-nav');
   const bookIdentity = document.querySelector('.book-brand')?.href || location.href;
-  const scrollKey = `notist-book-scroll:${bookIdentity}`;
 
   // Keep the reader's preferred width even when a smaller viewport temporarily clamps it.
   const resizeHandle = document.querySelector('#nav-resize');
@@ -157,19 +155,6 @@
     loadWidth();
   }
 
-  let navigationScroll = null;
-  try {
-    const stored = sessionStorage.getItem(scrollKey);
-    const value = Number(stored);
-    if (stored !== null && Number.isFinite(value) && value >= 0) navigationScroll = value;
-  } catch (_) {}
-  const saveNavigationScroll = () => {
-    if (!navigation?.getClientRects().length) return;
-    navigationScroll = navigation.scrollTop;
-    try { sessionStorage.setItem(scrollKey, String(navigationScroll)); } catch (_) {}
-  };
-  navigation?.addEventListener('scroll', saveNavigationScroll, { passive: true });
-  window.addEventListener('pagehide', saveNavigationScroll);
   const navToggle = document.querySelector('#nav-toggle');
   const navClose = document.querySelector('#nav-close');
   const backdrop = document.querySelector('#nav-backdrop');
@@ -177,25 +162,10 @@
   const previousInert = new Map();
   let returnFocus = null;
   let originalRole = null;
-  const revealCurrentPage = () => {
-    const current = navigation?.querySelector('[aria-current="page"]');
-    if (!current || !navigation.getClientRects().length) return;
-    const link = current.getBoundingClientRect();
-    const rail = navigation.getBoundingClientRect();
-    const start = rail.top + (navigation.querySelector('.rail-heading')?.getBoundingClientRect().height || 0);
-    if (link.bottom > rail.bottom) navigation.scrollTop += link.bottom - rail.bottom + 24;
-    else if (link.top < start) navigation.scrollTop += link.top - start - 24;
-  };
-  const restoreNavigationScroll = () => {
-    if (!navigation?.getClientRects().length) return;
-    if (navigationScroll !== null) navigation.scrollTop = navigationScroll;
-    revealCurrentPage();
-  };
   const setNavOpen = (open, restoreFocus = true) => {
     if (!navigation || !navToggle) return;
     open = open && mobile.matches;
     if (open === document.body.classList.contains('nav-open')) return;
-    if (!open) saveNavigationScroll();
     document.body.classList.toggle('nav-open', open);
     navToggle.setAttribute('aria-expanded', String(open));
     navToggle.setAttribute('aria-label', open ? 'Close contents' : 'Open contents');
@@ -210,7 +180,6 @@
         element.inert = true;
       }
       (navClose || navigation.querySelector('a, button'))?.focus({ preventScroll: true });
-      restoreNavigationScroll();
     } else {
       if (originalRole === null) navigation.removeAttribute('role');
       else navigation.setAttribute('role', originalRole);
@@ -225,7 +194,6 @@
   backdrop?.addEventListener('click', () => setNavOpen(false));
   navigation?.addEventListener('click', event => {
     if (event.target.closest('a')) {
-      saveNavigationScroll();
       setNavOpen(false, false);
     }
   });
@@ -233,9 +201,7 @@
     const wasCloseFocused = document.activeElement === navClose;
     setNavOpen(false, false);
     if (wasCloseFocused) navigation?.querySelector('[aria-current="page"], a')?.focus({ preventScroll: true });
-    restoreNavigationScroll();
   });
-  restoreNavigationScroll();
   document.addEventListener('keydown', event => {
     if (!document.body.classList.contains('nav-open')) return;
     if (event.key === 'Escape') {

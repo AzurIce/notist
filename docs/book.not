@@ -249,6 +249,8 @@ additional-js = ["scripts/reader.js"]
 
 --navigation-width 设置侧栏默认宽度，--book-width 设置整体布局的最大宽度（默认 1440px）。读者保存的侧栏宽度优先于主题默认值；重置后重新使用 --navigation-width。
 
+默认主题在 head 中提前设置 JavaScript 标记、主题和保存的侧栏宽度，避免先绘制无脚本布局再切换。目录后紧接 assets.navigation 内联脚本，先恢复目录再加载延迟的阅读交互。它以书籍首页 URL 隔离状态，记录普通目录点击项相对侧栏的位置；刷新与历史导航保留滚动位置，无记录时显示当前章。移动端抽屉打开时由同一逻辑恢复。自定义 index.hbs 应保留这两个初始化阶段；assets/navigation.js 可以覆盖内联目录脚本。
+
 模板引擎使用 Handlebars。自定义主题目录可以覆盖 index.hbs、navigation.hbs、navigation-label.hbs，或添加其他 .hbs partial；模板名是相对路径去掉 .hbs。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
 
 默认资源包含独立的 status.css，为 draft、staged 与 outdate 注解提供样式。主题可通过同名资源覆盖，规则见 [HTML 内容状态](html.not#内容状态)。
@@ -267,12 +269,14 @@ theme/
 | 字段 | 内容 |
 | --- | --- |
 | book | title、home（当前页面相对首页 URL） |
-| page | title、url（规范目录 URL）、source（Vault 相对源路径）、html（渲染正文） |
-| navigation | 顶层节点数组，每个节点包含 kind（chapter / draft / part / separator）、title、url、current、expanded、children；expanded 结合默认设置与当前路径决定 |
+| page | title、url（规范目录 URL）、source（Vault 相对源路径）、attrs（文档根注解）、html（渲染正文） |
+| navigation | 顶层节点数组，每个节点包含 kind（chapter / draft / part / separator）、title、attrs、url、current、expanded、children；expanded 结合默认设置与当前路径决定 |
 | breadcrumbs | 同样的节点字段组成的祖先序列；expanded 为 true，children 为空；分节与分隔线不进入此序列 |
 | outline | title、id、anchor（编码后的 fragment）、level 组成的标题序列 |
 | previous / next | title、url，或 null |
-| assets | styles（CSS URL 数组）、scripts（主题与附加脚本 URL 数组）、components（页面注册脚本 URL，或 null） |
+| assets | styles（CSS URL 数组）、scripts（主题与附加脚本 URL 数组）、components（页面注册脚本 URL，或 null）、navigation（应在目录节点之后内联的初始化脚本） |
+
+attrs 来自目标文档根节点的模块注解（`@!`），不包含局部标题或正文注解；无目标文档的目录节点使用空对象。page、navigation 和 breadcrumbs 使用相同投影：字符串、布尔和数值为 JSON 标量，数组和字典递归转换，Some 展开，Unit、None 与非有限浮点数为 null。这是主题呈现数据，不使用组件的 typed JSON 协议；不参与章节排序或路由。模板默认转义输出，访问可选字段前使用 if 检查，例如在 navigation-label.hbs 中用 `{{#if attrs.subtitle}}<small>{{attrs.subtitle}}</small>{{/if}}`。
 
 ```handlebars
 <!doctype html>

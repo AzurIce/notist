@@ -11,6 +11,7 @@ pub(crate) struct Theme {
     environment: Handlebars<'static>,
     styles: Vec<PathBuf>,
     scripts: Vec<PathBuf>,
+    navigation: String,
 }
 impl Theme {
     pub fn load(
@@ -47,6 +48,10 @@ impl Theme {
                 notist_html::STATUS_CSS.as_bytes().to_vec(),
             ),
         ]);
+        files.insert(
+            PathBuf::from("navigation.js"),
+            include_bytes!("theme/navigation.js").to_vec(),
+        );
         if let Some(path) = &config.theme {
             let root = mounts.resolve(&resources.resolve(path));
             if mounts.path(&root).is_none() {
@@ -96,6 +101,8 @@ impl Theme {
             }
             walk(resources, &root, &root, &mut templates, &mut files)?;
         }
+        let navigation = String::from_utf8(files.remove(Path::new("navigation.js")).unwrap())
+            .map_err(|error| Error::Message(format!("navigation script must be UTF-8: {error}")))?;
         let mut styles = vec![];
         for (name, bytes) in files {
             let destination = PathBuf::from("_notist/theme").join(&name);
@@ -148,7 +155,11 @@ impl Theme {
             environment,
             styles,
             scripts,
+            navigation,
         })
+    }
+    pub fn navigation_script(&self) -> &str {
+        &self.navigation
     }
     pub fn styles(&self, page: &Path) -> Vec<String> {
         self.styles

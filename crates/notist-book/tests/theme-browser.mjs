@@ -19,6 +19,7 @@ let browser;
 let socket;
 let server;
 const checks = [];
+let delayReader = false;
 const check = (name, value) => { assert.ok(value, name); checks.push(name); };
 
 try {
@@ -183,6 +184,7 @@ syntax PlainText -> Token;
       if (!file.startsWith(`${output}${sep}`)) throw new Error('Invalid path');
       const mime = file.endsWith('.css') ? 'text/css' : file.endsWith('.js') ? 'text/javascript' : file.endsWith('.wasm') ? 'application/wasm' : 'text/html';
       const bytes = await readFile(file);
+      if (delayReader && file.endsWith("/book.js")) await new Promise(resolve => setTimeout(resolve, 180));
       response.writeHead(200, { 'Content-Type': mime });
       response.end(bytes);
     } catch {
@@ -539,8 +541,26 @@ syntax PlainText -> Token;
     await savedNavigationWidth() === '360' && await evaluate('document.querySelector("#nav-resize").getAttribute("aria-valuenow") === "360" && !document.documentElement.classList.contains("nav-resizing")'));
   await navigate('/notes/native/');
   check('sidebar width follows the book across chapters', await navigationWidth() === 360);
+  delayReader = true;
+  const firstPaintProbe = await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.initialLayouts = [];
+    function sample() {
+      const nav = document.querySelector('#book-nav');
+      const main = document.querySelector('#page-content');
+      if (nav && main) initialLayouts.push({js: document.documentElement.classList.contains('js'), width: nav.getBoundingClientRect().width, hidden: getComputedStyle(nav).display === 'none', top: main.getBoundingClientRect().top});
+      if (document.readyState !== 'complete') requestAnimationFrame(sample);
+    }
+    requestAnimationFrame(sample);
+  ` });
   await reloadWidth('360');
   check('sidebar width survives reload', await navigationWidth() === 360);
+  check('saved width and JavaScript layout apply before delayed reader code paints', await evaluate('initialLayouts.length > 0 && initialLayouts.every(frame => frame.js && frame.width === 360)'));
+  await viewport(390, 844);
+  await navigate('/notes/essay/');
+  check('mobile contents never paint as a full no-JavaScript directory before reader setup', await evaluate('initialLayouts.length > 0 && initialLayouts.every(frame => frame.js && frame.hidden && frame.top < 100)'));
+  await viewport(1440);
+  await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier: firstPaintProbe.identifier });
+  delayReader = false;
   await navigate('/other-book/notes/essay/');
   check('a second book on the same origin starts with its own default', await navigationWidth() === 280 && await savedNavigationWidth() === null);
   await dragNavigation(48);
@@ -681,6 +701,20 @@ syntax PlainText -> Token;
   await evaluate('history.forward()');
   await waitFor('location.pathname === "/_logs/more31/" && document.readyState === "complete"');
   check('forward navigation retains sidebar scroll', Math.abs((await navigationPosition()).scroll - afterNeighbor.scroll) < 1);
+
+  await navigate('/');
+  const changedTreePosition = await evaluate(`(() => {
+    const nav = document.querySelector('#book-nav');
+    nav.querySelector('details').open = false;
+    [...nav.querySelectorAll('details')].at(-1).open = true;
+    const link = nav.querySelector('a[href="_logs/more30/"]');
+    nav.scrollTop += link.getBoundingClientRect().top - nav.getBoundingClientRect().top - nav.clientHeight / 2;
+    return {top: link.getBoundingClientRect().top, scroll: nav.scrollTop};
+  })()`);
+  await evaluate('document.querySelector("#book-nav a[href=\\"_logs/more30/\\"]").click()');
+  await waitFor('location.pathname === "/_logs/more30/" && document.readyState === "complete"');
+  const restoredTreePosition = await navigationPosition();
+  check('a chapter keeps its visual offset when default branch expansion changes tree height', Math.abs(restoredTreePosition.top - changedTreePosition.top) < 1 && Math.abs(restoredTreePosition.scroll - changedTreePosition.scroll) > 1);
 
   await viewport(390, 844);
   await navigate('/');

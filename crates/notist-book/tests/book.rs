@@ -712,6 +712,40 @@ fn theme_overrides_use_handlebars_partials_and_escape_metadata() {
 }
 
 #[test]
+fn document_annotations_reach_page_navigation_and_breadcrumb_templates() {
+    let mut vault = Vault::new(resources(&[
+        (
+            "README.not",
+            "@!(model_id: \"<home> & root\")\n@!(enabled: false)\n@!(rank: 7)\n@!(tags: (\"one\", \"two\"))\n= Home\n\n@(heading_only: \"private\")\n== Topic",
+        ),
+        ("child.md", "@!(model_id: \"child\")\n# Child"),
+        (
+            "SUMMARY.not",
+            "- [Named home](README.not)\n  - [Child](child.md)\n- Future\n",
+        ),
+        (
+            "theme/index.hbs",
+            "{{page.attrs.model_id}}|{{#each navigation}}{{#if attrs.model_id}}{{title}}={{attrs.model_id}}/{{attrs.enabled}}/{{attrs.rank}}/{{#if attrs.tags}}{{#each attrs.tags}}{{this}},{{/each}}{{/if}}{{#each children}};{{attrs.model_id}}{{/each}}{{/if}}{{/each}}|{{#each breadcrumbs}}{{attrs.model_id}};{{/each}}",
+        ),
+    ]));
+    let config = BookConfig {
+        theme: Some("theme".into()),
+        ..BookConfig::new("target/book")
+    };
+    let site = build(&mut vault, &config).unwrap();
+    let output = html(&site, "index.html");
+    assert!(
+        output.starts_with(
+            "&lt;home&gt; &amp; root|Named home=&lt;home&gt; &amp; root/false/7/one,two,;child"
+        ),
+        "{output}"
+    );
+    assert!(html(&site, "child/index.html").ends_with("|&lt;home&gt; &amp; root;child;"));
+    assert!(!site.pages[0].attrs.contains_key("heading_only"));
+    assert_eq!(site.pages[0].attrs["enabled"], serde_json::json!(false));
+}
+
+#[test]
 fn template_errors_fail_build_instead_of_publishing_empty_values() {
     for template in ["{{page.missing}}", "{{#if page.title}}oops"] {
         let mut vault = Vault::new(resources(&[

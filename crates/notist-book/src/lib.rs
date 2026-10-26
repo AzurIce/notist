@@ -84,8 +84,30 @@ impl From<notist::VaultError> for Error {
 pub struct Page {
     pub route: Route,
     pub title: String,
+    /// Document-root annotations projected to JSON values for presentation.
+    pub attrs: BTreeMap<String, serde_json::Value>,
     pub headings: Vec<Heading>,
 }
+// Templates consume ordinary JSON, independently of the typed component wire format.
+fn presentation_value(value: &Value) -> serde_json::Value {
+    use serde_json::{Value as Json, json};
+    match value {
+        Value::Unit | Value::None => Json::Null,
+        Value::Bool(value) => json!(value),
+        Value::Int(value) => json!(value),
+        Value::Float(value) => json!(value),
+        Value::Str(value) => json!(value),
+        Value::Array(values) => Json::Array(values.iter().map(presentation_value).collect()),
+        Value::Dict(values) => Json::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.to_owned(), presentation_value(value)))
+                .collect(),
+        ),
+        Value::Some(value) => presentation_value(value),
+    }
+}
+
 /// Fully validated files. A failed build returns no partial publication.
 #[derive(Debug)]
 pub struct BuildOutput {
@@ -407,6 +429,12 @@ fn build_inner<R: Resources>(
         .map(|page| Page {
             route: page.route.clone(),
             title: page.outline.title.clone(),
+            attrs: page
+                .root
+                .attrs
+                .iter()
+                .map(|(key, value)| (key.to_owned(), presentation_value(value)))
+                .collect(),
             headings: page.outline.headings.clone(),
         })
         .collect();
@@ -421,7 +449,7 @@ fn build_inner<R: Resources>(
         Some(entries) => Layout::declared(entries, &pages),
         None => Layout::new(&config.title, &pages),
     };
-    for page in &prepared {
+    for (page, metadata) in prepared.iter().zip(&pages) {
         let mut resolved = BTreeMap::new();
         for node in page.root.descendants().filter(|node| {
             matches!(node.ctor, Ctor::Link | Ctor::Embed)
@@ -579,11 +607,11 @@ fn build_inner<R: Resources>(
         let (previous, next) = layout.adjacent(&page.route.output, &pages);
         let context = serde_json::json!({
             "book":{"title":config.title,"home":layout.home_url(&page.route.output)},
-            "page":{"title":page.outline.title,"url":page.route.url,"source":page.route.path,"html":rendered.html},
+            "page":{"title":page.outline.title,"url":page.route.url,"source":page.route.path,"attrs":metadata.attrs,"html":rendered.html},
             "navigation":layout.navigation(&page.route.output),"breadcrumbs":layout.breadcrumbs(&page.route.output),
             "outline":page.outline.headings.iter().map(|heading| serde_json::json!({"title":heading.title,"id":heading.id,"anchor":notist::publication::url::fragment(&heading.id),"level":heading.level})).collect::<Vec<_>>(),
             "previous":previous,"next":next,
-            "assets":{"styles":theme.styles(&page.route.output),"scripts":theme.scripts(&page.route.output),"components":component_url}
+            "assets":{"styles":theme.styles(&page.route.output),"scripts":theme.scripts(&page.route.output),"components":component_url,"navigation":theme.navigation_script()}
         });
         assets.generated(
             page.route.output.clone(),

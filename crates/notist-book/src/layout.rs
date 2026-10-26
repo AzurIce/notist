@@ -13,6 +13,7 @@ use std::{
 pub struct Navigation {
     pub kind: NavigationKind,
     pub title: String,
+    pub attrs: BTreeMap<String, serde_json::Value>,
     pub url: Option<String>,
     pub current: bool,
     /// Initial expansion state, opening ancestors to reveal the current page.
@@ -27,6 +28,7 @@ pub struct PageLink {
 struct Node {
     kind: NavigationKind,
     title: String,
+    attrs: BTreeMap<String, serde_json::Value>,
     output: Option<PathBuf>,
     collapsed: bool,
     children: Vec<Node>,
@@ -48,6 +50,7 @@ fn declared_node(entry: &Entry, pages: &BTreeMap<PathBuf, &Page>) -> Node {
             .clone()
             .or_else(|| page.map(|page| page.title.clone()))
             .unwrap_or_default(),
+        attrs: page.map(|page| page.attrs.clone()).unwrap_or_default(),
         output: page.map(|page| page.route.output.clone()),
         collapsed: entry.collapsed,
         children: entry
@@ -113,6 +116,7 @@ impl Layout {
                 Navigation {
                     kind: node.kind,
                     title: node.title.clone(),
+                    attrs: node.attrs.clone(),
                     url: node
                         .output
                         .as_ref()
@@ -152,6 +156,7 @@ impl Layout {
             .map(|node| Navigation {
                 kind: node.kind,
                 title: node.title.clone(),
+                attrs: node.attrs.clone(),
                 url: node
                     .output
                     .as_ref()

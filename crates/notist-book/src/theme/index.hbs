@@ -5,7 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>{{page.title}} · {{book.title}}</title>
-  <script>try{const t=localStorage.getItem('notist-theme');document.documentElement.dataset.theme=t==='light'||t==='dark'?t:'auto'}catch(e){}</script>
+  <link rel="home" href="{{book.home}}">
+  <script>
+    document.documentElement.classList.add('js');
+    try {
+      const root = document.documentElement;
+      const theme = localStorage.getItem('notist-theme');
+      root.dataset.theme = theme === 'light' || theme === 'dark' ? theme : 'auto';
+      const home = document.querySelector('link[rel="home"]').href;
+      const width = Number(localStorage.getItem(`notist-book-width:${home}`));
+      if (Number.isFinite(width) && width > 0) root.style.setProperty('--navigation-user-width', `${width}px`);
+    } catch (_) {}
+  </script>
   {{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
   {{#each assets.scripts}}<script src="{{this}}" defer></script>{{/each}}
 </head>
@@ -25,6 +36,7 @@
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
       <ul class="navigation-tree">{{#each navigation}}{{> navigation this}}{{/each}}</ul>
     </nav>
+    <script>{{{assets.navigation}}}</script>
     <div id="nav-resize" class="navigation-resize" role="separator" tabindex="0" aria-label="Resize contents" aria-orientation="vertical" aria-controls="book-nav" title="Drag or use arrow keys to resize contents; double-click or press Home to reset"></div>
     <main id="page-content" tabindex="-1">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>

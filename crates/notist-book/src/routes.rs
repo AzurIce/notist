@@ -10,23 +10,23 @@ use std::{
 #[derive(Debug, Clone, Serialize)]
 pub struct Route {
     pub source: PathBuf,
+    /// Book-relative source path, including any mount prefix.
+    pub path: PathBuf,
     pub url: String,
     pub output: PathBuf,
 }
 impl Route {
-    pub(crate) fn new(root: &Path, source: PathBuf) -> Result<Self, String> {
-        let relative = source
-            .strip_prefix(root)
-            .map_err(|_| format!("page is outside Vault: {}", source.display()))?;
-        if relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
+    pub fn new(source: PathBuf, path: PathBuf) -> Result<Self, String> {
+        if path.as_os_str().is_empty()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
         {
             return Err("invalid page path".into());
         }
-        let mut directory = relative.with_extension("");
-        if relative.file_stem().is_some_and(|stem| stem == "README") {
-            directory = relative.parent().unwrap().into();
+        let mut directory = path.with_extension("");
+        if path.file_stem().is_some_and(|stem| stem == "README") {
+            directory = path.parent().unwrap().into();
         }
         if directory.starts_with("_notist") {
             return Err("_notist is reserved for generated site assets".into());
@@ -39,6 +39,7 @@ impl Route {
         };
         Ok(Self {
             source,
+            path,
             url,
             output,
         })
@@ -50,11 +51,10 @@ pub struct Routes {
     entries: BTreeMap<PathBuf, Route>,
 }
 impl Routes {
-    pub fn new(root: &Path, sources: impl IntoIterator<Item = PathBuf>) -> Result<Self, String> {
+    pub fn new(routes: impl IntoIterator<Item = Route>) -> Result<Self, String> {
         let mut entries = BTreeMap::new();
         let mut outputs = BTreeMap::<PathBuf, PathBuf>::new();
-        for source in sources {
-            let route = Route::new(root, source)?;
+        for route in routes {
             if let Some(previous) = outputs.insert(route.output.clone(), route.source.clone()) {
                 return Err(format!(
                     "route collision: `{}` and `{}` both map to `{}index.html`",

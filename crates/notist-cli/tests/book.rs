@@ -101,6 +101,91 @@ fn book_build_requires_output_and_resolves_cli_output_from_working_directory() {
     }
 }
 
+#[test]
+fn book_build_publishes_mounted_assets_and_prunes_unreferenced_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "docs/Notist.toml",
+        "[book]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+    );
+    write(
+        root,
+        "docs/README.md",
+        "# Home\n\n[Drill](art/drill/README.md)",
+    );
+    write(
+        root,
+        "art/drill/README.md",
+        "# Drill\n\n![Preview](renders/hero.png)\n\n[Download](model.glb)",
+    );
+    write(root, "art/drill/renders/hero.png", "image bytes");
+    write(root, "art/drill/model.glb", "model bytes");
+    write(root, "art/drill/private.blend", "unused");
+    let result = command(root)
+        .args(["book", "build", "docs"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(root.join("public/art/drill/index.html").is_file());
+    assert_eq!(
+        std::fs::read(root.join("public/art/drill/model.glb")).unwrap(),
+        b"model bytes"
+    );
+    assert!(!root.join("public/art/drill/private.blend").exists());
+    write(root, "art/drill/README.md", "# Drill updated");
+    let result = command(root)
+        .args(["book", "build", "docs"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!root.join("public/art/drill/model.glb").exists());
+    assert!(!root.join("public/art/drill/renders").exists());
+    assert_eq!(
+        std::fs::read(root.join("art/drill/model.glb")).unwrap(),
+        b"model bytes"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn book_mounts_reject_symlink_sources_and_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "docs/Notist.toml",
+        "[book]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+    );
+    write(root, "real/README.md", "# Art");
+    std::os::unix::fs::symlink(root.join("real"), root.join("art")).unwrap();
+    let result = command(root)
+        .args(["book", "build", "docs"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("regular files or directories"));
+    std::fs::remove_file(root.join("art")).unwrap();
+    write(root, "art/README.md", "# Art\n\n![Image](image.png)");
+    write(root, "outside.png", "image");
+    std::os::unix::fs::symlink(root.join("outside.png"), root.join("art/image.png")).unwrap();
+    let result = command(root)
+        .args(["book", "build", "docs"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("regular files or directories"));
+}
+
 #[cfg(unix)]
 #[test]
 fn html_and_site_publication_reject_symlink_component_resources() {
@@ -248,6 +333,45 @@ fn update(reader: &mut BufReader<TcpStream>, predicate: impl Fn(&Value) -> bool)
             }
         }
     }
+}
+
+#[test]
+fn serve_watches_mounted_pages_resources_and_new_subdirectories() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "docs/Notist.toml",
+        "[book]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+    );
+    write(root, "docs/README.md", "# Home");
+    write(root, "art/README.md", "# Art\n\n![Image](image.png)");
+    write(root, "art/image.png", "before");
+    let server = Server::start(&root.join("docs"));
+    let mut events = server.events();
+    let baseline = update(&mut events, |_| true);
+    assert!(server.get("/art/image.png").ends_with("before"));
+    write(root, "art/image.png", "after");
+    let changed = update(&mut events, |event| {
+        event["revision"].as_u64() > baseline["revision"].as_u64()
+    });
+    assert!(changed["error"].is_null());
+    assert!(server.get("/art/image.png").ends_with("after"));
+    write(root, "art/new/deep/README.md", "# New mounted chapter");
+    let added = update(&mut events, |event| {
+        event["revision"].as_u64() > changed["revision"].as_u64()
+    });
+    assert!(added["error"].is_null());
+    assert!(server.get("/art/new/deep/").contains("New mounted chapter"));
+    write(root, "art/new/deep/README.md", "# Updated mounted chapter");
+    update(&mut events, |event| {
+        event["revision"].as_u64() > added["revision"].as_u64()
+    });
+    assert!(
+        server
+            .get("/art/new/deep/")
+            .contains("Updated mounted chapter")
+    );
 }
 
 #[test]

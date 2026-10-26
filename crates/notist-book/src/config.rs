@@ -11,16 +11,28 @@ pub struct BookConfig {
     pub include: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// External source directories mounted into the book's path namespace.
+    #[serde(default)]
+    pub mounts: Vec<Mount>,
     /// Explicit output directory; relative paths are resolved against the Vault.
     pub output: PathBuf,
-    /// Vault-relative directory containing optional index.hbs and assets/.
+    /// Book source directory containing optional index.hbs and assets/.
     pub theme: Option<PathBuf>,
-    /// Vault-relative stylesheets, loaded last in the declared order.
+    /// Book source stylesheets, loaded last in the declared order.
     #[serde(default, rename = "additional-css")]
     pub additional_css: Vec<PathBuf>,
-    /// Vault-relative classic scripts, deferred after the theme script.
+    /// Book source classic scripts, deferred after the theme script.
     #[serde(default, rename = "additional-js")]
     pub additional_js: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mount {
+    /// Directory relative to the Vault root (or an absolute source path).
+    pub source: PathBuf,
+    /// Nonempty book-relative directory used for filtering and publication.
+    pub path: PathBuf,
 }
 fn default_title() -> String {
     "Book".into()
@@ -34,6 +46,7 @@ impl BookConfig {
             title: default_title(),
             include: default_include(),
             exclude: vec![],
+            mounts: vec![],
             output: output.into(),
             theme: None,
             additional_css: vec![],

@@ -2,7 +2,7 @@ use notist::{
     DiagnosticCode, MemoryResources, Resources, Vault,
     resources::{ResourceError, ResourceKind},
 };
-use notist_book::{BookConfig, BuildOutput, Error, Routes, build};
+use notist_book::{BookConfig, BuildOutput, Error, Route, Routes, build};
 use notist_html::components::{component_tag, module_key};
 use std::path::{Path, PathBuf};
 
@@ -306,8 +306,8 @@ fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
 fn colliding_readmes_and_file_directory_routes_fail() {
     for sources in [["README.not", "README.md"], ["foo.not", "foo/README.md"]] {
         let error = Routes::new(
-            Path::new("/vault"),
-            sources.map(|path| PathBuf::from("/vault").join(path)),
+            sources
+                .map(|path| Route::new(PathBuf::from("/vault").join(path), path.into()).unwrap()),
         )
         .unwrap_err();
         assert!(error.contains("route collision"));

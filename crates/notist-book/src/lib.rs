@@ -14,14 +14,16 @@ use std::{
 
 mod config;
 mod layout;
+mod mounts;
 mod outline;
 mod routes;
 mod structure;
 mod summary;
 mod theme;
-pub use config::BookConfig;
+pub use config::{BookConfig, Mount};
 use layout::Layout;
 pub use layout::{Navigation, PageLink};
+use mounts::Mounts;
 use notist::publication::{self, Assets};
 pub use outline::Heading;
 use outline::Outline;
@@ -153,6 +155,7 @@ fn append<'a>(
 fn discover<R: Resources>(
     vault: &Vault<R>,
     config: &BookConfig,
+    mounts: &Mounts,
 ) -> Result<BTreeSet<PathBuf>, Error> {
     let globs = |patterns: &[String]| {
         let mut builder = globset::GlobSetBuilder::new();
@@ -179,20 +182,48 @@ fn discover<R: Resources>(
             "site output cannot replace the Vault root".into(),
         ));
     }
-    let theme = config.theme.as_ref().map(|path| resources.resolve(path));
-    let mut pending = vec![resources.root().to_path_buf()];
+    let theme = config
+        .theme
+        .as_ref()
+        .map(|path| mounts.resolve(&resources.resolve(path)));
+    let mut pending: Vec<_> = mounts
+        .roots()
+        .map(|(source, _)| source.to_path_buf())
+        .collect();
     let mut pages = BTreeSet::new();
     while let Some(directory) = pending.pop() {
+        if directory.starts_with(&output)
+            || theme
+                .as_ref()
+                .is_some_and(|theme| directory.starts_with(theme))
+        {
+            continue;
+        }
+        let relative = mounts.path(&directory).unwrap();
+        if relative
+            .ancestors()
+            .filter(|path| !path.as_os_str().is_empty())
+            .any(|path| {
+                exclude.is_match(path)
+                    || path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().starts_with('.')
+                            || name == "target"
+                            || name == "node_modules"
+                    })
+            })
+        {
+            continue;
+        }
         for entry in resources.entries(&directory)? {
             if entry.starts_with(&output)
                 || theme.as_ref().is_some_and(|theme| entry.starts_with(theme))
             {
                 continue;
             }
-            let relative = entry
-                .strip_prefix(resources.root())
-                .map_err(|_| Error::Message("discovery escaped the Vault".into()))?;
-            if exclude.is_match(relative)
+            let relative = mounts
+                .path(&entry)
+                .ok_or_else(|| Error::Message("discovery escaped book sources".into()))?;
+            if exclude.is_match(&relative)
                 || entry.file_name().is_some_and(|name| {
                     name.to_string_lossy().starts_with('.')
                         || name == "target"
@@ -204,7 +235,7 @@ fn discover<R: Resources>(
             match resources.kind(&entry)? {
                 Some(ResourceKind::Directory) => pending.push(entry),
                 Some(ResourceKind::File)
-                    if include.is_match(relative) && vault.supports(&entry) =>
+                    if include.is_match(&relative) && vault.supports(&entry) =>
                 {
                     pages.insert(entry);
                 }
@@ -238,7 +269,8 @@ fn build_inner<R: Resources>(
     config: &BookConfig,
     recover: bool,
 ) -> Result<BuildOutput, Error> {
-    let mut sources = discover(vault, config)?;
+    let mounts = Mounts::new(vault.resources(), config)?;
+    let mut sources = discover(vault, config, &mounts)?;
     let root = vault.resources().root().to_path_buf();
     let mut summary_path = None;
     for name in summary::FILE_NAMES {
@@ -261,11 +293,20 @@ fn build_inner<R: Resources>(
             &mut errors,
             &summary_path,
             &source,
-            analysis.diagnostics(),
+            analysis
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.code != Some(DiagnosticCode::OutsideVault)),
             analysis.sources(),
         );
         let entries = summary::interpret(analysis.root()).and_then(|entries| {
-            summary::resolve(&entries, &summary_path, &sources, vault.resources())
+            summary::resolve(
+                &entries,
+                &summary_path,
+                &sources,
+                vault.resources(),
+                &mounts,
+            )
         });
         match entries {
             Ok(entries) => Some(entries),
@@ -287,13 +328,21 @@ fn build_inner<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     if let Some(plan) = &summary {
-        sources.retain(|source| plan.includes(source));
+        sources.retain(|source| plan.includes(source, &mounts));
     }
     if sources.is_empty() {
         return Err(Error::Message("book contains no selected documents".into()));
     }
-    let routes = Routes::new(&root, sources).map_err(Error::Message)?;
-    let summary = summary.map(|plan| plan.expand(&root, &routes));
+    let routes = sources
+        .into_iter()
+        .map(|source| {
+            let path = mounts.path(&source).unwrap();
+            Route::new(source, path)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Error::Message)?;
+    let routes = Routes::new(routes).map_err(Error::Message)?;
+    let summary = summary.map(|plan| plan.expand(&routes));
     let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
@@ -366,7 +415,7 @@ fn build_inner<R: Resources>(
         .collect();
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
     let mut warnings = vec![];
-    let theme = Theme::load(vault.resources(), config, &mut assets)?;
+    let theme = Theme::load(vault.resources(), config, &mounts, &mut assets)?;
     let layout = match &summary {
         Some(entries) => Layout::declared(entries, &pages),
         None => Layout::new(&config.title, &pages),
@@ -388,12 +437,13 @@ fn build_inner<R: Resources>(
                     query,
                     fragment,
                 }) => {
-                    if !path.starts_with(&root) {
+                    let path = mounts.resolve(&path);
+                    let Some(book_path) = mounts.path(&path) else {
                         let mut diagnostic = content_diagnostic(
                             page,
                             node,
                             format!(
-                                "local content reference `{value}` is outside Vault root `{}`",
+                                "local content reference `{value}` is outside Vault root `{}` and configured book mounts",
                                 root.display()
                             ),
                         );
@@ -404,7 +454,7 @@ fn build_inner<R: Resources>(
                             errors.push(diagnostic);
                         }
                         continue;
-                    }
+                    };
                     let mut url = if let Some(route) = routes.get(&path) {
                         if let Some(anchor) = &fragment
                             && !anchor.is_empty()
@@ -444,7 +494,7 @@ fn build_inner<R: Resources>(
                             continue;
                         }
                         warnings.push(diagnostic);
-                        let route = match Route::new(&root, path.clone()) {
+                        let route = match Route::new(path.clone(), book_path) {
                             Ok(route) => route,
                             Err(message) => {
                                 errors.push(content_diagnostic(page, node, message));
@@ -457,7 +507,7 @@ fn build_inner<R: Resources>(
                             true,
                         )
                     } else {
-                        let destination = path.strip_prefix(&root).unwrap();
+                        let destination = book_path.as_path();
                         if destination.starts_with("_notist") {
                             errors.push(content_diagnostic(
                                 page,
@@ -527,7 +577,7 @@ fn build_inner<R: Resources>(
         let (previous, next) = layout.adjacent(&page.route.output, &pages);
         let context = serde_json::json!({
             "book":{"title":config.title,"home":layout.home_url(&page.route.output)},
-            "page":{"title":page.outline.title,"url":page.route.url,"source":page.route.source.strip_prefix(&root).unwrap(),"html":rendered.html},
+            "page":{"title":page.outline.title,"url":page.route.url,"source":page.route.path,"html":rendered.html},
             "navigation":layout.navigation(&page.route.output),"breadcrumbs":layout.breadcrumbs(&page.route.output),
             "outline":page.outline.headings.iter().map(|heading| serde_json::json!({"title":heading.title,"id":heading.id,"anchor":notist::publication::url::fragment(&heading.id),"level":heading.level})).collect::<Vec<_>>(),
             "previous":previous,"next":next,

@@ -29,6 +29,35 @@ include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 
 
 include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md 匹配任意目录（包含根目录）。不使用 gitignore 的无斜杠简写或 ! 重新包含规则。无效 glob 使构建失败。
 
+=== 外部目录挂载
+
+通过 mounts 将 Vault 外的目录加入书籍，而不必将资产归档移进文档目录。例如项目的 docs/ 是 Vault，art/ 与它同级：
+
+#raw<BlockContent>(r#"""
+[book]
+output = "../build/book"
+include = ["**"]
+exclude = ["**/AGENTS.md", "art/**/source/**"]
+
+[[book.mounts]]
+source = "../art"
+path = "art"
+"""#, lang: "toml")
+
+source 相对于 Vault 根目录，也可使用绝对路径；path 是书籍内的相对目录。挂载后的 art/models/drill/README.md 对应源文件 ../art/models/drill/README.md，生成 art/models/drill/index.html。include / exclude、目录派生导航和模板中的 page.source 都使用带挂载前缀的书籍路径。
+
+挂载目录与 Vault 内目录共用章节选择规则：没有 SUMMARY 时发布所有符合过滤条件的文档；存在 SUMMARY 时只发布结构选择的章节。SUMMARY 可以用 `[模型](art/models/)` 发现挂载目录，也可用 `[钻头](art/models/drill/README.md)` 单独选择页面；根目录条目 `./` 包含挂载后的章节。挂载目录中的 SUMMARY 文件没有特殊作用，仅 Vault 根目录的 SUMMARY 声明整本书的结构。
+
+挂载声明不会整目录复制。发布选中的章节，以及这些章节通过 link / embed 引用的现有资源；普通链接不会使未选中的章节重新发布。比如资产说明引用 renders/hero.png 和 model/drill.glb 时复制这两个文件，未引用的 .blend、源码和其他素材不输出。文件使用挂载后的相对路径复制；重复引用只发布一份。
+
+正文相对链接与 Code 导入仍按源文件的真实位置解析。例如 ../art/models/drill/README.md 内的 renders/hero.png 指向同一资产目录中的渲染图；它也可以通过真实相对路径链接回 docs/ 中的章节或另一个已挂载目录。Vault 内的正文和 SUMMARY 还可以直接用 art/... 这样的挂载路径引用外部内容。已发布章节链接改写为相对目录 URL，资源链接改写为相对文件 URL，保留 query 与 fragment 并使用统一的 URL 编码。未挂载的外部内容仍遵守下文的 warning / error 规则。
+
+source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同挂载的源目录不能相同或相互包含。path 必须非空，不能是绝对路径、包含上级跳转或占用 _notist；挂载路径之间不能重叠，也不能遮盖 Vault 中已有的文件或目录。输出目录不得与挂载源目录或 Vault 内的挂载路径重叠。文件系统构建仍拒绝符号链接资源。
+
+挂载只扩展书籍发布范围，不改变文档身份和配置作用域。外部文档按真实位置寻找 Notist.toml；不会因为挂载而继承 docs/ 中的配置。显式 --config 仍覆盖所有文档的输出配置。serve 监听挂载目录中的修改、新增与删除，使用与 build 相同的章节和资源规则。
+
+=== 输出与配置作用域
+
 [book] 配置章节发现与展示；Notist.toml 的每条 transforms 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
 
 build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/publication.json（format 为 notist-publication，version 为 1）；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
@@ -177,9 +206,9 @@ link 与 embed 的本地目标相对于源文档解析。指向已发布文档�
 
 输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
 
-发布的正文与资源限于 Vault 内。普通 link 指向不存在或未发布的文档、缺失文件、不存在的锚点或 Vault 外的本地路径时产生 warning，build 与 serve 仍输出完整书籍并保留链接。Vault 内未发布的文档链接沿用源文件的章节路由，例如 missing.md 指向 missing/、guide/README.not 指向 guide/；query 与 fragment 保留，不为缺失目标创建页面。Vault 外的链接保留原始 URL，不读取、检查或复制目标文件，也不将其加入发布范围。点击不存在的页面或文件时由服务器返回 404；缺失锚点保留 fragment，但页面无法定位对应位置。链接不会使被 exclude 或 SUMMARY 排除的文档重新发布。
+发布的正文与资源限于 Vault 和显式 mounts 内。普通 link 指向不存在或未发布的文档、缺失文件、不存在的锚点或发布范围外的本地路径时产生 warning，build 与 serve 仍输出完整书籍并保留链接。发布范围内未发布的文档链接沿用其书籍路径对应的章节路由，例如 missing.md 指向 missing/、guide/README.not 指向 guide/；query 与 fragment 保留，不为缺失目标创建页面。发布范围外的链接保留原始 URL，不读取、检查或复制目标文件，也不将其加入发布范围。点击不存在的页面或文件时由服务器返回 404；缺失锚点保留 fragment，但页面无法定位对应位置。链接不会使被 exclude 或 SUMMARY 排除的文档重新发布。
 
-embed 的缺失目标及 Vault 外目标仍报错；非法 URL、保留资源路径及 SUMMARY 中的无效章节目标也仍阻止构建。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的现有资源按 Vault 相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
+embed 的缺失目标及发布范围外目标仍报错；非法 URL、保留资源路径及 SUMMARY 中的无效章节目标也仍阻止构建。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的现有资源按书籍相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
 
 导入的 Code 模块及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/modules/；各页面只注册自己使用的组件。资源计划与资源 URL 编码由 notist.publication 提供，单文档导出与书籍构建共享这套能力。资源按规范模块身份分目录；不同目录的同名模块可以共存。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
 
@@ -196,7 +225,7 @@ additional-js = ["scripts/reader.js"]
 # theme = "theme"
 ```
 
-附加路径相对于 Vault 根目录，必须指向 Vault 内的文件；文件按相同相对路径复制到发布目录。CSS 在默认样式与主题目录样式之后按声明顺序加载，JS 在默认 book.js 之后按声明顺序以 defer 加载。预览监听这些文件的变化。源路径与输出目录不得重叠；依赖的图片、字体等资源可放入主题的 assets/ 中统一发布。
+附加路径相对于 Vault 根目录，也可通过挂载路径或真实路径选择 mounts 内的文件；文件按书籍相对路径复制到发布目录。theme 目录同样可以来自挂载。CSS 在默认样式与主题目录样式之后按声明顺序加载，JS 在默认 book.js 之后按声明顺序以 defer 加载。预览监听这些文件的变化。源路径与输出目录不得重叠；依赖的图片、字体等资源可放入主题的 assets/ 中统一发布。不会自动追踪 CSS url()、JS import 或组件参数中的路径。
 
 轻量定制可只写一个样式表，例如 styles/palette.css：
 

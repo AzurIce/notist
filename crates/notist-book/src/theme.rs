@@ -1,4 +1,4 @@
-use crate::{BookConfig, Error};
+use crate::{BookConfig, Error, mounts::Mounts};
 use handlebars::Handlebars;
 use notist::publication::{Assets, url::relative_url};
 use notist::{Resources, resources::ResourceKind};
@@ -16,6 +16,7 @@ impl Theme {
     pub fn load(
         resources: &(impl Resources + ?Sized),
         config: &BookConfig,
+        mounts: &Mounts,
         assets: &mut Assets,
     ) -> Result<Self, Error> {
         let mut templates = BTreeMap::from([
@@ -47,9 +48,11 @@ impl Theme {
             ),
         ]);
         if let Some(path) = &config.theme {
-            let root = resources.resolve(path);
-            if !root.starts_with(resources.root()) {
-                return Err(Error::Message("theme must be within the Vault".into()));
+            let root = mounts.resolve(&resources.resolve(path));
+            if mounts.path(&root).is_none() {
+                return Err(Error::Message(
+                    "theme must be within the Vault or configured book mounts".into(),
+                ));
             }
             let output = resources.resolve(&config.output);
             if root.starts_with(&output) || output.starts_with(&root) {
@@ -115,26 +118,25 @@ impl Theme {
             (&config.additional_js, &mut scripts),
         ] {
             for path in paths {
-                let source = resources.resolve(path);
-                if !source.starts_with(resources.root()) {
+                let source = mounts.resolve(&resources.resolve(path));
+                let Some(destination) = mounts.path(&source) else {
                     return Err(Error::Message(
-                        "additional theme assets must be within the Vault".into(),
+                        "additional theme assets must be within the Vault or configured book mounts".into(),
                     ));
-                }
+                };
                 if resources.kind(&source)? != Some(ResourceKind::File) {
                     return Err(Error::Message(format!(
                         "additional theme asset `{}` is not a file",
                         path.display()
                     )));
                 }
-                let destination = source.strip_prefix(resources.root()).unwrap();
                 if destination.starts_with("_notist") {
                     return Err(Error::Message(
                         "_notist is reserved for generated resources".into(),
                     ));
                 }
-                assets.copy(resources, &source, destination)?;
-                destinations.push(destination.into());
+                assets.copy(resources, &source, &destination)?;
+                destinations.push(destination);
             }
         }
         let mut environment = Handlebars::new();

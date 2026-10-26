@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    mounts::Mounts,
     routes::{self, Routes},
     structure::{self, NavigationKind},
 };
@@ -56,13 +57,13 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
-    pub fn includes(&self, source: &Path) -> bool {
+    pub fn includes(&self, source: &Path, mounts: &Mounts) -> bool {
         self.claims.pages.contains(source)
-            || self
-                .claims
-                .directories
-                .iter()
-                .any(|directory| source.starts_with(directory))
+            || self.claims.directories.iter().any(|directory| {
+                mounts
+                    .path(source)
+                    .is_some_and(|path| path.starts_with(directory))
+            })
     }
 }
 
@@ -358,12 +359,14 @@ pub(crate) fn resolve<R: Resources>(
     summary: &Path,
     sources: &BTreeSet<PathBuf>,
     resources: &R,
+    mounts: &Mounts,
 ) -> Result<Plan, Vec<Diagnostic>> {
     fn resolve_entry<R: Resources>(
         entry: &Entry,
         summary: &Path,
         sources: &BTreeSet<PathBuf>,
         resources: &R,
+        mounts: &Mounts,
         claims: &mut Claims,
         errors: &mut Vec<Diagnostic>,
     ) -> Resolved {
@@ -382,38 +385,42 @@ pub(crate) fn resolve<R: Resources>(
                     query,
                     fragment,
                 }) => {
+                    let path = mounts.resolve(&path);
                     if !query.is_empty() || fragment.is_some() {
                         errors.push(diagnostic(
                             entry.span,
                             format!("structure entry `{value}` must not carry a query or fragment"),
                         ));
                         Target::Label
+                    } else if mounts.path(&path).is_none() {
+                        errors.push(diagnostic(
+                            entry.span,
+                            "structure target is outside Vault root and configured book mounts",
+                        ));
+                        Target::Label
                     } else if value.ends_with('/') {
-                        if !path.starts_with(resources.root()) {
-                            errors.push(diagnostic(
-                                entry.span,
-                                "structure directory is outside Vault root",
-                            ));
+                        let book_path = mounts.path(&path).unwrap();
+                        let kind = if mounts.is_virtual_directory(&book_path) {
+                            Ok(Some(ResourceKind::Directory))
                         } else {
-                            match resources.kind(&path) {
-                                Ok(Some(ResourceKind::Directory)) => {
-                                    if !claims.directories.insert(path.clone()) {
-                                        errors.push(diagnostic(
-                                            entry.span,
-                                            format!("duplicate structure directory `{value}`"),
-                                        ));
-                                    }
-                                }
-                                Ok(_) => errors.push(diagnostic(
-                                    entry.span,
-                                    format!("structure entry `{value}` is not a directory"),
-                                )),
-                                Err(error) => {
-                                    errors.push(diagnostic(entry.span, error.to_string()))
+                            resources.kind(&path)
+                        };
+                        match kind {
+                            Ok(Some(ResourceKind::Directory)) => {
+                                if !claims.directories.insert(book_path.clone()) {
+                                    errors.push(diagnostic(
+                                        entry.span,
+                                        format!("duplicate structure directory `{value}`"),
+                                    ));
                                 }
                             }
+                            Ok(_) => errors.push(diagnostic(
+                                entry.span,
+                                format!("structure entry `{value}` is not a directory"),
+                            )),
+                            Err(error) => errors.push(diagnostic(entry.span, error.to_string())),
                         }
-                        Target::Directory(path)
+                        Target::Directory(book_path)
                     } else if !sources.contains(&path) {
                         errors.push(diagnostic(
                             entry.span,
@@ -444,7 +451,9 @@ pub(crate) fn resolve<R: Resources>(
             children: entry
                 .children
                 .iter()
-                .map(|child| resolve_entry(child, summary, sources, resources, claims, errors))
+                .map(|child| {
+                    resolve_entry(child, summary, sources, resources, mounts, claims, errors)
+                })
                 .collect(),
         }
     }
@@ -452,7 +461,17 @@ pub(crate) fn resolve<R: Resources>(
     let mut claims = Claims::default();
     let entries = entries
         .iter()
-        .map(|entry| resolve_entry(entry, summary, sources, resources, &mut claims, &mut errors))
+        .map(|entry| {
+            resolve_entry(
+                entry,
+                summary,
+                sources,
+                resources,
+                mounts,
+                &mut claims,
+                &mut errors,
+            )
+        })
         .collect();
     if errors.is_empty() {
         Ok(Plan { entries, claims })
@@ -463,32 +482,26 @@ pub(crate) fn resolve<R: Resources>(
 
 impl Plan {
     /// Expand directory declarations using only the selected publication routes.
-    pub fn expand(self, root: &Path, routes: &Routes) -> Vec<structure::Entry> {
-        fn expand(
-            entry: Resolved,
-            root: &Path,
-            routes: &Routes,
-            claims: &Claims,
-        ) -> structure::Entry {
+    pub fn expand(self, routes: &Routes) -> Vec<structure::Entry> {
+        fn expand(entry: Resolved, routes: &Routes, claims: &Claims) -> structure::Entry {
             let mut children: Vec<_> = entry
                 .children
                 .into_iter()
-                .map(|child| expand(child, root, routes, claims))
+                .map(|child| expand(child, routes, claims))
                 .collect();
             match entry.target {
                 Target::Directory(path) => {
                     let selected = routes.iter().filter(|route| {
-                        route.source.starts_with(&path)
+                        route.path.starts_with(&path)
                             && !claims.pages.contains(&route.source)
                             // The most specific directory owns overlapping pages.
                             && !claims.directories.iter().any(|other| {
                                 other != &path
                                     && other.starts_with(&path)
-                                    && route.source.starts_with(other)
+                                    && route.path.starts_with(other)
                             })
                     });
-                    let mut discovered =
-                        structure::directory(path.strip_prefix(root).unwrap(), selected);
+                    let mut discovered = structure::directory(&path, selected);
                     discovered.collapsed = entry.collapsed;
                     discovered.label = entry.label.or_else(|| {
                         discovered.source.is_none().then(|| {
@@ -516,7 +529,7 @@ impl Plan {
         }
         self.entries
             .into_iter()
-            .map(|entry| expand(entry, root, routes, &self.claims))
+            .map(|entry| expand(entry, routes, &self.claims))
             .collect()
     }
 }

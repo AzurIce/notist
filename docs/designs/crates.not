@@ -28,11 +28,11 @@ flowchart TB
     grammar["notist-grammar · 铁路图"]
 """#)
 
-- `notist-core`：提供 Expr、RExpr、Item、Value、已检查表达式与待求值信息、函数定义、Registry、前端接口与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
+- `notist-core`：提供 Expr、RExpr、Item、Value、已检查表达式与待求值信息、函数定义、Registry、前端接口、DocumentExtension 阶段契约与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
 - `notist-syntax`：提供原生 Markup 与 Code 的词法、解析和 AST，共享 Rowan 基础，并定义内容字面量的 ContentParser 委托接口；不生成 IR，不依赖语义模型或具体前端。
-- `notist-pipeline`：依赖 core 与 syntax，提供 Context（Registry、CodeProgram 与 TransformPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
+- `notist-pipeline`：依赖 core 与 syntax，提供 Context（Registry、CodeProgram 与 ExtensionPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
-- `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口。
+- `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口，并通过 command_extension 将 stdio 外部命令适配为文档扩展。
 - `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
 - `notist-ssg`：依赖 notist 与 html，将内容目录直接映射为 HTML，负责站点模板、目录呈现数据、资源、Sass 和完整构建产物；独立于 book。
 - `notist-cli`：依赖 notist、html、book 与 ssg，提供终端命令、构建、共享的发布与预览宿主及 LSP 入口。
@@ -64,7 +64,8 @@ notist-pipeline 将前端实现与共用转换按职责组织：
 
 ```text
 src/
-  context.rs           Registry、CodeProgram 与 TransformPlan
+  context.rs           Registry、CodeProgram 与 ExtensionPlan
+  extensions/          文档扩展调度、阶段输出校验与执行映射校验
   definitions.rs       CodeModule 与函数体的装配
   code/check.rs        Code Expr 到 TypedExpr 的具体实例检查
   code/content.rs      共享内容后端：IR₁ 到 Item、children 契约与注解
@@ -88,9 +89,9 @@ crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在
 
 === 纯处理入口
 
-Pipeline.analyze / inspect 是完整分析入口，宿主可拆成 lower 与 analyze_lowered，以便在两者之间装配 import 作用域。后端显式接收 Context。前端的 Parse / Lower 只接收源码与语法选项，输出 import 声明列表、Expr 森林与并列的节点注解；Context 从 Resolve 开始提供函数定义，注解由 Materialize 在 Shape 之后挂载。Pipeline.compile_module 接收内容方言、模块身份、来源路径与 .notc 源码，阶段一将 Markup 字面量 Lower 为 IR₁ 并嵌入 CodeModule 的 Expr 树；阶段二实例检查向共享 Markup 内容管线提供 IR₁ 与词法环境，生成 Item 森林。该管线从 Resolve 开始，不包含前端 Parse / Lower。Pipeline.analyze_content_literal 接收内容前缀与 Context，直接返回 Item 森林、flavor 和诊断，并保留解析产物。Context 的 TransformPlan 在 Evaluate 中选择执行目标，分析入口保留原始调用身份。renderer 接收 Item 与渲染配置。
+Pipeline.analyze / inspect 是完整分析入口，宿主可拆成 lower 与 analyze_lowered，以便在两者之间装配 import 作用域。后端显式接收 Context。前端的 Parse / Lower 只接收源码与语法选项，输出 import 声明列表、Expr 森林与并列的节点注解；Context 从 Resolve 开始提供函数定义，注解由 Materialize 在 Shape 之后挂载。Pipeline.compile_module 接收内容方言、模块身份、来源路径与 .notc 源码，阶段一将 Markup 字面量 Lower 为 IR₁ 并嵌入 CodeModule 的 Expr 树；阶段二实例检查向共享 Markup 内容管线提供 IR₁ 与词法环境，生成 Item 森林。该管线从 Resolve 开始，不包含前端 Parse / Lower。Pipeline.analyze_content_literal 接收内容前缀与 Context，直接返回 Item 森林、flavor 和诊断，并保留解析产物。Context 的 ExtensionPlan 在检查前、检查后与求值后运行文档 hooks，并在 Evaluate 中选择执行目标；replace 保留原始调用身份。renderer 接收 Item 与渲染配置。
 
-这些入口在传入数据上完成解析、校验、转换和呈现。文件读取、import 图加载、配置解析与组件资源取得由 Resources / Environment / Vault 组织，规则见 [本地模块](../modules.not)、[内容函数与输出绑定](content-functions.not) 与 [IR Transforms](transforms.not)。
+这些入口在传入数据上完成解析、校验、转换和呈现。文件读取、import 图加载、配置解析与组件资源取得由 Resources / Environment / Vault 组织，规则见 [本地模块](../modules.not)、[内容函数与输出绑定](content-functions.not) 与 [文档扩展](extensions.not)。
 
 === 宿主与发布
 

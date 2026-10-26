@@ -1,59 +1,38 @@
-//! Ordered same-signature execution-target selection. Semantic identities are immutable.
+//! Validate execution replacements against their original signature contracts.
 use notist_core::{
-    definitions::{FunctionDef, FunctionId, ParameterMode, Type},
+    definitions::{FunctionDef, ParameterMode, Type},
     diag::{Diagnostic, Phase},
+    extensions::Replacement,
     registry::Registry,
 };
-use rowan::TextRange;
-#[derive(Debug, Clone)]
-pub struct Replace {
-    pub from: FunctionId,
-    pub to: FunctionId,
-    pub span: TextRange,
-}
-#[derive(Debug, Clone, Default)]
-pub struct TransformPlan {
-    replacements: Vec<Replace>,
-}
-impl TransformPlan {
-    pub fn compile(rules: &[Replace], registry: &Registry) -> Result<Self, Vec<Diagnostic>> {
-        let mut replacements = Vec::new();
-        let mut diagnostics = Vec::new();
-        for r in rules {
-            match (registry.get(&r.from), registry.get(&r.to)) {
-                (Some(a), Some(b)) => match compatible(a, b) {
-                    Ok(()) => replacements.push(r.clone()),
-                    Err(m) => diagnostics.push(Diagnostic::new(
+
+pub(super) fn validate(rules: &[Replacement], registry: &Registry) -> Result<(), Vec<Diagnostic>> {
+    let mut diagnostics = Vec::new();
+    for rule in rules {
+        match (registry.get(&rule.from), registry.get(&rule.to)) {
+            (Some(from), Some(to)) => {
+                if let Err(message) = compatible(from, to) {
+                    diagnostics.push(Diagnostic::new(
                         Phase::Type,
-                        r.span,
-                        format!("cannot replace `{}` with `{}`: {m}", r.from, r.to),
-                    )),
-                },
-                _ => diagnostics.push(Diagnostic::new(
-                    Phase::Type,
-                    r.span,
-                    "unknown transform function",
-                )),
+                        rule.span,
+                        format!(
+                            "cannot replace `{}` with `{}`: {message}",
+                            rule.from, rule.to
+                        ),
+                    ));
+                }
             }
-        }
-        if diagnostics.is_empty() {
-            Ok(Self { replacements })
-        } else {
-            Err(diagnostics)
+            _ => diagnostics.push(Diagnostic::new(
+                Phase::Type,
+                rule.span,
+                "unknown extension replacement function",
+            )),
         }
     }
-    pub fn is_empty(&self) -> bool {
-        self.replacements.is_empty()
-    }
-    /// Each rule can select the target once, in declaration order. No fixed point.
-    pub fn target(&self, source: &FunctionId) -> FunctionId {
-        let mut id = source.clone();
-        for rule in &self.replacements {
-            if id == rule.from {
-                id = rule.to.clone();
-            }
-        }
-        id
+    if diagnostics.is_empty() {
+        Ok(())
+    } else {
+        Err(diagnostics)
     }
 }
 fn normalized(t: &Type, d: &FunctionDef) -> Type {

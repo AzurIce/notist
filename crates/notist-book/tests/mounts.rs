@@ -288,7 +288,7 @@ fn mounted_documents_keep_their_real_import_and_configuration_scope() {
         ("../art/README.not", source),
         (
             "../art/Notist.toml",
-            "[[transforms]]\nkind='replace'\nimports={widget='lib.notc'}\nfrom='notist.math'\nto='widget.formula'",
+            "[[extensions]]\nkind='replace'\nimports={widget='lib.notc'}\nfrom='notist.math'\nto='widget.formula'",
         ),
         (
             "../art/lib.notc",

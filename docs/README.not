@@ -17,7 +17,7 @@
 - [本地模块](modules.not)：相对路径 import、词法命名空间、输出配置与资源布局。
 - [Vault 组件示例](components/README.not)：在同一目录声明并实现 panel、badge，直接导入其他本地模块的图形组件，并使用输出数学映射。
 - [内容函数与输出绑定](designs/content-functions.not)：原生内容函数的 HTML 绑定、组件参数协议与呈现生命周期。
-- [IR Transforms](designs/transforms.not)：有序输出转换、replace 契约与源码分析 / 输出树的边界。
+- [文档扩展](designs/extensions.not)：分阶段修改文档、Rust / stdio 接入、语义校验、输出编辑与 replace 执行映射。
 - [HTML Rendering](html.not)：最终内容树到 HTML 片段的转换与扩展入口。
 - [Notist Book](book.not)：书籍配置、README 路由、SUMMARY.not 阅读结构、主题、构建流程与本地预览。
 - [Notist SSG](ssg.not)：保持内容目录结构的 HTML 发布、站点模板、主题资源、数据与本地预览。
@@ -27,6 +27,6 @@
 
 `_logs/` 保存历史记录；当前行为以规范和实现为准。
 
-- [IR Transforms 与内置内容的 Package 呈现](_logs/2026-10-05-ir-transforms.md)：有序转换与内置 replace 的设计、实现和验收记录，stdio 扩展留待后续。
+- [IR Transforms 与内置内容的 Package 呈现](_logs/2026-10-05-ir-transforms.md)：有序转换与内置 replace 的设计、实现和验收记录，最初的 stdio 扩展构想。
 - [Pipeline、Vault 与 HTML 装配边界](_logs/2026-10-05-pipeline-vault-html.md)：共享管线、资源输入与宿主 API 的重构记录。
 - [.notc 声明模块与 Package / Plugin 扩展](_logs/2026-10-04-notc-packages-plugins.md)：以扩展 content function 与 Web Component 为首个目标的架构变更记录。

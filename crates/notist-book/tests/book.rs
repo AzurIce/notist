@@ -843,12 +843,12 @@ fn additional_theme_assets_require_local_files_and_cannot_overlap_output() {
 }
 
 #[test]
-fn explicit_transforms_publish_shared_component_resources_per_used_page() {
+fn explicit_extensions_publish_shared_component_resources_per_used_page() {
     let site = render(&[
         ("lib.notc", "import \"../math/lib.notc\" as math;"),
         (
             "Notist.toml",
-            "[[transforms]]\nkind='replace'\nimports={math='../math/lib.notc'}\nfrom='notist.math'\nto='math.formula'",
+            "[[extensions]]\nkind='replace'\nimports={math='../math/lib.notc'}\nfrom='notist.math'\nto='math.formula'",
         ),
         (
             "/math/lib.notc",

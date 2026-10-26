@@ -183,7 +183,7 @@ Item 由此一身二任：既是共享后端的终点，也是 Code 已检查树
 
 == 求值
 
-Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：按 Item.pending 执行内容实现，transform 在此挑选同签名目标，结果森林替换调用边界内的 children。它保留原语义树、不重新 Shape；失败在内容边界恢复，其余内容继续。契约见 [Code 类型与函数系统](../code/functions.not#对-item-与-shape-的契约) 与 [函数映射](transforms.not)。CLI 的 core / json / query 默认看求值前，`--eval` 看求值后。
+Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：按 Item.pending 执行内容实现，replace 扩展在此挑选同签名目标，结果森林替换调用边界内的 children。它保留原语义树、不重新 Shape；失败在内容边界恢复，其余内容继续。契约见 [Code 类型与函数系统](../code/functions.not#对-item-与-shape-的契约) 与 [函数映射](extensions.not)。CLI 的 core / json / query 默认看求值前，`--eval` 看求值后。
 
 == 对象速查
 
@@ -193,7 +193,7 @@ Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：�
 | 函数体 Expr | 未检查表达式树，字面量位置为 `Expr::Content` | 与实例无关，可复用 |
 | Markup IR₁ | 未解析 Expr 森林与注解 side list | Lower 后固定，各实例共享 |
 | Environment | 宿主装配结果：模块源码、配置位置、Context | 宿主持有，不可变 |
-| Context | Registry、CodeProgram、模块作用域、TransformPlan | 装配完成后只读 |
+| Context | Registry、CodeProgram、模块作用域、ExtensionPlan | 装配完成后只读 |
 | Checker | 当前模块、编译期实参、局部绑定、诊断、CheckedProgram | 每次会话创建 |
 | TypedExpr | 实例的已检查表达式树，内容分支是 Item 森林 | 存于 InstanceRecord.body |
 | CheckedProgram | FunctionInstance → 签名、TypedExpr、诊断、状态 | 随 Analysis 保留；独立检查只导出报告 |
@@ -237,7 +237,7 @@ Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：�
   node(point(285, 325), align(top + left, [Environment · 宿主结果]), name: <environment>,
     width: 420pt, height: 210pt, inset: 8pt, shape: rect,
     corner-radius: 18pt, fill: data-fill, layer: -1, snap: false),
-  data(<context>, 285, 315, [Context · 纯分析输入\ #text(size: 12pt)[Registry：函数签名与定义\ CodeProgram：未检查 Expr / 模块作用域\ TransformPlan：已校验执行映射]], w: 380, h: 130),
+  data(<context>, 285, 315, [Context · 纯分析输入\ #text(size: 12pt)[Registry：函数签名与定义\ CodeProgram：未检查 Expr / 模块作用域\ ExtensionPlan：有序文档扩展与执行映射]], w: 380, h: 130),
   caption(285, 405, [配置位置 / 已加载模块的路径与源码], size: 11, fill: data-fill),
   process(<document-analysis>, 110, 490, [文档分析入口\ analyze_lowered]),
   process(<code-analysis>, 460, 490, [Code 文件检查入口\ #text(size: 11pt)[check_module / 报告装配]], w: 190),
@@ -283,3 +283,7 @@ LSP 与 CLI 的 Code 检查共用 `Vault.analyze_code`：用编辑中的源码�
 边界诊断附加到 `Vault.analyze` / `inspect` 的 Analysis，供查询与语言服务等宿主共用。纯 Pipeline 接收源码与 Context；内容边界检查由持有 Vault 根的宿主执行。`VaultIndex.from_documents` 对显式传入的根执行相同检查，已有诊断不重复添加。
 
 `Vault.index` 从各文档处理结果派生 VaultIndex，保存索引、诊断、链接与 backlinks。它扫描指定目录，再补载 Vault 内实际链接到的正文；检查结果和 backlinks 的路径均相对于 Vault 根。
+
+== 文档扩展边界
+
+静态 import 装配后，before_check 接收可变 IR₁、节点注解与文档属性；修改结果完整进入 Resolve、Shape 与 Materialize。after_check 校验只读语义 Item，after_evaluate 编辑具体输出 Item。ExtensionPlan 调度有序 hooks 与同签名执行映射；内容字面量与 Code 模块不触发文档 hooks。契约与失败处理见 [文档扩展](extensions.not)。

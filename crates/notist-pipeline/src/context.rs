@@ -1,14 +1,15 @@
 //! Definitions, lexical module scopes and explicitly selected output mappings.
-use crate::transforms::{Replace, TransformPlan};
+use crate::extensions::ExtensionPlan;
+use notist_core::extensions::DocumentExtension;
 use notist_core::{builtins, definitions::FunctionDef, diag::Diagnostic, registry::Registry};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone)]
 /// Immutable definitions, lexical module scopes and checked execution mappings.
 /// Hosts load sources and resources; Context performs no IO.
 pub struct Context {
     registry: Registry,
-    transforms: TransformPlan,
+    extensions: ExtensionPlan,
     program: crate::definitions::CodeProgram,
     root: Option<String>,
 }
@@ -16,7 +17,7 @@ impl Context {
     pub fn new(registry: Registry) -> Self {
         Self {
             registry,
-            transforms: Default::default(),
+            extensions: Default::default(),
             program: Default::default(),
             root: None,
         }
@@ -110,11 +111,21 @@ impl Context {
     pub fn registry(&self) -> &Registry {
         &self.registry
     }
-    pub fn transforms(&self) -> &TransformPlan {
-        &self.transforms
+    pub fn extensions(&self) -> &ExtensionPlan {
+        &self.extensions
     }
-    pub fn with_transforms(mut self, rules: &[Replace]) -> Result<Self, Vec<Diagnostic>> {
-        self.transforms = TransformPlan::compile(rules, &self.registry)?;
+    /// Register an extension after installing its module dependencies.
+    pub fn with_extension(
+        self,
+        extension: impl DocumentExtension + 'static,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        self.with_shared_extension(Arc::new(extension))
+    }
+    pub fn with_shared_extension(
+        mut self,
+        extension: Arc<dyn DocumentExtension>,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        self.extensions = self.extensions.with_extension(extension, &self.registry)?;
         Ok(self)
     }
 }

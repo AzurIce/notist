@@ -27,7 +27,7 @@ source 是 Mermaid 图形源码。theme 支持 auto、light、dark；其他值�
 import "../modules/mermaid/lib.notc" as mermaid;
 ```
 
-Markup 使用 `#mermaid.diagram(...)` 调用。导入只引入名称，不执行内容实现或启用 transform。
+Markup 使用 `#mermaid.diagram(...)` 调用。导入只引入名称，不执行内容实现或启用 replace 扩展。
 
 == Example
 

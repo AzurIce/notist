@@ -1,5 +1,83 @@
+use notist::extensions::{DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument};
 use notist::{Ctor, MemoryResources, PreparedInputs, RenderOptions, Value, Vault};
 use std::collections::BTreeMap;
+
+#[derive(Debug)]
+struct GeneratedView;
+impl DocumentExtension for GeneratedView {
+    fn name(&self) -> &str {
+        "generated-view"
+    }
+    fn validate(&self, registry: &notist::Registry) -> ExtensionResult {
+        assert!(registry.function("/project/views.notc", "view").is_some());
+        Ok(())
+    }
+    fn before_check(
+        &self,
+        _: &DocumentContext<'_>,
+        document: &mut LoweredDocument,
+    ) -> ExtensionResult {
+        document.forest = vec![notist::expr::Expr::call("views.view", Default::default())];
+        document.attrs.insert("generated", Value::Bool(true));
+        Ok(())
+    }
+    fn after_evaluate(&self, _: &DocumentContext<'_>, root: &mut notist::Item) -> ExtensionResult {
+        root.children
+            .push(notist::Item::new(Ctor::Divider, Default::default()));
+        Ok(())
+    }
+}
+
+#[test]
+fn vault_extensions_use_loaded_imports_and_flow_through_render_and_inspection() {
+    let mut resources = MemoryResources::new("/project");
+    resources.insert(
+        "views.notc",
+        b"fn view() -> BlockContent { paragraph()[generated] }".to_vec(),
+    );
+    let mut vault = Vault::new(resources);
+    let source = "#import \"views.notc\" as views;\nremoved";
+    // Registering an extension invalidates already assembled environments.
+    let original = vault.analyze("doc.not", source).unwrap();
+    assert!(original.root().attrs.get("generated").is_none());
+    vault = vault.with_extension(GeneratedView);
+    for (path, source) in [("doc.not", source), ("doc.md", source)] {
+        let output = vault
+            .render_html(path, source, RenderOptions::default())
+            .unwrap();
+        assert!(
+            output.analysis.diagnostics().is_empty(),
+            "{:?}",
+            output.analysis.diagnostics()
+        );
+        assert!(
+            output.evaluation.diagnostics.is_empty(),
+            "{:?}",
+            output.evaluation.diagnostics
+        );
+        assert!(
+            output.rendered.diagnostics.is_empty(),
+            "{:?}",
+            output.rendered.diagnostics
+        );
+        assert!(output.rendered.html.contains("generated"));
+        assert!(!output.rendered.html.contains("removed"));
+        assert!(output.rendered.html.contains("<hr"));
+        let (inspected, inspection) = vault.inspect(path, source).unwrap();
+        assert_eq!(inspected, output.analysis);
+        assert_eq!(inspection.lowered.len(), 1);
+        assert_eq!(
+            inspection.lowered[0].callee_path().as_deref(),
+            Some("views.view")
+        );
+    }
+    // Modules are checked independently, without running document hooks.
+    assert!(
+        vault
+            .analyze_code("views.notc", "fn f() -> Int { 1 }")
+            .is_ok()
+    );
+}
 
 #[test]
 fn project_diagram_declaration_selects_either_renderer_without_a_local_component() {
@@ -26,7 +104,7 @@ fn project_diagram_declaration_selects_either_renderer_without_a_local_component
         inputs.insert(
             "Notist.toml",
             format!(
-                "[[transforms]]\nkind='replace'\nimports={{components='components/lib.notc',renderer='{renderer}/lib.notc'}}\nfrom='components.diagram'\nto='renderer.diagram'"
+                "[[extensions]]\nkind='replace'\nimports={{components='components/lib.notc',renderer='{renderer}/lib.notc'}}\nfrom='components.diagram'\nto='renderer.diagram'"
             )
             .into_bytes(),
         );
@@ -113,7 +191,7 @@ fn resources(mapped: bool) -> MemoryResources {
     if mapped {
         r.insert(
             "Notist.toml",
-            b"[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'".to_vec(),
+            b"[[extensions]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'".to_vec(),
         );
     }
     r
@@ -129,7 +207,7 @@ fn importing_native_functions_does_not_implicitly_transform_content() {
     assert_eq!(math.target.as_ref().unwrap().function.module, "notist");
 }
 #[test]
-fn explicit_transforms_resolve_private_imports_and_preserve_semantic_identity() {
+fn explicit_extensions_resolve_private_imports_and_preserve_semantic_identity() {
     let mut v = Vault::new(resources(true));
     let output = v
         .render_html("doc.not", "$x$", RenderOptions::default())
@@ -161,7 +239,7 @@ fn transform_errors_retain_the_configuration_source_and_span() {
     for target in ["missing.math", "view.unknown"] {
         let mut r = resources(false);
         let source = format!(
-            "[[transforms]]\nkind='replace'\nimports={{view='math/view.notc'}}\nfrom='notist.math'\nto='{target}'"
+            "[[extensions]]\nkind='replace'\nimports={{view='math/view.notc'}}\nfrom='notist.math'\nto='{target}'"
         );
         r.insert("Notist.toml", source.as_bytes().to_vec());
         let error = Vault::new(r)
@@ -188,13 +266,13 @@ fn document_and_each_rule_have_independent_bindings_and_chained_targets() {
     r.insert(
         "Notist.toml",
         br#"
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { view = "first.notc" }
 from = "notist.math"
 to = "view.math"
 
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { previous = "first.notc", view = "second.notc" }
 from = "previous.math"
@@ -241,8 +319,8 @@ to = "view.math"
 #[test]
 fn rules_cannot_inherit_document_or_previous_rule_bindings() {
     for rules in [
-        "[[transforms]]\nkind='replace'\nfrom='notist.math'\nto='view.math'",
-        "[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[transforms]]\nkind='replace'\nfrom='view.math'\nto='notist.math'",
+        "[[extensions]]\nkind='replace'\nfrom='notist.math'\nto='view.math'",
+        "[[extensions]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[extensions]]\nkind='replace'\nfrom='view.math'\nto='notist.math'",
     ] {
         let mut r = resources(false);
         r.insert("Notist.toml", rules.as_bytes().to_vec());
@@ -288,7 +366,7 @@ fn config_paths_are_relative_to_config_and_shared_imports_are_read_once() {
         }
     }
     let mut files = resources(false);
-    files.insert("config/Notist.toml", b"[[transforms]]\nkind='replace'\nimports={view='../math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[transforms]]\nkind='replace'\nimports={same='../math/../math/view.notc'}\nfrom='same.math'\nto='notist.math'".to_vec());
+    files.insert("config/Notist.toml", b"[[extensions]]\nkind='replace'\nimports={view='../math/view.notc'}\nfrom='notist.math'\nto='view.math'\n[[extensions]]\nkind='replace'\nimports={same='../math/../math/view.notc'}\nfrom='same.math'\nto='notist.math'".to_vec());
     let resources = CountReads {
         files,
         reads: RefCell::new(BTreeMap::new()),
@@ -326,7 +404,7 @@ fn transform_code_uses_its_definition_scope_and_reexported_members() {
         ),
         (
             "Notist.toml",
-            "[[transforms]]\nkind='replace'\nimports={source='source.notc', target='output/index.notc'}\nfrom='source.f'\nto='target.nested.f'",
+            "[[extensions]]\nkind='replace'\nimports={source='source.notc', target='output/index.notc'}\nfrom='source.f'\nto='target.nested.f'",
         ),
     ] {
         r.insert(path, source.as_bytes().to_vec());
@@ -348,10 +426,10 @@ fn transform_code_uses_its_definition_scope_and_reexported_members() {
 #[test]
 fn invalid_config_imports_and_signature_errors_retain_source_locations() {
     for config in [
-        "[[transforms]]\nkind='replace'\nimports={self='math/view.notc'}\nfrom='notist.math'\nto='self.math'",
-        "[[transforms]]\nkind='replace'\nimports={view='/math/view.notc'}\nfrom='notist.math'\nto='view.math'",
-        "[[transforms]]\nkind='replace'\nimports={view='missing.notc'}\nfrom='notist.math'\nto='view.math'",
-        "[[transforms]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.text'\nto='view.math'",
+        "[[extensions]]\nkind='replace'\nimports={self='math/view.notc'}\nfrom='notist.math'\nto='self.math'",
+        "[[extensions]]\nkind='replace'\nimports={view='/math/view.notc'}\nfrom='notist.math'\nto='view.math'",
+        "[[extensions]]\nkind='replace'\nimports={view='missing.notc'}\nfrom='notist.math'\nto='view.math'",
+        "[[extensions]]\nkind='replace'\nimports={view='math/view.notc'}\nfrom='notist.text'\nto='view.math'",
     ] {
         let mut r = resources(false);
         r.insert("Notist.toml", config.as_bytes().to_vec());
@@ -371,7 +449,7 @@ fn invalid_config_imports_and_signature_errors_retain_source_locations() {
     }
 }
 #[test]
-fn prepared_worker_and_native_hosts_share_module_scopes_and_transforms() {
+fn prepared_worker_and_native_hosts_share_module_scopes_and_extensions() {
     let r = resources(true);
     let prepared = PreparedInputs {
         root: "/project".into(),

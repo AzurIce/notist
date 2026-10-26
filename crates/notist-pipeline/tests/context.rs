@@ -1,8 +1,9 @@
+use notist_core::extensions::{Replace, Replacement};
 use notist_core::{
     definitions::FunctionId,
     item::{Ctor, Value},
 };
-use notist_pipeline::{Context, Pipeline, transforms::Replace};
+use notist_pipeline::{Context, Pipeline};
 use rowan::TextRange;
 
 fn context(declaration: &str) -> Context {
@@ -16,13 +17,13 @@ fn context(declaration: &str) -> Context {
 }
 
 #[test]
-fn one_context_drives_analysis_and_transforms_without_transforming_analysis() {
+fn one_context_drives_analysis_and_extensions_without_transforming_analysis() {
     let context = context("fn math<C: Type = InlineContent>(text: String) -> C;")
-        .with_transforms(&[Replace {
+        .with_extension(Replace::new([Replacement {
             from: FunctionId::new("notist", "math"),
             to: FunctionId::new("demo", "math"),
             span: TextRange::empty(0.into()),
-        }])
+        }]))
         .unwrap();
     let pipeline = Pipeline::default();
     for path in ["doc.not", "doc.md"] {

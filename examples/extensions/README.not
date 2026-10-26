@@ -1,0 +1,5 @@
+= Document extension example
+
+This paragraph is authored in the document. The extension appends package information read directly from the repository's Cargo.toml.
+
+Run `cargo run -p notist-cli -- html examples/extensions/README.not --out-dir target/extension-example` from the repository root. The command requires Python 3.11 or newer and runs relative to this directory.

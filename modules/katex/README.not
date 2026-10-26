@@ -20,14 +20,14 @@ import "../modules/katex/lib.notc" as katex;
 Markup 可以直接写 `#katex.math("x")`。要让内置 math 及 `$...$` 使用此实现，在根 Notist.toml 显式选择同签名映射：
 
 ```toml
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { katex = "./lib.notc" }
 from = "notist.math"
 to = "katex.math"
 ```
 
-import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.not)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/transforms.not)。
+import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.not)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/extensions.not)。
 
 == Example
 

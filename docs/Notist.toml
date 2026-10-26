@@ -3,13 +3,13 @@ title = "Notist"
 exclude = ["**/AGENTS.md"]
 output = "../target/book"
 
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { typst = "../modules/typst/lib.notc" }
 from = "notist.math"
 to = "typst.math"
 
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { components = "components/lib.notc", pele = "../modules/pele/lib.notc" }
 from = "components.diagram"

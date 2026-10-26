@@ -8,7 +8,7 @@ use std::{
 };
 mod config;
 mod loader;
-pub use config::{Configuration, TransformBinding, parse_config};
+pub use config::{Configuration, DocumentStage, ExtensionBinding, parse_config};
 
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
@@ -45,8 +45,11 @@ impl Environment {
         source: &str,
         imports: &[crate::Import],
         config: Option<&Path>,
+        extensions: &[Arc<dyn crate::extensions::DocumentExtension>],
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        loader::document(resources, pipeline, path, source, imports, config)
+        loader::document(
+            resources, pipeline, path, source, imports, config, extensions,
+        )
     }
     /// Load a Code source and its explicit import graph.
     pub fn load_from(

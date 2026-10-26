@@ -1,6 +1,9 @@
 //! Source import graph loading through the host's immutable resource view.
 use super::*;
-use crate::{Import, Pipeline, transforms::Replace};
+use crate::{
+    Import, Pipeline,
+    extensions::{DocumentExtension, Replace, Replacement},
+};
 use std::collections::BTreeSet;
 
 struct Graph<'a, R: Resources + ?Sized> {
@@ -195,10 +198,13 @@ pub(super) fn document(
     source: &str,
     imports: &[Import],
     config: Option<&Path>,
+    extensions: &[Arc<dyn DocumentExtension>],
 ) -> Result<Environment, Vec<SourceDiagnostic>> {
     let path = resources.resolve(path);
     let mut graph = Graph::new(resources, pipeline);
     let bindings = graph.imports(&path, source, imports);
+    let mut configured: Vec<(Arc<dyn DocumentExtension>, TextRange)> = Vec::new();
+    let mut config_source = None;
     if let Some(config) = config {
         let source = resources
             .source(config)
@@ -213,43 +219,109 @@ pub(super) fn document(
                 })
                 .collect::<Vec<_>>()
         })?;
-        let mut rules = Vec::new();
-        for rule in parsed.transforms {
-            let before = graph.errors.len();
-            let imports = graph
-                .imports(config, &source, &rule.imports)
-                .into_iter()
-                .collect();
-            if graph.errors.len() != before {
-                continue;
-            }
-            match (
-                graph.context.resolve_imports(&imports, &rule.from),
-                graph.context.resolve_imports(&imports, &rule.to),
-            ) {
-                (Some(from), Some(to)) => rules.push(Replace {
-                    from: from.id.clone(),
-                    to: to.id.clone(),
-                    span: rule.span,
-                }),
-                _ => graph.errors.push(issue(
-                    config,
-                    &source,
-                    rule.span,
-                    "unknown function in transform binding".into(),
-                )),
+        for binding in parsed.extensions {
+            match binding {
+                ExtensionBinding::Replace {
+                    imports,
+                    from,
+                    to,
+                    span,
+                } => {
+                    let before = graph.errors.len();
+                    let imports = graph
+                        .imports(config, &source, &imports)
+                        .into_iter()
+                        .collect();
+                    if graph.errors.len() != before {
+                        continue;
+                    }
+                    match (
+                        graph.context.resolve_imports(&imports, &from),
+                        graph.context.resolve_imports(&imports, &to),
+                    ) {
+                        (Some(from), Some(to)) => configured.push((
+                            Arc::new(Replace::new([Replacement {
+                                from: from.id.clone(),
+                                to: to.id.clone(),
+                                span,
+                            }])),
+                            span,
+                        )),
+                        _ => graph.errors.push(issue(
+                            config,
+                            &source,
+                            span,
+                            "unknown function in extension binding".into(),
+                        )),
+                    }
+                }
+                ExtensionBinding::Command {
+                    command,
+                    stages,
+                    span,
+                } => {
+                    #[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
+                    configured.push((
+                        Arc::new(crate::command_extension::CommandExtension::new(
+                            command,
+                            stages,
+                            config.parent().unwrap().to_path_buf(),
+                        )),
+                        span,
+                    ));
+                    #[cfg(not(all(not(target_arch = "wasm32"), feature = "command-extensions")))]
+                    {
+                        let _ = (command, stages);
+                        graph.errors.push(issue(
+                            config,
+                            &source,
+                            span,
+                            "command extensions are unavailable in this host".into(),
+                        ));
+                    }
+                }
             }
         }
-        match std::mem::take(&mut graph.context).with_transforms(&rules) {
+        config_source = Some(source);
+    }
+    // Validate only after all document/config imports have been loaded.
+    if !graph.errors.is_empty() {
+        return Err(graph.errors);
+    }
+    for extension in extensions {
+        match std::mem::take(&mut graph.context).with_shared_extension(extension.clone()) {
             Ok(context) => graph.context = context,
             Err(errors) => {
-                graph
-                    .errors
-                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: config.into(),
-                        source: source.clone(),
+                return Err(errors
+                    .into_iter()
+                    .map(|diagnostic| SourceDiagnostic {
+                        path: path.clone(),
+                        source: source.into(),
                         diagnostic,
-                    }))
+                    })
+                    .collect());
+            }
+        }
+    }
+    if let (Some(config), Some(source)) = (config, config_source) {
+        for (extension, span) in configured {
+            match std::mem::take(&mut graph.context).with_shared_extension(extension) {
+                Ok(context) => graph.context = context,
+                Err(errors) => {
+                    return Err(errors
+                        .into_iter()
+                        .map(|mut diagnostic| {
+                            if diagnostic.span.is_empty() {
+                                diagnostic.span = span;
+                            }
+                            SourceDiagnostic {
+                                path: config.into(),
+                                source: source.clone(),
+                                diagnostic,
+                            }
+                        })
+                        .collect());
+                }
             }
         }
     }

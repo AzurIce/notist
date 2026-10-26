@@ -4,12 +4,12 @@ mod context;
 pub use code::{Evaluation, Limits};
 mod definitions;
 
+pub mod extensions;
 pub mod frontend;
 pub mod lowering;
 pub mod materialize;
 mod resolve;
 pub mod shape;
-pub mod transforms;
 
 pub use context::Context;
 pub use definitions::{CodeModule, CodeProgram};
@@ -23,6 +23,7 @@ use crate::frontend::{Frontends, PipelineFrontend};
 pub use crate::lowering::content::{ContentLowering, Lowered};
 use notist_core::diag::{Diagnostic, Sources};
 use notist_core::expr::{Expr, RExpr};
+use notist_core::extensions::{DocumentContext, LoweredDocument};
 use notist_core::frontend::{FrontendOptions, FrontendOutput, FrontendSyntax};
 use notist_core::item::Item;
 use rowan::TextRange;
@@ -176,7 +177,21 @@ impl Pipeline {
         context: &Context,
         limits: Limits,
     ) -> Evaluation {
-        code::eval::evaluate(&analysis.root, &analysis.program, context, limits)
+        let mut evaluation =
+            code::eval::evaluate(&analysis.root, &analysis.program, context, limits);
+        if analysis.extensions_valid {
+            context.extensions().after_evaluate(
+                &DocumentContext {
+                    path: &analysis.path,
+                    sources: &analysis.sources,
+                    registry: context.registry(),
+                },
+                &mut evaluation.root,
+                &mut evaluation.diagnostics,
+                limits.content_nodes,
+            );
+        }
+        evaluation
     }
 
     /// Collect frontend-owned syntax and debug stages in the same source-to-IR pass.
@@ -231,24 +246,44 @@ impl Pipeline {
         capture: bool,
     ) -> (Analysis, Inspection) {
         let mut diagnostics = output.diagnostics;
+        let path = path.to_string_lossy().into_owned();
+        let mut sources = context.program().sources.clone();
+        sources.insert(path.clone(), src.clone());
+        let extension_context = DocumentContext {
+            path: &path,
+            sources: &sources,
+            registry: context.registry(),
+        };
+        let mut document = LoweredDocument {
+            forest: output.forest,
+            annotations: output.annotations,
+            attrs: output.module_attrs,
+        };
+        let mut extensions_valid =
+            context
+                .extensions()
+                .before_check(&extension_context, &mut document, &mut diagnostics);
         let lowered = if capture {
-            output.forest.clone()
+            document.forest.clone()
         } else {
             Vec::new()
         };
         let span = TextRange::new(0.into(), (src.len() as u32).into());
-        let (root, program, errors, shaped) = code::Checker::new(context, &path.to_string_lossy())
-            .document(
-                &output.forest,
-                &output.annotations,
-                span,
-                output.module_attrs,
-            );
+        let (root, program, errors, shaped) = code::Checker::new(context, &path).document(
+            &document.forest,
+            &document.annotations,
+            span,
+            document.attrs,
+        );
         diagnostics.extend(errors);
+        if extensions_valid {
+            extensions_valid =
+                context
+                    .extensions()
+                    .after_check(&extension_context, &root, &mut diagnostics);
+        }
         for diagnostic in &mut diagnostics {
-            diagnostic
-                .source
-                .get_or_insert_with(|| path.to_string_lossy().into_owned());
+            diagnostic.source.get_or_insert_with(|| path.clone());
         }
         let inspection = Inspection {
             syntax: output.syntax,
@@ -260,11 +295,9 @@ impl Pipeline {
                 root,
                 diagnostics,
                 program,
-                sources: {
-                    let mut s = context.program().sources.clone();
-                    s.insert(path.to_string_lossy().into_owned(), src);
-                    s
-                },
+                sources,
+                path,
+                extensions_valid,
             },
             inspection,
         )
@@ -281,6 +314,8 @@ pub struct Analysis {
     diagnostics: Vec<Diagnostic>,
     program: code::CheckedProgram,
     sources: Sources,
+    path: String,
+    extensions_valid: bool,
 }
 
 impl Analysis {

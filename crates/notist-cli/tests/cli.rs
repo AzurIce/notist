@@ -3,6 +3,50 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
+#[cfg(unix)]
+fn configured_command_extensions_run_through_the_cli() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("doc.not"), "original").unwrap();
+    std::fs::write(
+        root.path().join("edit.sh"),
+        "cat > request.json\ncat response.json\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("response.json"), r#"{"version":1,"document":{"forest":[],"annotations":[],"attrs":[["generated",{"Bool":true}]]}}"#).unwrap();
+    std::fs::write(
+        root.path().join("Notist.toml"),
+        "[[extensions]]\nkind='command'\ncommand=['sh','edit.sh']\nstages=['before_check']",
+    )
+    .unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["json", "doc.not"])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let result: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(result["core"]["attrs"]["generated"], true);
+    assert!(result["core"].get("children").is_none());
+    let request: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.path().join("request.json")).unwrap())
+            .unwrap();
+    assert_eq!(request["stage"], "before_check");
+    // The same CLI command reports extension diagnostics as a failure.
+    std::fs::write(root.path().join("response.json"), r#"{"version":1,"diagnostics":[{"phase":"Semantic","span":[0,0],"message":"extension validation failed"}]}"#).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["check", "doc.not"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("extension validation failed"));
+}
+
+#[test]
 fn cli_discovers_modules_and_reports_config_failures() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let help = Command::new(env!("CARGO_BIN_EXE_notist"))
@@ -142,7 +186,7 @@ fn typst_math_replacement_exports_both_frontends_and_component_imports() {
     .unwrap();
     std::fs::write(
         project.path().join("Notist.toml"),
-        "[[transforms]]\nkind='replace'\nimports={typst='../../modules/typst/lib.notc'}\nfrom='notist.math'\nto='typst.math'\n",
+        "[[extensions]]\nkind='replace'\nimports={typst='../../modules/typst/lib.notc'}\nfrom='notist.math'\nto='typst.math'\n",
     )
     .unwrap();
     for (name, source, count) in [

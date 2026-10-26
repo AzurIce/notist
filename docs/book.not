@@ -1,6 +1,6 @@
 = Notist Book
 
-notist-book 将 Vault 中的文档组织为章节，并构建可阅读的 HTML 书籍。它负责阅读结构、章节路由、跨章链接与主题，资源与环境装配由 notist 提供，HTML 内容渲染由 notist-html 提供。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、函数映射与求值、HTML 渲染的职责分别见 [Markup 管线](designs/pipeline/markup.not)、[函数映射与求值](designs/transforms.not) 与 [HTML Rendering](html.not)。
+notist-book 将 Vault 中的文档组织为章节，并构建可阅读的 HTML 书籍。它负责阅读结构、章节路由、跨章链接与主题，资源与环境装配由 notist 提供，HTML 内容渲染由 notist-html 提供。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、函数映射与求值、HTML 渲染的职责分别见 [Markup 管线](designs/pipeline/markup.not)、[函数映射与求值](designs/extensions.not) 与 [HTML Rendering](html.not)。
 
 SUMMARY（SUMMARY.not 或 SUMMARY.md）声明书籍发布的章节、阅读层级与顺序；[book] 的 include / exclude 限制可选的文档范围，源文件路径决定页面 URL。存在 SUMMARY 时，只发布其中显式登记或由目录条目发现的页面，其他文档不参与正文检查、路由或输出；没有 SUMMARY 时发布所有符合过滤条件的文档。调整阅读顺序只需修改 SUMMARY；移动源文件则会改变 URL，也需要更新指向它的链接。
 
@@ -62,7 +62,7 @@ source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同
 
 === 输出与配置作用域
 
-[book] 配置章节发现与展示；Notist.toml 的每条 transforms 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
+[book] 配置章节发现与展示；Notist.toml 的每条 extensions 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
 
 build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/publication.json（format 为 notist-publication，version 为 1）；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
 

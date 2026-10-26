@@ -354,13 +354,8 @@ pub struct Item {
     pub fields: Dict,
     pub children: Vec<Item>,
     pub attrs: Dict,
-    #[cfg_attr(feature = "serde", serde(skip, default = "empty_span"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
     pub span: TextRange,
-}
-
-#[cfg(feature = "serde")]
-fn empty_span() -> TextRange {
-    TextRange::empty(0.into())
 }
 
 impl Item {

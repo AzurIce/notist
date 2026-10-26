@@ -104,7 +104,7 @@ Markup 降糖生成的调用使用规范内置函数身份，不受模块同名�
 
 Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数体、诊断与来源源码。Evaluate 接收 Analysis 和同一 Context，直接根据 Item.pending 计算实参、拼接内容值森林并替换调用边界内的 children，产出 Item 表示树。内容值绑定将自由输入绑定到当前调用环境，保留不透明调用；各次调用独立实例化函数体中的 Item 森林。映射目标按需补查的字面量先完成 Shape，再执行其实现；已有 Item 结构不重新 Shape。C → C 只承诺类别一致；直接返回 children 也保留调用边界。原生终端使用自身挂载契约，Expanded 边界由 Renderer 透明呈现或承载其注解。
 
-[Transform](../designs/transforms.not) 在 Evaluate 中按同签名函数映射选择执行目标。Item 的语义身份保持原调用，目标单独记录，不增加调用层级。
+[Replace 扩展](../designs/extensions.not) 在 Evaluate 中按同签名函数映射选择执行目标。Item 的语义身份保持原调用，目标单独记录，不增加调用层级。
 
 == 错误冒泡与恢复
 
@@ -116,6 +116,6 @@ Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数�
 
 == 实现边界
 
-Registry 保存公开签名与实现种类；Context 组合 Registry、CodeProgram 和 TransformPlan。Checker 的可变会话状态保存当前模块、编译期实参、参数与局部绑定及 CheckedProgram；具体实例的 TypedExpr 保存在 InstanceRecord.body 中。文档入口将 CheckedProgram 随 Item 树保存在 Analysis，Code 文件检查入口仅导出声明、诊断与来源源码组成的 CodeAnalysis。Evaluate 可以为映射目标补查实例。Context 和管线均不读取文件；配置、源码、依赖与组件资源由宿主提供。
+Registry 保存公开签名与实现种类；Context 组合 Registry、CodeProgram 和 ExtensionPlan。Checker 的可变会话状态保存当前模块、编译期实参、参数与局部绑定及 CheckedProgram；具体实例的 TypedExpr 保存在 InstanceRecord.body 中。文档入口将 CheckedProgram 随 Item 树保存在 Analysis，Code 文件检查入口仅导出声明、诊断与来源源码组成的 CodeAnalysis。Evaluate 可以为映射目标补查实例。Context 和管线均不读取文件；配置、源码、依赖与组件资源由宿主提供。
 
 Type 返回值、通用 Set、运行期类型反射、可变状态、多内容槽、一般集合访问和用户结构角色不在本版范围。可选值模型见 [Option 类型](option.not)。

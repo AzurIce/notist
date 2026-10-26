@@ -1,0 +1,4 @@
+[[extensions]]
+kind = "command"
+command = ["python3", "metadata.py"]
+stages = ["before_check"]

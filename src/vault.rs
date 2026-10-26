@@ -1,5 +1,6 @@
 //! Vault orchestration: resources, declaration environments and typed outputs.
 use crate::environment::{discover_config_in, issue};
+use crate::extensions::DocumentExtension;
 use crate::resources::{FsResources, ResourceError, ResourceKind, Resources};
 use crate::{Analysis, Environment, Pipeline, SourceDiagnostic, UnsupportedFormat};
 use notist_html::{HtmlRegistry, ModuleLocator, RenderResult, Renderer};
@@ -81,6 +82,7 @@ pub struct ItemOutput {
 pub struct Vault<R = FsResources> {
     resources: R,
     pipeline: Pipeline,
+    extensions: Vec<Arc<dyn DocumentExtension>>,
     environments: BTreeMap<PathBuf, BTreeMap<Arc<str>, Arc<Environment>>>,
     config: Option<PathBuf>,
     module_urls: BTreeMap<PathBuf, String>,
@@ -90,6 +92,7 @@ impl<R: Resources> Vault<R> {
         Self {
             resources,
             pipeline: Pipeline::default(),
+            extensions: Vec::new(),
             environments: BTreeMap::new(),
             config: None,
             module_urls: BTreeMap::new(),
@@ -104,6 +107,13 @@ impl<R: Resources> Vault<R> {
     }
     pub fn with_pipeline(mut self, pipeline: Pipeline) -> Self {
         self.pipeline = pipeline;
+        self.environments.clear();
+        self
+    }
+    /// Register a document extension, validated after the document's imports load.
+    /// Native extensions run before extensions configured in Notist.toml.
+    pub fn with_extension(mut self, extension: impl DocumentExtension + 'static) -> Self {
+        self.extensions.push(Arc::new(extension));
         self.environments.clear();
         self
     }
@@ -144,6 +154,7 @@ impl<R: Resources> Vault<R> {
                 source,
                 imports,
                 config.as_deref(),
+                &self.extensions,
             )
             .map_err(VaultError::Environment)?;
             self.environments

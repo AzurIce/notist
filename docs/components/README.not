@@ -36,7 +36,7 @@ diagram 声明文档中的块级图形，source 使用两种渲染器共同支�
 docs/Notist.toml 选择具体实现：
 
 ```toml
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { components = "components/lib.notc", pele = "../modules/pele/lib.notc" }
 from = "components.diagram"

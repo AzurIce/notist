@@ -296,7 +296,7 @@ fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() 
     assert!(
         notist::environment::parse_config(config)
             .unwrap()
-            .transforms
+            .extensions
             .is_empty()
     );
 }
@@ -426,11 +426,13 @@ fn generic_component_fields_use_the_execution_targets_concrete_types() {
     let context = Context::default()
         .with_module(module)
         .unwrap()
-        .with_transforms(&[notist::transforms::Replace {
-            from: FunctionId::new("generic", "source"),
-            to: FunctionId::new("generic", "target"),
-            span: Default::default(),
-        }])
+        .with_extension(notist::extensions::Replace::new([
+            notist::extensions::Replacement {
+                from: FunctionId::new("generic", "source"),
+                to: FunctionId::new("generic", "target"),
+                span: Default::default(),
+            },
+        ]))
         .unwrap();
     let p = Pipeline::default();
     let a = p

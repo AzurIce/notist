@@ -30,7 +30,7 @@
     - [Markup 管线](designs/pipeline/markup.not)
     - [Code 管线](designs/pipeline/code.not)
   - [内容函数与输出绑定](designs/content-functions.not)
-  - [IR Transforms](designs/transforms.not)
+  - [文档扩展](designs/extensions.not)
 - [HTML Rendering](html.not)
 - [Notist Book](book.not)
 - [Notist SSG](ssg.not)

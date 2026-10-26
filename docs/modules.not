@@ -47,7 +47,7 @@ Code 使用同一份 import 语法与 lowering，省略 Markup 的 `#`。每份�
 Notist.toml 保存显式函数映射与站点选项。宿主可选择最近的配置，CLI 可通过 --config 指定；配置不合并父级配置。每条映射通过自身的 imports 声明输出依赖，不向文档提供绑定。
 
 ```toml
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { typst = "../modules/typst/lib.notc" }
 from = "notist.math"
@@ -58,7 +58,7 @@ title = "My Notes"
 output = "public"
 ```
 
-每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析并校验。文档无须导入输出目标；文档、不同规则之间的同名别名相互独立，同一规范模块只加载一次。规则不读取导入模块目录的配置。源码 import 只提供定义，不自动启用 transform。执行契约见 [函数映射](designs/transforms.not)。Code 文件检查只加载自身的 import 图。
+每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析并校验。文档无须导入输出目标；文档、不同规则之间的同名别名相互独立，同一规范模块只加载一次。规则不读取导入模块目录的配置。源码 import 只提供定义，不自动启用 replace 扩展。执行契约见 [函数映射](designs/extensions.not)。Code 文件检查只加载自身的 import 图。
 
 项目可以只声明内容函数，由输出规则选择实现，无须为原声明提供 Web Component。本仓库的 [components.diagram](components/README.not#diagram) 使用同签名规则选择 Pele 或 Mermaid；正文保留项目函数身份，HTML 绑定选中的渲染器。下方模块示例直接调用各自实现，以展示模块本身。
 

@@ -21,7 +21,8 @@ rowan = "0.17.0"
 percent-encoding = "2"
 
 [features]
-default = []
+default = ["command-extensions"]
+command-extensions = ["notist-core/serde"]
 serde = ["notist-core/serde"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

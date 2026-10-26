@@ -25,7 +25,7 @@ sass = "sass"
 # theme = "theme"
 ```
 
-路径相对于站点资源根目录。Notist.toml 中的 transforms 仍由文档宿主加载，[ssg] 只负责站点配置。
+路径相对于站点资源根目录。Notist.toml 中的 extensions 仍由文档宿主加载，[ssg] 只负责站点配置。
 
 == 内容与路径
 

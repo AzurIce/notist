@@ -1,0 +1,162 @@
+= 文档扩展
+
+DocumentExtension 定义单份文档的阶段扩展。它可以修改检查前的表达式、校验语义树、选择执行实现或编辑求值后的输出树；notist-core 保存共同契约，notist-pipeline 调度阶段，Environment / Vault 装配扩展及其依赖。站点页面集合、路由与发布结构属于站点宿主。
+
+== 阶段与表示
+
+```text
+Parse / Lower → 静态 import 装配 → before_check
+             → Resolve / Shape / Materialize → after_check
+             → Evaluate（执行映射）→ after_evaluate → 输出后端
+```
+
+| 扩展点 | 输入 | 可执行的操作 |
+| --- | --- | --- |
+| validate | 只读 Registry | 在模块签名装配后检查扩展配置 |
+| before_check | 可变 LoweredDocument | 增删改 Expr 森林、节点注解与文档属性；修改结果进入完整名称解析、类型检查和结构定稿 |
+| after_check | 只读 Item 语义树 | 检查语义、收集信息并返回诊断 |
+| replacements | 同签名函数映射 | 在求值时为调用选择实现，保持原语义身份 |
+| after_evaluate | 可变 Item 输出树 | 增删改具体节点、字段与属性，结果直接交给输出后端 |
+
+LoweredDocument 保存 forest、annotations 与 attrs，.not 和 Markdown 共用同一表示。静态 imports 在进入 before_check 前已装配，扩展生成的名称使用文档的原作用域。扩展不能在这里改变 import 图；Code 模块与内容字面量不单独触发文档扩展。
+
+after_check 保持只读：语义 Item 携带具体实例身份与待求值计算，直接编辑会绕过类型检查。需要调用函数、插入表达式或改变结构时，在 before_check 完成。after_evaluate 不重新执行 Resolve、Shape 或 Evaluate；调用方负责具体节点的字段和内容契约，管线检查 Doc 根、禁止嵌套 Doc 与待求值内容、重复 id 及输出节点预算。
+
+DocumentContext 提供文档身份、文档与模块的源码快照以及只读 Registry。核心接口不读取文件、不启动进程，也不依赖终端或站点实现。生成 Expr 的 span 必须位于当前文档的 UTF-8 边界内；无对应原文的内容可以用插入位置的空范围锚定。
+
+== 调度与失败
+
+Context 保存按注册顺序排列的 ExtensionPlan。每个阶段依次运行所有扩展，阶段之间遵循编译顺序；Pipeline.analyze / inspect 执行 before_check 与 after_check，evaluate 执行求值及 after_evaluate。inspect 捕获修改后的 IR₁，前端语法树保持原始源码。再次调用 analyze 或 evaluate 会重新运行对应阶段，扩展应避免依赖调用次数。
+
+每次可变 hook 在独立候选值上运行，成功后提交。返回错误或产生无效阶段输出时，保留该 hook 之前的结果，停止本次文档剩余的 hooks；此前成功的修改保留，正常检查和求值继续提供恢复结果。已注册的执行映射仍属于恢复求值的 Context。错误携带扩展名、阶段及来源，不能标记为已恢复；空错误列表生成一条失败诊断。失败保护只覆盖文档值，扩展自行管理外部副作用。
+
+Analysis 保存 before_check 修改后的语义树、实例缓存、来源快照和阶段状态。Evaluate 生成独立的输出树，after_evaluate 不回写 Analysis。默认查询、索引和语言服务消费语义树；CLI 的 core、json、query 通过 `--eval` 查看输出树。
+
+== Rust 接入
+
+```rust
+use notist::{Context, Pipeline};
+use notist::extensions::{
+    DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument,
+};
+use notist::expr::Expr;
+
+#[derive(Debug)]
+struct Notice;
+impl DocumentExtension for Notice {
+    fn name(&self) -> &str { "notice" }
+
+    fn before_check(
+        &self,
+        _: &DocumentContext<'_>,
+        document: &mut LoweredDocument,
+    ) -> ExtensionResult {
+        let span = Default::default();
+        document.forest.push(Expr::fragment(
+            vec![Expr::text("Generated notice".into(), span)],
+            span,
+        ));
+        Ok(())
+    }
+}
+
+let pipeline = Pipeline::default();
+let context = Context::default().with_extension(Notice)?;
+let analysis = pipeline.analyze("example.not", source, &context)?;
+let evaluation = pipeline.evaluate(&analysis, &context);
+```
+
+Context.with_extension 在依赖模块安装后注册和校验扩展。使用资源宿主时，Vault.with_extension 注册 Rust 扩展；宿主在每份文档的全部依赖装配后校验，按注册顺序先安装 Rust 扩展，再安装 Notist.toml 中的内置扩展。新增扩展会清除已装配环境。
+
+Vault.evaluate(path, analysis) 使用文档的 Context；render_output(path, analysis, options) 求值并渲染已有 Analysis。render_html 组合分析、求值与呈现，返回 analysis、evaluation、rendered。文档扩展共用此入口，Book 与 SSG 继续消费 Vault 的结果。
+
+== CLI 与 stdio 扩展
+
+Notist.toml 用有序的 extensions 表配置文档扩展。command 通过 Rust 的 CommandExtension 适配同一 DocumentExtension 接口，CLI 的 check、core、json、query、html、Book 和 SSG 都经过文档宿主，无须编写自己的编译驱动：
+
+```toml
+[[extensions]]
+kind = "command"
+command = ["python3", "scripts/metadata.py"]
+stages = ["before_check", "after_check", "after_evaluate"]
+```
+
+command 是程序与独立参数的数组，不经过 shell。进程的工作目录为配置文件所在目录；脚本可以自行读取 Cargo.toml、源码或其他文件。若命令需要 shell 语法，需要显式选择 shell 程序与参数。stages 必须非空且无重复，只启动所选阶段；每份文档的每次所选阶段调用启动一个独立进程。
+
+标准输入承载一个 JSON 请求，随后关闭。请求包含：
+
+| 字段 | 内容 |
+| --- | --- |
+| version | 协议版本，当前为 1 |
+| stage | before_check、after_check 或 after_evaluate |
+| path | 当前文档的来源身份 |
+| sources | 文档及已加载模块的源码，按来源身份索引 |
+| functions | 已加载 Registry 的公开函数签名 |
+| document | before_check 为 LoweredDocument；其他阶段为 Item |
+
+标准输出只能写一个 JSON 响应，日志写标准错误。成功响应为 `{"version":1,"document":...}`；省略 document 或使用 null 保持当前文档值。after_check 为只读，只允许返回版本和诊断，不允许返回 document。响应的 diagnostics 是 Diagnostic 数组；任何条目均使本次 hook 失败并回滚文档修改。例如：
+
+```json
+{
+  "version": 1,
+  "diagnostics": [
+    {"phase": "Semantic", "span": [0, 0], "message": "missing package metadata"}
+  ]
+}
+```
+
+source 默认为当前文档，code 与 recovered 可以省略；管线将扩展失败标记为未恢复。非零退出状态、启动或通信失败、无效 JSON、版本不符和错误阶段表示都会转成扩展诊断。
+
+协议直接使用核心类型的 serde 表示，保留类型与范围信息，与 CLI 调试用 JSON 的 core / ir1 / tree 展示格式分别定义。span 为 `[start,end]` UTF-8 字节范围，枚举使用 Rust serde 的外部标签形式，例如 `{"Str":"text"}`、`{"Ref":{"name":"notist.text","span":[0,0]}}`；Dict 是有序键值对数组，空值为 `[]`。Item 同时保留 span 与 origin。输入、修改后输出及往返结果遵循相同的数据表示。
+
+Rust 编写的外部命令可以使用 notist.command_extension 的 Request / Response 类型，文档模型使用 notist-core 的 serde feature。notist 的默认 command-extensions feature 提供进程适配；不支持进程的 WASM 宿主和禁用该 feature 的构建显式报告不可用。核心与管线仍保持无 IO。
+
+可运行示例见仓库 examples/extensions：metadata.py 直接读取 Cargo.toml，在 before_check 返回生成的 Expr 与文档属性。仓库根目录执行：
+
+```sh
+cargo run -p notist-cli -- html examples/extensions/README.not --out-dir target/extension-example
+```
+
+脚本需要 Python 3.11 或更新版本。站点页面集合与路由扩展由站点宿主另行设计。
+
+== Replace 配置与作用域
+
+Notist.toml 的每条规则声明自己的 import 表与映射两端：
+
+```toml
+[[extensions]]
+kind = "replace"
+imports = { katex = "../modules/katex/lib.notc" }
+from = "notist.math"
+to = "katex.math"
+```
+
+import 路径相对于配置文件。from / to 使用 Code 相同的名称解析规则，在当前规则的 import 表中解析；内置 prelude 可直接使用。规则不继承文档或其他规则的绑定，也不向它们注入名称。被导入模块目录中的配置不参与装配。
+
+模块按规范路径在同一次环境装配中去重，文档与规则可用不同别名引用同一模块。解析及签名检查完成后，ExtensionPlan 只保存规范函数身份与规则范围；临时 import 表不进入执行阶段。Code 函数体始终使用定义模块的作用域。所有规则由宿主显式提供并校验，保留声明顺序。模块与文件入口见 [本地模块](../modules.not)。
+
+=== 契约与执行
+
+源和目标的编译期参数关系、普通参数名称与顺序、类型、位置绑定、默认值、值域、children 输入、返回类型及结构角色必须一致。结构角色包含 node 的透明契约，普通 Code 函数不能作为其映射目标。编译期参数按位置规范化，允许改名。默认浮点数按比特比较；数组和字典保留顺序。
+
+每条规则按序选择目标一次，不求固定点。A → B、B → C 得到 C；反序得到 B。目标可为 Code 或原生实现，实例在执行前检查。原编译期实参、字段、输入 children 原样转发，不计算参数映射。
+
+输出 Item 仍记录原调用 f；target 记录实际执行的 g。Code 结果替换原边界内的 children，原生结果使用目标输出绑定。替换不重跑 Resolve 或 Shape。失败生成保持原类别与身份的错误节点，独立内容继续处理。
+
+== Replace API
+
+Replace 是实现 DocumentExtension 的内置扩展，Replacement 保存单条映射。配置解析与相对路径加载由宿主完成；核心与管线只接收规范函数身份。
+
+```rust
+use notist::extensions::{Replace, Replacement};
+
+let context = Context::default()
+    .with_module(module)?
+    .with_extension(Replace::new([Replacement {
+        from: notist::FunctionId::new("notist", "math"),
+        to: notist::FunctionId::new("katex", "math"),
+        span: Default::default(),
+    }]))?;
+```
+
+HTML 根据 target 绑定原生处理器或组件；Code 的 Expanded 边界不要求对应 Web Component。源码映射记录文件身份和展开链。配置失败属于 environment 诊断；analysis、evaluate、render 分别报告所属阶段。严格导出保留失败状态；交互预览可以呈现错误节点及其余内容。

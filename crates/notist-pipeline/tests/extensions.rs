@@ -1,18 +1,27 @@
+use notist_core::extensions::{Replace, Replacement};
 use notist_core::{
     builtins::Accepts,
     definitions::{DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, Type},
     item::{Ctor, Value},
 };
-use notist_pipeline::{
-    Context, Pipeline,
-    transforms::{Replace, TransformPlan},
-};
-fn rule(a: &str, b: &str) -> Replace {
+use notist_pipeline::{Context, Pipeline, extensions::ExtensionPlan};
+
+fn replacement_plan(
+    rules: &[Replacement],
+    registry: &notist_core::registry::Registry,
+) -> Result<ExtensionPlan, Vec<notist_core::diag::Diagnostic>> {
+    ExtensionPlan::default().with_extension(
+        std::sync::Arc::new(Replace::new(rules.iter().cloned())),
+        registry,
+    )
+}
+
+fn rule(a: &str, b: &str) -> Replacement {
     let id = |s: &str| {
         let (p, n) = s.split_once(".").unwrap();
         FunctionId::new(p, n)
     };
-    Replace {
+    Replacement {
         from: id(a),
         to: id(b),
         span: Default::default(),
@@ -24,7 +33,7 @@ fn context() -> Context {
 #[test]
 fn both_frontends_preserve_identity_and_select_native_targets() {
     let c = context()
-        .with_transforms(&[rule("notist.math", "maths.first")])
+        .with_extension(Replace::new([rule("notist.math", "maths.first")]))
         .unwrap();
     let p = Pipeline::default();
     for path in ["test.not", "test.md"] {
@@ -63,17 +72,17 @@ fn rules_run_once_in_order_and_generic_names_are_normalized() {
         rule("maths.first", "maths.second"),
         rule("maths.second", "notist.math"),
     ];
-    let plan = TransformPlan::compile(&rules, c.registry()).unwrap();
+    let plan = replacement_plan(&rules, c.registry()).unwrap();
     assert_eq!(
         plan.target(&FunctionId::new("notist", "math")),
         FunctionId::new("notist", "math")
     );
-    let plan = TransformPlan::compile(&rules[..2], c.registry()).unwrap();
+    let plan = replacement_plan(&rules[..2], c.registry()).unwrap();
     assert_eq!(
         plan.target(&FunctionId::new("notist", "math")),
         FunctionId::new("maths", "second")
     );
-    let plan = TransformPlan::compile(&[rules[1].clone(), rules[0].clone()], c.registry()).unwrap();
+    let plan = replacement_plan(&[rules[1].clone(), rules[0].clone()], c.registry()).unwrap();
     assert_eq!(
         plan.target(&FunctionId::new("notist", "math")),
         FunctionId::new("maths", "first")
@@ -88,7 +97,7 @@ fn incompatible_contracts_and_roles_are_rejected() {
         rule("notist.strong", "notist.emph"),
         rule("notist.math", "maths.missing"),
     ] {
-        let result = TransformPlan::compile(std::slice::from_ref(&r), c.registry());
+        let result = replacement_plan(std::slice::from_ref(&r), c.registry());
         if r.from.name == "strong" {
             assert!(result.is_ok());
         } else {
@@ -97,8 +106,8 @@ fn incompatible_contracts_and_roles_are_rejected() {
     }
 }
 #[test]
-fn transform_can_execute_code_without_changing_semantic_call() {
-    let c=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_transforms(&[rule("notist.emph","demo.loud")]).unwrap();
+fn replace_extension_can_execute_code_without_changing_semantic_call() {
+    let c=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_extension(Replace::new([rule("notist.emph","demo.loud")])).unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "_hello_", &c).unwrap();
     let e = p.evaluate(&a, &c);
@@ -132,8 +141,8 @@ fn defaults_compare_exact_float_bits_and_parameter_binding_order() {
         m.functions.push(f);
     }
     r.register(m).unwrap();
-    assert!(TransformPlan::compile(&[rule("native.a", "native.b")], &r).is_ok());
-    assert!(TransformPlan::compile(&[rule("native.a", "native.c")], &r).is_err());
+    assert!(replacement_plan(&[rule("native.a", "native.b")], &r).is_ok());
+    assert!(replacement_plan(&[rule("native.a", "native.c")], &r).is_err());
 }
 
 #[test]
@@ -150,7 +159,7 @@ fn generated_paragraphs_participate_in_function_mapping() {
                 .unwrap(),
         )
         .unwrap()
-        .with_transforms(&[rule("notist.paragraph", "demo.paragraph")])
+        .with_extension(Replace::new([rule("notist.paragraph", "demo.paragraph")]))
         .unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "ordinary text", &c).unwrap();
@@ -171,7 +180,7 @@ fn output_mapping_cannot_change_compile_time_source_analysis() {
     let base=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn original() -> Int { 1 } fn target() -> Int { 2 } fn show() -> BlockContent { heading<level: original()>()[title] }").unwrap()).unwrap();
     let mapped = base
         .clone()
-        .with_transforms(&[rule("demo.original", "demo.target")])
+        .with_extension(Replace::new([rule("demo.original", "demo.target")]))
         .unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "#self.show()", &base).unwrap();
@@ -212,7 +221,7 @@ fn transparent_node_contract_cannot_be_replaced_by_an_opaque_code_function() {
         ("notist.node", "demo.replacement"),
         ("demo.replacement", "notist.node"),
     ] {
-        let errors = TransformPlan::compile(&[rule(from, to)], c.registry()).unwrap_err();
+        let errors = replacement_plan(&[rule(from, to)], c.registry()).unwrap_err();
         assert!(
             errors
                 .iter()

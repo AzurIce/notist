@@ -6,6 +6,7 @@ use crate::item::Dict;
 
 /// Where an annotation sits relative to the syntax around it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AnnotationKind {
     /// A standalone line; it targets the first block after its position.
     Block,
@@ -19,8 +20,10 @@ pub enum AnnotationKind {
 /// Annotations are not content nodes: their source span and dict travel
 /// beside the forest, so shaping never has to preserve or split them.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Annotation {
     pub dict: Dict,
+    #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
     pub span: TextRange,
     pub kind: AnnotationKind,
 }

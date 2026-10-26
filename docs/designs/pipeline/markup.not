@@ -8,7 +8,7 @@ Markup 前端将标记源码 Parse / Lower 为 IR₁。共享 Markup 内容管�
 @(id: "数据流")
 == 数据流
 
-各标记语言前端输出共同的 IR₁，共享后端接收调用方提供的 Context，最终产生 Item 森林。文档入口为森林附加 Doc 根，形成文档树。
+各标记语言前端输出共同的 IR₁，共享后端接收调用方提供的 Context，最终产生 Item 森林。文档入口为森林附加 Doc 根，形成文档树。文档扩展的 before_check 在共享后端之前修改 IR₁，after_check 在 Doc 根生成后校验语义树；内容区域入口不触发这些 hooks，见 [文档扩展](../extensions.not)。
 
 #components.diagram(r#"""
 %%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%

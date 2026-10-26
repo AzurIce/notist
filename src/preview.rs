@@ -2,15 +2,15 @@
 use crate::{MemoryResources, PreparedInputs, RenderOptions, Vault, VaultError};
 use serde_json::{Value, json};
 
-/// Discover source imports or transform-local configuration imports without IO.
+/// Discover source imports or extension-local configuration imports without IO.
 pub fn source_imports(path: &str, source: &str) -> String {
     let (imports, diagnostics) = if path.ends_with(".toml") {
         match crate::environment::parse_config(source) {
             Ok(config) => (
                 config
-                    .transforms
+                    .extensions
                     .into_iter()
-                    .flat_map(|rule| rule.imports)
+                    .flat_map(|rule| rule.imports().to_vec())
                     .collect(),
                 Vec::new(),
             ),

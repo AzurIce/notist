@@ -46,7 +46,7 @@ struct Evaluator<'a> {
     limits: Limits,
     steps: usize,
     depth: usize,
-    transforms: bool,
+    runtime: bool,
 }
 
 pub(crate) fn evaluate(
@@ -62,7 +62,7 @@ pub(crate) fn evaluate(
         limits,
         steps: 0,
         depth: 0,
-        transforms: true,
+        runtime: true,
     };
     let forest = e.bind_content(
         std::slice::from_ref(root),
@@ -90,7 +90,7 @@ pub(super) fn constant(
         limits: Limits::default(),
         steps: 0,
         depth: 0,
-        transforms: false,
+        runtime: false,
     };
     match e.expr(t, &Scope::new())? {
         Runtime::Value(v) => Ok(v),
@@ -102,8 +102,8 @@ impl Evaluator<'_> {
         &self,
         id: &notist_core::definitions::FunctionId,
     ) -> notist_core::definitions::FunctionId {
-        if self.transforms {
-            self.context.transforms().target(id)
+        if self.runtime {
+            self.context.extensions().target(id)
         } else {
             id.clone()
         }
@@ -130,7 +130,7 @@ impl Evaluator<'_> {
                 .ok_or_else(|| format!("runtime input `{name}` is unavailable at compile time")),
             ExprKind::Failure(m) => Err(m.clone()),
             ExprKind::Content(forest) => {
-                if !self.transforms {
+                if !self.runtime {
                     return Err("content cannot be constructed at compile time".into());
                 }
                 Ok(Runtime::Content(

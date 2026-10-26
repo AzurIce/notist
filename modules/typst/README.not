@@ -8,7 +8,7 @@ fn math<C: Type = InlineContent>(text: String) -> C;
 fn svg(source: String) -> BlockContent;
 ```
 
-组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。它与 notist.math、katex.math 具有相同的调用契约，可直接调用或通过 transforms 替换内置节点。
+组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。它与 notist.math、katex.math 具有相同的调用契约，可直接调用或通过 replace 扩展 替换内置节点。
 
 == 数学
 
@@ -70,14 +70,14 @@ import "../modules/typst/lib.notc" as typst;
 Markup 可以直接写 `#typst.math("x")`。要让内置 math 及 `$...$` 使用此实现，在根 Notist.toml 显式选择同签名映射：
 
 ```toml
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { typst = "./lib.notc" }
 from = "notist.math"
 to = "typst.math"
 ```
 
-import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.not)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/transforms.not)。
+import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.not)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/extensions.not)。
 
 == 组件实现
 

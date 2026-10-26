@@ -67,4 +67,4 @@ Lower 把一份模块拆成三个去向：
 
 == 求值
 
-Evaluate 在求值前 Item 树上原地展开：先解析插值并捕获调用的自由变量，再在内容边界执行调用——transform 在此选择同签名目标，目标实例沿用原编译期实参，缺失的实例就地补检查。原生实现产生 prototype Item，Code 实现的结果森林嵌入调用边界；失败标记为 Error 并在边界恢复，原语义树保持可用。完整契约见 [Code 函数系统](../../code/functions.not#对-item-与-shape-的契约)。
+Evaluate 在求值前 Item 树上原地展开：先解析插值并捕获调用的自由变量，再在内容边界执行调用——replace 扩展在此选择同签名目标，目标实例沿用原编译期实参，缺失的实例就地补检查。原生实现产生 prototype Item，Code 实现的结果森林嵌入调用边界；失败标记为 Error 并在边界恢复，原语义树保持可用。完整契约见 [Code 函数系统](../../code/functions.not#对-item-与-shape-的契约)。

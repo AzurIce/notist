@@ -50,7 +50,7 @@ raw 与 graph 是相邻的独立输出，源码不位于组件内部，也不通
 import "../modules/grammar/lib.notc" as grammar;
 ```
 
-Markup 使用 `#grammar.diagram(...)` 调用。导入只引入名称，不执行内容实现或启用 transform。
+Markup 使用 `#grammar.diagram(...)` 调用。导入只引入名称，不执行内容实现或启用 replace 扩展。
 
 == Example
 

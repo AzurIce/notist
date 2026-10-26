@@ -33,7 +33,7 @@ struct Cli {
     /// Use this output configuration instead of searching parent directories
     #[arg(long, global = true)]
     config: Option<PathBuf>,
-    /// Inspect the representation tree after Code evaluation and transforms
+    /// Inspect the representation tree after Code evaluation and extensions
     #[arg(long, global = true)]
     eval: bool,
 }

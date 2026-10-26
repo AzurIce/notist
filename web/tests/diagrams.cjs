@@ -12,7 +12,7 @@ const { chromium } = require('playwright');
     page.on('request', request => requests.push(new URL(request.url()).pathname));
     let renderer;
     await page.route(`${base}/docs/diagram-switch.toml`, route => route.fulfill({ body: `
-[[transforms]]
+[[extensions]]
 kind = "replace"
 imports = { components = "components/lib.notc", renderer = "../modules/${renderer}/lib.notc" }
 from = "components.diagram"

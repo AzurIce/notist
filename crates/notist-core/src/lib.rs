@@ -6,6 +6,7 @@ pub mod diag;
 pub mod dump;
 pub mod evaluation;
 pub mod expr;
+pub mod extensions;
 pub mod frontend;
 pub mod index;
 pub mod item;

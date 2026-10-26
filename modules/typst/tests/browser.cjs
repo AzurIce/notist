@@ -112,7 +112,7 @@ const { chromium } = require("playwright");
     // The existing Worker pipeline can replace native math with this module.
     await page.goto(`${base}/web/`);
     await page.waitForSelector("#core .kind");
-    await page.route('**/modules/typst/test.toml', route => route.fulfill({ body: "[[transforms]]\nkind='replace'\nimports={typst='./lib.notc'}\nfrom='notist.math'\nto='typst.math'" }));
+    await page.route('**/modules/typst/test.toml', route => route.fulfill({ body: "[[extensions]]\nkind='replace'\nimports={typst='./lib.notc'}\nfrom='notist.math'\nto='typst.math'" }));
     await page.fill("#root-url", "../modules/typst/");
     await page.fill("#config-url", "test.toml");
     await page.fill("#path", "README.not");
@@ -134,6 +134,6 @@ const { chromium } = require("playwright");
     assert.equal(await page.frameLocator("#preview").locator('[notist-function$=math][notist-content="block"]').evaluate(node => node.closest("p")), null);
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     assert.deepEqual(errors, []);
-    console.log("Typst SVG, concurrency, lifecycle, errors, scaling and .not/.md Worker transforms passed.");
+    console.log("Typst SVG, concurrency, lifecycle, errors, scaling and .not/.md Worker extensions passed.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

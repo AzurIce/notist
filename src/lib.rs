@@ -42,8 +42,10 @@ pub mod json;
 pub mod prepared;
 pub mod preview;
 pub use prepared::PreparedInputs;
+#[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
+pub mod command_extension;
 pub mod environment;
-pub use notist_pipeline::transforms;
+pub use notist_core::extensions;
 pub mod publication;
 pub mod query;
 pub mod resources;

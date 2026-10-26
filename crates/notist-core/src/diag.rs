@@ -5,6 +5,7 @@ pub type Sources = std::collections::BTreeMap<String, std::sync::Arc<str>>;
 
 /// Which pipeline phase produced a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Phase {
     /// Parser: malformed structure.
     Syntax,
@@ -26,6 +27,7 @@ impl std::fmt::Display for Phase {
 
 /// Stable classification for host policy, independent of diagnostic wording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiagnosticCode {
     OutsideVault,
 }
@@ -33,15 +35,20 @@ pub enum DiagnosticCode {
 /// The shared diagnostic type of the whole pipeline: `notist-syntax`'s own
 /// `parser::Diagnostic` is converted in at the boundary with `phase: Syntax`.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Diagnostic {
+    #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
     pub span: TextRange,
     pub message: String,
     pub phase: Phase,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub code: Option<DiagnosticCode>,
     /// Source identity when expansion/checking crosses the document boundary.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub source: Option<String>,
     /// A content boundary contains this failure and preserves independent content.
     /// Hosts may present the recovered tree regardless of the diagnostic phase.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub recovered: bool,
 }
 

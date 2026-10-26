@@ -5,6 +5,7 @@ use crate::item::{Ctor, Dict, Value};
 /// How a call's `[...]` body was written. Frontend-generated calls without
 /// an explicit body use `None`; their content contracts are still checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BodyFlavor {
     None,
     Inline,
@@ -14,6 +15,7 @@ pub enum BodyFlavor {
 /// An argument before signature binding. Both forms carry expressions;
 /// argument order and repeated names remain available for diagnostics.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CallArg {
     Positional(Expr),
     Named { name: String, value: Expr },
@@ -40,23 +42,30 @@ impl CallArg {
 /// Annotations are carried beside the forest until shaping ends; module
 /// annotations are carried by `FrontendOutput` instead.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Expr {
-    Literal(Value, TextRange),
+    Literal(
+        Value,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))] TextRange,
+    ),
     /// A source-delimited fragment in a block content sequence. A soft
     /// newline stays inside this group. Resolve checks the children's public
     /// categories: all inline becomes one paragraph; a sole block passes
     /// through. This is syntax grouping, never a function invocation.
     Fragment {
         children: Vec<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Ref {
         name: String,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Member {
         base: Box<Expr>,
         name: String,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     /// Markup IR₁, lowered without an environment. The shared backend
@@ -65,41 +74,54 @@ pub enum Expr {
         forest: Vec<Expr>,
         annotations: Vec<crate::annotation::Annotation>,
         body: BodyFlavor,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Block {
         bindings: Vec<(String, Expr)>,
         value: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     If {
         condition: Box<Expr>,
         yes: Box<Expr>,
         no: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Match {
         subject: Box<Expr>,
         arms: Vec<(Expr, Expr)>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Binary {
         op: String,
         left: Box<Expr>,
         right: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Unary {
         op: String,
         value: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
     Comptime {
         value: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
-    Array(Vec<Expr>, TextRange),
-    Dict(Vec<(String, Expr)>, TextRange),
+    Array(
+        Vec<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))] TextRange,
+    ),
+    Dict(
+        Vec<(String, Expr)>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))] TextRange,
+    ),
     Call {
         callee: Box<Expr>,
         args: Vec<CallArg>,
@@ -107,6 +129,7 @@ pub enum Expr {
         children: Vec<Expr>,
         body: BodyFlavor,
         attrs: Dict,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
 }

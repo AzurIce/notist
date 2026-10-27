@@ -5,6 +5,8 @@
 = 开始阅读
 
 - [Cook Book](cookbook/README.not)
+  - [从 Cargo examples 生成站点（Experimental）](cookbook/ssg-extensions.not)
+- [扩展 Notist（Experimental）](extensions.not)
 
 = Markup
 

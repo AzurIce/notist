@@ -1,0 +1,99 @@
+= 扩展 Notist（Experimental）
+
+Notist CLI 负责构建流程，扩展在指定阶段接收输入并返回修改结果。Rust 实现可以注册到构建驱动，外部程序通过 stdin / stdout 交换 JSON；使用外部扩展时，仍通过 notist 命令检查或构建，无须自行编写编译驱动。
+
+通用文档扩展与 SSG 站点扩展目前均为实验性接口，阶段、Rust API、stdio 协议及序列化表示可能调整。version = 1 标识当前协议格式，不代表兼容性承诺。站点扩展使用 Cargo examples 生成场景验证；文档级通用 hooks 尚缺实际项目用例验证。
+
+== 选择扩展层级
+
+| 需求 | 使用入口 | 输入与修改范围 |
+| --- | --- | --- |
+| 根据 Cargo.toml、目录或外部数据生成页面，批量调整页面集合 | SSG 站点扩展 | 整站文档源码与模板数据，可增删改页面及 site.data |
+| 修改每份文档的表达式、检查语义或编辑求值结果 | 文档扩展 | 当前文档的 Expr 或 Item，操作取决于阶段 |
+| 为已有函数选择同签名执行实现，例如替换数学渲染器 | 内置 replace 文档扩展 | 函数实现映射，保留原调用身份 |
+| 增加可直接调用的内容函数或 Web Component | 本地 Code 模块 | 通过 import 引入声明与实现 |
+| 支持新的源码格式 | 文档前端 | 解析和 lowering，生成共享 Expr |
+
+生成 example 目录与每个 example 的页面属于站点层；调整每个页面内部的语义属于文档层。站点层接收源码字符串，生成 Markdown 或 .not 文档不需要构造 Expr JSON。
+
+相关接口见 [SSG 站点扩展](ssg.not#站点扩展-experimental)、[文档扩展](designs/extensions.not)、[本地模块](modules.not) 与 [文档前端](designs/frontends.not)。从完整用例开始可阅读 [从 Cargo examples 生成站点](cookbook/ssg-extensions.not)。
+
+== 配置与执行顺序
+
+两层扩展使用独立配置表，可同时写在同一份 Notist.toml 中：
+
+```toml
+[ssg]
+title = "Example Site"
+content = "content"
+output = "public"
+
+# 站点层：一次构建运行一次，先准备页面源码与模板数据。
+[[ssg.extensions]]
+kind = "command"
+command = ["python3", "scripts/catalog.py", "../Cargo.toml"]
+watch = ["scripts", "../Cargo.toml", "../examples"]
+
+# 文档层：每份文档进入所选阶段时运行。
+[[extensions]]
+kind = "command"
+command = ["python3", "scripts/check_document.py"]
+stages = ["after_check"]
+```
+
+代码块中的脚本名称说明配置方式，实际脚本需要由项目提供。两层在 SSG 中的调用顺序为：
+
+```text
+发现文档 / 加载 data
+  → 站点 prepare：修改整站源码与数据
+  → 为每份最终文档加载静态 imports
+  → 文档 before_check：修改 Expr
+  → 名称解析 / 类型检查 / 结构整理
+  → 文档 after_check：只读语义校验
+  → 求值与执行映射
+  → 文档 after_evaluate：修改具体 Item
+  → 站点链接检查 / 模板渲染 / 发布
+```
+
+同一层先按注册顺序运行 Rust 扩展，再按配置顺序运行命令。外部命令不常驻，每次阶段调用启动一个新进程；反复构建或预览重建会重新运行，脚本应从当前输入计算结果，避免依赖调用次数。
+
+== 两套 stdio 协议
+
+| 项目 | SSG 站点扩展 | 文档扩展 |
+| --- | --- | --- |
+| 配置表 | ssg.extensions | extensions |
+| 调用阶段 | prepare | `before_check`、`after_check`、`after_evaluate` |
+| 请求中的主要输入 | input.documents 与 input.data | document，以及 sources、functions |
+| 文档表示 | 路径到源码字符串的映射 | LoweredDocument 或 Item |
+| 返回修改 | input 完整快照 | document 完整值；`after_check` 只读 |
+| 返回错误 | errors 字符串数组 | diagnostics 诊断数组 |
+| 工作目录 | 站点根目录 | 当前文档所用配置文件的目录 |
+| 额外输入监听 | watch 声明文件或目录 | 没有独立的 watch 配置 |
+
+工作目录也决定脚本参数中的相对文件路径。SSG 的 --config 可以选择其他位置的配置文件，但站点扩展的工作目录仍是站点根目录。文档扩展则使用配置文件所在目录；它的每条 replace 规则也有相对于该配置文件的独立 imports 表。
+
+共同的传输方式是 stdin 读取一个 JSON 值和 EOF，stdout 写一个 JSON 响应，日志写 stderr。command 是程序与参数数组，不经过 shell。省略返回的 input / document 或将其设为 null 保持输入；返回完整值时，未包含的页面、数据或节点会被删除。
+
+两套协议的字段和文档表示各自定义，不能把站点请求作为文档请求处理。CLI 的 json 命令是调试输出，也不等于扩展协议。具体字段及例子见 [站点协议](ssg.not#cli-与-stdio) 和 [文档协议](designs/extensions.not#cli-与-stdio-扩展)。
+
+== 常用执行入口
+
+```sh
+# 站点扩展以及最终各文档的扩展由 SSG 构建调用。
+notist ssg build website
+notist ssg serve website --address 127.0.0.1:8000
+
+# 单文档命令只调用文档层，不调用站点 prepare。
+notist check website/content/index.not
+notist json website/content/index.not
+notist json website/content/index.not --eval
+notist html website/content/index.not --out-dir target/page
+```
+
+check 与普通分析执行 `before_check` / `after_check`；求值入口还执行 `after_evaluate`。HTML、Book 和 SSG 在需要求值和呈现时运行对应文档阶段；站点 prepare 只属于 SSG。已有语义树与求值后输出树可分别查看，外部扩展不改变 CLI 的驱动职责。
+
+站点扩展返回错误会终止构建，CLI 保留已有输出，预览保留上次成功产物。文档 hook 失败撤销该次候选修改并停止当前文档剩余 hooks，分析和求值仍可提供恢复结果；失败诊断保持未恢复状态，交给宿主决定是否发布。失败保护只覆盖构建输入与产物，不撤销脚本自行执行的文件写入或其他副作用。
+
+== 可运行示例
+
+仓库中的 examples/ssg-extensions 直接读取 Cargo.toml 与 Rust 文件，在内存中生成页面和 site.data；可通过 [Cargo examples 教程](cookbook/ssg-extensions.not) 从零搭建简化版本。examples/extensions 演示文档层 `before_check` 的 Expr 修改，详见 [文档扩展示例](designs/extensions.not#cli-与-stdio-扩展)。两个示例都需要 Python 3.11 或更新版本。

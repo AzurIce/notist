@@ -1,5 +1,11 @@
 = Cook Book
 
+== 构建与扩展
+
+需要从清单或源文件自动生成页面时，可阅读 [从 Cargo examples 生成站点](ssg-extensions.not)。该教程给出完整的 Notist.toml、Python stdio 扩展和模板，用正常 CLI 构建站点，不逐项维护生成的文档和数据文件。
+
+站点层与文档层的选择、执行顺序及实验性接口边界见 [扩展 Notist](../extensions.not)。现有接口参考分别位于 [Notist SSG](../ssg.not) 与 [文档扩展](../designs/extensions.not)。
+
 == 基础 Markup 语法
 
 下列示例使用 `.not`；完整规则见 [Syntax](../markup/syntax.not) 与 [Builtin](../markup/builtin.not)。

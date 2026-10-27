@@ -4,6 +4,8 @@
 
 DocumentExtension 定义单份文档的阶段扩展。它可以修改检查前的表达式、校验语义树、选择执行实现或编辑求值后的输出树；notist-core 保存共同契约，notist-pipeline 调度阶段，Environment / Vault 装配扩展及其依赖。站点页面集合、路由与发布结构属于站点宿主。
 
+如何选择层级、在同一配置中组合两套扩展，以及各 CLI 命令调用哪些阶段，见 [扩展总览](../extensions.not)。生成页面集合或从 Cargo.toml 构建 example 目录时，使用 [SSG 站点扩展](../ssg.not)；完整用例见 [Cargo examples 教程](../cookbook/ssg-extensions.not)。
+
 == 阶段与表示
 
 ```text
@@ -15,24 +17,24 @@ Parse / Lower → 静态 import 装配 → before_check
 | 扩展点 | 输入 | 可执行的操作 |
 | --- | --- | --- |
 | validate | 只读 Registry | 在模块签名装配后检查扩展配置 |
-| before_check | 可变 LoweredDocument | 增删改 Expr 森林、节点注解与文档属性；修改结果进入完整名称解析、类型检查和结构定稿 |
-| after_check | 只读 Item 语义树 | 检查语义、收集信息并返回诊断 |
+| `before_check` | 可变 LoweredDocument | 增删改 Expr 森林、节点注解与文档属性；修改结果进入完整名称解析、类型检查和结构定稿 |
+| `after_check` | 只读 Item 语义树 | 检查语义、收集信息并返回诊断 |
 | replacements | 同签名函数映射 | 在求值时为调用选择实现，保持原语义身份 |
-| after_evaluate | 可变 Item 输出树 | 增删改具体节点、字段与属性，结果直接交给输出后端 |
+| `after_evaluate` | 可变 Item 输出树 | 增删改具体节点、字段与属性，结果直接交给输出后端 |
 
-LoweredDocument 保存 forest、annotations 与 attrs，.not 和 Markdown 共用同一表示。静态 imports 在进入 before_check 前已装配，扩展生成的名称使用文档的原作用域。扩展不能在这里改变 import 图；Code 模块与内容字面量不单独触发文档扩展。
+LoweredDocument 保存 forest、annotations 与 attrs，.not 和 Markdown 共用同一表示。静态 imports 在进入 `before_check` 前已装配，扩展生成的名称使用文档的原作用域。扩展不能在这里改变 import 图；Code 模块与内容字面量不单独触发文档扩展。
 
-after_check 保持只读：语义 Item 携带具体实例身份与待求值计算，直接编辑会绕过类型检查。需要调用函数、插入表达式或改变结构时，在 before_check 完成。after_evaluate 不重新执行 Resolve、Shape 或 Evaluate；调用方负责具体节点的字段和内容契约，管线检查 Doc 根、禁止嵌套 Doc 与待求值内容、重复 id 及输出节点预算。
+`after_check` 保持只读：语义 Item 携带具体实例身份与待求值计算，直接编辑会绕过类型检查。需要调用函数、插入表达式或改变结构时，在 `before_check` 完成。`after_evaluate` 不重新执行 Resolve、Shape 或 Evaluate；调用方负责具体节点的字段和内容契约，管线检查 Doc 根、禁止嵌套 Doc 与待求值内容、重复 id 及输出节点预算。
 
 DocumentContext 提供文档身份、文档与模块的源码快照以及只读 Registry。核心接口不读取文件、不启动进程，也不依赖终端或站点实现。生成 Expr 的 span 必须位于当前文档的 UTF-8 边界内；无对应原文的内容可以用插入位置的空范围锚定。
 
 == 调度与失败
 
-Context 保存按注册顺序排列的 ExtensionPlan。每个阶段依次运行所有扩展，阶段之间遵循编译顺序；Pipeline.analyze / inspect 执行 before_check 与 after_check，evaluate 执行求值及 after_evaluate。inspect 捕获修改后的 IR₁，前端语法树保持原始源码。再次调用 analyze 或 evaluate 会重新运行对应阶段，扩展应避免依赖调用次数。
+Context 保存按注册顺序排列的 ExtensionPlan。每个阶段依次运行所有扩展，阶段之间遵循编译顺序；Pipeline.analyze / inspect 执行 `before_check` 与 `after_check`，evaluate 执行求值及 `after_evaluate`。inspect 捕获修改后的 IR₁，前端语法树保持原始源码。再次调用 analyze 或 evaluate 会重新运行对应阶段，扩展应避免依赖调用次数。
 
 每次可变 hook 在独立候选值上运行，成功后提交。返回错误或产生无效阶段输出时，保留该 hook 之前的结果，停止本次文档剩余的 hooks；此前成功的修改保留，正常检查和求值继续提供恢复结果。已注册的执行映射仍属于恢复求值的 Context。错误携带扩展名、阶段及来源，不能标记为已恢复；空错误列表生成一条失败诊断。失败保护只覆盖文档值，扩展自行管理外部副作用。
 
-Analysis 保存 before_check 修改后的语义树、实例缓存、来源快照和阶段状态。Evaluate 生成独立的输出树，after_evaluate 不回写 Analysis。默认查询、索引和语言服务消费语义树；CLI 的 core、json、query 通过 `--eval` 查看输出树。
+Analysis 保存 `before_check` 修改后的语义树、实例缓存、来源快照和阶段状态。Evaluate 生成独立的输出树，`after_evaluate` 不回写 Analysis。默认查询、索引和语言服务消费语义树；CLI 的 core、json、query 通过 `--eval` 查看输出树。
 
 == Rust 接入
 
@@ -90,13 +92,13 @@ command 是程序与独立参数的数组，不经过 shell。进程的工作目
 | 字段 | 内容 |
 | --- | --- |
 | version | 协议版本，当前为 1 |
-| stage | before_check、after_check 或 after_evaluate |
+| stage | `before_check`、`after_check` 或 `after_evaluate` |
 | path | 当前文档的来源身份 |
 | sources | 文档及已加载模块的源码，按来源身份索引 |
 | functions | 已加载 Registry 的公开函数签名 |
-| document | before_check 为 LoweredDocument；其他阶段为 Item |
+| document | `before_check` 为 LoweredDocument；其他阶段为 Item |
 
-标准输出只能写一个 JSON 响应，日志写标准错误。成功响应为 `{"version":1,"document":...}`；省略 document 或使用 null 保持当前文档值。after_check 为只读，只允许返回版本和诊断，不允许返回 document。响应的 diagnostics 是 Diagnostic 数组；任何条目均使本次 hook 失败并回滚文档修改。例如：
+标准输出只能写一个 JSON 响应，日志写标准错误。成功响应为 `{"version":1,"document":...}`；省略 document 或使用 null 保持当前文档值。`after_check` 为只读，只允许返回版本和诊断，不允许返回 document。响应的 diagnostics 是 Diagnostic 数组；任何条目均使本次 hook 失败并回滚文档修改。例如：
 
 ```json
 {
@@ -113,13 +115,13 @@ source 默认为当前文档，code 与 recovered 可以省略；管线将扩展
 
 Rust 编写的外部命令可以使用 notist.command_extension 的 Request / Response 类型，文档模型使用 notist-core 的 serde feature。notist 的默认 command-extensions feature 提供进程适配；不支持进程的 WASM 宿主和禁用该 feature 的构建显式报告不可用。核心与管线仍保持无 IO。
 
-可运行示例见仓库 examples/extensions：metadata.py 直接读取 Cargo.toml，在 before_check 返回生成的 Expr 与文档属性。仓库根目录执行：
+可运行示例见仓库 examples/extensions：metadata.py 直接读取 Cargo.toml，在 `before_check` 返回生成的 Expr 与文档属性。仓库根目录执行：
 
 ```sh
 cargo run -p notist-cli -- html examples/extensions/README.not --out-dir target/extension-example
 ```
 
-脚本需要 Python 3.11 或更新版本。站点页面集合与路由扩展由站点宿主另行设计。
+脚本需要 Python 3.11 或更新版本。整站页面集合及模板数据的增删改已由 [SSG 的 prepare 扩展](../ssg.not) 提供；它接收源码字符串，协议与本文的 Expr / Item 表示分别定义。
 
 == Replace 配置与作用域
 

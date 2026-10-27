@@ -107,6 +107,8 @@ Builder 接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文
 
 站点扩展在发现文档和加载 data 后、路由校验与文档编译前运行。它接收整站的 SiteInput，直接增删改文档源码和模板数据，结果按相同目录映射进入正常编译与呈现流程。该 API 与 stdio 协议处于实验阶段，以 Cargo example 页面生成场景验证边界。
 
+从可复制的项目开始，见 [从 Cargo examples 生成站点](cookbook/ssg-extensions.not)；比较站点层与文档层，以及组合执行顺序，见 [扩展 Notist](extensions.not)。
+
 ```text
 发现 content / 加载 data → SiteExtension.prepare
                        → 路由校验 → 文档分析 / 求值 → 链接检查 / 模板渲染

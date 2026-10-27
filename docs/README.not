@@ -1,6 +1,8 @@
 = Notist Documentation
 
 - [Cook Book](cookbook/README.not)：从示例开始编写文档。
+- [扩展 Notist（Experimental）](extensions.not)：选择站点层或文档层扩展、配置与执行顺序、stdio 协议边界。
+- [从 Cargo examples 生成站点](cookbook/ssg-extensions.not)：通过 CLI 扩展读取清单与源码，在内存中生成页面及模板数据。
 - [Markup Syntax](markup/syntax.not)：.not 的词法、调用、注解与通用解析规则，以及 Markdown 扩展语法。
 - [Code Syntax](code/syntax.not)：.notc 的签名声明、类型引用、CST / AST 与错误恢复。
 - [Code 函数系统](code/functions.not)：Type 类型值、编译期实参、函数检查、森林插值与调用边界，以及求值前后的 Item 契约。

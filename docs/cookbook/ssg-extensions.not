@@ -1,0 +1,180 @@
+= 从 Cargo examples 生成站点（Experimental）
+
+本例让 Notist SSG 在构建时读取 Cargo.toml 的 `[[example]]` 和 Rust 源文件，为每个 example 生成一个页面及模板数据。增减 Cargo targets 后重新构建即可，无须为每项维护独立的文档与 data 目录中的 TOML 文件。
+
+该用例使用实验性的 SSG prepare 扩展。脚本操作文档源码字符串和普通 JSON 数据，生成页面继续使用正常文档编译与站点模板。层级选择与执行顺序见 [扩展总览](../extensions.not)，完整协议见 [SSG 站点扩展](../ssg.not#站点扩展-experimental)。
+
+== 文件布局
+
+```text
+project/
+  Cargo.toml
+  examples/
+    hello/main.rs
+  website/
+    Notist.toml
+    content/index.not
+    scripts/examples.py
+    templates/page.hbs
+```
+
+准备一个最小 Cargo.toml：
+
+```toml
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2024"
+
+[[example]]
+name = "hello"
+path = "examples/hello/main.rs"
+```
+
+examples/hello/main.rs：
+
+```rust
+fn main() {
+    println!("Hello from an example!");
+}
+```
+
+本例只读取这些文件，不编译或运行 Rust 程序。
+
+== 配置扩展
+
+website/Notist.toml：
+
+```toml
+[ssg]
+title = "Rust examples"
+content = "content"
+output = "public"
+
+[[ssg.extensions]]
+kind = "command"
+command = ["python3", "scripts/examples.py", "../Cargo.toml"]
+watch = ["scripts", "../Cargo.toml", "../examples"]
+```
+
+脚本在 website 目录运行，因此 ../Cargo.toml 指向项目清单。watch 中的路径也相对于 website：清单和 Rust 源码位于站点根之外，需要显式声明才能触发预览重建。依赖目录递归监听，新增 example 目录也会触发重建。脚本需要 Python 3.11+，使用标准库中的 tomllib 解析 TOML。
+
+website/content/index.not 是唯一需要手写的内容页：
+
+```not
+= Rust examples
+
+[浏览 example 目录](examples/index.md)。
+```
+
+链接目标稍后由扩展创建，可以在构建中正常解析。
+
+== 实现 prepare
+
+将下面代码保存到 website/scripts/examples.py：
+
+```python
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+
+def prepare(request, manifest_path):
+    if request["version"] != 1 or request["stage"] != "prepare":
+        raise ValueError("unsupported site extension request")
+
+    manifest = tomllib.loads(manifest_path.read_text())
+    site = request["input"]
+    documents = site["documents"]
+
+    # 本扩展管理 examples/ 页面和 site.data.examples。
+    for path in list(documents):
+        if path.startswith("examples/"):
+            del documents[path]
+    site["data"]["examples"] = {}
+    links = ["# Examples", ""]
+
+    for target in manifest.get("example", []):
+        name = target["name"]
+        source = (manifest_path.parent / target["path"]).read_text()
+        quoted_name = json.dumps(name, ensure_ascii=False)
+        documents[f"examples/{name}.md"] = (
+            f"@!(title: {quoted_name}, example: {quoted_name})\n\n"
+            f"# {name}\n"
+        )
+        site["data"]["examples"][name] = {"name": name, "code": source}
+        links.append(f"- [{name}]({name}.md)")
+
+    documents["examples/index.md"] = "\n".join(links) + "\n"
+    return {"version": 1, "input": site}
+
+
+try:
+    response = prepare(json.load(sys.stdin), Path(sys.argv[1]))
+except Exception as error:
+    response = {"version": 1, "errors": [str(error)]}
+json.dump(response, sys.stdout)
+```
+
+input.documents 的键相对于 content 目录，所以 examples/hello.md 的绝对源身份是 website/content/examples/hello.md，输出为 examples/hello.html；即使源文件没有写到磁盘，也会参与站点目录、链接与文档检查。根注解把 example 名称放入 page.attrs.example，供模板查找数据。
+
+脚本修改请求中的完整输入并原样返回其他内容。examples/ 下的页面与 site.data.examples 由本扩展管理，先清空这两个范围再重建，删除 Cargo target 后不会留下旧页面或数据。其他页面和数据保持当前输入值。这一策略适用于扩展拥有明确命名空间的项目；有手写 example 页面时，应先确定需要保留哪些路径。
+
+== 模板消费数据
+
+website/templates/page.hbs：
+
+```handlebars
+<!doctype html>
+<html>
+  <head><meta charset="utf-8"><title>{{page.title}} · {{site.title}}</title></head>
+  <body>
+    <nav><a href="{{url 'index.html'}}">Home</a></nav>
+    <main>
+      {{{page.html}}}
+      {{#with (lookup site.data.examples page.attrs.example)}}
+        <pre><code>{{code}}</code></pre>
+      {{/with}}
+    </main>
+    {{#if assets.components}}
+      <script type="module" src="{{assets.components}}"></script>
+    {{/if}}
+  </body>
+</html>
+```
+
+HTML 模板由普通 `{{code}}` 插值转义 Rust 源码。site.data 是扩展生成的 JSON，模板直接查表，不负责读取 Cargo.toml 或 Rust 文件。这里只显示源码；如需代码高亮，可以使用站点正文或 markdown 辅助函数承载带语言标记的代码块，见 [站点模板](../ssg.not#站点模板)。
+
+== 构建与检查
+
+从 project 目录执行：
+
+```sh
+notist ssg build website
+notist ssg serve website --address 127.0.0.1:8000
+```
+
+默认输出结构为：
+
+```text
+website/public/
+  index.html
+  examples/
+    index.html
+    hello.html
+```
+
+content 中仍只有手写的 index.not，data 目录不需要创建。添加新的 Cargo example target 及源码后，预览会生成相应页面；删除 target 后，再次成功构建会清理旧输出。
+
+调试脚本时，日志写到 stderr，例如 `print("loading manifest", file=sys.stderr)`。stdout 只能返回协议响应。清单缺失或无法解析时，本例返回 errors，构建失败，CLI 保留已有输出；修复被 watch 观察的文件后，预览会重新构建。
+
+单独执行 `notist check website/content/index.not` 只检查现有单文档，不执行站点 prepare，因此应通过 ssg build 检查生成页面之间的链接和完整站点。
+
+仓库还提供 examples/ssg-extensions，包含分组目录、相邻 scenes.rs 源码读取，以及保留现有媒体数据的生成版本。从 Notist 仓库根目录可直接执行：
+
+```sh
+cargo run -p notist-cli -- ssg build examples/ssg-extensions
+```
+
+该示例匹配 ranim 的 example 布局，负责生成文档与数据，不负责构建 WASM、渲染动画或上传媒体。

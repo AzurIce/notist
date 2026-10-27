@@ -47,6 +47,10 @@ impl Theme {
                 PathBuf::from("status.css"),
                 notist_html::STATUS_CSS.as_bytes().to_vec(),
             ),
+            (
+                PathBuf::from("highlight.css"),
+                notist_html::highlight::CSS.as_bytes().to_vec(),
+            ),
         ]);
         files.insert(
             PathBuf::from("navigation.js"),

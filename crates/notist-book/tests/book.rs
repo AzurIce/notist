@@ -156,6 +156,42 @@ fn default_theme_escapes_titles_and_encodes_explicit_outline_ids() {
 }
 
 #[test]
+fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
+    for source in ["README.not", "README.md"] {
+        let site = render(&[
+            (
+                source,
+                "```toml\n[book]\ntitle = \"Example\"\n```\n\n```typescript\nconst n: number = 1;\n```\n\n```notc\nfn name() -> String { \"example\" }\n```\n\n```unknown\n<script>&\n```",
+            ),
+            ("guide/start.md", "```rust\nfn main() {}\n```"),
+        ]);
+        let output = html(&site, "index.html");
+        assert!(output.contains("class=\"language-toml\"><span class="));
+        assert!(output.contains("class=\"language-typescript\"><span class="));
+        assert!(output.contains("class=\"z-source z-notc\""));
+        assert!(output.contains("<code class=\"language-unknown\">&lt;script&gt;&amp;\n</code>"));
+        assert!(output.contains("href=\"_notist/theme/highlight.css\""));
+        let nested = html(&site, "guide/start/index.html");
+        assert!(nested.contains("href=\"../../_notist/theme/highlight.css\""));
+        assert!(nested.contains("class=\"z-source z-rust\""));
+        assert_eq!(
+            html(&site, "_notist/theme/highlight.css"),
+            notist_html::highlight::CSS
+        );
+    }
+    let mut vault = Vault::new(resources(&[
+        ("README.md", "```rust\nfn main() {}\n```"),
+        ("theme/assets/highlight.css", "pre code { color: purple; }"),
+    ]));
+    let config = BookConfig::parse("[book]\noutput='public'\ntheme='theme'", None).unwrap();
+    let site = build(&mut vault, &config).unwrap();
+    assert_eq!(
+        html(&site, "_notist/theme/highlight.css"),
+        "pre code { color: purple; }"
+    );
+}
+
+#[test]
 fn default_theme_omits_outline_and_adjacency_for_headingless_single_pages() {
     for source in ["README.not", "README.md"] {
         let site = render(&[(source, "Only body text.")]);

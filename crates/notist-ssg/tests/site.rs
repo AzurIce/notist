@@ -203,7 +203,7 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
         ),
         (
             "templates/page.hbs",
-            "{{{page.html}}}{{{markdown site.data.code.source}}}",
+            "<link rel=\"stylesheet\" href=\"{{assets.highlight}}\">{{{page.html}}}{{{markdown site.data.code.source}}}",
         ),
         ("data/code.toml", "source='''```rust\nfn main() {}\n```'''"),
     ]);
@@ -216,4 +216,23 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
     assert!(page.contains("id=\"one-2\""));
     assert_eq!(page.matches("class=\"z-source z-rust\"").count(), 2);
     assert!(page.contains("&lt;"));
+    assert!(page.contains("href=\"_notist/highlight.css\""));
+    assert_eq!(
+        html(&site, "_notist/highlight.css"),
+        notist_html::highlight::CSS
+    );
+}
+
+#[test]
+fn default_template_loads_highlight_styles_relative_to_nested_pages() {
+    let mut vault = vault(&[(
+        "content/guide/start.md",
+        "```toml\n[book]\ntitle = \"Example\"\n```",
+    )]);
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    let page = html(&site, "guide/start.html");
+    assert!(page.contains("href=\"../_notist/highlight.css\""));
+    assert!(page.contains("class=\"language-toml\"><span class="));
 }

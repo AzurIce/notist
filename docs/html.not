@@ -42,7 +42,7 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 
 连续的开头 header 行进入 thead，余下行进入 tbody；后续 header 行保持原位置并使用 th。表头 cell 带 scope，table.align 逐列生成 text-align 样式。单元格的段落与其他块内容均保留。列表统一保留 item 中的段落，不依赖 Markdown tight 标记。
 
-raw 的 lang 字段取首个空白分隔片段生成 language-* 类，正文原样转义，不裁掉末尾换行。HTML 片段不附带样式表、代码高亮或公式引擎。
+raw 的 lang 字段取首个空白分隔片段生成 language-* 类，正文原样转义，不裁掉末尾换行。默认 HTML 片段不附带样式表、代码高亮或公式引擎。
 
 @(id: "属性")
 == 属性
@@ -65,6 +65,23 @@ raw 的 lang 字段取首个空白分隔片段生成 language-* 类，正文原�
 status 是字符串注解，约定 draft（方案讨论中）、staged（方案确定、等待实现）与 outdate（已被取代）三种值。它挂载已有节点，不新增函数身份，不改变内容类别与 Shape；标注任意范围时使用带注解的 `#node[ ... ]`。
 
 共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html.STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
+
+== 代码高亮
+
+notist-html 的可选 Cargo feature highlight 提供构建期高亮。基础 Renderer 默认仍输出转义文本；宿主显式安装代码回调，并发布样式：
+
+```rust
+let renderer = notist_html::Renderer::new()
+    .with_code_renderer(notist_html::highlight::code);
+let html = renderer.render(&root);
+let css = notist_html::highlight::CSS;
+```
+
+回调只替换块级 pre/code 内部的文本，不改变外层属性和源码映射，也不处理行内代码。常用语言使用 syntect 与 two-face 的扩展语法集，覆盖 Rust、JavaScript、TypeScript / TSX、JSON、TOML、Shell、YAML、Dockerfile 等；not / notist 和 notc 直接使用 Notist 的无损语法树，不执行代码、不读取导入文件，未完成的示例也可展示。语言名按首个空白分隔片段识别，大小写不敏感，支持语法集的文件扩展名与 shell / docker 别名。
+
+没有语言、未知语言，以及 text / txt / plaintext / plain / none / nohighlight 均回退到普通转义文本，不自动猜测语言。高亮保留原始源码、空白与末尾换行，输出带 z- 前缀的作用域 class；样式通过 --notist-code-* CSS 变量配置颜色，默认跟随系统明暗，根元素的 data-theme=light / dark 可覆盖。静态 HTML 无需高亮脚本。
+
+Book 自动接入高亮并发布默认配色；SSG 的正文和 markdown 模板辅助函数使用同一个实现，模板可以加载 assets.highlight，或使用自有的作用域样式。
 
 == 资源与数学扩展
 

@@ -1,7 +1,8 @@
 //! Render Notist's final [`Item`] tree into an HTML fragment.
 //!
-//! This crate depends only on `notist-core`. Analyze source with a frontend
-//! first, then pass the final document or a subtree to [`render`].
+//! The default renderer consumes `notist-core` without syntax dependencies.
+//! The optional `highlight` feature adds syntax-aware code rendering. Analyze
+//! source with a frontend first, then pass the final tree to [`render`].
 //!
 //! ```
 //! use notist_core::item::{Ctor, Item, Value};
@@ -11,7 +12,7 @@
 //! ```
 //!
 //! [`Renderer`] allows applications to supply trusted HTML for the contents
-//! of math and embed nodes. The renderer retains the node's outer element
+//! of math, embed and block code nodes. The renderer retains the outer element
 //! and attributes; returning `None` selects the default rendering.
 
 use notist_core::diag::{Diagnostic, Phase};
@@ -20,6 +21,8 @@ use notist_core::item::{Ctor, EvaluationState, Item, Value};
 mod attributes;
 pub mod components;
 mod escape;
+#[cfg(feature = "highlight")]
+pub mod highlight;
 mod url;
 pub use components::{BindingError, Component, HtmlRegistry, ModuleLocator, Target};
 

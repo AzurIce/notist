@@ -369,6 +369,11 @@ pub(crate) fn build<R: Resources>(
         &content_assets,
         &mut assets,
     )?);
+    let highlight_css = PathBuf::from("_notist/highlight.css");
+    assets.generated(
+        highlight_css.clone(),
+        notist_html::highlight::CSS.as_bytes().to_vec(),
+    )?;
     let engine = templates::load(vault.resources(), config)?;
     let data = input.data;
     let by_source: BTreeMap<_, _> = documents
@@ -424,7 +429,7 @@ pub(crate) fn build<R: Resources>(
         )?;
         let rendered = notist_html::Renderer::new()
             .with_registry(registry)
-            .with_code_renderer(crate::highlight::code)
+            .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(lookup)
             .with_embed_renderer(|node| {
                 let Some(Value::Str(target)) = node.fields.get("target") else {
@@ -476,7 +481,10 @@ pub(crate) fn build<R: Resources>(
             .get("template")
             .and_then(|v| v.as_str())
             .unwrap_or(&config.template);
-        let context = serde_json::json!({ "site": site, "page": page, "directory": dirs[&page.directory], "assets": { "components": components.get(&page.route.path) } });
+        let context = serde_json::json!({ "site": site, "page": page, "directory": dirs[&page.directory], "assets": {
+            "components": components.get(&page.route.path),
+            "highlight": relative_url(&page.route.output, &highlight_css, false),
+        } });
         let html = engine
             .render(template, &context)
             .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;

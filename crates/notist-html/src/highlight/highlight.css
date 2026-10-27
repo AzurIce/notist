@@ -1,0 +1,60 @@
+/* Scope classes are shared by syntect and native Notist snippets. Hosts can
+   override these variables without replacing the generated HTML. */
+:root {
+  --notist-code-fg: #24292f;
+  --notist-code-bg: #f5f7fa;
+  --notist-code-comment: #59636e;
+  --notist-code-keyword: #a626a4;
+  --notist-code-string: #116329;
+  --notist-code-constant: #0550ae;
+  --notist-code-function: #6639ba;
+  --notist-code-type: #953800;
+  --notist-code-tag: #116329;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --notist-code-fg: #e3e7ef;
+    --notist-code-bg: #1e2229;
+    --notist-code-comment: #9da7b3;
+    --notist-code-keyword: #ff7b72;
+    --notist-code-string: #a5d6ff;
+    --notist-code-constant: #79c0ff;
+    --notist-code-function: #d2a8ff;
+    --notist-code-type: #ffa657;
+    --notist-code-tag: #7ee787;
+  }
+}
+:root[data-theme="dark"] {
+  --notist-code-fg: #e3e7ef;
+  --notist-code-bg: #1e2229;
+  --notist-code-comment: #9da7b3;
+  --notist-code-keyword: #ff7b72;
+  --notist-code-string: #a5d6ff;
+  --notist-code-constant: #79c0ff;
+  --notist-code-function: #d2a8ff;
+  --notist-code-type: #ffa657;
+  --notist-code-tag: #7ee787;
+}
+/* Give standalone hosts a matching background too. Book's --code variable
+   retains its theme background; unknown/plain code blocks are left alone. */
+pre:has(> code > :is(.z-source, .z-text)) {
+  color: var(--notist-code-fg);
+  background-color: var(--code, var(--notist-code-bg));
+}
+pre > code :is(.z-source, .z-text) { color: var(--notist-code-fg); }
+pre > code :is(.z-keyword, .z-storage) { color: var(--notist-code-keyword); }
+pre > code :is(.z-constant, .z-support) { color: var(--notist-code-constant); }
+pre > code :is(.z-entity.z-name.z-function, .z-support.z-function) { color: var(--notist-code-function); }
+pre > code :is(.z-entity.z-name.z-type, .z-entity.z-name.z-class, .z-storage.z-type) { color: var(--notist-code-type); }
+pre > code :is(.z-entity.z-name.z-tag, .z-markup.z-heading) { color: var(--notist-code-tag); }
+pre > code :is(.z-string, .z-markup.z-raw) { color: var(--notist-code-string); }
+pre > code .z-comment { color: var(--notist-code-comment); font-style: italic; }
+pre > code :is(.z-comment, .z-string, .z-markup.z-raw) :is(.z-punctuation, .z-meta) { color: inherit; }
+pre > code :is(.z-markup.z-heading, .z-markup.z-bold) { font-weight: bold; }
+pre > code .z-markup.z-italic { font-style: italic; }
+pre > code .z-markup.z-strikethrough { text-decoration: line-through; }
+pre > code .z-markup.z-link { text-decoration: underline; }
+@media print {
+  pre:has(> code > :is(.z-source, .z-text)) { color: black; background-color: transparent; }
+  pre > code :is(.z-source, .z-text), pre > code :is(.z-source, .z-text) * { color: inherit !important; }
+}

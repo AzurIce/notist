@@ -100,7 +100,7 @@ impl HelperDef for Markdown {
             .into());
         }
         let rendered = notist_html::Renderer::new()
-            .with_code_renderer(crate::highlight::code)
+            .with_code_renderer(notist_html::highlight::code)
             .render_with_diagnostics(&evaluation.root);
         if !rendered.diagnostics.is_empty() {
             return Err(RenderErrorReason::Other(
@@ -125,7 +125,7 @@ pub(crate) fn load(
     resources: &impl Resources,
     config: &SiteConfig,
 ) -> Result<Handlebars<'static>, Error> {
-    let mut templates = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title></head><body><main>{{{page.html}}}</main>{{#if assets.components}}<script type=\"module\" src=\"{{assets.components}}\"></script>{{/if}}</body></html>".into())]);
+    let mut templates = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title><link rel=\"stylesheet\" href=\"{{assets.highlight}}\"></head><body><main>{{{page.html}}}</main>{{#if assets.components}}<script type=\"module\" src=\"{{assets.components}}\"></script>{{/if}}</body></html>".into())]);
     let mut directories = vec![];
     if let Some(theme) = &config.theme {
         let theme = resources.resolve(theme);

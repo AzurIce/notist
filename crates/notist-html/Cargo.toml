@@ -3,6 +3,12 @@ name = "notist-html"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+highlight = ["dep:notist-syntax", "dep:syntect", "dep:two-face"]
+
 [dependencies]
 notist-core = { path = "../notist-core" }
 serde_json = "1"
+notist-syntax = { path = "../notist-syntax", optional = true }
+syntect = { version = "5", default-features = false, features = ["html", "regex-fancy"], optional = true }
+two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"], optional = true }

@@ -6,7 +6,6 @@ pub mod command;
 mod config;
 mod document;
 pub mod extensions;
-mod highlight;
 mod routes;
 mod templates;
 

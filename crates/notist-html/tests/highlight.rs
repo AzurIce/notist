@@ -42,7 +42,15 @@ fn text(html: &str) -> String {
 fn common_languages_and_aliases_preserve_exact_code_text() {
     for (languages, source) in [
         (
-            &["rust", "rs", "Rust flags"][..],
+            &[
+                "rust",
+                "rs",
+                "Rust flags",
+                "rust,ignore",
+                "rust,no_run",
+                "rust,ignore,no_run",
+                " Rust, ignore",
+            ][..],
             "fn main() { let x = 1 < 2; }\n",
         ),
         (&["typescript", "ts"], "const name: string = \"你好\";\n"),
@@ -78,6 +86,7 @@ fn plain_and_unknown_languages_fall_back_without_affecting_inline_code() {
         "",
         " ",
         "text",
+        "text,ignore",
         "txt",
         "plaintext",
         "plain",

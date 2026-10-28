@@ -156,6 +156,30 @@ fn default_theme_escapes_titles_and_encodes_explicit_outline_ids() {
 }
 
 #[test]
+fn rust_fence_attributes_do_not_disable_highlighting_in_either_frontend() {
+    for source in ["README.not", "README.md"] {
+        for info in [
+            "rust,ignore",
+            "rust,no_run",
+            "rust,ignore,no_run",
+            "rust ignore",
+            "rust, ignore",
+        ] {
+            let site = render(&[(
+                source,
+                &format!("```{info}\nfn main() {{ let value = 1 < 2; }}\n```"),
+            )]);
+            let output = html(&site, "index.html");
+            assert!(
+                output.contains("<code class=\"language-rust\"><span class=\"z-source z-rust\">"),
+                "{source} / {info}: {output}"
+            );
+            assert!(!output.contains("language-rust,"));
+        }
+    }
+}
+
+#[test]
 fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
     for source in ["README.not", "README.md"] {
         let site = render(&[

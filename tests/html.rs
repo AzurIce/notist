@@ -24,6 +24,28 @@ fn code_renderer_preserves_the_shell_and_escapes_fallbacks() {
 }
 
 #[test]
+fn fence_attributes_do_not_become_part_of_the_html_language_class() {
+    for extension in ["not", "md"] {
+        for info in [
+            "rust,ignore",
+            "rust,no_run",
+            "rust,ignore,no_run",
+            "rust ignore",
+            "rust, ignore",
+        ] {
+            let root = analyze(extension, &format!("```{info}\nlet value = 1 < 2;\n```"));
+            let before = root.clone();
+            let html = render(&root);
+            assert!(
+                html.contains("<code class=\"language-rust\">let value = 1 &lt; 2;\n</code>"),
+                "{extension} / {info}: {html}"
+            );
+            assert_eq!(root, before);
+        }
+    }
+}
+
+#[test]
 fn publication_url_resolver_preserves_url_safety_and_source_tree() {
     let root = analyze("not", "[Guide](guide.not) ![Picture](picture.svg)");
     let before = root.clone();

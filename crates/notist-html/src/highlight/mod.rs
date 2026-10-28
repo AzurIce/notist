@@ -16,7 +16,8 @@ mod native;
 pub const CSS: &str = include_str!("highlight.css");
 
 /// Highlight a raw node's text without replacing its pre/code shell. Only the
-/// first whitespace-separated language tag is used; detection is never implicit.
+/// first comma- or whitespace-separated language tag is used; detection is
+/// never implicit.
 /// Missing, unknown and explicit plain-text languages select escaped fallback.
 pub fn code(item: &Item) -> Option<String> {
     let Value::Str(language) = item.fields.get("lang")? else {
@@ -25,7 +26,7 @@ pub fn code(item: &Item) -> Option<String> {
     let Value::Str(text) = item.fields.get("text")? else {
         return None;
     };
-    let language = language.split_whitespace().next()?.to_ascii_lowercase();
+    let language = crate::code_language(language)?.to_ascii_lowercase();
     match language.as_str() {
         "not" | "notist" => return Some(native::render(text, false)),
         "notc" => return Some(native::render(text, true)),

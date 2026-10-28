@@ -224,7 +224,7 @@ embed 的缺失目标及发布范围外目标仍报错；非法 URL、保留资�
 
 == 代码块高亮
 
-Book 在构建和 serve 时为显式标注语言的代码块生成高亮 HTML，.not 与 Markdown 共用实现，无需浏览器高亮脚本。常用语言由 syntect 与 two-face 语法集提供，包括 TypeScript / TSX、TOML、Dockerfile；not / notist 与 notc 使用 Notist 自己的语法树，高亮示例不会执行代码或读取导入。未知语言、无语言和 text / plaintext 等纯文本标记保持转义后的原文，不自动猜测语言。行内代码不高亮。
+Book 在构建和 serve 时为显式标注语言的代码块生成高亮 HTML，.not 与 Markdown 共用实现，无需浏览器高亮脚本。常用语言由 syntect 与 two-face 语法集提供，包括 TypeScript / TSX、TOML、Dockerfile；not / notist 与 notc 使用 Notist 自己的语法树，高亮示例不会执行代码或读取导入。未知语言、无语言和 text / plaintext 等纯文本标记保持转义后的原文，不自动猜测语言。行内代码不高亮。语言标签支持逗号或空白分隔的附加信息，例如 rust,ignore、rust,no_run 与 rust 使用相同高亮，ignore 不会关闭着色。
 
 默认的 _notist/theme/highlight.css 提供明暗配色，与页面主题同步；根元素未显式选择主题时跟随系统。可通过附加 CSS 覆盖 --notist-code-* 变量，或在 theme/assets/highlight.css 替换整个配色文件。高亮保留源码空白与末尾换行，语言标签和复制按钮继续显示、复制原始内容。
 

@@ -72,6 +72,15 @@ pub fn render(item: &Item) -> String {
     Renderer::default().render(item)
 }
 
+// Fence info strings can carry comma- or whitespace-separated attributes such
+// as `rust,ignore,no_run`. Only the leading language controls presentation.
+fn code_language(info: &str) -> Option<&str> {
+    info.trim_start()
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .next()
+        .filter(|language| !language.is_empty())
+}
+
 /// Configurable rendering of final IR. Hooks may borrow application state.
 #[derive(Default)]
 pub struct Renderer<'a> {
@@ -342,7 +351,7 @@ impl State<'_, '_> {
             Ctor::RawInline => {
                 let block = is_block(item);
                 let class = string_field(item, "lang")
-                    .and_then(|s| s.split_whitespace().next())
+                    .and_then(code_language)
                     .map(|lang| format!("language-{lang}"))
                     .unwrap_or_default();
                 if block {

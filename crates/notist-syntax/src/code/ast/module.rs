@@ -26,6 +26,7 @@ macro_rules! node {
 
 node!(Module);
 node!(ImportDecl);
+node!(ImportMember);
 node!(FunctionDecl);
 node!(ParameterList);
 node!(Parameter);
@@ -61,6 +62,32 @@ impl ImportDecl {
     }
     pub fn alias(&self) -> Option<SyntaxToken> {
         ident(&self.0)
+    }
+    pub fn has_members(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .any(|e| e.kind() == SyntaxKind::Colon)
+    }
+    pub fn is_wildcard(&self) -> bool {
+        self.0
+            .children_with_tokens()
+            .any(|e| e.kind() == SyntaxKind::Star)
+    }
+    pub fn members(&self) -> impl Iterator<Item = ImportMember> + '_ {
+        self.0.children().filter_map(ImportMember::cast)
+    }
+}
+
+impl ImportMember {
+    pub fn name(&self) -> Option<SyntaxToken> {
+        ident(&self.0)
+    }
+    pub fn alias(&self) -> Option<SyntaxToken> {
+        self.0
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .filter(|t| t.kind() == SyntaxKind::Ident)
+            .nth(1)
     }
 }
 

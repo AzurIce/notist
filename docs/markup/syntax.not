@@ -9,7 +9,7 @@
 
 == 文件级导入
 
-`#import "relative.notc" as name;` 独占一行，只允许文件顶层。as 可省略，默认名称为文件名去掉扩展名；绑定对整个文件有效。声明复用 Code 的 ImportDecl 语法，前端 lower 为并列的 Import 列表，不产生内容节点；字面量内部及嵌套内容不接受导入。模块加载与名称规则见 [本地模块](../modules.not)。
+`#import "relative.notc" as name;` 独占一行，只允许文件顶层。as 可省略，默认名称为文件名去掉扩展名；也可写 `#import "relative.notc": member as local, other;` 或 `#import "relative.notc": *;`。原生 Notist Markup 与 Markdown 扩展共用这些规则，绑定对整个文件有效。声明复用 Code 的 ImportDecl 语法，前端 lower 为并列的 Import 列表，不产生内容节点；字面量内部及嵌套内容不接受导入。模块加载与名称规则见 [本地模块](../modules.not)。
 
 == 原生词法
 

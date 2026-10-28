@@ -27,7 +27,10 @@ fn both_frontends_lower_imports_separately_and_load_the_same_module_graph() {
         assert_eq!(lowered.imports.len(), 1);
         let import = &lowered.imports[0];
         assert_eq!(import.path, "./views.notc");
-        assert_eq!(import.alias, "ui");
+        assert_eq!(
+            import.kind,
+            notist::ImportKind::Module { alias: "ui".into() }
+        );
         assert_eq!(
             &source[usize::from(import.span.start())..usize::from(import.span.end())],
             "#import \"./views.notc\" as ui;"
@@ -167,22 +170,27 @@ fn import_like_raw_text_comments_and_escaped_markers_do_not_load_modules() {
 
 #[test]
 fn import_parser_recovers_for_every_unicode_prefix() {
-    let source = "#import \"./视图.notc\" as 页面;";
-    for end in (0..=source.len()).filter(|&i| source.is_char_boundary(i)) {
-        let source = format!("{}\n\nFollowing content", &source[..end]);
-        for path in ["doc.not", "doc.md"] {
-            let output = Pipeline::default()
-                .lower(path, &source, FrontendOptions::default())
-                .unwrap();
-            assert!(
-                output
-                    .diagnostics
-                    .iter()
-                    .all(|d| usize::from(d.span.end()) <= source.len())
-            );
+    for source in [
+        "#import \"./视图.notc\" as 页面;",
+        "#import \"./视图.notc\": 组件 as 页面, other;",
+        "#import \"./视图.notc\": *;",
+    ] {
+        for end in (0..=source.len()).filter(|&i| source.is_char_boundary(i)) {
+            let source = format!("{}\n\nFollowing content", &source[..end]);
+            for path in ["doc.not", "doc.md"] {
+                let output = Pipeline::default()
+                    .lower(path, &source, FrontendOptions::default())
+                    .unwrap();
+                assert!(
+                    output
+                        .diagnostics
+                        .iter()
+                        .all(|d| usize::from(d.span.end()) <= source.len())
+                );
+            }
+            let parsed = notist::syntax::markup::parse_document(&source);
+            assert_eq!(parsed.syntax().text().to_string(), source);
         }
-        let parsed = notist::syntax::markup::parse_document(&source);
-        assert_eq!(parsed.syntax().text().to_string(), source);
     }
 }
 
@@ -228,8 +236,6 @@ fn import_comments_and_invalid_declarations_use_the_same_rules_in_both_frontends
         }
 
         let source = "#import \"views.notc\" as ui;\n#import \"missing.notc\" as ui;\n#ui.view()";
-        let output = vault.render_html(path, source, Default::default()).unwrap();
-        assert!(!output.analysis.diagnostics().is_empty());
-        assert!(output.rendered.html.contains("imported result"));
+        assert!(vault.render_html(path, source, Default::default()).is_err());
     }
 }

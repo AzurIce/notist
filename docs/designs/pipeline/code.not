@@ -29,7 +29,7 @@ flowchart TB
 
 == Parse：声明语法与字面量定界
 
-模块顶层只有两类声明：`import` 与 `fn`。CST 无损——空白与注释作为 trivia 保留，源码可完整恢复；语法错误就近诊断，恢复以声明为界：破损声明进入 Error 节点，下一个 `fn` / `import` 从不被吞掉。AST 视图（Module、FunctionDecl、ImportDecl 等）是 CST 上的薄访问器，值与类型在此仍是语法：默认值保存字面量 token，类型引用保存路径节点，转换与校验留给 Lower。
+模块顶层只有两类声明：`import` 与 `fn`。CST 无损——空白与注释作为 trivia 保留，源码可完整恢复；语法错误就近诊断，恢复以声明为界：破损声明进入 Error 节点，下一个 `fn` / `import` 从不被吞掉。AST 视图（Module、FunctionDecl、ImportDecl、ImportMember 等）是 CST 上的薄访问器，值与类型在此仍是语法：默认值保存字面量 token，类型引用保存路径节点，转换与校验留给 Lower。
 
 内容字面量外包给所选前端。遇到 `[` 时，`ContentParser.parse_content(source, open)` 用前端自己的 token 流做括号配平——raw 块、字符串等不透明区域整块跳过——决定字面量边界与 flavor，并就地解析出前端语法树。Code 词法器随后从字面量结束处继续，字面量在 CST 里只有 `[`、`ContentText`、`]` 三个 token；语法树与诊断按源码范围放进 side list，等 Lower 回查。
 
@@ -39,8 +39,8 @@ flowchart TB
 
 Lower 把一份模块拆成三个去向：
 
-- *imports*：别名默认为文件 stem；`notist`、`self`、`true`、`false` 不可作别名，别名与本模块函数名冲突报诊断。
-- *签名*：类型引用与默认值在此转换为 FunctionDef，汇入 DefinitionModule；签名与 imports 的错误使模块编译整体失败。
+- *imports*：保存模块别名、成员选择与重命名或通配选择，校验路径字面量与保留名称；模块别名默认取文件 stem。宿主加载目标后由 Context 展开公开绑定，统一诊断缺失成员、导入之间及与本模块函数的名称冲突。
+- *签名*：类型引用与默认值在此转换为 FunctionDef，汇入 DefinitionModule；签名与导入声明的错误使模块编译整体失败；依赖公开表相关错误使宿主环境装配失败。
 - *函数体*：机械映射为 Expr——成员访问、调用、If / Match、数据字面量与块；调用的 children 字面量整体作为一个 `Expr::Content` 进入 children，flavor 取自 Parse 结果，函数体内的错误收进 CodeBody 诊断。
 
 内容字面量在这一步才 Lower：按 span 回查内容语法树，经 ContentLowering 转成 Markup IR₁ 嵌入 `Expr::Content`。名称解析、类型检查与结构定稿都不在这里发生——函数体保留源码里的名字，直到实例检查。
@@ -49,7 +49,7 @@ Lower 把一份模块拆成三个去向：
 
 检查以 FunctionInstance（函数身份 + 编译期实参值）为单位、按需进行。Checker 会话持有只读 Context、当前模块、局部绑定与实例缓存 CheckedProgram，规则如下：
 
-- *名称解析*：局部绑定遮蔽优先，随后是当前模块作用域与 import 链，裸名回落内置 prelude；`notist` 与 `self` 是保留命名空间。非调用位置的模块成员访问报 `module members must be called`。
+- *名称解析*：局部绑定遮蔽优先，随后是当前文件的函数与静态绑定，未绑定的裸名回落内置 prelude；限定路径只遍历公开绑定；`notist` 与 `self` 是保留命名空间。非调用位置的模块成员访问报 `module members must be called`。
 - *常量折叠与折枝*：沿途记录编译期已知值；编译期已知的 If / Match 直接折枝，未选中分支不做名称与类型检查。
 - *实例建立*：先占座再检查函数体，递归引用直接返回已有记录；换入定义处的模块与作用域，普通参数与 children 作为输入绑定；嵌套深度上限 32，实例总数上限 4096。
 - *内容穿越*：`Expr::Content` 的 IR₁ 连同当前词法绑定进入共享后端的 prepare → shape → materialize，收回的 Item 森林嵌入 `ExprKind::Content`。
@@ -62,6 +62,7 @@ Lower 把一份模块拆成三个去向：
 | --- | --- |
 | Parse | 语法错误就近诊断并继续；恢复以声明为界；类型嵌套超过 128 层报错 |
 | Lower | 数据字面量、默认值与 imports 的语义错误；函数体错误收进 CodeBody，签名与 imports 错误使模块编译失败 |
+| 模块加载 | 展开显式 / 通配成员选择，检查缺失成员、保留名称、统一名称冲突与循环依赖；加载失败不返回正式环境 |
 | 实例检查 | 名称、实参、类型与内容契约错误；诊断随 InstanceRecord 保存，单个实例失败不影响其他实例与独立内容 |
 | 求值 | 步数与内容节点数各 100k（步数预算在每个内容边界重置）、调用深度 32；失败在内容边界恢复 |
 

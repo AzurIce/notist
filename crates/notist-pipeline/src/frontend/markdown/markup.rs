@@ -363,6 +363,11 @@ impl Markup {
             };
             for import in &mut imports {
                 import.span = source.range(import.span);
+                if let notist_core::definitions::ImportKind::Members(members) = &mut import.kind {
+                    for member in members {
+                        member.span = source.range(member.span);
+                    }
+                }
             }
             diagnostics.extend(errors.into_iter().map(|mut d| {
                 d.span = source.range(d.span);

@@ -110,7 +110,15 @@ fn module_ast(module: &code_ast::Module) -> serde_json::Value {
         .collect();
     let mut children: Vec<_> = module
         .imports()
-        .map(|i| ast_node("ImportDecl", i.syntax(), Vec::new()))
+        .map(|i| {
+            ast_node(
+                "ImportDecl",
+                i.syntax(),
+                i.members()
+                    .map(|m| ast_node("ImportMember", m.syntax(), Vec::new()))
+                    .collect(),
+            )
+        })
         .collect();
     children.extend(functions);
     children.sort_by_key(|node| node["start"].as_u64());

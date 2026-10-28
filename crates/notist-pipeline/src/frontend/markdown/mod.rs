@@ -167,24 +167,7 @@ fn lower_parsed(src: &str, arena: &Arena, root: NodeRef, allow_module: bool) -> 
         imports: RefCell::new(Vec::new()),
     };
     let forest = lowerer.children(root);
-    let mut aliases = std::collections::BTreeSet::new();
-    let imports = lowerer
-        .imports
-        .into_inner()
-        .into_iter()
-        .filter(|import| {
-            if aliases.insert(import.alias.clone()) {
-                true
-            } else {
-                lowerer.diagnostics.borrow_mut().push(Diagnostic::new(
-                    Phase::Type,
-                    import.span,
-                    "duplicate import alias",
-                ));
-                false
-            }
-        })
-        .collect();
+    let imports = lowerer.imports.into_inner();
     FrontendOutput {
         imports,
         forest,

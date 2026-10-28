@@ -21,7 +21,8 @@ pub use rowan::{TextRange, TextSize};
 pub use notist_core::annotation::{Annotation, AnnotationKind};
 pub use notist_core::definitions::{
     ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionInstance,
-    Import, ParameterDef, ParameterMode, Type, ValueConstraint,
+    Import, ImportBinding, ImportKind, ImportMember, ParameterDef, ParameterMode, Type,
+    ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
 pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};

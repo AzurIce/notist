@@ -312,3 +312,81 @@ fn truncated_imports_and_functions_recover_at_either_declaration_kind() {
         }
     }
 }
+
+#[test]
+fn member_import_ast_keeps_renames_wildcards_comments_and_ranges() {
+    let source =
+        "import \"视图.notc\": 组件 /* original */ as 页面, other,; import \"empty.notc\": *;";
+    let module = module(source);
+    let imports: Vec<_> = module.imports().collect();
+    assert!(imports[0].alias().is_none());
+    assert!(imports[0].has_members());
+    assert!(!imports[0].is_wildcard());
+    let members: Vec<_> = imports[0].members().collect();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].name().unwrap().text(), "组件");
+    assert_eq!(members[0].alias().unwrap().text(), "页面");
+    assert_eq!(
+        &source[usize::from(members[0].range().start())..usize::from(members[0].range().end())],
+        "组件 /* original */ as 页面"
+    );
+    assert_eq!(members[1].name().unwrap().text(), "other");
+    assert!(members[1].alias().is_none());
+    assert!(imports[1].has_members() && imports[1].is_wildcard());
+    assert_eq!(imports[1].members().count(), 0);
+}
+
+#[test]
+fn malformed_member_imports_are_lossless_and_recover_at_next_declaration() {
+    for source in [
+        "import \"x.notc\":;",
+        "import \"x.notc\": ,;",
+        "import \"x.notc\": a as;",
+        "import \"x.notc\": a b;",
+        "import \"x.notc\": *, a;",
+        "import \"x.notc\": a, *;",
+        "import \"x.notc\": * as all;",
+        "import \"x.notc\" as x: a;",
+        "import \"x.notc\": a.b;",
+        "import \"x.notc\": as x;",
+    ] {
+        let source = format!("{source}\nfn good() -> Int {{ 1 }}");
+        let parsed = parse_module(&source, &notist_syntax::markup::MarkupContentParser);
+        assert_eq!(parsed.syntax().text().to_string(), source);
+        assert!(!parsed.diagnostics.is_empty(), "{source}");
+        assert_eq!(
+            function_names(&ast::Module::cast(parsed.syntax()).unwrap()),
+            ["good"]
+        );
+    }
+    for source in [
+        "import \"视图.notc\": 组件 as 页面, other;",
+        "import \"视图.notc\": *;",
+    ] {
+        for end in (0..=source.len()).filter(|&i| source.is_char_boundary(i)) {
+            let input = format!(
+                "{}\nimport \"good.notc\" as good; fn last() -> Int {{ 1 }}",
+                &source[..end]
+            );
+            let parsed = parse_module(&input, &notist_syntax::markup::MarkupContentParser);
+            assert_eq!(parsed.syntax().text().to_string(), input);
+            assert!(
+                parsed
+                    .diagnostics
+                    .iter()
+                    .all(|d| usize::from(d.span.end()) <= input.len())
+            );
+            let module = ast::Module::cast(parsed.syntax()).unwrap();
+            assert!(
+                module
+                    .imports()
+                    .any(|i| i.alias().is_some_and(|a| a.text() == "good")),
+                "{input}"
+            );
+            assert_eq!(
+                function_names(&module).last().map(String::as_str),
+                Some("last")
+            );
+        }
+    }
+}

@@ -112,7 +112,7 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
                                 return None;
                             }
                             Some(Import {
-                                alias,
+                                kind: crate::ImportKind::Module { alias },
                                 path: path.into_inner(),
                                 span,
                             })

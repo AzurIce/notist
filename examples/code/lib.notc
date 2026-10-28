@@ -1,4 +1,7 @@
 import "./labels.notc" as labels;
+import "./labels.notc": label as format_label;
+
+fn tag(text: String) -> InlineContent { format_label(text) }
 
 fn decorate<C: Type>[children: C] -> C {
     match C {

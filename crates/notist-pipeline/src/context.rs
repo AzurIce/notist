@@ -1,7 +1,12 @@
 //! Definitions, lexical module scopes and explicitly selected output mappings.
 use crate::extensions::ExtensionPlan;
 use notist_core::extensions::DocumentExtension;
-use notist_core::{builtins, definitions::FunctionDef, diag::Diagnostic, registry::Registry};
+use notist_core::{
+    builtins,
+    definitions::{DefinitionModule, FunctionDef, Import, ImportBinding, ImportKind},
+    diag::{Diagnostic, Phase},
+    registry::Registry,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone)]
@@ -43,7 +48,7 @@ impl Context {
     pub fn with_scope(
         mut self,
         module: impl Into<String>,
-        imports: impl IntoIterator<Item = (String, String)>,
+        imports: impl IntoIterator<Item = (String, ImportBinding)>,
     ) -> Self {
         let module = module.into();
         self.program
@@ -64,7 +69,7 @@ impl Context {
     /// Module definitions and member traversal use the same resolver as Code.
     pub fn resolve_imports(
         &self,
-        imports: &BTreeMap<String, String>,
+        imports: &BTreeMap<String, ImportBinding>,
         path: &str,
     ) -> Option<&FunctionDef> {
         self.resolve_from(None, Some(imports), path)
@@ -72,34 +77,153 @@ impl Context {
     fn resolve_from(
         &self,
         scope: Option<&str>,
-        imports: Option<&BTreeMap<String, String>>,
+        imports: Option<&BTreeMap<String, ImportBinding>>,
         path: &str,
     ) -> Option<&FunctionDef> {
-        let mut parts: Vec<_> = path.split('.').collect();
-        let name = parts.pop()?;
-        let mut module = scope;
-        for (i, part) in parts.iter().enumerate() {
-            if i == 0 && *part == "notist" {
-                module = Some("notist");
+        let mut parts = path.split('.').peekable();
+        let mut module = scope.map(str::to_owned);
+        let mut temporary = imports;
+        let mut first = true;
+        while let Some(part) = parts.next() {
+            if first && matches!(part, "notist" | "self") && parts.peek().is_some() {
+                if part == "notist" {
+                    module = Some("notist".into());
+                }
+                temporary = None;
+                first = false;
                 continue;
             }
-            if i == 0 && *part == "self" {
-                continue;
-            }
-            let bindings = if i == 0 && imports.is_some() {
-                imports?
+            let binding = if let Some(table) = temporary {
+                table.get(part).cloned()
             } else {
-                self.program.imports.get(module?)?
+                module
+                    .as_deref()
+                    .and_then(|module| self.public_binding(module, part))
             };
-            module = Some(bindings.get(*part)?);
+            match binding {
+                Some(ImportBinding::Function(id)) if parts.peek().is_none() => {
+                    return self.registry.get(&id);
+                }
+                Some(ImportBinding::Module(id)) if parts.peek().is_some() => {
+                    module = Some(id);
+                    temporary = None;
+                }
+                None if first && parts.peek().is_none() => {
+                    return self.registry.function("notist", part);
+                }
+                _ => return None,
+            }
+            first = false;
         }
-        if let Some(def) = module.and_then(|id| self.registry.function(id, name)) {
-            return Some(def);
+        None
+    }
+
+    fn public_binding(&self, module: &str, name: &str) -> Option<ImportBinding> {
+        self.registry
+            .function(module, name)
+            .map(|f| ImportBinding::Function(f.id.clone()))
+            .or_else(|| self.program.imports.get(module)?.get(name).cloned())
+    }
+
+    /// Own definitions and static imports are public; the implicit prelude is not.
+    pub fn public_bindings(&self, module: &str) -> BTreeMap<String, ImportBinding> {
+        let mut bindings = self
+            .program
+            .imports
+            .get(module)
+            .cloned()
+            .unwrap_or_default();
+        bindings.extend(
+            self.registry
+                .functions()
+                .filter(|f| f.id.module == module)
+                .map(|f| (f.id.name.clone(), ImportBinding::Function(f.id.clone()))),
+        );
+        bindings
+    }
+
+    /// Expand imports after their targets have loaded, checking one shared name
+    /// table for namespaces, explicit members and wildcard members alike.
+    pub fn import_bindings<'a>(
+        &self,
+        imports: impl IntoIterator<Item = (&'a Import, String)>,
+        local: Option<&DefinitionModule>,
+    ) -> Result<BTreeMap<String, ImportBinding>, Vec<Diagnostic>> {
+        let mut bindings = BTreeMap::new();
+        let mut origins = BTreeMap::new();
+        let mut diagnostics = Vec::new();
+        if let Some(local) = local {
+            for f in &local.functions {
+                origins.insert(
+                    f.id.name.clone(),
+                    format!("local function `{}` at {:?}", f.id, f.span),
+                );
+            }
         }
-        if path == name {
-            self.registry.function("notist", name)
+        for (import, module) in imports {
+            let public = self.public_bindings(&module);
+            let selected = match &import.kind {
+                ImportKind::Module { alias } => vec![(
+                    alias.clone(),
+                    ImportBinding::Module(module.clone()),
+                    import.span,
+                    "module".to_owned(),
+                )],
+                ImportKind::Wildcard => public
+                    .into_iter()
+                    .map(|(name, binding)| {
+                        (
+                            name.clone(),
+                            binding,
+                            import.span,
+                            format!("member `{name}`"),
+                        )
+                    })
+                    .collect(),
+                ImportKind::Members(members) => members
+                    .iter()
+                    .filter_map(|member| match public.get(&member.name) {
+                        Some(binding) => Some((
+                            member.alias.clone(),
+                            binding.clone(),
+                            member.span,
+                            format!("member `{}`", member.name),
+                        )),
+                        None => {
+                            diagnostics.push(Diagnostic::new(
+                                Phase::Type,
+                                member.span,
+                                format!(
+                                    "module `{}` ({module}) has no public member `{}`",
+                                    import.path, member.name
+                                ),
+                            ));
+                            None
+                        }
+                    })
+                    .collect(),
+            };
+            for (name, binding, span, selected) in selected {
+                let origin = format!("{selected} from `{}` ({module}) at {span:?}", import.path);
+                if !crate::lowering::imports::valid_import_alias(&name) {
+                    diagnostics.push(Diagnostic::new(
+                        Phase::Type,
+                        span,
+                        format!("invalid or reserved import name `{name}`: {origin}"),
+                    ));
+                } else if let Some(previous) = origins.get(&name) {
+                    diagnostics.push(Diagnostic::new(Phase::Type, span,
+                        format!("import name conflict for `{name}`: {origin}; already bound by {previous}")));
+                } else {
+                    origins.insert(name.clone(), origin);
+                    bindings.insert(name, binding);
+                }
+            }
+        }
+        if diagnostics.is_empty() {
+            Ok(bindings)
         } else {
-            None
+            Err(diagnostics)
         }
     }
     pub fn resolve(&self, path: &str) -> Option<&FunctionDef> {

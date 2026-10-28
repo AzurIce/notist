@@ -7,7 +7,8 @@ Code 是固定的纯函数语言；内容字面量的语法由注入的 Markup �
 
 ```notation
 Module       = (ImportDecl | FunctionDecl)*
-ImportDecl   = "import" String ("as" name)? ";"
+ImportDecl   = "import" String (("as" name) | (":" ("*" | ImportMember ("," ImportMember)* ","?)))? ";"
+ImportMember = name ("as" name)?
 FunctionDecl = "fn" name ComptimeParams? Params? Children? "->" TypeRef (Block | ";")
 ComptimeParams = "<" (name ":" TypeRef ("=" Literal)? ",")* ">"
 Params       = "(" (name "?"? ":" TypeRef ("=" Literal)? ",")* ")"
@@ -31,7 +32,8 @@ import syntax Trivia from `../markup/syntax.not`;
 import syntax Path from `../markup/syntax.not`;
 import syntax Value from `types.not`;
 syntax Module -> Trivia* ((ImportDecl | FunctionDecl) Trivia*)* !ANY;
-syntax ImportDecl -> `import` STR (`as` IDENT)? `;`;
+syntax ImportDecl -> `import` STR ((`as` IDENT) | (`:` (`*` | ImportMember (`,` ImportMember)* `,`?)))? `;`;
+syntax ImportMember -> IDENT (`as` IDENT)?;
 syntax FunctionDecl -> `fn` IDENT ComptimeParams? Params? Children? `->` TypeRef (Block | `;`);
 syntax ComptimeParams -> `<` ComptimeParam (`,` ComptimeParam)* `,`? `>`;
 syntax ComptimeParam -> IDENT `:` TypeRef (`=` Value)?;
@@ -64,7 +66,7 @@ syntax ContentLiteral -> `[` body:scan FrontendContent `]`?;
 
 上述产生式省略词法项间的 Trivia；表达式中 ComptimeArgs 的开括号必须紧贴调用目标。FrontendContent 委托当前前端识别结束范围，不能由 Code 规则递归扫描正文。
 
-import 只在模块顶层出现，路径为相对字符串字面量，as 省略时绑定文件名去掉扩展名。导出、模块身份与宿主装配见 [本地模块](../modules.not)。
+import 只在模块顶层出现，路径为相对字符串字面量。省略选择部分时绑定文件名去掉扩展名，as 指定命名空间别名；`: name as local, other` 直接导入公开成员，`: *` 导入所有公开绑定。导出、模块身份与宿主装配见 [本地模块](../modules.not)。
 
 == 表达式
 
@@ -87,7 +89,7 @@ if 写作 `if condition { yes } else { no }`；match 写作 `match subject { pat
 
 关键字为 fn、import、as、let、if、else、match、comptime。标识符支持 Unicode 字母、数字、下划线及连字符；减法与名称以空白区分，箭头 `->` 总是结束标识符。字符串、注释对括号平衡不透明。
 
-notist-syntax 共用一套 Rowan 类型与 SyntaxKind，Document 与 Module 是独立根。Module 包含 ImportDecl、FunctionDecl、编译期与普通 Parameter、ChildrenDecl、TypeRef、BlockExpr 及表达式节点。AST 访问器只返回语法与范围，语义检查属于 pipeline。
+notist-syntax 共用一套 Rowan 类型与 SyntaxKind，Document 与 Module 是独立根。Module 包含 ImportDecl、ImportMember、FunctionDecl、编译期与普通 Parameter、ChildrenDecl、TypeRef、BlockExpr 及表达式节点。AST 访问器只返回语法与范围，语义检查属于 pipeline。
 
 ```rust
 let parsed = notist_syntax::code::parse_module(

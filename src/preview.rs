@@ -33,7 +33,23 @@ pub fn source_imports(path: &str, source: &str) -> String {
             Err(error) => return json!({"error":error.to_string()}).to_string(),
         }
     };
-    json!({"imports":imports.iter().map(|i|json!({"path":i.path,"alias":i.alias})).collect::<Vec<_>>(),"diagnostics":diagnostics.iter().map(|d|diagnostic_json(path,"analysis",d)).collect::<Vec<_>>()}).to_string()
+    json!({"imports":imports.iter().map(import_json).collect::<Vec<_>>(),"diagnostics":diagnostics.iter().map(|d|diagnostic_json(path,"analysis",d)).collect::<Vec<_>>()}).to_string()
+}
+
+pub(crate) fn import_json(import: &crate::Import) -> Value {
+    let mut data = json!({"path": import.path, "start": u32::from(import.span.start()), "end": u32::from(import.span.end())});
+    match &import.kind {
+        crate::ImportKind::Module { alias } => {
+            data["kind"] = json!("module");
+            data["alias"] = json!(alias);
+        }
+        crate::ImportKind::Members(members) => {
+            data["kind"] = json!("members");
+            data["members"] = json!(members.iter().map(|m| json!({"name": m.name, "alias": m.alias, "start": u32::from(m.span.start()), "end": u32::from(m.span.end())})).collect::<Vec<_>>());
+        }
+        crate::ImportKind::Wildcard => data["kind"] = json!("wildcard"),
+    }
+    data
 }
 fn prepare(inputs: &str) -> Result<Vault<MemoryResources>, Value> {
     serde_json::from_str::<PreparedInputs>(inputs)

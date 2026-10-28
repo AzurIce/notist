@@ -132,37 +132,18 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        if uri.path().ends_with(".notc") {
-            let documents = self.documents.lock().await;
-            let Some(src) = documents.get(uri) else {
-                return Ok(None);
-            };
-            let lines = LineIndex::new(src);
-            let offset = lines.offset(src, position);
-            let parse = notist::syntax::code::parse_module(
-                src,
-                &notist::syntax::markup::MarkupContentParser,
-            );
-            let module = notist::syntax::code::ast::Module::cast(parse.syntax()).unwrap();
-            let target = module
-                .functions()
-                .find(|function| function.range().contains((offset as u32).into()));
-            return Ok(target.map(|function| Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::PlainText,
-                    value: function.syntax().text().to_string(),
-                }),
-                range: Some(lines.range(src, function.range())),
-            }));
-        }
-        let Some((src, item)) = self.analyzed(uri).await else {
+        let Some(src) = self.documents.lock().await.get(uri).cloned() else {
             return Ok(None);
         };
         let lines = LineIndex::new(&src);
         let offset = lines.offset(&src, position);
-        if let Some(name) = call_path_at(uri, &src, offset)
-            && let Ok(project) = self.project(uri).await
-            && let Ok(definition) = project.context().resolve(&name).ok_or(())
+        if let Ok(project) = self.project(uri).await
+            && let Some(definition) = notist::Pipeline::default().definition_at(
+                uri.path(),
+                &src,
+                project.context(),
+                offset,
+            )
         {
             return Ok(Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -200,6 +181,26 @@ impl LanguageServer for Backend {
                 range: None,
             }));
         }
+        if uri.path().ends_with(".notc") {
+            let parse = notist::syntax::code::parse_module(
+                &src,
+                &notist::syntax::markup::MarkupContentParser,
+            );
+            let module = notist::syntax::code::ast::Module::cast(parse.syntax()).unwrap();
+            return Ok(module
+                .functions()
+                .find(|f| f.range().contains((offset as u32).into()))
+                .map(|f| Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::PlainText,
+                        value: f.syntax().text().to_string(),
+                    }),
+                    range: Some(lines.range(&src, f.range())),
+                }));
+        }
+        let Some((_, item)) = self.analyzed(uri).await else {
+            return Ok(None);
+        };
         let Some(target) = smallest_at(&item, offset) else {
             return Ok(None);
         };
@@ -218,18 +219,19 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some((src, item)) = self.analyzed(&uri).await else {
+        let Some(src) = self.documents.lock().await.get(&uri).cloned() else {
             return Ok(None);
         };
         let lines = LineIndex::new(&src);
         let offset = lines.offset(&src, position);
-        if let Some(name) = call_path_at(&uri, &src, offset) {
-            let Some(project) = self.project(&uri).await.ok() else {
-                return Ok(None);
-            };
-            let Ok(definition) = project.context().resolve(&name).ok_or(()) else {
-                return Ok(None);
-            };
+        if let Ok(project) = self.project(&uri).await
+            && let Some(definition) = notist::Pipeline::default().definition_at(
+                uri.path(),
+                &src,
+                project.context(),
+                offset,
+            )
+        {
             let Some(module) = project.modules().get(&definition.id.module) else {
                 return Ok(None);
             };
@@ -248,6 +250,12 @@ impl LanguageServer for Backend {
                 range: LineIndex::new(&module.source).range(&module.source, definition.span),
             })));
         }
+        if uri.path().ends_with(".notc") {
+            return Ok(None);
+        }
+        let Some((_, item)) = self.analyzed(&uri).await else {
+            return Ok(None);
+        };
         let Some(target) = smallest_at(&item, offset) else {
             return Ok(None);
         };
@@ -614,22 +622,6 @@ impl LineIndex {
             self.position(src, usize::from(span.end())),
         )
     }
-}
-
-fn call_path_at(uri: &Url, source: &str, offset: usize) -> Option<String> {
-    if !uri.path().ends_with(".not") {
-        return None;
-    }
-    notist::syntax::markup::parse_document(source)
-        .syntax()
-        .descendants()
-        .filter_map(notist::syntax::code::ast::CodeCall::cast)
-        .find_map(|call| {
-            let path = call.callee()?;
-            path.text_range()
-                .contains((offset as u32).into())
-                .then(|| path.text().to_string())
-        })
 }
 
 fn lsp_diagnostic(source: &str, diagnostic: &notist::Diagnostic) -> Diagnostic {

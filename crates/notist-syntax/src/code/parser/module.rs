@@ -37,6 +37,39 @@ impl Parser<'_, '_> {
             self.eat_trivia();
             self.module_expect(SyntaxKind::Ident, "expected a module alias after `as`");
             self.eat_trivia();
+        } else if self.cur() == Some(SyntaxKind::Colon) {
+            self.eat();
+            self.eat_trivia();
+            if self.cur() == Some(SyntaxKind::Star) {
+                self.eat();
+                self.eat_trivia();
+            } else {
+                loop {
+                    self.state
+                        .builder
+                        .start_node(SyntaxKind::ImportMember.into());
+                    let named = self.module_expect(
+                        SyntaxKind::Ident,
+                        "expected an imported member name or `*`",
+                    );
+                    self.eat_trivia();
+                    if named && self.cur() == Some(SyntaxKind::AsKeyword) {
+                        self.eat();
+                        self.eat_trivia();
+                        self.module_expect(SyntaxKind::Ident, "expected a member alias after `as`");
+                        self.eat_trivia();
+                    }
+                    self.state.builder.finish_node();
+                    if !named || self.cur() != Some(SyntaxKind::Comma) {
+                        break;
+                    }
+                    self.eat();
+                    self.eat_trivia();
+                    if self.cur() == Some(SyntaxKind::Semicolon) {
+                        break;
+                    }
+                }
+            }
         }
         if !self.module_expect(SyntaxKind::Semicolon, "expected `;` after import") {
             self.recover_declaration();

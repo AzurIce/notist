@@ -33,8 +33,29 @@ impl std::fmt::Display for FunctionId {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Import {
     pub path: String,
+    pub kind: ImportKind,
+    pub span: TextRange,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportKind {
+    Module { alias: String },
+    Members(Vec<ImportMember>),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportMember {
+    pub name: String,
     pub alias: String,
     pub span: TextRange,
+}
+
+/// Static name binding. Functions always retain their defining identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportBinding {
+    Module(String),
+    Function(FunctionId),
 }
 
 /// Type descriptions. `Parameter` occurs only in signature templates.

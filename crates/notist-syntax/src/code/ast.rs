@@ -4,7 +4,8 @@ use rowan::{NodeOrToken, TextRange};
 
 mod module;
 pub use module::{
-    ChildrenDecl, DefaultValue, FunctionDecl, ImportDecl, Module, Parameter, ParameterList, TypeRef,
+    ChildrenDecl, DefaultValue, FunctionDecl, ImportDecl, ImportMember, Module, Parameter,
+    ParameterList, TypeRef,
 };
 
 /// The text between the first balanced `()` pair of a node (depth-aware),

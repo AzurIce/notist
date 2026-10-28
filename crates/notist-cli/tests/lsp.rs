@@ -268,3 +268,72 @@ fn opening_code_alone_reports_and_clears_body_checking_and_parse_errors() {
                 .is_some_and(Vec::is_empty)
     });
 }
+
+#[test]
+fn member_imports_navigate_to_original_definitions_in_every_source_language() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(temp.path().join("parts")).unwrap();
+    let module = temp.path().join("parts/issue.notc");
+    let definition_source = "fn issue() -> InlineContent { [original definition] }";
+    std::fs::write(&module, definition_source).unwrap();
+    let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
+    let mut server = Lsp::new(temp.path());
+    server.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    server.until(|m| m["id"] == 1);
+    server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    let mut id = 2;
+    for extension in ["notc", "not", "md"] {
+        for (tail, name) in [(": issue as ticket", "ticket"), (": *", "issue")] {
+            let uri = url::Url::from_file_path(temp.path().join(format!("{name}.{extension}")))
+                .unwrap()
+                .to_string();
+            let prefix = if extension == "notc" { "" } else { "#" };
+            let call = if extension == "notc" {
+                format!("fn f() -> InlineContent {{ {name}() }}")
+            } else {
+                format!("#{name}()")
+            };
+            let source = format!("{prefix}import \"parts/issue.notc\"{tail};\n{call}");
+            server.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":extension,"version":1,"text":source}}}));
+            let diagnostics = server.until(|m| {
+                m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
+            });
+            assert!(
+                diagnostics["params"]["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{diagnostics}"
+            );
+            let character = call.find(name).unwrap();
+            for (method, line, character) in [
+                ("textDocument/definition", 1, character),
+                ("textDocument/hover", 1, character),
+                (
+                    "textDocument/definition",
+                    0,
+                    source.find("ticket;").unwrap_or(0),
+                ),
+            ] {
+                if line == 0 && name != "ticket" {
+                    continue;
+                }
+                server.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"textDocument":{"uri":uri},"position":{"line":line,"character":character}}}));
+                let response = server.until(|m| m["id"] == id);
+                if method.ends_with("definition") {
+                    assert_eq!(
+                        response["result"]["uri"], module_uri,
+                        "{extension} {tail}: {response}"
+                    );
+                    assert_eq!(response["result"]["range"]["start"]["character"], 0);
+                } else {
+                    assert_eq!(
+                        response["result"]["contents"]["value"], definition_source,
+                        "{extension} {tail}: {response}"
+                    );
+                }
+                id += 1;
+            }
+        }
+    }
+}

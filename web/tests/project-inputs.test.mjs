@@ -138,3 +138,29 @@ test('HTML discovery failures retain the edited source graph for recovery', asyn
     return true;
   });
 });
+
+test('member and wildcard selections discover the same canonical dependency graph', async () => {
+  const sources = {
+    '/root/doc.md': '#import "parts/issue.notc": issue as ticket;\n#import "parts/issue.notc": *;',
+    '/root/parts/issue.notc': 'import "helper.notc": message; fn issue() -> InlineContent { [#message()] }',
+    '/root/parts/helper.notc': 'fn message() -> InlineContent { [hello] }',
+  };
+  const requests = [];
+  const inputs = await loadInputs(new URL('https://host.test/root/doc.md'), {
+    // Selection and ranges are supplied by Rust. Discovery reads only paths.
+    source_imports: path => JSON.stringify({ imports: path.endsWith('doc.md') ? [
+      { path: 'parts/issue.notc', kind: 'members', members: [{ name: 'issue', alias: 'ticket', start: 33, end: 48 }] },
+      { path: 'parts/issue.notc', kind: 'wildcard' },
+    ] : path.endsWith('issue.notc') ? [
+      { path: 'helper.notc', kind: 'members', members: [{ name: 'message', alias: 'message' }] },
+    ] : [] }),
+    describe_prepared: () => JSON.stringify({ functions: [{ module: '/root/parts/issue.notc', root: '/root/parts', name: 'issue', entries: ['issue.js', 'issue/index.js'] }] }),
+  }, async (url, options) => {
+    requests.push([url.pathname, options?.method ?? 'GET']);
+    if (url.pathname in sources) return new Response(sources[url.pathname]);
+    return new Response(null, { status: url.pathname === '/root/parts/issue.js' ? 200 : 404 });
+  });
+  assert.equal(requests.filter(([path, method]) => path === '/root/parts/issue.notc' && method === 'GET').length, 1);
+  assert.equal(text(inputs.files['/root/parts/helper.notc']), sources['/root/parts/helper.notc']);
+  assert.equal(inputs.module_urls['/root/parts/issue.js'], 'https://host.test/root/parts/issue.js');
+});

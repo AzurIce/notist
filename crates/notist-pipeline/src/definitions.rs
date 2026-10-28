@@ -6,7 +6,7 @@ use notist_core::{
     builtins::Accepts,
     definitions::{
         ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, Import,
-        ParameterDef, ParameterMode, Type, validate_module,
+        ImportBinding, ParameterDef, ParameterMode, Type, validate_module,
     },
     diag::{Diagnostic, Phase, Sources},
     expr::Expr,
@@ -19,7 +19,7 @@ pub struct CodeProgram {
     pub(crate) bodies: BTreeMap<FunctionId, CodeBody>,
     pub(crate) sources: Sources,
     pub(crate) modules: BTreeMap<String, String>,
-    pub(crate) imports: BTreeMap<String, BTreeMap<String, String>>,
+    pub(crate) imports: BTreeMap<String, BTreeMap<String, ImportBinding>>,
 }
 impl CodeProgram {
     pub fn sources(&self) -> &Sources {
@@ -44,12 +44,12 @@ pub struct CodeModule {
 
 impl CodeModule {
     /// Hosts bind source imports to canonical resource identities after loading.
-    pub fn bind_import(&mut self, alias: &str, module: String) {
+    pub fn bind_import(&mut self, alias: &str, binding: ImportBinding) {
         self.program
             .imports
             .entry(self.definitions.module.clone())
             .or_default()
-            .insert(alias.into(), module);
+            .insert(alias.into(), binding);
     }
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
         self.program
@@ -74,7 +74,6 @@ pub(crate) fn compile_module(
     program.sources.insert(path.into(), source.into());
     program.modules.insert(module.into(), path.into());
     let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
-    let aliases: std::collections::BTreeSet<_> = imports.iter().map(|i| i.alias.clone()).collect();
     let mut assigned = vec![false; parsed.diagnostics.len()];
     for function in ast.functions() {
         let body = function.body();
@@ -125,15 +124,6 @@ pub(crate) fn compile_module(
         }
     }
     diagnostics.extend(validate_module(&definitions));
-    for function in &definitions.functions {
-        if aliases.contains(&function.id.name) {
-            diagnostics.push(Diagnostic::new(
-                Phase::Type,
-                function.span,
-                "function name conflicts with an import alias",
-            ));
-        }
-    }
     if diagnostics.is_empty() {
         Ok(CodeModule {
             definitions,

@@ -17,7 +17,7 @@ FrontendOutput 将模块声明与内容表达式分别输出。字段为：
 
 | 字段 | 含义 |
 | --- | --- |
-| imports | Vec<Import>；文件级静态依赖，保存相对路径、别名和源码范围 |
+| imports | Vec<Import>；文件级静态依赖，保存相对路径、ImportKind 与源码范围 |
 | forest | Vec<Expr>；名称尚未解析的表达式森林 IR₁ |
 | annotations | Vec<Annotation>；与 forest 并列的节点注解，保留到 Shape 之后挂载 |
 | module_attrs | Dict；由模块注解得到的文档根属性 |
@@ -37,6 +37,8 @@ Call.comptime 保存编译期实参；Call.args 按源码顺序保存 CallArg.Po
 注解不决定目标，也不写入内容节点：前端只记录 `Annotation { dict, span, kind }`，与 forest 一起交到共享后端。模块注解写入 FrontendOutput.module_attrs。Shape 完成后由 Materialize 按 span 挂载；Ref 没有自身节点，不能承载节点注解。
 
 RExpr 是独立的已解析内容节点结构，保存 ctor、已知 Value 字段、输入 children、body flavor、attrs 与源码范围；pending 保留已检查的调用、内容插值或失败信息。Shape 只使用公开内容契约，原样保留待求值表达式；Materialize 在 Shape 之后按源码位置挂载注解，将 attrs 与其他已解析信息写入 Item，并填充来源。
+
+ImportKind 区分 Module { alias }、Members(Vec<ImportMember>) 与 Wildcard；ImportMember 保存原成员名、本地名称和独立的原始源码范围。宿主加载依赖后，Context.import_bindings 按公开表展开选择并统一检查冲突；作用域中的 ImportBinding 只保存规范模块身份或 FunctionId。源码声明与已解析绑定分别保存。
 
 独立 Markup 支持文件级 `#import`；原生与 Markdown 前端都输出相同 Import 模型，声明不进入内容森林。Code 字面量禁止声明导入。宿主先读取声明并装配作用域，再调用共享后端。
 
@@ -182,3 +184,9 @@ pipeline 按接口传递解析产物，工具按具体类型消费。当前 cst_
 == 文档扩展
 
 FrontendOutput 的静态 imports 先由宿主加载，表达式森林、注解与根属性随后组成 LoweredDocument，交给 before_check。扩展在共享表示上工作，两种前端复用相同的阶段调度；前端自身不调用扩展。inspect 中的语法产物对应原源码，lowered 捕获扩展后的 IR₁，见 [文档扩展](extensions.not)。
+
+== 导入预览与编辑器导航
+
+preview.source_imports 与同名 WASM 接口返回 imports 和 diagnostics。每个导入包含 path、kind、start、end；kind 为 module 时另含 alias，为 members 时另含 members 数组（name、alias、start、end），为 wildcard 时由宿主加载模块后展开。范围均为原始源码的 UTF-8 字节范围。浏览器依赖发现仅使用 path，所有选择形式共用同一规范资源图。Code 的 CST / AST JSON 保留 ImportMember 子节点及其范围。
+
+Pipeline.definition_at(path, source, context, offset) 在已加载源码快照的 Context 中解析显式调用目标和成员导入位置。Code、原生 Markup 与 Markdown 均复用降低后的调用表达式；Code 中的参数、编译期参数、children 与 let 绑定参与词法遮蔽。LSP 用这一入口提供悬浮和定义跳转，目标为原定义文件与范围，成员重命名不改变目标。LSP 在未保存的资源覆盖视图中加载同一模块图，缺失成员与导入冲突诊断归属声明所在文件。

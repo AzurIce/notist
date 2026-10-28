@@ -3,6 +3,7 @@ mod code;
 mod context;
 pub use code::{Evaluation, Limits};
 mod definitions;
+mod navigation;
 
 pub mod extensions;
 pub mod frontend;

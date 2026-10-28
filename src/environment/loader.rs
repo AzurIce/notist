@@ -25,19 +25,15 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             errors: Vec::new(),
         }
     }
-    fn imports(&mut self, path: &Path, source: &str, imports: &[Import]) -> Vec<(String, String)> {
+    fn imports(
+        &mut self,
+        path: &Path,
+        source: &str,
+        imports: &[Import],
+        local: Option<&crate::DefinitionModule>,
+    ) -> BTreeMap<String, crate::ImportBinding> {
         let mut bindings = Vec::new();
-        let mut aliases = BTreeSet::new();
         for import in imports {
-            if !aliases.insert(&import.alias) {
-                self.errors.push(issue(
-                    path,
-                    source,
-                    import.span,
-                    "duplicate import alias".into(),
-                ));
-                continue;
-            }
             if Path::new(&import.path).is_absolute()
                 || import.path.starts_with('@')
                 || import
@@ -84,10 +80,22 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                     import.span,
                     format!("cannot import `{}`", import.path),
                 ));
+                continue;
             }
-            bindings.push((import.alias.clone(), target.to_string_lossy().into_owned()));
+            bindings.push((import, target.to_string_lossy().into_owned()));
         }
-        bindings
+        match self.context.import_bindings(bindings, local) {
+            Ok(bindings) => bindings,
+            Err(errors) => {
+                self.errors
+                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
+                        path: path.into(),
+                        source: source.into(),
+                        diagnostic,
+                    }));
+                BTreeMap::new()
+            }
+        }
     }
     fn visit(&mut self, path: &Path) {
         let id = path.to_string_lossy().into_owned();
@@ -139,7 +147,9 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             }
         };
         let text = module.program.sources()[&id].clone();
-        for (alias, target) in self.imports(path, &source, &module.imports) {
+        for (alias, target) in
+            self.imports(path, &source, &module.imports, Some(&module.definitions))
+        {
             module.bind_import(&alias, target);
         }
         match std::mem::take(&mut self.context).with_module(module) {
@@ -202,7 +212,7 @@ pub(super) fn document(
 ) -> Result<Environment, Vec<SourceDiagnostic>> {
     let path = resources.resolve(path);
     let mut graph = Graph::new(resources, pipeline);
-    let bindings = graph.imports(&path, source, imports);
+    let bindings = graph.imports(&path, source, imports, None);
     let mut configured: Vec<(Arc<dyn DocumentExtension>, TextRange)> = Vec::new();
     let mut config_source = None;
     if let Some(config) = config {
@@ -229,7 +239,7 @@ pub(super) fn document(
                 } => {
                     let before = graph.errors.len();
                     let imports = graph
-                        .imports(config, &source, &imports)
+                        .imports(config, &source, &imports, None)
                         .into_iter()
                         .collect();
                     if graph.errors.len() != before {

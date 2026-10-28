@@ -71,6 +71,7 @@ pub enum SyntaxKind {
     ImportKeyword,
     AsKeyword,
     ImportDecl,
+    ImportMember,
     MemberExpr,
     Question,
     Arrow,

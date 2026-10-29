@@ -80,7 +80,14 @@ pub fn report(error: Error) {
     }
 }
 pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
-    build_inner(root, config, output, None)
+    match crate::workspace::legacy_target(root, config, crate::serve::Kind::Book, output) {
+        Ok(Some(target)) => build_inner(&target.root, None, output, Some(&target)),
+        Ok(None) => build_inner(root, config, output, None),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 pub(crate) fn build_target(target: &crate::workspace::Target) -> std::process::ExitCode {
     build_inner(&target.root, None, None, Some(target))

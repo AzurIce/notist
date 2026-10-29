@@ -103,6 +103,49 @@ fn selects_projects_and_targets_and_rejects_ambiguous_preview() {
 }
 
 #[test]
+fn legacy_build_commands_select_new_targets_and_preserve_output_overrides() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    workspace(root);
+    success(run(root, &["book", "build", "book"]));
+    success(run(root, &["ssg", "build", "website"]));
+    assert!(root.join("dist/ranim-book/book/index.html").is_file());
+    assert!(root.join("dist/ranim-website/website/index.html").is_file());
+    success(run(
+        root,
+        &["book", "build", "book", "--out-dir", "published-book"],
+    ));
+    success(run(
+        root,
+        &["ssg", "build", "website", "--out-dir", "published-site"],
+    ));
+    assert!(root.join("published-book/index.html").is_file());
+    assert!(root.join("published-site/index.html").is_file());
+    failure(
+        run(
+            root,
+            &["book", "build", "book", "--out-dir", "dist/ranim-website"],
+        ),
+        "overlapping target outputs",
+    );
+    failure(
+        run(root, &["ssg", "build", "website", "--out-dir", "book"]),
+        "output would replace project inputs",
+    );
+    success(run(root, &["book", "build"]));
+    success(run(root, &["ssg", "build"]));
+    write(
+        root,
+        "book/Notist.toml",
+        "[project]\nname='ranim-book'\n[[book]]\nname='first'\n[[book]]\nname='second'",
+    );
+    failure(
+        run(root, &["book", "build", "book"]),
+        "expected exactly one",
+    );
+}
+
+#[test]
 fn standalone_project_defaults_names_and_resolves_root_and_output() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -347,17 +390,14 @@ impl Drop for Server {
 }
 impl Server {
     fn start(root: &Path, project: &str) -> Self {
+        Self::start_args(root, &["serve", "-p", project])
+    }
+    fn start_args(root: &Path, args: &[&str]) -> Self {
         use std::io::{BufRead, BufReader};
         let mut child = Command::new(env!("CARGO_BIN_EXE_notist"))
             .current_dir(root)
-            .args([
-                "serve",
-                "-p",
-                project,
-                "--address",
-                "127.0.0.1:0",
-                "--no-clear-screen",
-            ])
+            .args(args)
+            .args(["--address", "127.0.0.1:0", "--no-clear-screen"])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -493,5 +533,17 @@ fn preview_selects_site_and_uses_local_base_url() {
     let page = server.get("/");
     assert!(page.contains("Ranim Website"), "{page}");
     assert!(page.contains("href=\"/next.html\""), "{page}");
+    assert!(!root.join("dist").exists());
+}
+
+#[test]
+fn legacy_preview_commands_understand_new_project_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    workspace(root);
+    let book = Server::start_args(root, &["book", "serve", "book"]);
+    assert!(book.get("/").contains("Ranim Book"));
+    let site = Server::start_args(root, &["ssg", "serve", "website"]);
+    assert!(site.get("/").contains("Ranim Website"));
     assert!(!root.join("dist").exists());
 }

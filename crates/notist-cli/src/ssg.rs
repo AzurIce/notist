@@ -76,7 +76,14 @@ pub(crate) fn assemble(
     }
 }
 pub(crate) fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> ExitCode {
-    build_inner(root, config, output, None)
+    match crate::workspace::legacy_target(root, config, crate::serve::Kind::Site, output) {
+        Ok(Some(target)) => build_inner(&target.root, None, output, Some(&target)),
+        Ok(None) => build_inner(root, config, output, None),
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 pub(crate) fn build_target(target: &crate::workspace::Target) -> ExitCode {
     build_inner(&target.root, None, None, Some(target))

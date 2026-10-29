@@ -222,7 +222,14 @@ fn discover(config: Option<&Path>) -> Result<(Vec<Target>, Option<String>), Stri
         {
             return Err(format!("duplicate project name: {}", target.project));
         }
-        for other in &result {
+    }
+    validate_outputs(&result)?;
+    Ok((result, current_project))
+}
+
+fn validate_outputs(result: &[Target]) -> Result<(), String> {
+    for target in result {
+        for other in result {
             if other.root.starts_with(&target.output) || other.manifest.starts_with(&target.output)
             {
                 return Err(format!(
@@ -244,7 +251,58 @@ fn discover(config: Option<&Path>) -> Result<(Vec<Target>, Option<String>), Stri
             }
         }
     }
-    Ok((result, current_project))
+    Ok(())
+}
+
+/// Old command names understand both manifest generations. Only an explicitly
+/// declared project/workspace opts in; legacy configuration keeps its behavior.
+pub(crate) fn legacy_target(
+    root: &Path,
+    config: Option<&Path>,
+    kind: Kind,
+    output: Option<&Path>,
+) -> Result<Option<Target>, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let path = match config {
+        Some(path) => normalize(&cwd.join(path)),
+        None => match nearest(&root) {
+            Ok(path) => path,
+            Err(_) => return Ok(None),
+        },
+    };
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let Ok(value) = source.parse::<toml::Value>() else {
+        // Legacy serve must still start on malformed configuration and recover
+        // when the user fixes it, rather than failing in the compatibility shim.
+        return Ok(None);
+    };
+    if value.get("project").is_none() && value.get("workspace").is_none() {
+        return Ok(None);
+    }
+    let (mut all, current) = discover(Some(&path))?;
+    let candidates: Vec<_> = all
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind == kind && current.as_ref().is_none_or(|p| p == &t.project))
+        .map(|(index, _)| index)
+        .collect();
+    let [index] = candidates.as_slice() else {
+        return Err(format!(
+            "expected exactly one {kind:?} target; use notist build/serve -p <project> --target <name>"
+        ));
+    };
+    if let Some(output) = output {
+        if output.as_os_str().is_empty() {
+            return Err("output must not be empty".into());
+        }
+        all[*index].output = normalize(&cwd.join(output));
+        validate_outputs(&all)?;
+    }
+    Ok(Some(all.remove(*index)))
 }
 
 pub(crate) fn select(

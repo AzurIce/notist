@@ -127,6 +127,8 @@ dist 中的相邻目录不意味着部署后的 URL 相邻。Ranim 的 Book 与 
 
 == 旧配置兼容
 
-原有 `[book]` / `[ssg]` 单表配置和 notist book build / serve、notist ssg build / serve 继续可用。新统一命令使用 `[project]` 与 `[[book]]` / `[[site]]`，不会自动把旧配置视为 workspace 成员。
+原有 `[book]` / `[ssg]` 单表配置和 notist book build / serve、notist ssg build / serve 继续可用。旧命令遇到新的项目或 workspace 配置时，转为选择当前范围内唯一的 Book / Site target；存在多个候选或没有对应类型时报错，提示使用统一命令的 -p / --target 显式选择。build 的 --out-dir 仍相对于 CWD，并检查与其他 target 输出和项目输入的冲突。
+
+新统一命令使用 `[project]` 与 `[[book]]` / `[[site]]`，不会自动把旧配置视为 workspace 成员。新配置可以继续通过旧命令构建和预览，不要求一次性改完所有脚本。
 
 迁移时添加 `[project]`，将 `[book]` 改成 `[[book]]` 或 `[ssg]` 改成 `[[site]]`；原有 ssg.extensions 改成 site.extensions。保留顶层文档 extensions，或将 Book 专属规则移入 book.extensions。不指定 output 即采用新的共享输出路径；CI 上传目录和 .gitignore 也应同步调整。

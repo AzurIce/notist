@@ -125,7 +125,14 @@ pub fn serve(
     no_clear_screen: bool,
     kind: Kind,
 ) -> std::process::ExitCode {
-    serve_inner(root, config, address, no_clear_screen, kind, None)
+    match crate::workspace::legacy_target(root, config, kind, None) {
+        Ok(Some(target)) => serve_target(target, address, no_clear_screen),
+        Ok(None) => serve_inner(root, config, address, no_clear_screen, kind, None),
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 pub(crate) fn serve_target(
     target: crate::workspace::Target,

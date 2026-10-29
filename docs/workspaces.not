@@ -1,0 +1,132 @@
+= Workspace、项目与构建 Target
+
+Notist 可以用根目录的 Notist.toml 组织多个项目，每个成员目录保留自己的 Notist.toml。项目通过 `[[book]]` / `[[site]]` 声明任意命名的发布 target；workspace 只负责成员组织与统一构建，不合并配置，不自动建立页面或发布依赖。
+
+== 以 Ranim 为例
+
+```text
+ranim/
+├── Notist.toml
+├── Cargo.toml
+├── examples/
+├── book/
+│   ├── Notist.toml
+│   ├── SUMMARY.md
+│   ├── README.md
+│   └── _components/
+├── website/
+│   ├── Notist.toml
+│   ├── content/
+│   ├── templates/
+│   ├── sass/
+│   └── static/
+└── dist/
+```
+
+根配置：
+
+```toml
+[workspace]
+members = ["book", "website"]
+dist = "dist"
+```
+
+members 是显式目录列表，相对于根配置；不解释 glob。每个成员必须存在自己的 Notist.toml，并声明 [project]。项目名在 workspace 内唯一。根配置也可以声明 [project] 和 targets，该根项目自动成为成员；不支持嵌套 workspace。
+
+book/Notist.toml：
+
+#raw<BlockContent>(r#"""
+[project]
+name = "ranim-book"
+
+[[book]]
+name = "book"
+title = "Ranim Book"
+exclude = ["**/AGENTS.md", "_components/**"]
+additional-css = ["version-select.css"]
+additional-js = ["version-select.js"]
+
+[[book.extensions]]
+kind = "replace"
+imports = { typst = "_components/typst/lib.notc" }
+from = "notist.math"
+to = "typst.math"
+"""#, lang: "toml")
+
+website/Notist.toml：
+
+```toml
+[project]
+name = "ranim-website"
+
+[[site]]
+name = "website"
+title = "Ranim"
+base_url = "https://azurice.github.io/ranim/"
+content = "content"
+
+[[site.extensions]]
+kind = "command"
+command = ["cargo", "examples", "site"]
+watch = ["../Cargo.toml", "../examples", "../assets",
+         "../xtasks/xtask-examples", "../.shadow/refs",
+         "../shadow.toml", "render-state.json"]
+```
+
+站点扩展仍从 website/ 运行，可以读取 examples/ 等外部输入，在内存中生成页面，不要求把整个仓库作为正文目录。Notist 构建不会自动编译 Ranim WASM、渲染动画或上传媒体，这些步骤仍由 Ranim 自己的工具管理。
+
+== 选择与输出
+
+```sh
+# 在纯 workspace 根目录，默认构建全部成员
+notist build
+notist build --workspace
+
+# 构建指定项目；-p 可以重复
+notist build -p ranim-book
+notist build -p ranim-website --target website
+
+# 在成员内部，默认只构建当前项目
+cd book
+notist build
+notist build --workspace
+
+# 预览必须能唯一选出一个 target
+notist serve -p ranim-book
+```
+
+命令从当前目录向上寻找 Notist.toml；成员会进一步寻找所属 workspace。--config 可以显式指定项目或 workspace 配置。根配置同时声明 [project] 时，根目录默认只构建根项目，--workspace 构建所有成员。--workspace 与 -p 不能同时使用。
+
+项目与 target 名称只允许 ASCII 字母、数字、减号和下划线。target 名称在同一项目内唯一，不区分 Book / Site；不同项目可以使用相同 target 名称。name 默认为项目名，因此一个项目声明多个 target 时需要显式区分名称。
+
+默认输出为 workspace 根目录下的 dist/<project>/<target>/。上例生成 dist/ranim-book/book/ 和 dist/ranim-website/website/。独立项目不需要 workspace 配置，使用项目目录下的 dist/<project>/<target>/。可以用 [workspace].dist 修改共享输出根，或用 target 的 output 显式覆盖。
+
+构建前检查所有成员的项目名、target 名及输出目录：输出目录不能相同或互相包含，也不能替换任何成员的输入根或配置文件。配置校验后按 target 逐个构建；每个 target 独立暂存与发布，失败保留该 target 的旧产物并停止后续构建，已经成功发布的其他 target 不回滚。完整 workspace 构建不是跨 target 事务。
+
+== 路径与配置作用域
+
+- [workspace].members、dist 相对于 workspace 配置目录。
+- target 的 root 相对于所属项目配置目录，默认是该目录。
+- target 的主题、content、mounts、output、Site prepare 的 watch 等输入路径相对于 target root；Site prepare 进程 CWD 也为 target root。
+- 文档扩展的 imports 与命令 CWD 相对于声明它的项目配置目录；root 不改变文档扩展的路径基准，与单文件命令保持一致。
+- 源码 import、正文相对链接仍相对于其真实来源文件；不因为项目加入 workspace 而改变。
+
+顶层 `[[extensions]]` 是项目的公共文档扩展；`[[book.extensions]]` 追加当前 Book 的文档扩展。`[[site.extensions]]` 是 Site 的 prepare 扩展，与文档扩展是不同阶段。项目之间、workspace 与成员之间不隐式继承扩展或其他配置。
+
+统一 build / serve 显式使用选中 target 的文档输出配置，适用于该 target 的全部页面，不再按各页面位置切换输出配置。单文件 check / html 仍使用已有的最近配置机制，只读取顶层文档扩展；选择 target 才会启用 Book 专属扩展。
+
+选中的配置以项目配置目录下的 .notist-target-<name>.toml 虚拟身份提供给管线，只存在内存中。配置规则的诊断引用这份投影后的内容，不会把生成位置错误地标到原始 manifest 的行号上。
+
+serve 监听项目与 workspace 配置以及实际读取的外部依赖，重建时重新读取 target 配置。配置错误保留旧预览，修复后恢复；修改已选 target 的 root、类型或身份需要重启 serve。
+
+== 发布边界
+
+workspace 成员关系不扩大页面发现范围，也不允许普通链接自动带入其他项目的文档。Book 仍通过 SUMMARY、过滤和显式 mounts 选择发布内容；Site 仍通过 content 与 prepare 扩展准备页面。Code 模块和显式外部依赖可以位于 target root 外。
+
+dist 中的相邻目录不意味着部署后的 URL 相邻。Ranim 的 Book 与 Website 可以继续分别部署到各自地址；跨项目链接仍使用显式发布 URL。当前不提供自动跨 target 路由映射或组合部署。
+
+== 旧配置兼容
+
+原有 `[book]` / `[ssg]` 单表配置和 notist book build / serve、notist ssg build / serve 继续可用。新统一命令使用 `[project]` 与 `[[book]]` / `[[site]]`，不会自动把旧配置视为 workspace 成员。
+
+迁移时添加 `[project]`，将 `[book]` 改成 `[[book]]` 或 `[ssg]` 改成 `[[site]]`；原有 ssg.extensions 改成 site.extensions。保留顶层文档 extensions，或将 Book 专属规则移入 book.extensions。不指定 output 即采用新的共享输出路径；CI 上传目录和 .gitignore 也应同步调整。

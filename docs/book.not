@@ -6,6 +6,8 @@ SUMMARY（SUMMARY.not 或 SUMMARY.md）声明书籍发布的章节、阅读层�
 
 == 命令与配置
 
+多项目构建可使用 [Workspace 与构建 Target](workspaces.not) 的 `[project]` / `[[book]]` 配置与 notist build / serve；以下是继续兼容的独立 Book 命令与单表配置。
+
 ```sh
 notist book build path/to/vault
 notist book build path/to/vault --out-dir path/to/output

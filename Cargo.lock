@@ -992,6 +992,7 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
+ "toml",
  "tower-lsp",
  "url",
 ]

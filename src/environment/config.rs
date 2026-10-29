@@ -45,6 +45,12 @@ struct Config {
     book: Option<toml::Value>,
     #[serde(default)]
     ssg: Option<toml::Value>,
+    #[serde(default)]
+    site: Option<toml::Value>,
+    #[serde(default)]
+    project: Option<toml::Value>,
+    #[serde(default)]
+    workspace: Option<toml::Value>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,7 +77,13 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
             e.message(),
         )]
     })?;
-    let _ = (config.book, config.ssg);
+    let _ = (
+        config.book,
+        config.ssg,
+        config.site,
+        config.project,
+        config.workspace,
+    );
     let mut diagnostics = Vec::new();
     let extensions = config
         .extensions

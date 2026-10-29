@@ -11,6 +11,8 @@ mod query;
 mod serve;
 #[cfg(not(target_arch = "wasm32"))]
 mod ssg;
+#[cfg(not(target_arch = "wasm32"))]
+mod workspace;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -40,6 +42,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Build publication targets in the current project or workspace
+    Build {
+        #[arg(long, conflicts_with = "project")]
+        workspace: bool,
+        #[arg(short = 'p', long = "project")]
+        project: Vec<String>,
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Preview exactly one publication target
+    Serve {
+        #[arg(short = 'p', long = "project")]
+        project: Vec<String>,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "127.0.0.1:8000")]
+        address: String,
+        #[arg(long)]
+        no_clear_screen: bool,
+    },
     /// Parse and materialize a document, reporting every diagnostic
     Check { file: PathBuf },
     /// Print the lossless CST
@@ -119,6 +141,29 @@ fn main() -> ExitCode {
     let config = cli.config.as_deref();
     let evaluate = cli.eval;
     match cli.command {
+        Command::Build {
+            workspace: all,
+            project,
+            target,
+        } => workspace::build(config, all, &project, target.as_deref()),
+        Command::Serve {
+            project,
+            target,
+            address,
+            no_clear_screen,
+        } => match workspace::select(config, false, &project, target.as_deref()) {
+            Ok(mut targets) if targets.len() == 1 => {
+                serve::serve_target(targets.remove(0), &address, no_clear_screen)
+            }
+            Ok(_) => {
+                eprintln!("serve requires exactly one target; select with -p and/or --target");
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Book { command } => match command {
             BookCommand::Build { root, out_dir } => book::build(&root, config, out_dir.as_deref()),
             BookCommand::Serve {

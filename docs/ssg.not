@@ -4,6 +4,8 @@ Notist SSG 将内容目录中的文档直接发布为 HTML，站点模板决定�
 
 == 构建与预览
 
+多项目构建可使用 [Workspace 与构建 Target](workspaces.not) 的 `[project]` / `[[site]]` 配置与 notist build / serve；以下是继续兼容的独立 SSG 命令与单表配置。
+
 ```sh
 notist ssg build website
 notist ssg serve website --address 127.0.0.1:8000

@@ -16,7 +16,7 @@ mod terminal;
 use report::Report;
 use terminal::Terminal;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Book,
     Site,
@@ -51,14 +51,19 @@ struct Build {
     output: PathBuf,
     observed: BTreeSet<PathBuf>,
 }
+struct Assembly {
+    kind: Kind,
+    target: Option<crate::workspace::Target>,
+}
 impl Kind {
     fn assemble(
         self,
         root: &Path,
         config: Option<&Path>,
+        target: Option<&crate::workspace::Target>,
     ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
         match self {
-            Self::Book => book::assemble(root, config, None, true)
+            Self::Book => book::assemble(root, config, None, true, target)
                 .map(|b| Build {
                     artifact: BuildOutput {
                         pages: b.artifact.pages.len(),
@@ -79,7 +84,7 @@ impl Kind {
                         inputs,
                     )
                 }),
-            Self::Site => crate::ssg::assemble(root, config, None, true)
+            Self::Site => crate::ssg::assemble(root, config, None, true, target)
                 .map(|b| Build {
                     artifact: BuildOutput {
                         pages: b.artifact.pages.len(),
@@ -120,7 +125,32 @@ pub fn serve(
     no_clear_screen: bool,
     kind: Kind,
 ) -> std::process::ExitCode {
-    match run(root, config, address, no_clear_screen, kind) {
+    serve_inner(root, config, address, no_clear_screen, kind, None)
+}
+pub(crate) fn serve_target(
+    target: crate::workspace::Target,
+    address: &str,
+    no_clear_screen: bool,
+) -> std::process::ExitCode {
+    let root = target.root.clone();
+    serve_inner(
+        &root,
+        None,
+        address,
+        no_clear_screen,
+        target.kind,
+        Some(target),
+    )
+}
+fn serve_inner(
+    root: &Path,
+    config: Option<&Path>,
+    address: &str,
+    no_clear_screen: bool,
+    kind: Kind,
+    target: Option<crate::workspace::Target>,
+) -> std::process::ExitCode {
+    match run(root, config, address, no_clear_screen, kind, target) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -134,6 +164,7 @@ fn run(
     address: &str,
     no_clear_screen: bool,
     kind: Kind,
+    target: Option<crate::workspace::Target>,
 ) -> Result<(), Error> {
     let root = std::fs::canonicalize(root).map_err(|error| Error::Message(error.to_string()))?;
     let config = config
@@ -157,6 +188,7 @@ fn run(
     let mut observed = BTreeSet::new();
     let mut watched = BTreeMap::new();
     let mut output = None;
+    let assembly = Assembly { kind, target };
     rebuild(
         &root,
         config.as_deref(),
@@ -164,7 +196,7 @@ fn run(
         &mut observed,
         &mut output,
         &terminal,
-        kind,
+        &assembly,
     );
     watch_external(&mut watcher, &root, &observed, &mut watched)?;
     let shared = state.clone();
@@ -215,7 +247,7 @@ fn run(
                 &mut observed,
                 &mut output,
                 &terminal,
-                kind,
+                &assembly,
             );
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
@@ -240,7 +272,7 @@ fn rebuild(
     observed: &mut BTreeSet<PathBuf>,
     output: &mut Option<PathBuf>,
     terminal: &Terminal,
-    kind: Kind,
+    assembly: &Assembly,
 ) {
     let (previous, has_preview) = {
         let mut published = state.write().unwrap();
@@ -250,7 +282,9 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = kind.assemble(root, config);
+    let result = assembly
+        .kind
+        .assemble(root, config, assembly.target.as_ref());
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {

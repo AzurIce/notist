@@ -13,13 +13,26 @@ use std::{
 pub(crate) struct Files {
     base: FsResources,
     observed: Mutex<BTreeSet<PathBuf>>,
+    configuration: Option<(PathBuf, Vec<u8>)>,
 }
 impl Files {
     pub fn new(root: &Path) -> Self {
         Self {
             base: FsResources::new(root),
             observed: Mutex::default(),
+            configuration: None,
         }
+    }
+    /// An in-memory target configuration; never writes generated config to disk.
+    pub fn with_configuration(
+        mut self,
+        path: PathBuf,
+        source: String,
+        inputs: BTreeSet<PathBuf>,
+    ) -> Self {
+        self.configuration = Some((path, source.into_bytes()));
+        self.observed.lock().unwrap().extend(inputs);
+        self
     }
     pub fn observed(&self) -> BTreeSet<PathBuf> {
         self.observed.lock().unwrap().clone()
@@ -55,9 +68,21 @@ impl Resources for Files {
         self.base.root()
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        if let Some((config, source)) = &self.configuration
+            && &self.resolve(path) == config
+        {
+            return Ok(source.clone());
+        }
         self.base.read(&self.inspect(path)?)
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+        if self
+            .configuration
+            .as_ref()
+            .is_some_and(|(config, _)| &self.resolve(path) == config)
+        {
+            return Ok(Some(ResourceKind::File));
+        }
         self.base.kind(&self.inspect(path)?)
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {

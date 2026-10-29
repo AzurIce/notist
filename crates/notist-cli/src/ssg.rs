@@ -21,8 +21,20 @@ pub(crate) fn assemble(
     config: Option<&Path>,
     output: Option<&Path>,
     preview: bool,
+    target: Option<&crate::workspace::Target>,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    let mut vault = Vault::new(Files::new(root));
+    let prepared = target.map(|t| t.prepare()).transpose().map_err(|e| {
+        (
+            Error::Message(e),
+            target.map_or_else(BTreeSet::new, |t| t.inputs()),
+        )
+    })?;
+    let config_path = prepared.as_ref().map(|p| p.config.clone());
+    let config = config_path.as_deref().or(config);
+    let files = prepared
+        .map(|p| p.files)
+        .unwrap_or_else(|| Files::new(root));
+    let mut vault = Vault::new(files);
     if let Some(config) = config {
         let cwd = std::env::current_dir()
             .map_err(|e| (Error::Message(e.to_string()), BTreeSet::new()))?;
@@ -64,9 +76,20 @@ pub(crate) fn assemble(
     }
 }
 pub(crate) fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> ExitCode {
+    build_inner(root, config, output, None)
+}
+pub(crate) fn build_target(target: &crate::workspace::Target) -> ExitCode {
+    build_inner(&target.root, None, None, Some(target))
+}
+fn build_inner(
+    root: &Path,
+    config: Option<&Path>,
+    output: Option<&Path>,
+    target: Option<&crate::workspace::Target>,
+) -> ExitCode {
     let result = (|| {
         let root = std::fs::canonicalize(root).map_err(|e| Error::Message(e.to_string()))?;
-        let result = assemble(&root, config, output, false).map_err(|(e, _)| e)?;
+        let result = assemble(&root, config, output, false, target).map_err(|(e, _)| e)?;
         publish(&result.artifact.files, &result.output, &root)?;
         crate::emit_source_diagnostics(
             &result.artifact.warnings,

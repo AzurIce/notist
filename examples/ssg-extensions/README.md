@@ -8,7 +8,7 @@ cargo run -p notist-cli -- build -p ssg-extensions
 
 Requires Python 3.11+. The command reads `project/Cargo.toml` and its example
 sources and generates the catalog, grouped pages, and `site.data` in memory.
-Open `dist/ssg-extensions/site/index.html` to inspect the output.
+Open `dist/ssg-extensions-site/index.html` to inspect the output.
 
 `examples.py` accepts another Cargo manifest as its argument. It follows the
 `examples/<group>/<name>/main.rs` layout used by Ranim, also includes adjacent

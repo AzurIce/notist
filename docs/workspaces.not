@@ -40,7 +40,7 @@ book/Notist.toml：
 name = "ranim-book"
 
 [[book]]
-name = "book"
+name = "ranim-book"
 title = "Ranim Book"
 exclude = ["**/AGENTS.md", "_components/**"]
 additional-css = ["version-select.css"]
@@ -60,7 +60,7 @@ website/Notist.toml：
 name = "ranim-website"
 
 [[site]]
-name = "website"
+name = "ranim-website"
 title = "Ranim"
 base_url = "https://azurice.github.io/ranim/"
 content = "content"
@@ -84,7 +84,7 @@ notist build --workspace
 
 # 构建指定项目；-p 可以重复
 notist build -p ranim-book
-notist build -p ranim-website --target website
+notist build -p ranim-website --target ranim-website
 
 # 在成员内部，默认只构建当前项目
 cd book
@@ -97,11 +97,11 @@ notist serve -p ranim-book
 
 命令从当前目录向上寻找 Notist.toml；成员会进一步寻找所属 workspace。--config 可以显式指定项目或 workspace 配置。根配置同时声明 [project] 时，根目录默认只构建根项目，--workspace 构建所有成员。--workspace 与 -p 不能同时使用。
 
-项目与 target 名称只允许 ASCII 字母、数字、减号和下划线。target 名称在同一项目内唯一，不区分 Book / Site；不同项目可以使用相同 target 名称。name 默认为项目名，因此一个项目声明多个 target 时需要显式区分名称。
+项目与 target 名称只允许 ASCII 字母、数字、减号和下划线。项目名在 workspace 内唯一；target 名称在整个 workspace 内唯一，不区分 Book / Site。name 默认是 `<project>-<kind>`，例如 `icy-bot` 项目的 book target 默认得到 `icy-bot-book`；单 target 项目通常不需要显式命名，一个项目声明多个同类 target 时才需要显式区分名称。
 
-默认输出为 workspace 根目录下的 dist/<project>/<target>/。上例生成 dist/ranim-book/book/ 和 dist/ranim-website/website/。独立项目不需要 workspace 配置，使用项目目录下的 dist/<project>/<target>/。可以用 [workspace].dist 修改共享输出根，或用 target 的 output 显式覆盖。
+默认输出为 workspace 根目录下的 dist/<target>/，目录名就是 target 名。上例生成 dist/ranim-book/ 和 dist/ranim-website/。独立项目不需要 workspace 配置，使用项目目录下的 dist/<target>/。可以用 [workspace].dist 修改共享输出根，或用 target 的 output 显式覆盖。dist 是一层平铺的发布根集合，不按项目分组。
 
-构建前检查所有成员的项目名、target 名及输出目录：输出目录不能相同或互相包含，也不能替换任何成员的输入根或配置文件。配置校验后按 target 逐个构建；每个 target 独立暂存与发布，失败保留该 target 的旧产物并停止后续构建，已经成功发布的其他 target 不回滚。完整 workspace 构建不是跨 target 事务。
+构建前检查所有成员的项目名、target 名及输出目录：target 名称在 workspace 内不能重复，输出目录不能相同或互相包含，也不能替换任何成员的输入根或配置文件。配置校验后按 target 逐个构建；每个 target 独立暂存与发布，失败保留该 target 的旧产物并停止后续构建，已经成功发布的其他 target 不回滚。完整 workspace 构建不是跨 target 事务。
 
 == 路径与配置作用域
 
@@ -131,4 +131,4 @@ Notist 只保留一套发布配置与命令入口：`[project]`、`[[book]]` / `
 
 build 的 --out-dir 相对于 CWD，仅在选中唯一 target 时可用，并检查与其他 target 输出和项目输入的冲突。独立项目也使用相同配置，只需省略可选的 workspace，不存在另一套独立 Book / Site 配置格式。
 
-迁移时添加 `[project]`，将 `[book]` 改成 `[[book]]` 或 `[ssg]` 改成 `[[site]]`；原有 ssg.extensions 改成 site.extensions。保留顶层文档 extensions，或将 Book 专属规则移入 book.extensions。脚本统一改用 build / serve，通过 --config、-p 和 --target 选择项目与 target。不指定 output 即采用共享输出路径；CI 上传目录、工具链锁定版本和 .gitignore 也应同步调整。
+迁移时添加 `[project]`，将 `[book]` 改成 `[[book]]` 或 `[ssg]` 改成 `[[site]]`；原有 ssg.extensions 改成 site.extensions。保留顶层文档 extensions，或将 Book 专属规则移入 book.extensions。脚本统一改用 build / serve，通过 --config、-p 和 --target 选择项目与 target。不指定 output 即采用共享输出路径；旧的 dist/<project>/<target>/ 不再生成，迁移后目录变为 dist/<target>/，需要同步 CI 上传路径、部署配置和 .gitignore。若多个项目使用相同 target 名，需要改名或显式设置 name。

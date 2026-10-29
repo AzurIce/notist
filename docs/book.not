@@ -33,7 +33,7 @@ exclude = ["drafts/**", "**/AGENTS.md"]
 theme = "theme"
 """#, lang: "toml")
 
-include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。过滤后的文档是候选范围，存在 SUMMARY 时再由结构声明选择发布页面。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 默认为共享 dist/<project>/<target>/，也可显式覆盖。theme 默认使用内置主题。target 的输入路径相对于 root；命令行 --out-dir 相对于当前工作目录，仅在选中唯一 target 时可用，并覆盖配置中的 output。
+include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。过滤后的文档是候选范围，存在 SUMMARY 时再由结构声明选择发布页面。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 默认为共享 dist/<target>/（target 名默认是 <project>-<kind>），也可显式覆盖。theme 默认使用内置主题。target 的输入路径相对于 root；命令行 --out-dir 相对于当前工作目录，仅在选中唯一 target 时可用，并覆盖配置中的 output。
 
 include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md 匹配任意目录（包含根目录）。不使用 gitignore 的无斜杠简写或 ! 重新包含规则。无效 glob 使构建失败。
 
@@ -340,6 +340,6 @@ CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预�
 
 == GitHub Pages
 
-仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块的 recipe 构建 WASM，再运行 notist build -p notist-docs，上传 dist/notist-docs/book 并部署到 GitHub Pages。根 Notist.toml 声明 workspace，docs/Notist.toml 声明 notist-docs 项目及 book target；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块的 recipe 构建 WASM，再运行 notist build -p notist-docs，上传 dist/notist-docs-book 并部署到 GitHub Pages。根 Notist.toml 声明 workspace，docs/Notist.toml 声明 notist-docs 项目及 book target；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
 
 push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

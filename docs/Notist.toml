@@ -2,7 +2,6 @@
 name = "notist-docs"
 
 [[book]]
-name = "book"
 title = "Notist"
 exclude = ["**/AGENTS.md"]
 

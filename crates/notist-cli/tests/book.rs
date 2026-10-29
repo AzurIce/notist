@@ -90,7 +90,7 @@ fn book_build_defaults_output_and_resolves_cli_output_from_working_directory() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        assert!(root.join("vault/dist/manual/manual/index.html").is_file());
+        assert!(root.join("vault/dist/manual-book/index.html").is_file());
 
         let result = command(root)
             .args([

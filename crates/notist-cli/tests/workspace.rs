@@ -57,24 +57,24 @@ fn builds_workspace_and_members_from_nested_working_directories() {
     let root = temp.path();
     workspace(root);
     success(run(root, &["build"]));
-    assert!(root.join("dist/ranim-book/book/index.html").is_file());
-    assert!(root.join("dist/ranim-website/website/index.html").is_file());
+    assert!(root.join("dist/book/index.html").is_file());
+    assert!(root.join("dist/website/index.html").is_file());
     write(root, "website/content/index.md", "# Changed Website");
     write(root, "book/README.md", "# Changed Book");
     success(run(&root.join("website/content"), &["build"]));
     assert!(
-        std::fs::read_to_string(root.join("dist/ranim-website/website/index.html"))
+        std::fs::read_to_string(root.join("dist/website/index.html"))
             .unwrap()
             .contains("Changed Website")
     );
     assert!(
-        !std::fs::read_to_string(root.join("dist/ranim-book/book/index.html"))
+        !std::fs::read_to_string(root.join("dist/book/index.html"))
             .unwrap()
             .contains("Changed Book")
     );
     success(run(&root.join("website"), &["build", "--workspace"]));
     assert!(
-        std::fs::read_to_string(root.join("dist/ranim-book/book/index.html"))
+        std::fs::read_to_string(root.join("dist/book/index.html"))
             .unwrap()
             .contains("Changed Book")
     );
@@ -89,7 +89,7 @@ fn selects_projects_and_targets_and_rejects_ambiguous_preview() {
         root,
         &["build", "-p", "ranim-book", "--target", "book"],
     ));
-    assert!(!root.join("dist/ranim-website").exists());
+    assert!(!root.join("dist/website").exists());
     failure(run(root, &["build", "-p", "unknown"]), "unknown project");
     failure(
         run(root, &["build", "--target", "unknown"]),
@@ -109,8 +109,8 @@ fn unified_build_preserves_output_overrides_and_checks_all_target_ownership() {
     workspace(root);
     success(run(root, &["build", "-p", "ranim-book"]));
     success(run(root, &["build", "-p", "ranim-website"]));
-    assert!(root.join("dist/ranim-book/book/index.html").is_file());
-    assert!(root.join("dist/ranim-website/website/index.html").is_file());
+    assert!(root.join("dist/book/index.html").is_file());
+    assert!(root.join("dist/website/index.html").is_file());
     success(run(
         root,
         &["build", "-p", "ranim-book", "--out-dir", "published-book"],
@@ -130,13 +130,7 @@ fn unified_build_preserves_output_overrides_and_checks_all_target_ownership() {
     failure(
         run(
             root,
-            &[
-                "build",
-                "-p",
-                "ranim-book",
-                "--out-dir",
-                "dist/ranim-website",
-            ],
+            &["build", "-p", "ranim-book", "--out-dir", "dist/website"],
         ),
         "overlapping target outputs",
     );
@@ -171,8 +165,39 @@ fn standalone_project_defaults_names_and_resolves_root_and_output() {
     write(root, "docs/README.not", "= Standalone");
     success(run(&root.join("docs"), &["build"]));
     assert!(root.join("published/index.html").is_file());
-    assert!(!root.join("docs/.notist-target-manual.toml").exists());
+    assert!(!root.join("docs/.notist-target-manual-book.toml").exists());
     success(run(&root.join("docs"), &["check", "README.not"]));
+}
+
+#[test]
+fn default_target_names_join_project_and_kind_and_publish_flat() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        "[project]\nname='icy-bot'\n[[book]]\nroot='book'\n[[site]]\nroot='site'",
+    );
+    write(root, "book/README.md", "# Book");
+    write(root, "site/content/index.md", "# Site");
+    success(run(root, &["build"]));
+    assert!(root.join("dist/icy-bot-book/index.html").is_file());
+    assert!(root.join("dist/icy-bot-site/index.html").is_file());
+    assert!(!root.join("dist/icy-bot").exists());
+}
+
+#[test]
+fn rejects_duplicate_target_names_across_projects() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    workspace(root);
+    write(
+        root,
+        "website/Notist.toml",
+        "[project]\nname='ranim-website'\n[[site]]\nname='book'",
+    );
+    failure(run(root, &["build"]), "duplicate target name");
+    assert!(!root.join("dist").exists());
 }
 
 #[test]
@@ -187,11 +212,8 @@ fn shares_dist_but_not_configuration_between_projects() {
         "[workspace]\nmembers=['book','website']\ndist='release'\n[[extensions]]\nkind='replace'\nimports={missing='does-not-exist.notc'}\nfrom='notist.math'\nto='missing.math'",
     );
     success(run(root, &["build", "--workspace"]));
-    assert!(root.join("release/ranim-book/book/index.html").is_file());
-    assert!(
-        root.join("release/ranim-website/website/index.html")
-            .is_file()
-    );
+    assert!(root.join("release/book/index.html").is_file());
+    assert!(root.join("release/website/index.html").is_file());
 }
 
 #[test]
@@ -210,12 +232,11 @@ fn target_specific_document_extensions_resolve_from_project_manifest() {
         "fn math<C: Type = InlineContent>(text: String) -> C { [ Replaced ] }",
     );
     success(run(root, &["build", "--target", "transformed"]));
-    let transformed =
-        std::fs::read_to_string(root.join("dist/docs/transformed/index.html")).unwrap();
+    let transformed = std::fs::read_to_string(root.join("dist/transformed/index.html")).unwrap();
     assert!(transformed.contains("Replaced"), "{transformed}");
     success(run(root, &["build", "--target", "plain"]));
     assert!(
-        !std::fs::read_to_string(root.join("dist/docs/plain/index.html"))
+        !std::fs::read_to_string(root.join("dist/plain/index.html"))
             .unwrap()
             .contains("Replaced")
     );
@@ -241,14 +262,14 @@ fn project_document_extensions_keep_the_same_paths_for_targets_and_single_files(
         root,
         &["html", "content/README.not", "--out-dir", "single"],
     ));
-    for output in ["dist/docs/docs/index.html", "single/index.html"] {
+    for output in ["dist/docs-book/index.html", "single/index.html"] {
         assert!(
             std::fs::read_to_string(root.join(output))
                 .unwrap()
                 .contains("Consistent")
         );
     }
-    assert!(!root.join(".notist-target-docs.toml").exists());
+    assert!(!root.join(".notist-target-docs-book.toml").exists());
 }
 
 #[test]
@@ -269,7 +290,7 @@ fn ranim_style_prepare_reads_external_dependencies_with_target_cwd() {
     );
     success(run(root, &["build", "-p", "ranim-website"]));
     assert!(
-        std::fs::read_to_string(root.join("dist/ranim-website/website/examples/demo.html"))
+        std::fs::read_to_string(root.join("dist/website/examples/demo.html"))
             .unwrap()
             .contains("From external examples")
     );
@@ -289,9 +310,9 @@ fn workspace_membership_does_not_publish_external_documents_without_a_mount() {
     let output = run(root, &["build", "-p", "ranim-book"]);
     assert!(String::from_utf8_lossy(&output.stderr).contains("warning"));
     success(output);
-    let book_output = root.join("dist/ranim-book/book");
+    let book_output = root.join("dist/book");
     assert!(!book_output.join("website").exists());
-    assert!(!root.join("dist/ranim-website").exists());
+    assert!(!root.join("dist/website").exists());
     write(
         root,
         "book/Notist.toml",
@@ -304,7 +325,7 @@ fn workspace_membership_does_not_publish_external_documents_without_a_mount() {
     );
     success(run(root, &["build", "-p", "ranim-book"]));
     assert!(book_output.join("website/index/index.html").is_file());
-    assert!(!root.join("dist/ranim-website").exists());
+    assert!(!root.join("dist/website").exists());
     let previous = std::fs::read(book_output.join("index.html")).unwrap();
     write(
         root,
@@ -386,10 +407,10 @@ fn workspace_can_also_have_a_root_project_and_explicit_config() {
     );
     write(root, "guide/README.md", "# Root project");
     success(run(root, &["build"]));
-    assert!(root.join("dist/root/root/index.html").is_file());
-    assert!(!root.join("dist/ranim-book").exists());
+    assert!(root.join("dist/root-book/index.html").is_file());
+    assert!(!root.join("dist/book").exists());
     success(run(root, &["build", "--config", "book/Notist.toml"]));
-    assert!(root.join("dist/ranim-book/book/index.html").is_file());
+    assert!(root.join("dist/book/index.html").is_file());
 }
 
 struct Server {

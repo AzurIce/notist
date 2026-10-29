@@ -97,6 +97,13 @@ fn string(table: &mut toml::Table, key: &str, default: &str) -> Result<String, S
     }
 }
 
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Book => "book",
+        Kind::Site => "site",
+    }
+}
+
 fn targets(path: &Path, workspace: Option<&Path>, dist: &Path) -> Result<Vec<Target>, String> {
     let manifest = read(path)?;
     let project = manifest
@@ -107,8 +114,9 @@ fn targets(path: &Path, workspace: Option<&Path>, dist: &Path) -> Result<Vec<Tar
     let mut names = BTreeSet::new();
     let mut result = Vec::new();
     for (kind, tables) in [(Kind::Book, manifest.book), (Kind::Site, manifest.site)] {
+        let default_name = format!("{project}-{}", kind_name(kind));
         for mut table in tables {
-            let target_name = string(&mut table, "name", &project)?;
+            let target_name = string(&mut table, "name", &default_name)?;
             name(&target_name)?;
             if !names.insert(target_name.clone()) {
                 return Err(format!(
@@ -128,7 +136,7 @@ fn targets(path: &Path, workspace: Option<&Path>, dist: &Path) -> Result<Vec<Tar
                 ));
             }
             let output = match table.get("output") {
-                None => dist.join(&project).join(&target_name),
+                None => dist.join(&target_name),
                 Some(toml::Value::String(p)) if !p.is_empty() => normalize(&root.join(p)),
                 _ => return Err("target output must be a nonempty string".into()),
             };
@@ -238,6 +246,15 @@ fn discover(config: Option<&Path>) -> Result<(Vec<Target>, Option<String>), Stri
             return Err(format!("duplicate project name: {}", target.project));
         }
     }
+    let mut names = std::collections::BTreeMap::new();
+    for target in &result {
+        if let Some(previous) = names.insert(target.name.as_str(), target.project.as_str()) {
+            return Err(format!(
+                "duplicate target name {:?} in projects {previous} and {}",
+                target.name, target.project
+            ));
+        }
+    }
     validate_outputs(&result)?;
     Ok((result, current_project))
 }
@@ -334,12 +351,13 @@ impl Target {
             Kind::Book => manifest.book,
             Kind::Site => manifest.site,
         };
+        let default_name = format!("{}-{}", self.project, kind_name(self.kind));
         let mut options = tables
             .into_iter()
             .find(|t| {
                 t.get("name")
                     .and_then(toml::Value::as_str)
-                    .unwrap_or(&self.project)
+                    .unwrap_or(&default_name)
                     == self.name
             })
             .ok_or("target configuration changed while reading; retry")?;

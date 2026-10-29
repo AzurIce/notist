@@ -2,6 +2,6 @@
 name = "notist-site"
 
 [[site]]
-name = "site"
+name = "notist-site"
 title = "Notist Site"
 base_url = "/"

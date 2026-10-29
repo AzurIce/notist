@@ -11,7 +11,7 @@ notist build
 notist serve --address 127.0.0.1:8000
 ```
 
-build 默认发布到共享 dist/<project>/<target>/；--out-dir 相对于当前工作目录，在选中唯一 target 时覆盖输出目录。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 /，静态构建使用配置的 base_url。
+build 默认发布到共享 dist/<target>/（目录名即 target 名，默认 <project>-<kind>）；--out-dir 相对于当前工作目录，在选中唯一 target 时覆盖输出目录。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 /，静态构建使用配置的 base_url。
 
 ```toml
 [project]
@@ -217,4 +217,4 @@ Builder 按注册顺序先运行 Rust 扩展，再运行配置中的命令。Sit
 cargo run -p notist-cli -- build -p ssg-extensions
 ```
 
-输出位于 dist/ssg-extensions/site。示例按 examples/<group>/<name>/main.rs 组织分组，也读取相邻的 scenes.rs，匹配 ranim 的 example 源码布局。它负责 examples/ 文档命名空间，已有数据中的媒体 URL 与渲染 hash 保留，代码列表从当前 Rust 文件重新生成。它不负责渲染、上传或替代 ranim 的发布工作流。
+输出位于 dist/ssg-extensions-site。示例按 examples/<group>/<name>/main.rs 组织分组，也读取相邻的 scenes.rs，匹配 ranim 的 example 源码布局。它负责 examples/ 文档命名空间，已有数据中的媒体 URL 与渲染 hash 保留，代码列表从当前 Rust 文件重新生成。它不负责渲染、上传或替代 ranim 的发布工作流。

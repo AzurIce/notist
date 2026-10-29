@@ -2,7 +2,6 @@
 name = "ssg-extensions"
 
 [[site]]
-name = "site"
 title = "Generated Rust examples"
 
 # Experimental site extension: source text and template data, once per build.

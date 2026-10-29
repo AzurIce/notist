@@ -23,13 +23,16 @@ Notist CLI 负责构建流程，扩展在指定阶段接收输入并返回修改
 两层扩展使用独立配置表，可同时写在同一份 Notist.toml 中：
 
 ```toml
-[ssg]
+[project]
+name = "example-site"
+
+[[site]]
 title = "Example Site"
 content = "content"
 output = "public"
 
 # 站点层：一次构建运行一次，先准备页面源码与模板数据。
-[[ssg.extensions]]
+[[site.extensions]]
 kind = "command"
 command = ["python3", "scripts/catalog.py", "../Cargo.toml"]
 watch = ["scripts", "../Cargo.toml", "../examples"]
@@ -61,7 +64,7 @@ stages = ["after_check"]
 
 | 项目 | SSG 站点扩展 | 文档扩展 |
 | --- | --- | --- |
-| 配置表 | ssg.extensions | extensions |
+| 配置表 | site.extensions | extensions |
 | 调用阶段 | prepare | `before_check`、`after_check`、`after_evaluate` |
 | 请求中的主要输入 | input.documents 与 input.data | document，以及 sources、functions |
 | 文档表示 | 路径到源码字符串的映射 | LoweredDocument 或 Item |
@@ -70,7 +73,7 @@ stages = ["after_check"]
 | 工作目录 | 站点根目录 | 当前文档所用配置文件的目录 |
 | 额外输入监听 | watch 声明文件或目录 | 没有独立的 watch 配置 |
 
-工作目录也决定脚本参数中的相对文件路径。SSG 的 --config 可以选择其他位置的配置文件，但站点扩展的工作目录仍是站点根目录。文档扩展则使用配置文件所在目录；它的每条 replace 规则也有相对于该配置文件的独立 imports 表。
+工作目录也决定脚本参数中的相对文件路径。--config 选择项目或 workspace；站点扩展的工作目录是选中 Site target 的 root。文档扩展则使用项目配置所在目录；它的每条 replace 规则也有相对于该目录的独立 imports 表。
 
 共同的传输方式是 stdin 读取一个 JSON 值和 EOF，stdout 写一个 JSON 响应，日志写 stderr。command 是程序与参数数组，不经过 shell。省略返回的 input / document 或将其设为 null 保持输入；返回完整值时，未包含的页面、数据或节点会被删除。
 
@@ -80,8 +83,8 @@ stages = ["after_check"]
 
 ```sh
 # 站点扩展以及最终各文档的扩展由 SSG 构建调用。
-notist ssg build website
-notist ssg serve website --address 127.0.0.1:8000
+notist build --config website/Notist.toml
+notist serve --config website/Notist.toml --address 127.0.0.1:8000
 
 # 单文档命令只调用文档层，不调用站点 prepare。
 notist check website/content/index.not

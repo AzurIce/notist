@@ -70,7 +70,10 @@ imports = { typst = "../modules/typst/lib.notc" }
 from = "notist.math"
 to = "typst.math"
 
-[book]
+[project]
+name = "notes"
+
+[[book]]
 title = "My Notes"
 output = "public"
 ```

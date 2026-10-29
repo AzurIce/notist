@@ -207,7 +207,7 @@ fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
         ("README.md", "```rust\nfn main() {}\n```"),
         ("theme/assets/highlight.css", "pre code { color: purple; }"),
     ]));
-    let config = BookConfig::parse("[book]\noutput='public'\ntheme='theme'", None).unwrap();
+    let config: BookConfig = toml::from_str("output='public'\ntheme='theme'").unwrap();
     let site = build(&mut vault, &config).unwrap();
     assert_eq!(
         html(&site, "_notist/theme/highlight.css"),
@@ -834,7 +834,7 @@ fn additional_styles_and_scripts_preserve_declared_order_and_nested_urls() {
         ("scripts/first.js", "window.first = true;"),
         ("scripts/last.js", "window.last = window.first;"),
     ]);
-    let config = BookConfig::parse("[book]\noutput='public'\ntheme='theme'\nadditional-css=['styles/first.css','styles/last.css']\nadditional-js=['scripts/first.js','scripts/last.js']", None).unwrap();
+    let config: BookConfig = toml::from_str("output='public'\ntheme='theme'\nadditional-css=['styles/first.css','styles/last.css']\nadditional-js=['scripts/first.js','scripts/last.js']").unwrap();
     let output = build(&mut Vault::new(files), &config).unwrap();
     let nested = html(&output, "guide/start/index.html");
     for paths in [
@@ -957,42 +957,31 @@ fn explicit_extensions_publish_shared_component_resources_per_used_page() {
 
 #[test]
 fn site_configuration_is_separate_from_context_configuration() {
-    let config = BookConfig::parse(
-        "[book]\noutput='public'\ntitle='Book'\ninclude=['docs/**']\nexclude=['docs/drafts/**']\ntheme='theme'",
-        None,
+    let config: BookConfig = toml::from_str(
+        "output='public'\ntitle='Book'\ninclude=['docs/**']\nexclude=['docs/drafts/**']\ntheme='theme'",
     )
     .unwrap();
     assert_eq!(config.title, "Book");
     assert_eq!(config.theme, Some(PathBuf::from("theme")));
-    assert!(BookConfig::parse("[book]\noutput='public'\nunknown=true", None).is_err());
+    assert!(toml::from_str::<BookConfig>("output='public'\nunknown=true").is_err());
 }
 
 #[test]
-fn output_must_be_explicit_in_configuration_or_host_override() {
-    for source in ["", "[book]", "[book]\ntitle='Handbook'"] {
-        let error = BookConfig::parse(source, None).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("set [book].output or pass --out-dir")
-        );
-        let config = BookConfig::parse(source, Some(Path::new("public"))).unwrap();
-        assert_eq!(config.output, Path::new("public"));
-        assert_eq!(config.include, ["**"]);
-        assert!(config.exclude.is_empty());
+fn library_options_require_output_supplied_by_the_host() {
+    for source in ["", "title='Handbook'"] {
+        assert!(toml::from_str::<BookConfig>(source).is_err());
     }
-    let config = BookConfig::parse("[book]\noutput='configured'", None).unwrap();
+    let config: BookConfig = toml::from_str("output='configured'").unwrap();
     assert_eq!(config.output, Path::new("configured"));
-    let config =
-        BookConfig::parse("[book]\noutput='configured'", Some(Path::new("override"))).unwrap();
-    assert_eq!(config.output, Path::new("override"));
+    let config = BookConfig::new("");
+    let mut vault = Vault::new(resources(&[("README.md", "# Home")]));
     assert!(
-        BookConfig::parse("[book]\noutput=''", None)
+        build(&mut vault, &config)
             .unwrap_err()
             .to_string()
             .contains("must not be empty")
     );
-    assert!(BookConfig::parse("[book]\noutput=42", None).is_err());
+    assert!(toml::from_str::<BookConfig>("output=42").is_err());
 }
 
 #[test]

@@ -247,6 +247,7 @@ pub(crate) fn build<R: Resources>(
     config: &SiteConfig,
     extensions: &[Box<dyn crate::extensions::SiteExtension>],
 ) -> Result<BuildOutput, Error> {
+    config.validate()?;
     let content = vault.resources().resolve(&config.content);
     let output = vault.resources().resolve(&config.output);
     if output.starts_with(&content)

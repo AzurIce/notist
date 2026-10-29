@@ -65,7 +65,8 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
         ),
     ]);
     let config =
-        SiteConfig::parse("[ssg]\nbase_url='https://example.com/project'\ntheme='theme'").unwrap();
+        toml::from_str::<SiteConfig>("base_url='https://example.com/project'\ntheme='theme'")
+            .unwrap();
     let site = Builder::default().build(&mut vault, &config).unwrap();
     let home = html(&site, "index.html");
     assert!(home.contains("Home &amp; more|Example|https://example.com/project/style.css"));

@@ -24,7 +24,7 @@ fn setup(root: &Path, response: &str) -> SiteConfig {
         "cat > request.json\ncat response.json\n",
     )
     .unwrap();
-    SiteConfig::parse("[[ssg.extensions]]\nkind='command'\ncommand=['sh','edit.sh']").unwrap()
+    toml::from_str("[[extensions]]\nkind='command'\ncommand=['sh','edit.sh']").unwrap()
 }
 
 #[derive(Debug)]

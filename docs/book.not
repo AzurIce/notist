@@ -2,36 +2,38 @@
 
 notist-book 将 Vault 中的文档组织为章节，并构建可阅读的 HTML 书籍。它负责阅读结构、章节路由、跨章链接与主题，资源与环境装配由 notist 提供，HTML 内容渲染由 notist-html 提供。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、函数映射与求值、HTML 渲染的职责分别见 [Markup 管线](designs/pipeline/markup.not)、[函数映射与求值](designs/extensions.not) 与 [HTML Rendering](html.not)。
 
-SUMMARY（SUMMARY.not 或 SUMMARY.md）声明书籍发布的章节、阅读层级与顺序；[book] 的 include / exclude 限制可选的文档范围，源文件路径决定页面 URL。存在 SUMMARY 时，只发布其中显式登记或由目录条目发现的页面，其他文档不参与正文检查、路由或输出；没有 SUMMARY 时发布所有符合过滤条件的文档。调整阅读顺序只需修改 SUMMARY；移动源文件则会改变 URL，也需要更新指向它的链接。
+SUMMARY（SUMMARY.not 或 SUMMARY.md）声明书籍发布的章节、阅读层级与顺序；Book target 的 include / exclude 限制可选的文档范围，源文件路径决定页面 URL。存在 SUMMARY 时，只发布其中显式登记或由目录条目发现的页面，其他文档不参与正文检查、路由或输出；没有 SUMMARY 时发布所有符合过滤条件的文档。调整阅读顺序只需修改 SUMMARY；移动源文件则会改变 URL，也需要更新指向它的链接。
 
 == 命令与配置
 
-多项目构建可使用 [Workspace 与构建 Target](workspaces.not) 的 `[project]` / `[[book]]` 配置与 notist build / serve；以下是继续兼容的独立 Book 命令与单表配置。
+Book 是统一项目模型中的一种 target；配置与选择规则见 [Workspace 与构建 Target](workspaces.not)。以下命令从项目目录运行，多项目时通过 -p 选择成员。
 
 ```sh
-notist book build path/to/vault
-notist book build path/to/vault --out-dir path/to/output
-notist book serve path/to/vault --address 127.0.0.1:8000
+notist build
+notist build --out-dir path/to/output
+notist serve --address 127.0.0.1:8000
 ```
 
-Vault 默认为当前目录。build 写入完整站点；serve 在内存中生成相同产物，通过 HTTP 提供页面与资源，并监听输入变化。预览构建失败时保留上一次可用页面，并明确提示当前展示旧预览；首次构建失败时显示诊断和等待页面。修复后自动刷新。
+target 的 root 默认为项目配置目录，作为 Vault 根。build 写入完整站点；serve 在内存中生成相同产物，通过 HTTP 提供页面与资源，并监听输入变化。预览构建失败时保留上一次可用页面，并明确提示当前展示旧预览；首次构建失败时显示诊断和等待页面。修复后自动刷新。
 
 serve 的终端输出按构建轮次显示状态、耗时和错误／警告数量；交互终端默认清除当前屏幕并展示本轮结果，保留终端滚动历史。通过 --no-clear-screen 保留每轮输出；重定向、管道和 CI 环境自动关闭清屏。开始重建时显示 Rebuilding，只有本轮检查完成后才确认错误是否解决；全部错误修复后显示 All errors resolved。
 
 浏览器中的可折叠诊断面板同步本轮结果，包含源码位置与代码片段。普通 warning 不阻止更新，默认折叠；可恢复的内容错误允许生成新预览，但仍标明存在错误；阻止构建的错误保留旧预览。新结果替换旧诊断，错误清零后清除错误面板；连接断开时提示正在重连，避免将上次状态误认为当前状态。
 
-Vault 根目录的 Notist.toml 可包含书籍配置：
+项目的 Notist.toml 声明 Book target：
 
 #raw<BlockContent>(r#"""
-[book]
+[project]
+name = "my-book"
+
+[[book]]
 title = "My Book"
 include = ["**"]
 exclude = ["drafts/**", "**/AGENTS.md"]
-output = "target/book"
 theme = "theme"
 """#, lang: "toml")
 
-include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。过滤后的文档是候选范围，存在 SUMMARY 时再由结构声明选择发布页面。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 没有默认值：必须配置 [book].output，或在 build 时通过 --out-dir 显式指定；serve 需要 [book].output。theme 默认使用内置主题。配置路径相对于 Vault；命令行 --out-dir 相对于当前工作目录，并覆盖配置中的 output。
+include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。过滤后的文档是候选范围，存在 SUMMARY 时再由结构声明选择发布页面。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。output 默认为共享 dist/<project>/<target>/，也可显式覆盖。theme 默认使用内置主题。target 的输入路径相对于 root；命令行 --out-dir 相对于当前工作目录，仅在选中唯一 target 时可用，并覆盖配置中的 output。
 
 include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md 匹配任意目录（包含根目录）。不使用 gitignore 的无斜杠简写或 ! 重新包含规则。无效 glob 使构建失败。
 
@@ -40,7 +42,10 @@ include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md �
 通过 mounts 将 Vault 外的目录加入书籍，而不必将资产归档移进文档目录。例如项目的 docs/ 是 Vault，art/ 与它同级：
 
 #raw<BlockContent>(r#"""
-[book]
+[project]
+name = "my-book"
+
+[[book]]
 output = "../build/book"
 include = ["**"]
 exclude = ["**/AGENTS.md", "art/**/source/**"]
@@ -60,11 +65,11 @@ source 相对于 Vault 根目录，也可使用绝对路径；path 是书籍内�
 
 source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同挂载的源目录不能相同或相互包含。path 必须非空，不能是绝对路径、包含上级跳转或占用 _notist；挂载路径之间不能重叠，也不能遮盖 Vault 中已有的文件或目录。输出目录不得与挂载源目录或 Vault 内的挂载路径重叠。文件系统构建仍拒绝符号链接资源。
 
-挂载只扩展书籍发布范围，不改变文档身份和配置作用域。外部文档按真实位置寻找 Notist.toml；不会因为挂载而继承 docs/ 中的配置。显式 --config 仍覆盖所有文档的输出配置。serve 监听挂载目录中的修改、新增与删除，使用与 build 相同的章节和资源规则。
+挂载只扩展书籍发布范围，不改变文档身份或源码 import 的解析基准。统一构建入口对所有页面显式应用选中 target 的文档扩展配置；不会合并挂载目录中的其他项目配置。serve 监听挂载目录中的修改、新增与删除，使用与 build 相同的章节和资源规则。
 
 === 输出与配置作用域
 
-[book] 配置章节发现与展示；Notist.toml 的每条 extensions 通过独立 imports 选择输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 只覆盖输出配置，不改变文档的导入绑定。
+Book target 配置章节发现与展示；项目的顶层 extensions 和 book.extensions 通过独立 imports 选择文档输出实现。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 选择项目或 workspace 配置，不改变文档的导入绑定。
 
 build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/publication.json（format 为 notist-publication，version 为 1）；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。
 
@@ -173,7 +178,7 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 
 目录条目沿用默认导航的目录层级与文件名自然排序，例如 entry2 排在 entry10 前。目录中的已发布 README 合并为该分支首页，其子页面随后排列；没有 README 时保留无链接的章节节点，子章节按目录层级排列。补上 README 后绑定内容与页面 URL，原目录层级保持不变。链接文字覆盖分支标题；文字为空时使用首页标题，没有首页则使用目录名。新增目录内的页面后，无需再修改 SUMMARY。
 
-目录发现从 [book] 过滤后的候选文档中选择页面，不会重新纳入被 include / exclude 排除的文档，也不会纳入隐藏文件、输出产物或根目录的结构文件。目录外的文档若未由其他条目选中则不发布，也不报漏列错误；发现不会改变页面 URL。
+目录发现从 Book target 过滤后的候选文档中选择页面，不会重新纳入被 include / exclude 排除的文档，也不会纳入隐藏文件、输出产物或根目录的结构文件。目录外的文档若未由其他条目选中则不发布，也不报漏列错误；发现不会改变页面 URL。
 
 显式页面条目优先：无论出现在目录条目之前、之后还是嵌套在其中，页面都留在显式声明的位置，自动发现时跳过。同一页面显式声明两次仍报错。目录条目附带的手工子条目排在自动子树之前；若其 README 已显式放到别处，该目录条目保留为无链接的章节节点，子章节仍在其下排列。
 
@@ -235,7 +240,10 @@ Book 在构建和 serve 时为显式标注语言的代码块生成高亮 HTML，
 主题支持三层定制：通过 CSS 变量调整配色、字体与阅读宽度；通过 additional-css / additional-js 追加文件；通过 theme 目录覆盖模板与默认资源。
 
 ```toml
-[book]
+[project]
+name = "handbook"
+
+[[book]]
 title = "Project Handbook"
 output = "public"
 additional-css = ["styles/palette.css", "styles/content.css"]
@@ -332,6 +340,6 @@ CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预�
 
 == GitHub Pages
 
-仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块 的 recipe 构建 WASM，再运行 notist book build docs，上传 target/book 并部署到 GitHub Pages。docs/ 是 Vault 根目录，配置位于 docs/Notist.toml，output = "../target/book"；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块的 recipe 构建 WASM，再运行 notist build -p notist-docs，上传 dist/notist-docs/book 并部署到 GitHub Pages。根 Notist.toml 声明 workspace，docs/Notist.toml 声明 notist-docs 项目及 book target；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
 
 push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

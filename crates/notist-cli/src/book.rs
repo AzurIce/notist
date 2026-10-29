@@ -1,107 +1,57 @@
-//! Book assembly and command host; resources and disk publication are shared.
-use crate::publication::{Files, publish};
+//! Book target assembly; manifests and target selection belong to workspace.
+use crate::{
+    publication::publish,
+    workspace::{Options, Target},
+};
 use codespan_reporting::diagnostic::Severity;
-use notist::{
-    Resources, Vault,
-    resources::{ResourceError, normalize},
-};
-use notist_book::{BookConfig, BuildOutput, Error};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use notist::Vault;
+use notist_book::{BuildOutput, Error};
+use std::{collections::BTreeSet, path::PathBuf};
 
 pub(crate) struct Build {
     pub artifact: BuildOutput,
     pub output: PathBuf,
     pub observed: BTreeSet<PathBuf>,
 }
-pub fn assemble(
-    root: &Path,
-    config: Option<&Path>,
-    output: Option<&Path>,
+pub(crate) fn assemble(
+    target: &Target,
     recovery: bool,
-    target: Option<&crate::workspace::Target>,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    let prepared = target.map(|t| t.prepare()).transpose().map_err(|e| {
-        (
-            Error::Message(e),
-            target.map_or_else(BTreeSet::new, |t| t.inputs()),
-        )
-    })?;
-    let config_path = prepared.as_ref().map(|p| p.config.clone());
-    let config = config_path.as_deref().or(config);
-    let files = prepared
-        .map(|p| p.files)
-        .unwrap_or_else(|| Files::new(root));
-    let mut vault = Vault::new(files);
-    if let Some(config) = config {
-        vault = vault.with_config(normalize(&std::env::current_dir().unwrap().join(config)));
-    }
-
-    let result = (|| {
-        let path = config
-            .map(|path| normalize(&std::env::current_dir().unwrap().join(path)))
-            .unwrap_or_else(|| root.join("Notist.toml"));
-        let source = match vault.resources().kind(&path)? {
-            Some(_) => vault.resources().source(&path)?.to_string(),
-            None if config.is_none() => String::new(),
-            None => return Err(ResourceError::NotFound(path).into()),
-        };
-        let override_output =
-            output.map(|output| normalize(&std::env::current_dir().unwrap().join(output)));
-        let options = BookConfig::parse(&source, override_output.as_deref())
-            .map_err(|error| Error::Message(format!("{}: {error}", path.display())))?;
-        let output = vault.resources().resolve(&options.output);
-        let site = if recovery {
-            notist_book::serve(&mut vault, &options)
-        } else {
-            notist_book::build(&mut vault, &options)
-        }?;
-        Ok((site, output))
-    })();
+    let prepared = target
+        .prepare()
+        .map_err(|e| (Error::Message(e), target.inputs()))?;
+    let Options::Book(options) = prepared.options else {
+        return Err((
+            Error::Message("expected a Book target".into()),
+            target.inputs(),
+        ));
+    };
+    let mut vault = Vault::new(prepared.files).with_config(prepared.config);
+    let result = if recovery {
+        notist_book::serve(&mut vault, &options)
+    } else {
+        notist_book::build(&mut vault, &options)
+    };
     let observed = vault.resources().observed();
-    match result {
-        Ok((site, output)) => Ok(Build {
-            artifact: site,
-            output,
-            observed,
-        }),
-        Err(error) => Err((error, observed)),
-    }
+    result
+        .map(|artifact| Build {
+            artifact,
+            output: options.output,
+            observed: observed.clone(),
+        })
+        .map_err(|e| (e, observed))
 }
 
-pub fn report(error: Error) {
+pub(crate) fn report(error: Error) {
     match error {
-        Error::Diagnostics(errors) => {
-            crate::emit_source_diagnostics(&errors, Severity::Error);
-        }
+        Error::Diagnostics(errors) => crate::emit_source_diagnostics(&errors, Severity::Error),
         error => eprintln!("{error}"),
     }
 }
-pub fn build(root: &Path, config: Option<&Path>, output: Option<&Path>) -> std::process::ExitCode {
-    match crate::workspace::legacy_target(root, config, crate::serve::Kind::Book, output) {
-        Ok(Some(target)) => build_inner(&target.root, None, output, Some(&target)),
-        Ok(None) => build_inner(root, config, output, None),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::ExitCode::FAILURE
-        }
-    }
-}
-pub(crate) fn build_target(target: &crate::workspace::Target) -> std::process::ExitCode {
-    build_inner(&target.root, None, None, Some(target))
-}
-fn build_inner(
-    root: &Path,
-    config: Option<&Path>,
-    output: Option<&Path>,
-    target: Option<&crate::workspace::Target>,
-) -> std::process::ExitCode {
+pub(crate) fn build_target(target: &Target) -> std::process::ExitCode {
     let result = (|| {
-        let root = std::fs::canonicalize(root).map_err(io)?;
-        let result = assemble(&root, config, output, false, target).map_err(|(error, _)| error)?;
-        publish(&result.artifact.files, &result.output, &root)?;
+        let result = assemble(target, false).map_err(|(error, _)| error)?;
+        publish(&result.artifact.files, &result.output, &target.root)?;
         crate::emit_source_diagnostics(&result.artifact.warnings, Severity::Warning);
         println!(
             "{} pages → {}",
@@ -117,8 +67,4 @@ fn build_inner(
             std::process::ExitCode::FAILURE
         }
     }
-}
-
-fn io(error: impl std::fmt::Display) -> Error {
-    Error::Message(error.to_string())
 }

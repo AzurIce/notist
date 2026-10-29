@@ -46,12 +46,15 @@ fn main() {
 website/Notist.toml：
 
 ```toml
-[ssg]
+[project]
+name = "example-site"
+
+[[site]]
 title = "Rust examples"
 content = "content"
 output = "public"
 
-[[ssg.extensions]]
+[[site.extensions]]
 kind = "command"
 command = ["python3", "scripts/examples.py", "../Cargo.toml"]
 watch = ["scripts", "../Cargo.toml", "../examples"]
@@ -151,8 +154,8 @@ HTML 模板由普通 `{{code}}` 插值转义 Rust 源码。site.data 是扩展�
 从 project 目录执行：
 
 ```sh
-notist ssg build website
-notist ssg serve website --address 127.0.0.1:8000
+notist build --config website/Notist.toml
+notist serve --config website/Notist.toml --address 127.0.0.1:8000
 ```
 
 默认输出结构为：
@@ -169,12 +172,12 @@ content 中仍只有手写的 index.not，data 目录不需要创建。添加新
 
 调试脚本时，日志写到 stderr，例如 `print("loading manifest", file=sys.stderr)`。stdout 只能返回协议响应。清单缺失或无法解析时，本例返回 errors，构建失败，CLI 保留已有输出；修复被 watch 观察的文件后，预览会重新构建。
 
-单独执行 `notist check website/content/index.not` 只检查现有单文档，不执行站点 prepare，因此应通过 ssg build 检查生成页面之间的链接和完整站点。
+单独执行 `notist check website/content/index.not` 只检查现有单文档，不执行站点 prepare，因此应通过 build 检查生成页面之间的链接和完整站点。
 
 仓库还提供 examples/ssg-extensions，包含分组目录、相邻 scenes.rs 源码读取，以及保留现有媒体数据的生成版本。从 Notist 仓库根目录可直接执行：
 
 ```sh
-cargo run -p notist-cli -- ssg build examples/ssg-extensions
+cargo run -p notist-cli -- build -p ssg-extensions
 ```
 
 该示例匹配 ranim 的 example 布局，负责生成文档与数据，不负责构建 WASM、渲染动画或上传媒体。

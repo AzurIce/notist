@@ -103,45 +103,59 @@ fn selects_projects_and_targets_and_rejects_ambiguous_preview() {
 }
 
 #[test]
-fn legacy_build_commands_select_new_targets_and_preserve_output_overrides() {
+fn unified_build_preserves_output_overrides_and_checks_all_target_ownership() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     workspace(root);
-    success(run(root, &["book", "build", "book"]));
-    success(run(root, &["ssg", "build", "website"]));
+    success(run(root, &["build", "-p", "ranim-book"]));
+    success(run(root, &["build", "-p", "ranim-website"]));
     assert!(root.join("dist/ranim-book/book/index.html").is_file());
     assert!(root.join("dist/ranim-website/website/index.html").is_file());
     success(run(
         root,
-        &["book", "build", "book", "--out-dir", "published-book"],
+        &["build", "-p", "ranim-book", "--out-dir", "published-book"],
     ));
     success(run(
         root,
-        &["ssg", "build", "website", "--out-dir", "published-site"],
+        &[
+            "build",
+            "-p",
+            "ranim-website",
+            "--out-dir",
+            "published-site",
+        ],
     ));
     assert!(root.join("published-book/index.html").is_file());
     assert!(root.join("published-site/index.html").is_file());
     failure(
         run(
             root,
-            &["book", "build", "book", "--out-dir", "dist/ranim-website"],
+            &[
+                "build",
+                "-p",
+                "ranim-book",
+                "--out-dir",
+                "dist/ranim-website",
+            ],
         ),
         "overlapping target outputs",
     );
     failure(
-        run(root, &["ssg", "build", "website", "--out-dir", "book"]),
+        run(root, &["build", "-p", "ranim-website", "--out-dir", "book"]),
         "output would replace project inputs",
     );
-    success(run(root, &["book", "build"]));
-    success(run(root, &["ssg", "build"]));
+    failure(
+        run(root, &["build", "--workspace", "--out-dir", "shared"]),
+        "requires exactly one target",
+    );
     write(
         root,
         "book/Notist.toml",
         "[project]\nname='ranim-book'\n[[book]]\nname='first'\n[[book]]\nname='second'",
     );
     failure(
-        run(root, &["book", "build", "book"]),
-        "expected exactly one",
+        run(root, &["build", "-p", "ranim-book", "--out-dir", "shared"]),
+        "requires exactly one target",
     );
 }
 
@@ -537,13 +551,27 @@ fn preview_selects_site_and_uses_local_base_url() {
 }
 
 #[test]
-fn legacy_preview_commands_understand_new_project_manifests() {
+fn removed_commands_and_legacy_configuration_report_migration_errors() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     workspace(root);
-    let book = Server::start_args(root, &["book", "serve", "book"]);
-    assert!(book.get("/").contains("Ranim Book"));
-    let site = Server::start_args(root, &["ssg", "serve", "website"]);
-    assert!(site.get("/").contains("Ranim Website"));
+    failure(
+        run(root, &["book", "build", "book"]),
+        "unrecognized subcommand",
+    );
+    failure(
+        run(root, &["ssg", "serve", "website"]),
+        "unrecognized subcommand",
+    );
+    for config in ["[book]\noutput='public'", "[ssg]\noutput='public'"] {
+        write(root, "Notist.toml", config);
+        failure(run(root, &["build"]), "migrate to [[book]]/[[site]]");
+        failure(run(root, &["serve"]), "migrate to [[book]]/[[site]]");
+        write(root, "README.not", "= Old configuration");
+        failure(
+            run(root, &["check", "README.not"]),
+            "migrate to [[book]]/[[site]]",
+        );
+    }
     assert!(!root.join("dist").exists());
 }

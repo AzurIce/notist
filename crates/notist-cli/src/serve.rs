@@ -51,19 +51,13 @@ struct Build {
     output: PathBuf,
     observed: BTreeSet<PathBuf>,
 }
-struct Assembly {
-    kind: Kind,
-    target: Option<crate::workspace::Target>,
-}
 impl Kind {
     fn assemble(
         self,
-        root: &Path,
-        config: Option<&Path>,
-        target: Option<&crate::workspace::Target>,
+        target: &crate::workspace::Target,
     ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
         match self {
-            Self::Book => book::assemble(root, config, None, true, target)
+            Self::Book => book::assemble(target, true)
                 .map(|b| Build {
                     artifact: BuildOutput {
                         pages: b.artifact.pages.len(),
@@ -84,7 +78,7 @@ impl Kind {
                         inputs,
                     )
                 }),
-            Self::Site => crate::ssg::assemble(root, config, None, true, target)
+            Self::Site => crate::ssg::assemble(target, true)
                 .map(|b| Build {
                     artifact: BuildOutput {
                         pages: b.artifact.pages.len(),
@@ -118,46 +112,12 @@ struct Published {
 type State = Arc<RwLock<Published>>;
 const CLIENT: &str = include_str!("serve.js");
 
-pub fn serve(
-    root: &Path,
-    config: Option<&Path>,
-    address: &str,
-    no_clear_screen: bool,
-    kind: Kind,
-) -> std::process::ExitCode {
-    match crate::workspace::legacy_target(root, config, kind, None) {
-        Ok(Some(target)) => serve_target(target, address, no_clear_screen),
-        Ok(None) => serve_inner(root, config, address, no_clear_screen, kind, None),
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::ExitCode::FAILURE
-        }
-    }
-}
 pub(crate) fn serve_target(
     target: crate::workspace::Target,
     address: &str,
     no_clear_screen: bool,
 ) -> std::process::ExitCode {
-    let root = target.root.clone();
-    serve_inner(
-        &root,
-        None,
-        address,
-        no_clear_screen,
-        target.kind,
-        Some(target),
-    )
-}
-fn serve_inner(
-    root: &Path,
-    config: Option<&Path>,
-    address: &str,
-    no_clear_screen: bool,
-    kind: Kind,
-    target: Option<crate::workspace::Target>,
-) -> std::process::ExitCode {
-    match run(root, config, address, no_clear_screen, kind, target) {
+    match run(target, address, no_clear_screen) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -166,16 +126,11 @@ fn serve_inner(
     }
 }
 fn run(
-    root: &Path,
-    config: Option<&Path>,
+    target: crate::workspace::Target,
     address: &str,
     no_clear_screen: bool,
-    kind: Kind,
-    target: Option<crate::workspace::Target>,
 ) -> Result<(), Error> {
-    let root = std::fs::canonicalize(root).map_err(|error| Error::Message(error.to_string()))?;
-    let config = config
-        .map(|path| notist::resources::normalize(&std::env::current_dir().unwrap().join(path)));
+    let root = target.root.clone();
     let server = Server::http(address).map_err(|error| Error::Message(error.to_string()))?;
     let terminal = Terminal::new(format!("http://{}/", server.server_addr()), no_clear_screen);
     let state = Arc::new(RwLock::new(Published {
@@ -195,16 +150,7 @@ fn run(
     let mut observed = BTreeSet::new();
     let mut watched = BTreeMap::new();
     let mut output = None;
-    let assembly = Assembly { kind, target };
-    rebuild(
-        &root,
-        config.as_deref(),
-        &state,
-        &mut observed,
-        &mut output,
-        &terminal,
-        &assembly,
-    );
+    rebuild(&state, &mut observed, &mut output, &terminal, &target);
     watch_external(&mut watcher, &root, &observed, &mut watched)?;
     let shared = state.clone();
     let watcher_root = root.clone();
@@ -247,15 +193,7 @@ fn run(
                     break;
                 }
             }
-            rebuild(
-                &watcher_root,
-                config.as_deref(),
-                &shared,
-                &mut observed,
-                &mut output,
-                &terminal,
-                &assembly,
-            );
+            rebuild(&shared, &mut observed, &mut output, &terminal, &target);
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
                 eprintln!("{error}");
@@ -273,13 +211,11 @@ fn run(
     Ok(())
 }
 fn rebuild(
-    root: &Path,
-    config: Option<&Path>,
     state: &State,
     observed: &mut BTreeSet<PathBuf>,
     output: &mut Option<PathBuf>,
     terminal: &Terminal,
-    assembly: &Assembly,
+    target: &crate::workspace::Target,
 ) {
     let (previous, has_preview) = {
         let mut published = state.write().unwrap();
@@ -289,9 +225,7 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = assembly
-        .kind
-        .assemble(root, config, assembly.target.as_ref());
+    let result = target.kind.assemble(target);
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {

@@ -42,15 +42,9 @@ impl Default for SiteConfig {
     }
 }
 impl SiteConfig {
-    pub fn parse(source: &str) -> Result<Self, Error> {
-        #[derive(Deserialize)]
-        struct Config {
-            #[serde(default)]
-            ssg: SiteConfig,
-        }
-        let config = toml::from_str::<Config>(source)
-            .map_err(|e| Error::Message(e.to_string()))?
-            .ssg;
+    /// Validate typed target options; project manifests are parsed by the host.
+    pub fn validate(&self) -> Result<(), Error> {
+        let config = self;
         for (name, path) in [
             ("content", &config.content),
             ("output", &config.output),
@@ -60,36 +54,36 @@ impl SiteConfig {
             ("sass", &config.sass),
         ] {
             if path.as_os_str().is_empty() {
-                return Err(Error::Message(format!("ssg {name} must not be empty")));
+                return Err(Error::Message(format!("site {name} must not be empty")));
             }
         }
         if config.template.is_empty() {
-            return Err(Error::Message("ssg template must not be empty".into()));
+            return Err(Error::Message("site template must not be empty".into()));
         }
         for extension in &config.extensions {
             let crate::extensions::ExtensionConfig::Command { command, .. } = extension;
             if command.first().is_none_or(|program| program.is_empty()) {
                 return Err(Error::Message(
-                    "ssg extension command requires a nonempty program".into(),
+                    "site extension command requires a nonempty program".into(),
                 ));
             }
         }
         if !config.base_url.starts_with('/') || config.base_url.starts_with("//") {
             let url = url::Url::parse(&config.base_url)
-                .map_err(|e| Error::Message(format!("invalid ssg base_url: {e}")))?;
+                .map_err(|e| Error::Message(format!("invalid site base_url: {e}")))?;
             if !matches!(url.scheme(), "http" | "https")
                 || url.host_str().is_none()
                 || url.query().is_some()
                 || url.fragment().is_some()
             {
                 return Err(Error::Message(
-                    "ssg base_url must be an HTTP(S) URL or a root-relative path".into(),
+                    "site base_url must be an HTTP(S) URL or a root-relative path".into(),
                 ));
             }
         } else if config.base_url.contains(['?', '#', '\\']) {
-            return Err(Error::Message("invalid ssg base_url path".into()));
+            return Err(Error::Message("invalid site base_url path".into()));
         }
-        Ok(config)
+        Ok(())
     }
     pub(crate) fn url(&self, path: &str) -> String {
         if path.starts_with("//") || path.split('/').next().is_some_and(|s| s.contains(':')) {

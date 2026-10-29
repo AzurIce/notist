@@ -4,17 +4,21 @@ Notist SSG 将内容目录中的文档直接发布为 HTML，站点模板决定�
 
 == 构建与预览
 
-多项目构建可使用 [Workspace 与构建 Target](workspaces.not) 的 `[project]` / `[[site]]` 配置与 notist build / serve；以下是继续兼容的独立 SSG 命令与单表配置。
+Site 是统一项目模型中的一种 target；配置与选择规则见 [Workspace 与构建 Target](workspaces.not)。以下命令从站点项目目录运行。
 
 ```sh
-notist ssg build website
-notist ssg serve website --address 127.0.0.1:8000
+notist build
+notist serve --address 127.0.0.1:8000
 ```
 
-build 默认发布到站点根目录下的 public；--out-dir 相对于当前工作目录，并覆盖配置。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 /，静态构建使用配置的 base_url。
+build 默认发布到共享 dist/<project>/<target>/；--out-dir 相对于当前工作目录，在选中唯一 target 时覆盖输出目录。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 /，静态构建使用配置的 base_url。
 
 ```toml
-[ssg]
+[project]
+name = "my-site"
+
+[[site]]
+name = "website"
 title = "My Site"
 base_url = "https://example.com/project/"
 content = "content"
@@ -27,7 +31,7 @@ sass = "sass"
 # theme = "theme"
 ```
 
-路径相对于站点资源根目录。顶层 extensions 配置文档级扩展，ssg.extensions 配置站点级扩展；两者在不同的输入与阶段上执行。
+target 输入路径相对于 root，默认为项目配置目录。顶层 extensions 配置文档级扩展，site.extensions 配置站点级扩展；两者在不同的输入与阶段上执行。
 
 == 内容与路径
 
@@ -134,13 +138,13 @@ Builder 接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文
 === CLI 与 stdio
 
 ```toml
-[[ssg.extensions]]
+[[site.extensions]]
 kind = "command"
 command = ["python3", "scripts/examples.py", "../Cargo.toml"]
 watch = ["../Cargo.toml", "../examples"]
 ```
 
-ssg.extensions 按配置顺序运行，一次构建中每条命令启动一次进程。程序、参数和 watch 路径相对于站点根目录，CWD 始终为站点根目录，即使使用 --config 指向其他位置也保持这个规则。程序名称可通过 PATH 查找；参数不经过 shell。watch 为脚本读取的外部文件或目录声明依赖，目录递归监听；依赖在启动扩展前登记，所以失败的扩展也能在文件修复后触发重建。脚本直接读取的路径不会自动被宿主观察，尤其是站点根目录以外的输入，应显式列入 watch。
+site.extensions 按配置顺序运行，一次构建中每条命令启动一次进程。程序、参数和 watch 路径相对于站点 root，CWD 始终为该 root。程序名称可通过 PATH 查找；参数不经过 shell。watch 为脚本读取的外部文件或目录声明依赖，目录递归监听；依赖在启动扩展前登记，所以失败的扩展也能在文件修复后触发重建。脚本直接读取的路径不会自动被宿主观察，尤其是站点根目录以外的输入，应显式列入 watch。
 
 stdin 接收一个 JSON 请求和 EOF：
 
@@ -210,7 +214,7 @@ Builder 按注册顺序先运行 Rust 扩展，再运行配置中的命令。Sit
 仓库 examples/ssg-extensions 提供可运行的 Python 3.11+ 示例：读取 Cargo.toml 的 `[[example]]`、Rust 源文件，为每个 example 在内存中生成 Markdown 页面、根注解和 site.data，不创建每个 example 的源文档或 TOML 数据文件。
 
 ```sh
-cargo run -p notist-cli -- ssg build examples/ssg-extensions
+cargo run -p notist-cli -- build -p ssg-extensions
 ```
 
-输出位于 target/ssg-extension-example。示例按 examples/<group>/<name>/main.rs 组织分组，也读取相邻的 scenes.rs，匹配 ranim 的 example 源码布局。它负责 examples/ 文档命名空间，已有数据中的媒体 URL 与渲染 hash 保留，代码列表从当前 Rust 文件重新生成。它不负责渲染、上传或替代 ranim 的发布工作流。
+输出位于 dist/ssg-extensions/site。示例按 examples/<group>/<name>/main.rs 组织分组，也读取相邻的 scenes.rs，匹配 ranim 的 example 源码布局。它负责 examples/ 文档命名空间，已有数据中的媒体 URL 与渲染 hash 保留，代码列表从当前 Rust 文件重新生成。它不负责渲染、上传或替代 ranim 的发布工作流。

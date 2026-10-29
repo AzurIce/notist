@@ -1,9 +1,12 @@
-[ssg]
+[project]
+name = "ssg-extensions"
+
+[[site]]
+name = "site"
 title = "Generated Rust examples"
-output = "../../target/ssg-extension-example"
 
 # Experimental site extension: source text and template data, once per build.
-[[ssg.extensions]]
+[[site.extensions]]
 kind = "command"
 command = ["python3", "examples.py", "project/Cargo.toml"]
 watch = ["project"]

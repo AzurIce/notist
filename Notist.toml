@@ -1,0 +1,3 @@
+[workspace]
+members = ["docs", "examples/site", "examples/ssg-extensions"]
+dist = "dist"

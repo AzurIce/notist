@@ -232,13 +232,18 @@ fn generated_documents_can_supply_all_content_and_report_their_own_source_errors
 
 #[test]
 fn site_extension_config_is_separate_from_document_extension_config() {
-    let config = SiteConfig::parse("[[ssg.extensions]]\nkind='command'\ncommand=['python3','examples.py']\nwatch=['../Cargo.toml']\n[[extensions]]\nkind='replace'\nfrom='text'\nto='text'").unwrap();
+    let config: SiteConfig = toml::from_str("[[extensions]]\nkind='command'\ncommand=['python3','examples.py']\nwatch=['../Cargo.toml']").unwrap();
     assert_eq!(config.extensions.len(), 1);
     for config in [
-        "[[ssg.extensions]]\nkind='command'\ncommand=[]",
-        "[[ssg.extensions]]\nkind='unknown'\ncommand=['sh']",
-        "[[ssg.extensions]]\nkind='command'\ncommand=['sh']\nstages=['prepare']",
+        "[[extensions]]\nkind='command'\ncommand=[]",
+        "[[extensions]]\nkind='unknown'\ncommand=['sh']",
+        "[[extensions]]\nkind='command'\ncommand=['sh']\nstages=['prepare']",
     ] {
-        assert!(SiteConfig::parse(config).is_err());
+        assert!(
+            toml::from_str::<SiteConfig>(config)
+                .map_err(|e| e.to_string())
+                .and_then(|c| c.validate().map_err(|e| e.to_string()))
+                .is_err()
+        );
     }
 }

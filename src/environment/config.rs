@@ -77,6 +77,13 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
             e.message(),
         )]
     })?;
+    if config.ssg.is_some() || config.book.as_ref().is_some_and(toml::Value::is_table) {
+        return Err(vec![Diagnostic::new(
+            Phase::Semantic,
+            super::range(0..source.len()),
+            "legacy [book]/[ssg] configuration is no longer supported; add [project] and migrate to [[book]]/[[site]], then use notist build/serve",
+        )]);
+    }
     let _ = (
         config.book,
         config.ssg,

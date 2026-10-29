@@ -1,5 +1,5 @@
-use serde::{Deserialize, de::Error as _};
-use std::path::{Path, PathBuf};
+use serde::Deserialize;
+use std::path::PathBuf;
 
 /// Book presentation and eligible chapter sources, independent of document scopes.
 #[derive(Debug, Clone, Deserialize)]
@@ -52,32 +52,5 @@ impl BookConfig {
             additional_css: vec![],
             additional_js: vec![],
         }
-    }
-    /// Read only [book]; module configuration remains owned by notist.
-    /// An explicit host output overrides [book].output, including when absent.
-    pub fn parse(source: &str, output: Option<&Path>) -> Result<Self, toml::de::Error> {
-        #[derive(Deserialize)]
-        struct Config {
-            #[serde(default)]
-            book: toml::Table,
-        }
-        let mut book = toml::from_str::<Config>(source)?.book;
-        if let Some(output) = output {
-            book.insert("output".into(), output.to_string_lossy().as_ref().into());
-        }
-        if !book.contains_key("output") {
-            return Err(toml::de::Error::custom(
-                "missing book output: set [book].output or pass --out-dir",
-            ));
-        }
-        let mut config: Self = toml::Value::Table(book).try_into()?;
-        if let Some(output) = output {
-            // Preserve OS paths that cannot round-trip through a TOML string.
-            config.output = output.into();
-        }
-        if config.output.as_os_str().is_empty() {
-            return Err(toml::de::Error::custom("book output must not be empty"));
-        }
-        Ok(config)
     }
 }

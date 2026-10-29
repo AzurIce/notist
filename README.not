@@ -9,6 +9,6 @@ Notist 是基于内容树的文档工具链，支持 .not 与 Markdown，共享�
 - [本地模块](docs/modules.not)：相对路径 import、词法命名空间与组件资源。
 
 ```sh
-cargo run -p notist-cli -- book build docs
-cargo run -p notist-cli -- book serve docs
+cargo run -p notist-cli -- build -p notist-docs
+cargo run -p notist-cli -- serve -p notist-docs
 ```

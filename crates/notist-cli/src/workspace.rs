@@ -48,16 +48,30 @@ pub(crate) struct Target {
     pub root: PathBuf,
     pub output: PathBuf,
     pub kind: Kind,
+    output_override: Option<PathBuf>,
 }
 
 pub(crate) struct Prepared {
     pub files: Files,
     pub config: PathBuf,
-    pub source: String,
+    pub options: Options,
+}
+
+pub(crate) enum Options {
+    Book(notist_book::BookConfig),
+    Site(notist_ssg::SiteConfig),
 }
 
 fn read(path: &Path) -> Result<Manifest, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let value: toml::Value =
+        toml::from_str(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+    if value.get("ssg").is_some() || value.get("book").is_some_and(toml::Value::is_table) {
+        return Err(format!(
+            "{}: legacy [book]/[ssg] configuration is no longer supported; add [project] and migrate to [[book]]/[[site]], then use notist build/serve",
+            path.display()
+        ));
+    }
     toml::from_str(&source).map_err(|e| format!("{}: {e}", path.display()))
 }
 fn valid_name(name: &str) -> bool {
@@ -126,6 +140,7 @@ fn targets(path: &Path, workspace: Option<&Path>, dist: &Path) -> Result<Vec<Tar
                 root,
                 output,
                 kind,
+                output_override: None,
             });
         }
     }
@@ -254,57 +269,6 @@ fn validate_outputs(result: &[Target]) -> Result<(), String> {
     Ok(())
 }
 
-/// Old command names understand both manifest generations. Only an explicitly
-/// declared project/workspace opts in; legacy configuration keeps its behavior.
-pub(crate) fn legacy_target(
-    root: &Path,
-    config: Option<&Path>,
-    kind: Kind,
-    output: Option<&Path>,
-) -> Result<Option<Target>, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let path = match config {
-        Some(path) => normalize(&cwd.join(path)),
-        None => match nearest(&root) {
-            Ok(path) => path,
-            Err(_) => return Ok(None),
-        },
-    };
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let source = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let Ok(value) = source.parse::<toml::Value>() else {
-        // Legacy serve must still start on malformed configuration and recover
-        // when the user fixes it, rather than failing in the compatibility shim.
-        return Ok(None);
-    };
-    if value.get("project").is_none() && value.get("workspace").is_none() {
-        return Ok(None);
-    }
-    let (mut all, current) = discover(Some(&path))?;
-    let candidates: Vec<_> = all
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| t.kind == kind && current.as_ref().is_none_or(|p| p == &t.project))
-        .map(|(index, _)| index)
-        .collect();
-    let [index] = candidates.as_slice() else {
-        return Err(format!(
-            "expected exactly one {kind:?} target; use notist build/serve -p <project> --target <name>"
-        ));
-    };
-    if let Some(output) = output {
-        if output.as_os_str().is_empty() {
-            return Err("output must not be empty".into());
-        }
-        all[*index].output = normalize(&cwd.join(output));
-        validate_outputs(&all)?;
-    }
-    Ok(Some(all.remove(*index)))
-}
-
 pub(crate) fn select(
     config: Option<&Path>,
     all: bool,
@@ -349,7 +313,15 @@ impl Target {
     /// Re-read manifests on every preview rebuild. Root/type changes require a
     /// restart, but content options, extensions and workspace dist reload live.
     pub(crate) fn prepare(&self) -> Result<Prepared, String> {
-        let (all, _) = discover(Some(self.workspace.as_deref().unwrap_or(&self.manifest)))?;
+        let (mut all, _) = discover(Some(self.workspace.as_deref().unwrap_or(&self.manifest)))?;
+        if let Some(output) = &self.output_override {
+            for target in &mut all {
+                if target.project == self.project && target.name == self.name {
+                    target.output = output.clone();
+                }
+            }
+            validate_outputs(&all)?;
+        }
         let fresh = all
             .into_iter()
             .find(|t| t.project == self.project && t.name == self.name)
@@ -389,13 +361,21 @@ impl Target {
                     .cloned(),
             );
         }
-        let key = if self.kind == Kind::Book {
-            "book"
-        } else {
-            "ssg"
+        let options = match self.kind {
+            Kind::Book => Options::Book(
+                toml::Value::Table(options)
+                    .try_into()
+                    .map_err(|e: toml::de::Error| e.to_string())?,
+            ),
+            Kind::Site => {
+                let options: notist_ssg::SiteConfig = toml::Value::Table(options)
+                    .try_into()
+                    .map_err(|e: toml::de::Error| e.to_string())?;
+                options.validate().map_err(|e| e.to_string())?;
+                Options::Site(options)
+            }
         };
         let mut config = toml::Table::new();
-        config.insert(key.into(), options.into());
         config.insert("extensions".into(), extensions.into());
         let source = toml::to_string(&config).map_err(|e| e.to_string())?;
         // A distinct virtual identity makes diagnostics show the exact selected
@@ -412,7 +392,7 @@ impl Target {
         Ok(Prepared {
             files,
             config: path,
-            source,
+            options,
         })
     }
 }
@@ -422,24 +402,32 @@ pub(crate) fn build(
     all: bool,
     projects: &[String],
     target: Option<&str>,
+    output: Option<&Path>,
 ) -> ExitCode {
-    let targets = match select(config, all, projects, target) {
+    let mut targets = match select(config, all, projects, target) {
         Ok(targets) => targets,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::FAILURE;
         }
     };
+    if let Some(output) = output {
+        if targets.len() != 1 || output.as_os_str().is_empty() {
+            eprintln!("--out-dir requires exactly one target and a nonempty output path");
+            return ExitCode::FAILURE;
+        }
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        targets[0].output_override = Some(normalize(&cwd.join(output)));
+    }
     // Preflight all selected configurations before replacing any output.
     for target in &targets {
-        let check = target.prepare().and_then(|p| match target.kind {
-            Kind::Book => notist_book::BookConfig::parse(&p.source, None)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            Kind::Site => notist_ssg::SiteConfig::parse(&p.source)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        });
+        let check = target.prepare();
         if let Err(e) = check {
             eprintln!("{e}");
             return ExitCode::FAILURE;

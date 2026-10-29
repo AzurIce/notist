@@ -42,7 +42,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     write(
         root,
         "Notist.toml",
-        "[[ssg.extensions]]\nkind='command'\ncommand=['sh','edit.sh','first-request.json','first-response.json']\n[[ssg.extensions]]\nkind='command'\ncommand=['sh','edit.sh','second-request.json','second-response.json']",
+        "[project]\nname='test'\n[[site]]\noutput='public'\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh','first-request.json','first-response.json']\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh','second-request.json','second-response.json']",
     );
     write(
         root,
@@ -54,7 +54,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
         "second-response.json",
         r##"{"version":1,"input":{"documents":{"index.not":"= Final\n\n[New](new/page.md)","new/page.md":"# New"},"data":{"step":2}}}"##,
     );
-    let result = command(root).args(["ssg", "build"]).output().unwrap();
+    let result = command(root).args(["build"]).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -75,7 +75,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
         "second-response.json",
         r##"{"version":1,"errors":["missing manifest"]}"##,
     );
-    let result = command(root).args(["ssg", "build"]).output().unwrap();
+    let result = command(root).args(["build"]).output().unwrap();
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("missing manifest"));
     assert_eq!(
@@ -89,7 +89,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     );
     assert!(
         command(root)
-            .args(["ssg", "build"])
+            .args(["build"])
             .output()
             .unwrap()
             .status
@@ -113,7 +113,7 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
     write(
         &root,
         "Notist.toml",
-        "[[ssg.extensions]]\nkind='command'\ncommand=['sh','edit.sh']\nwatch=['../external']",
+        "[project]\nname='test'\n[[site]]\noutput='public'\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh']\nwatch=['../external']",
     );
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -122,7 +122,7 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
         .port();
     let address = format!("127.0.0.1:{port}");
     let mut child = command(&root)
-        .args(["ssg", "serve", "--address", &address, "--no-clear-screen"])
+        .args(["serve", "--address", &address, "--no-clear-screen"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -190,11 +190,15 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
 fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "Notist.toml", "[ssg]\noutput='public'");
+    write(
+        root,
+        "Notist.toml",
+        "[project]\nname='test'\n[[site]]\noutput='public'",
+    );
     write(root, "content/index.not", "= Home");
     write(root, "content/sub/page.md", "# Page");
     write(root, "static/extra.txt", "asset");
-    let result = command(root).args(["ssg", "build"]).output().unwrap();
+    let result = command(root).args(["build"]).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
@@ -210,7 +214,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     );
     assert!(
         !command(root)
-            .args(["ssg", "build"])
+            .args(["build"])
             .output()
             .unwrap()
             .status
@@ -224,7 +228,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     std::fs::remove_file(root.join("content/sub/page.md")).unwrap();
     assert!(
         command(root)
-            .args(["ssg", "build"])
+            .args(["build"])
             .output()
             .unwrap()
             .status
@@ -234,7 +238,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     write(root, "unowned/keep.txt", "keep");
     assert!(
         !command(root)
-            .args(["ssg", "build", "--out-dir", "unowned"])
+            .args(["build", "--out-dir", "unowned"])
             .output()
             .unwrap()
             .status
@@ -253,7 +257,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
     write(
         root,
         "Notist.toml",
-        "[ssg]\nbase_url='https://example.com/project/'",
+        "[project]\nname='test'\n[[site]]\nbase_url='https://example.com/project/'",
     );
     write(root, "content/index.not", "= Home");
     write(
@@ -268,7 +272,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
         .port();
     let address = format!("127.0.0.1:{port}");
     let mut child = command(root)
-        .args(["ssg", "serve", "--address", &address, "--no-clear-screen"])
+        .args(["serve", "--address", &address, "--no-clear-screen"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

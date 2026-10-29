@@ -1,4 +1,7 @@
-[ssg]
+[project]
+name = "notist-site"
+
+[[site]]
+name = "site"
 title = "Notist Site"
 base_url = "/"
-output = "../../target/notist-site"

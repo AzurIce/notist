@@ -292,6 +292,9 @@ fn build_inner<R: Resources>(
     config: &BookConfig,
     recover: bool,
 ) -> Result<BuildOutput, Error> {
+    if config.output.as_os_str().is_empty() {
+        return Err(Error::Message("book output must not be empty".into()));
+    }
     let mounts = Mounts::new(vault.resources(), config)?;
     let mut sources = discover(vault, config, &mounts)?;
     let root = vault.resources().root().to_path_buf();

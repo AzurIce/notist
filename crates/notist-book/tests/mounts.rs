@@ -262,18 +262,16 @@ fn mount_configuration_rejects_ambiguous_paths_and_source_output_overlap() {
 
 #[test]
 fn mounts_parse_without_changing_include_semantics() {
-    let options = BookConfig::parse(
-        "[book]\noutput='public'\ninclude=['art/**']\n[[book.mounts]]\nsource='../art'\npath='art'",
-        None,
+    let options: BookConfig = toml::from_str(
+        "output='public'\ninclude=['art/**']\n[[mounts]]\nsource='../art'\npath='art'",
     )
     .unwrap();
     assert_eq!(options.include, ["art/**"]);
     assert_eq!(options.mounts.len(), 1);
     assert_eq!(options.mounts[0].source, Path::new("../art"));
     assert!(
-        BookConfig::parse(
-            "[book]\noutput='public'\n[[book.mounts]]\nsource='../art'\npath='art'\nunknown=true",
-            None
+        toml::from_str::<BookConfig>(
+            "output='public'\n[[mounts]]\nsource='../art'\npath='art'\nunknown=true"
         )
         .is_err()
     );

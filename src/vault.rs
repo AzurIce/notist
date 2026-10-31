@@ -318,7 +318,7 @@ impl<R: Resources> Vault<R> {
             &evaluation.root,
         )
         .map_err(VaultError::Environment)?;
-        let mut renderer = Renderer::new().with_registry(registry);
+        let mut renderer = Renderer::from_registry(registry);
         if options.source_map {
             renderer = renderer.with_source_map();
         }

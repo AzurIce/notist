@@ -110,6 +110,19 @@ impl<'a> Renderer<'a> {
         Self::default()
     }
 
+    /// Render with an already bound registry without constructing and discarding
+    /// the default native registry first.
+    pub fn from_registry(registry: HtmlRegistry) -> Self {
+        Self {
+            embed: None,
+            math: None,
+            code: None,
+            source_map: false,
+            registry,
+            url_resolver: None,
+        }
+    }
+
     /// Emit reserved `data-notist-node` identifiers and source ranges. Default
     /// output is unchanged. Transparent and structural groups stay flattened;
     /// empty-range generated nodes have no identifier and fall back to parents.

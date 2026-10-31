@@ -576,8 +576,7 @@ fn build_inner<R: Resources>(
             }
         }
         let registry = vault.html_registry(&page.route.source, &page.source, &page.root)?;
-        let rendered = Renderer::new()
-            .with_registry(registry)
+        let rendered = Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
             .with_embed_renderer(|item| embeds::image(item, &resolved))

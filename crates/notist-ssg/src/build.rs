@@ -428,8 +428,7 @@ pub(crate) fn build<R: Resources>(
             &document.source,
             &document.root,
         )?;
-        let rendered = notist_html::Renderer::new()
-            .with_registry(registry)
+        let rendered = notist_html::Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(lookup)
             .with_embed_renderer(|node| {

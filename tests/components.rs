@@ -28,10 +28,16 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
         "{:?}",
         analysis.diagnostics()
     );
-    let output = Renderer::new()
-        .with_registry(html)
+    let legacy = Renderer::new()
+        .with_registry(html.clone())
         .with_source_map()
         .render_with_diagnostics(analysis.root());
+    let output = Renderer::from_registry(html)
+        .with_source_map()
+        .render_with_diagnostics(analysis.root());
+    assert_eq!(output.html, legacy.html);
+    assert_eq!(output.diagnostics, legacy.diagnostics);
+    assert_eq!(output.source_map, legacy.source_map);
     assert!(output.diagnostics.is_empty());
     assert!(
         output.html.contains("notist-title=\"&lt;&amp;&quot;\""),

@@ -25,22 +25,90 @@ pub struct BuildOutput {
     pub warnings: Vec<SourceDiagnostic>,
 }
 
-#[derive(Serialize)]
 struct Directory {
     path: String,
     name: String,
-    index: Option<Page>,
-    pages: Vec<Page>,
+    index: Option<usize>,
+    pages: Vec<usize>,
     directories: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct SiteContext<'a> {
-    title: &'a str,
-    base_url: &'a str,
-    pages: &'a [Page],
-    directories: &'a BTreeMap<String, Directory>,
-    data: &'a BTreeMap<String, serde_json::Value>,
+/// Engine values stay inside the template boundary. Page maps are serialized
+/// once; site listings, directory listings and the current page share them.
+struct TemplateContext {
+    context: tera::Context,
+    pages: Vec<tera::Value>,
+    directories: BTreeMap<String, tera::Value>,
+}
+
+impl TemplateContext {
+    fn new(
+        config: &SiteConfig,
+        pages: &[Page],
+        directories: &BTreeMap<String, Directory>,
+        data: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<Self, Error> {
+        use tera::Value;
+
+        let pages: Vec<_> = pages
+            .iter()
+            .map(Value::try_from_serializable)
+            .collect::<Result<_, _>>()
+            .map_err(|e| Error::Message(e.to_string()))?;
+        let directories: BTreeMap<_, _> = directories
+            .iter()
+            .map(|(key, directory)| {
+                let value = Value::from(BTreeMap::from([
+                    ("path", Value::from(directory.path.as_str())),
+                    ("name", Value::from(directory.name.as_str())),
+                    (
+                        "index",
+                        directory
+                            .index
+                            .map_or_else(Value::none, |i| pages[i].clone()),
+                    ),
+                    (
+                        "pages",
+                        Value::from(
+                            directory
+                                .pages
+                                .iter()
+                                .map(|&i| pages[i].clone())
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                    (
+                        "directories",
+                        Value::from(
+                            directory
+                                .directories
+                                .iter()
+                                .map(|key| Value::from(key.as_str()))
+                                .collect::<Vec<_>>(),
+                        ),
+                    ),
+                ]));
+                (key.clone(), value)
+            })
+            .collect();
+        let site = Value::from(BTreeMap::from([
+            ("title", Value::from(config.title.as_str())),
+            ("base_url", Value::from(config.base_url.as_str())),
+            ("pages", Value::from(pages.clone())),
+            ("directories", Value::from(directories.clone())),
+            (
+                "data",
+                Value::try_from_serializable(data).map_err(|e| Error::Message(e.to_string()))?,
+            ),
+        ]));
+        let mut context = tera::Context::new();
+        context.insert_value("site", site);
+        Ok(Self {
+            context,
+            pages,
+            directories,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -77,7 +145,7 @@ fn directories(pages: &[Page], paths: &[PathBuf], content: &Path) -> BTreeMap<St
             .directories
             .push(key);
     }
-    for page in pages {
+    for (i, page) in pages.iter().enumerate() {
         let dir = result.get_mut(&page.directory).unwrap();
         if page
             .route
@@ -85,9 +153,9 @@ fn directories(pages: &[Page], paths: &[PathBuf], content: &Path) -> BTreeMap<St
             .file_name()
             .is_some_and(|s| s == "index.html")
         {
-            dir.index = Some(page.clone());
+            dir.index = Some(i);
         } else {
-            dir.pages.push(page.clone());
+            dir.pages.push(i);
         }
     }
     result
@@ -489,21 +557,10 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     let dirs = directories(&pages, &source_dirs, &content);
-    // A site can contain tens of thousands of generated pages and large data
-    // indexes. Convert borrowed data straight to Tera without an intermediate
-    // owned JSON tree, and keep that shared context for the whole build.
-    let site = tera::Value::try_from_serializable(&SiteContext {
-        title: &config.title,
-        base_url: &config.base_url,
-        pages: &pages,
-        directories: &dirs,
-        data: &data,
-    })
-    .map_err(|e| Error::Message(e.to_string()))?;
-    let mut context = tera::Context::new();
-    context.insert_value("site", site);
+    let mut values = TemplateContext::new(config, &pages, &dirs, &data)?;
+    drop(data);
     let mut current_directory: Option<&str> = None;
-    for page in &pages {
+    for (i, page) in pages.iter().enumerate() {
         let template = page
             .attrs
             .get("template")
@@ -512,11 +569,13 @@ pub(crate) fn build<R: Resources>(
         // Directory listings can themselves be large. Keep the current listing
         // while rendering sibling pages instead of cloning it for each sibling.
         if current_directory != Some(page.directory.as_str()) {
-            context.insert("directory", &dirs[&page.directory]);
+            values
+                .context
+                .insert_value("directory", values.directories[&page.directory].clone());
             current_directory = Some(&page.directory);
         }
-        context.insert("page", page);
-        context.insert(
+        values.context.insert_value("page", values.pages[i].clone());
+        values.context.insert(
             "assets",
             &PageAssets {
                 components: components.get(&page.route.path),
@@ -524,7 +583,7 @@ pub(crate) fn build<R: Resources>(
             },
         );
         let html = engine
-            .render(template, &context)
+            .render(template, &values.context)
             .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;
         assets.generated(page.route.output.clone(), html.into_bytes())?;
     }
@@ -533,4 +592,102 @@ pub(crate) fn build<R: Resources>(
         pages,
         warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn field<'a>(value: &'a tera::Value, key: &str) -> &'a tera::Value {
+        value
+            .as_map()
+            .unwrap()
+            .get(&tera::value::Key::from(key.to_owned()))
+            .unwrap()
+    }
+
+    #[test]
+    fn template_context_shares_page_and_directory_maps_without_losing_data() {
+        let content = Path::new("/site/content");
+        let pages: Vec<_> = ["index.not", "a.not", "folder/index.not"]
+            .into_iter()
+            .map(|path| Page {
+                route: Route::new(content.join(path), content).unwrap(),
+                title: path.into(),
+                attrs: BTreeMap::from([(
+                    "nested".into(),
+                    serde_json::json!({"enabled": true, "values": [42, null, "<&>"]}),
+                )]),
+                headings: vec![],
+                html: "<strong>body</strong>".into(),
+                directory: Path::new(path)
+                    .parent()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                ancestors: vec![],
+            })
+            .collect();
+        let dirs = directories(
+            &pages,
+            &[
+                content.into(),
+                content.join("empty"),
+                content.join("folder"),
+            ],
+            content,
+        );
+        let mut values =
+            TemplateContext::new(&SiteConfig::default(), &pages, &dirs, &BTreeMap::new()).unwrap();
+        values.context.insert_value("page", values.pages[0].clone());
+        values
+            .context
+            .insert_value("directory", values.directories[""].clone());
+        let site = values.context.get("site").unwrap();
+        let shared_pages = field(site, "pages").as_array().unwrap();
+        let root = field(field(site, "directories"), "");
+        for (left, right) in [
+            (&values.pages[0], &shared_pages[0]),
+            (&values.pages[0], field(root, "index")),
+            (&values.pages[0], values.context.get("page").unwrap()),
+            (
+                &values.pages[1],
+                &field(root, "pages").as_array().unwrap()[0],
+            ),
+            (
+                &values.pages[2],
+                field(field(field(site, "directories"), "folder"), "index"),
+            ),
+            (root, values.context.get("directory").unwrap()),
+        ] {
+            assert!(std::ptr::eq(
+                left.as_map().unwrap(),
+                right.as_map().unwrap()
+            ));
+        }
+        let empty = field(field(site, "directories"), "empty");
+        assert!(field(empty, "index").is_none());
+        assert!(field(empty, "pages").as_array().unwrap().is_empty());
+        for (page, value) in pages.iter().zip(shared_pages) {
+            assert_eq!(
+                serde_json::to_value(page).unwrap(),
+                serde_json::to_value(value).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn template_context_accepts_an_empty_generated_site() {
+        let values = TemplateContext::new(
+            &SiteConfig::default(),
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let site = values.context.get("site").unwrap();
+        assert!(field(site, "pages").as_array().unwrap().is_empty());
+        assert!(field(site, "directories").as_map().unwrap().is_empty());
+        assert!(field(site, "data").as_map().unwrap().is_empty());
+    }
 }

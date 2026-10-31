@@ -98,7 +98,7 @@ site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径�
 
 === 大型数据站的模板上下文
 
-SSG 为一次构建复用整站模板上下文，每页仅更新 page、assets 和当前 directory，避免随页面数重复复制 site.pages、site.directories 与 site.data。模板中的整站查询接口保持不变；如果模板自己为每页遍历所有页面，仍会产生相应的计算量。
+SSG 为一次构建复用整站模板上下文，不先构造完整的 JSON 中间树。每页的模板值仅转换一次，site.pages、site.directories、当前 page 和 directory 共享对应的不可变值；每页仅更新当前页、资源路径及必要的目录引用。模板中的整站查询接口保持不变；如果模板自己为每页遍历所有页面，仍会产生相应的计算量。
 
 使用 `{% include 'header' %}` 引用局部模板；局部模板继承当前作用域，直接通过 page.title、site.title 访问页面和整站信息。循环使用显式变量，例如 `{% for other in site.pages %}{{other.title}}{% endfor %}`；目录映射使用 `{% for path, dir in site.directories %}{{dir.name}}{% endfor %}`。动态数据查询使用 `site.data.items[page.attrs.id]`，无需 lookup 或 @root。
 

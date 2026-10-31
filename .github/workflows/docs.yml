@@ -65,12 +65,12 @@ jobs:
         run: nix develop -c just --justfile modules/grammar/justfile build
 
       - name: Build book
-        run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- build -p notist-docs
+        run: nix develop -c cargo run --locked --release -p notist-cli --no-default-features -- build -p notist
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
-          path: dist/notist-docs-book
+          path: dist/notist-book
 
   deploy:
     name: Deploy documentation

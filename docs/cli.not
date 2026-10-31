@@ -1,0 +1,217 @@
+= Notist CLI
+
+`notist` 是发布与检查的统一入口。`build` / `serve` 在 project 或 workspace 的发布 target 上工作；`check` / `cst` / `core` / `json` / `query` / `html` 直接分析单个源码或渲染单页；`lsp` 提供 stdio 语言服务。
+
+target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模型见 [Workspace 与构建 Target](workspaces.not)。本页以下示例使用安装后的 `notist`；从源码运行时写成 `cargo run -p notist-cli -- <command>`。
+
+== 命令总览
+
+| 命令 | 作用 | 选择方式 | 主要输出 |
+| --- | --- | --- | --- |
+| `build` | 构建一个或多个发布 target | project / target / workspace | 文件树与 stdout 摘要 |
+| `serve` | 预览一个发布 target | 必须唯一 | HTTP 服务与终端 / 浏览器诊断 |
+| `check` | 解析并报告文档或模块的诊断 | 单文件或目录 | stderr 诊断 |
+| `cst` | 打印无损 CST | 单文件 | stdout 树 |
+| `core` | 打印降糖后的 core / IR | 单文件 | stdout 树 |
+| `json` | 打印 JSON analysis | 单文件 | stdout JSON |
+| `query` | 按 id / tag / ctor / function / level 选择节点 | 单文件 | stdout JSON |
+| `html` | 渲染单页 HTML 及使用的组件资源 | 单文件 | 目录与 stdout 路径 |
+| `lsp` | 通过 stdio 运行语言服务 | 编辑器 | JSON-RPC |
+
+`notist help <command>` 或 `notist <command> --help` 显示当前二进制的完整参数。
+
+== 全局选项
+
+| 选项 | 说明 |
+| --- | --- |
+| `--config <path>` | 显式指定 Notist.toml，跳过自动发现；相对当前工作目录。`build` / `serve` 接受项目或 workspace 清单；单文件命令用它提供文档扩展。 |
+| `--eval` | 让 `core` / `json` / `query` 查看求值后的表示；`core` / `json` 只对文档生效，`.notc` 模块分析不经过文档求值。不影响 `build` / `serve` / `check` / `cst` / `html`。 |
+| `-h, --help` | 打印帮助。 |
+| `-V, --version` | 打印版本。 |
+
+`--config` 只改变配置来源，不会让单文件命令运行 Site prepare；站点 prepare 只属于 Site target 的构建和预览。
+
+== 配置发现
+
+`build` / `serve` 从当前目录向上寻找最近的 Notist.toml。找到的 manifest 若声明 `[workspace]`，再读取成员；当前目录在成员内时，会继续向上寻找所属 workspace。单文件命令从被检查文件（或目录参数）所在目录向上寻找配置。
+
+完整规则、成员归属和 `--config` 的作用域见 [Notist.toml 配置](configuration.not#文件发现)。
+
+== 发布：notist build
+
+```sh
+notist build [--workspace | -p <project> ...] [--target <name>] [--out-dir <path>]
+```
+
+| 选项 | 说明 |
+| --- | --- |
+| `--workspace` | 构建 workspace 的所有成员；不能与 `-p` 同时使用。 |
+| `-p, --project <name>` | 只构建指定项目；可以重复。 |
+| `--target <name>` | 在选中的项目内按 target 名过滤。target 名在 workspace 内唯一。 |
+| `--out-dir <path>` | 覆盖唯一选中 target 的输出目录，相对当前工作目录。 |
+
+默认选择：
+
+- 在独立项目或成员目录中：只构建当前项目。
+- 在纯 workspace 根（没有 `[project]`）：构建全部成员。
+- 在声明了 `[project]` 的 workspace 根：默认只构建根项目；`--workspace` 构建全部成员。
+
+输出与发布：
+
+- 默认输出是 `<dist 根>/<target>/`。workspace 使用 `[workspace].dist`，独立项目使用项目目录下的 `dist/`；target 的 `output` 可以覆盖，`--out-dir` 最终覆盖。
+- `--out-dir` 要求本次只选中一个 target；整个 workspace 的构建不能共用一个输出目录。
+- 构建先预检所有选中 target 的配置与输出归属，再逐个暂存、发布。某个 target 失败会保留它的旧产物并停止后续 target；已经成功发布的其他 target 不回滚。
+- 成功时在 stdout 打印页数与绝对输出路径，例如 `22 pages → /path/dist/icy-bot-book`。
+
+```sh
+# 当前项目或当前成员
+notist build
+
+# 指定项目与 target
+notist build -p ranim-book
+notist build -p ranim-website --target ranim-website
+
+# 整个 workspace
+notist build --workspace
+
+# 单 target 临时改输出位置
+notist build -p my-book --out-dir target/preview
+```
+
+== 预览：notist serve
+
+```sh
+notist serve [-p <project> ...] [--target <name>] [--address <addr>] [--no-clear-screen]
+```
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `-p, --project <name>` | 当前项目 | 选择项目；可以重复。 |
+| `--target <name>` | 全部匹配 | 选择 target。 |
+| `--address <addr>` | `127.0.0.1:8000` | HTTP 监听地址。 |
+| `--no-clear-screen` | 关闭 | 保留每一轮构建的终端输出；重定向、管道和 CI 环境也会自动关闭清屏。 |
+
+选择规则与 `build` 相同，但结果必须恰好是一个 target；否则报 `serve requires exactly one target`。在纯 workspace 根使用 `-p` 或 `--target` 消歧。
+
+serve 在内存中生成与静态构建相同的产物，监听源文件、模板、样式、数据、配置和实际读取的模块资源。失败时保留上一次成功预览，并明确提示当前展示旧内容；修复后自动重建。预览始终使用根路径 `/`，静态构建使用 Site 的 `base_url`。
+
+```sh
+cd book && notist serve
+notist serve -p ranim-website --target ranim-website
+notist serve --config website/Notist.toml --address 127.0.0.1:9000
+```
+
+== 单文件命令
+
+单文件命令不选择 target，也不执行 Site prepare。它们使用最近 Notist.toml 的顶层文档扩展；`--config` 可以改变来源。
+
+=== check
+
+```sh
+notist check <file|dir>
+```
+
+解析并物化文档，报告全部诊断。文件参数可以是 `.not` / `.md` 文档或 `.notc` 模块；`.not` 文档还会检查本地的正文链接与锚点。参数是目录时索引该目录并检查其中的文档。
+
+诊断写到 stderr；有任何问题以非零状态退出，并用 `check: N issues in <file>` 或 `check: N issues under <dir>` 汇总。
+
+```sh
+notist check docs/README.not
+notist check docs
+notist check modules/grammar/src/lexer.notc
+```
+
+=== cst / core / json
+
+三个命令把不同层次的表示打印到 stdout：
+
+| 命令 | 输入 | 输出 |
+| --- | --- | --- |
+| `cst` | 单文件 | 无损 CST，不做名称解析或求值。 |
+| `core` | 单文件 | 降糖后的 core / IR。文档输出求值前的 Item 树；`.notc` 输出模块分析。 |
+| `json` | 单文件 | 完整 JSON analysis：语法树、AST、core 与诊断。`.notc` 输出模块 JSON。 |
+
+`--eval` 在这一组命令中只改变文档的 `core` / `json`：`core` 打印求值后的 Item，`json` 追加 `core` 与 `evaluation_diagnostics`。`.notc` 的模块分析不经过文档求值。`query` 的 `--eval` 见下一节。
+
+```sh
+notist cst docs/README.not
+notist core docs/README.not
+notist core docs/README.not --eval
+notist json docs/README.not
+notist json docs/README.not --eval
+```
+
+=== query
+
+```sh
+notist query <file> <selector>
+```
+
+在文档的表示树上按 selector 选择后代节点，输出 JSON。`--eval` 时在求值后的树上选择。
+
+| selector | 匹配 |
+| --- | --- |
+| `id:<value>` | `id` 属性等于 value 的节点。 |
+| `tag:<value>` | `tags` 中包含 value 的节点。 |
+| `ctor:<name>` | 构造函数名；扩展函数按注册名匹配，内置构造不区分 ASCII 大小写。 |
+| `function:<module.fn>` | 调用的函数身份。 |
+| `level:block` / `level:inline` | 内容层级。 |
+
+```sh
+notist query docs/README.not 'level:block'
+notist query docs/README.not 'function:notist.math'
+notist query docs/README.not 'tag:diagram' --eval
+```
+
+=== html
+
+```sh
+notist html <file> [--out-dir <dir>]
+```
+
+渲染单个文档为 HTML，并把实际使用的组件资源写入目录；默认输出目录是 `target/notist-html`。命令在 stdout 打印生成的 `index.html` 路径。
+
+单页导出不读取 Book 的 SUMMARY、主题或章节路由，也不执行 Site 的模板与 prepare；它适合检查组件、模块资源与单页呈现。
+
+```sh
+notist html docs/components/README.not --out-dir target/components-demo
+```
+
+=== lsp
+
+```sh
+notist lsp
+```
+
+通过 stdio 运行语言服务；`--config` 指定编辑器会话使用的清单。`lsp` 是默认 feature 的一部分；构建时关闭 `lsp` feature 则不提供该子命令。
+
+== 诊断、输出与退出码
+
+- 成功返回 `0`，失败返回非零（当前为 `1`）。
+- 诊断与人类可读错误写到 stderr；JSON、CST、core 等机器输出写到 stdout。`build` 的页数摘要在 stdout；`serve` 的地址行在 stdout，构建状态在 stderr。
+- warning 不阻止 `build` 发布；阻止构建的错误会保留旧产物（`build`）或旧预览（`serve`）。
+- 终端颜色与清屏按 TTY 自动判断；重定向、管道和 CI 不输出清屏控制序列。
+
+== 常见工作流
+
+```sh
+# 构建并部署文档
+notist build -p my-book
+
+# 本地预览，指定端口
+notist serve -p my-book --address 127.0.0.1:9000
+
+# 检查一份文档或整个目录
+notist check docs/README.not
+notist check docs
+
+# 查看 IR 与求值结果
+notist core docs/README.not
+notist json docs/README.not --eval
+
+# 按标签或函数选择节点，交给 jq 等工具
+notist query docs/README.not 'tag:diagram' | jq .
+
+# 导出单页组件示例
+notist html docs/components/README.not --out-dir target/components-demo
+```

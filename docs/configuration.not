@@ -1,0 +1,274 @@
+= Notist.toml 配置
+
+Notist.toml 是 Notist 唯一的项目清单。它声明一个 project，或一个 workspace 及其成员；project 通过 `[[book]]` / `[[site]]` 声明发布 target。target 的 name 同时是输出目录名，所以这份文件同时决定“构建什么”和“发布到哪里”。
+
+命令如何选择 target 见 [Notist CLI](cli.not)；多项目组织、构建顺序与部署边界见 [Workspace 与构建 Target](workspaces.not)；Book 与 Site 的内容规则分别见 [Notist Book](book.not) 与 [Notist SSG](ssg.not)。
+
+== 文件发现
+
+| 场景 | 规则 |
+| --- | --- |
+| `build` / `serve` | 从当前目录向上寻找最近的 Notist.toml；若它声明 `[workspace]`，再读取 members。当前目录在成员内时，会继续向上寻找所属 workspace。 |
+| 单文件命令 | `check` / `cst` / `core` / `json` / `query` / `html` 从文件（或目录参数）所在目录向上寻找最近的 Notist.toml，使用它的顶层文档扩展。 |
+| `--config <path>` | 跳过自动发现；相对当前工作目录。`build` / `serve` 接受项目或 workspace 清单，单文件命令把它作为配置来源。 |
+| 成员归属 | 在成员目录运行时，成员必须出现在 workspace 的 members 中；不支持嵌套 workspace。 |
+
+一个目录只有一份 manifest；成员各自保留自己的 Notist.toml。workspace 只组织成员与共享输出根，不合并文档配置，也不继承扩展。
+
+== 顶层结构
+
+```toml
+[workspace]        # 可选：成员列表与共享输出根
+[project]          # 项目身份
+[[book]]           # 一个 Book 发布 target
+[[site]]           # 一个 Site 发布 target
+[[extensions]]     # 项目级文档扩展，作用于该项目的所有 target
+```
+
+| 表 | 必需 | 作用 |
+| --- | --- | --- |
+| `[workspace]` | 否 | 成员列表与共享 dist 根 |
+| `[project]` | 是（纯 workspace 根除外） | 项目身份，以及默认 target 名的前缀 |
+| `[[book]]` / `[[site]]` | 每个项目至少一个 | 发布 target 及类型专属配置 |
+| `[[extensions]]` | 否 | 项目级文档扩展 |
+
+`[[book.extensions]]` 和 `[[site.extensions]]` 写在对应 target 表内，属于该 target 的扩展层，见下文“扩展”。
+
+== Workspace
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `members` | string[] | 必填 | 成员目录，相对 workspace manifest；显式列表，不解释 glob。每个成员必须有 Notist.toml 和 `[project]`。不能重复，也不能再声明 workspace。 |
+| `dist` | path | `"dist"` | 共享输出根，相对 workspace manifest。所有成员 target 默认发布到这里。 |
+
+根 manifest 同时声明 `[project]` 时，该根项目自动成为成员，不需要写进 members。纯 workspace 根（没有 `[project]`）本身没有 target；在根目录运行 `notist build` 默认构建全部成员。
+
+workspace 根清单里的 `[[extensions]]` 不会继承给成员。它只在根 manifest 同时声明 `[project]` 和 target 时，作用于根项目。
+
+== Project
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | 必填 | 项目身份。只允许 ASCII 字母、数字、`-` 和 `_`；在 workspace 内唯一。 |
+
+每个项目必须声明 `[project]`；纯 workspace 根（只组织成员、没有 target）可以没有。`name` 是项目身份，用于 `-p` 选择、默认 target 名和错误信息；输出目录由 target 名决定：
+
+```text
+name = "icy-bot"
+[[book]]                    # 没有显式 name
+→ target 名 icy-bot-book
+→ 独立项目输出 dist/icy-bot-book/
+```
+
+== 发布 Target 的公共字段
+
+`[[book]]` 和 `[[site]]` 共用以下字段。类型由所在表决定，一个 target 只有一种类型。
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `name` | string | `<project>-<kind>` | target 名，也是输出目录名。kind 为 `book` 或 `site`。整个 workspace 内唯一。 |
+| `root` | path | `"."` | target 根，也是 Vault / resource root；相对项目 manifest。必须是现有目录。 |
+| `output` | path | `<dist>/<name>` | 发布目录；相对 target root，也可以是绝对路径。覆盖共享输出根下的默认位置。 |
+
+target 名一旦被 CI 或部署配置引用就应保持稳定。默认名已经包含项目名，单 target 项目通常不需要显式写 `name`；一个项目声明多个同类 target 时才需要区分。
+
+== Book target
+
+除公共字段外，Book target 还接受：
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `title` | string | `"Book"` | 页面标题。 |
+| `include` | string[] | `["**"]` | 参与发现的 Vault 相对 glob；`*` 不跨目录，`**` 跨目录。 |
+| `exclude` | string[] | `[]` | 排除的 Vault 相对 glob；规则与 include 相同。 |
+| `theme` | path | 内置主题 | 含 `index.hbs` 与 `assets/` 的主题目录，相对 root。 |
+| `additional-css` | path[] | `[]` | 按声明顺序在主题样式之后加载。 |
+| `additional-js` | path[] | `[]` | 在主题脚本之后延迟加载。 |
+| `[[book.mounts]]` | table[] | `[]` | 把 Vault 外的目录挂进书籍命名空间。 |
+
+`[[book.mounts]]` 的字段：
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `source` | path | 必填 | 外部目录，相对 root 或绝对路径；必须存在且不能与 Vault 互相包含。 |
+| `path` | path | 必填 | 书籍内的非空相对目录；不能是绝对路径、包含 `..`、占用 `_notist`，也不能与其它挂载或 Vault 已有路径重叠。 |
+
+include / exclude 的候选范围、SUMMARY 选择、挂载与路由语义见 [Notist Book](book.not)。
+
+== Site target
+
+除公共字段外，Site target 还接受：
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `title` | string | `"Site"` | 站点标题。 |
+| `base_url` | string | `"/"` | 静态构建的链接前缀：HTTP(S) URL 或根相对路径；不能带 query 或 fragment。 |
+| `content` | path | `"content"` | 内容目录，相对 root。 |
+| `theme` | path | 内置主题 | 含 `templates/`、`static/` 和可选 `sass/` 的主题包。 |
+| `templates` | path | `"templates"` | 覆盖主题模板的目录。 |
+| `static_dir` | path | `"static"` | 复制到输出根的静态资源目录。 |
+| `data` | path | `"data"` | TOML / JSON 数据目录，以 `site.data` 暴露。 |
+| `sass` | path | `"sass"` | 顶层 `.scss` / `.sass` 编译入口；partial 只作为输入。 |
+| `template` | string | `"page"` | 页面模板名。 |
+| `[[site.extensions]]` | table[] | `[]` | 站点 prepare 扩展，见“扩展”。 |
+
+内容映射、模板上下文、主题资源与站点扩展协议见 [Notist SSG](ssg.not)。
+
+== 扩展
+
+扩展按输入与阶段分三层，可以同时写在同一份清单里：
+
+| 表 | 作用范围 | 阶段 | 用途 |
+| --- | --- | --- | --- |
+| `[[extensions]]` | 项目的所有 target | 每份文档的 `before_check` / `after_check` / `after_evaluate` | 修改表达式、检查语义或编辑求值结果 |
+| `[[book.extensions]]` | 单个 Book target | 同上，追加在项目级之后 | 只对这本书生效的文档扩展 |
+| `[[site.extensions]]` | 单个 Site target | prepare，一次构建运行一次 | 生成或修改整站源码与 `site.data` |
+
+文档扩展的字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `kind` | `"replace"` / `"command"` | 必填。 |
+| `imports` | table | 仅 replace：别名到模块路径的映射，路径相对项目 manifest。 |
+| `from` / `to` | string | 仅 replace：替换的函数身份。 |
+| `command` | string[] | 仅 command：程序与参数，不经过 shell。 |
+| `stages` | string[] | 仅 command：`before_check` / `after_check` / `after_evaluate` 的非空唯一子集。 |
+
+`replace` 不接受 `command` / `stages`；`command` 不接受 `imports` / `from` / `to`。
+
+站点扩展当前只有 command 形式：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `kind` | `"command"` | 当前唯一形式。 |
+| `command` | string[] | 程序与参数，不经过 shell。 |
+| `watch` | path[] | 相对 site root 的额外输入；命令失败时也会监听。 |
+
+执行顺序、stdio 请求 / 响应与失败处理见 [扩展 Notist](extensions.not)；站点协议见 [Notist SSG](ssg.not#站点扩展-experimental)。
+
+一个同时使用三层的例子：
+
+```toml
+[project]
+name = "example"
+
+# 项目级文档扩展：所有 target 的文档都经过这里。
+[[extensions]]
+kind = "replace"
+imports = { typst = "modules/typst/lib.notc" }
+from = "notist.math"
+to = "typst.math"
+
+[[book]]
+name = "example-book"
+
+# 只对这本书追加的文档扩展。
+[[book.extensions]]
+kind = "command"
+command = ["python3", "scripts/check_book.py"]
+stages = ["after_check"]
+
+[[site]]
+name = "example-site"
+
+# 站点 prepare：一次构建运行一次。
+[[site.extensions]]
+kind = "command"
+command = ["python3", "scripts/generate.py"]
+watch = ["Cargo.toml", "examples"]
+```
+
+== 路径基准
+
+| 配置 | 相对基准 |
+| --- | --- |
+| `[workspace].members`、`[workspace].dist` | workspace manifest 所在目录 |
+| target 的 `root` | 项目 manifest 所在目录 |
+| Book / Site 的 `include`、`exclude`、`theme`、`content`、`templates`、`static_dir`、`data`、`sass`、`additional-css`、`additional-js` | target root |
+| `output` | target root（绝对路径除外） |
+| `mounts.source` | target root（绝对路径除外） |
+| 文档扩展的 `imports` 与命令 CWD | 声明它的项目 manifest 目录 |
+| 站点扩展的 `command` CWD 与 `watch` | site target root |
+| `--config`、`--out-dir` | 当前工作目录 |
+
+源码 `#import` 与正文相对链接仍按真实来源文件解析；target 的 `root` 不会改变这些基准。
+
+== 输出
+
+默认输出是 `dist 根 / target 名`：
+
+```text
+workspace 成员:  <workspace manifest>/<dist>/<target>/
+独立项目:        <project manifest>/dist/<target>/
+```
+
+目录名就是 target 名，dist 下是一层平铺的发布根，不再有 `dist/<project>/` 这一级。`output` 可以覆盖这个位置；`--out-dir` 只对唯一选中的 target 生效，相对当前工作目录，并最终覆盖 `output`。
+
+发布是整目录替换：输出目录必须为空，或包含有效的 `_notist/publication.json`（`notist-publication` v1）；重建会删除旧产物中已不再发布的文件。输出目录不能与其他 target 的输出相同或互相包含，也不能覆盖任何成员的输入根或配置文件。构建先校验所有选中的 target，再逐个暂存并发布；某个 target 失败会保留它的旧产物并停止后续构建，已经发布的其他 target 不回滚。
+
+== 校验
+
+加载清单时检查：
+
+- project 名与 target 名的字符集；project 在 workspace 内唯一，target 在整个 workspace 内唯一。
+- 每个项目至少声明一个 `[[book]]` 或 `[[site]]`。
+- workspace 成员存在、没有重复、没有嵌套 workspace；每个成员都有 `[project]`。
+- target 的 `root` 存在且是目录。
+- 输出目录不与任何输入根或配置文件重叠，也不与其它 target 的输出相同或互相包含。
+- `base_url` 是 HTTP(S) URL 或根相对路径；Site 的路径字段非空。
+- 文档扩展的 `replace` / `command` 字段组合合法；站点扩展有非空程序。
+
+== 最小示例
+
+独立 Book：
+
+```toml
+[project]
+name = "icy-bot"
+
+[[book]]
+title = "Icy Bot"
+root = "docs"
+```
+
+在项目根目录构建，产物是 `dist/icy-bot-book/`。
+
+workspace：
+
+```toml
+# Notist.toml
+[workspace]
+members = ["book", "website"]
+dist = "dist"
+```
+
+```toml
+# book/Notist.toml
+[project]
+name = "ranim-book"
+
+[[book]]
+name = "ranim-book"
+```
+
+```toml
+# website/Notist.toml
+[project]
+name = "ranim-website"
+
+[[site]]
+name = "ranim-website"
+base_url = "https://azurice.github.io/ranim/"
+```
+
+构建产物是 `dist/ranim-book/` 与 `dist/ranim-website/`。
+
+== 从旧配置迁移
+
+旧版 `[book]` / `[ssg]` 单表配置和 `notist book` / `notist ssg` 子命令已经移除，加载时会提示迁移，不提供隐式兼容。
+
+- 添加 `[project]`，把 `[book]` 改成 `[[book]]`，`[ssg]` 改成 `[[site]]`。
+- `ssg.extensions` 改成 `site.extensions`；顶层文档扩展保留为 `[[extensions]]`，Book 专属规则移入 `[[book.extensions]]`。
+- 输出从 `dist/<project>/<target>/` 变为 `dist/<target>/`；同步 CI 上传路径、部署配置和 `.gitignore`。
+- target 名改为 workspace 全局唯一；多个项目同名时显式设置 `name`。
+- 脚本统一使用 `notist build` / `notist serve`，通过 `--config`、`-p`、`--target` 选择。

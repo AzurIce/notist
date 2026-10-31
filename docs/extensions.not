@@ -1,6 +1,6 @@
 = 扩展 Notist（Experimental）
 
-Notist CLI 负责构建流程，扩展在指定阶段接收输入并返回修改结果。Rust 实现可以注册到构建驱动，外部程序通过 stdin / stdout 交换 JSON；使用外部扩展时，仍通过 notist 命令检查或构建，无须自行编写编译驱动。
+Notist CLI 负责构建流程，扩展在指定阶段接收输入并返回修改结果。Rust 实现可以注册到构建驱动，外部程序通过 stdin / stdout 交换 JSON；使用外部扩展时，仍通过 notist 命令检查或构建，无须自行编写编译驱动。命令行入口见 [Notist CLI](cli.not)，配置字段与路径基准见 [Notist.toml 配置](configuration.not#扩展)。
 
 通用文档扩展与 SSG 站点扩展目前均为实验性接口，阶段、Rust API、stdio 协议及序列化表示可能调整。version = 1 标识当前协议格式，不代表兼容性承诺。站点扩展使用 Cargo examples 生成场景验证；文档级通用 hooks 尚缺实际项目用例验证。
 

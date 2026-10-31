@@ -3,12 +3,14 @@
 Notist 是基于内容树的文档工具链，支持 .not 与 Markdown，共享内容函数、诊断和 HTML 输出。
 
 - [Documentation](docs/README.not)：语法、内置函数、IR、模块与工具使用。
-- [Notist Book](docs/book.not)：书籍配置、README 路由、SUMMARY.not 阅读结构、主题与本地预览。
+- [Notist CLI](docs/cli.not)：build / serve、单文件检查与调试命令、target 选择与诊断。
+- [Notist.toml 配置](docs/configuration.not)：workspace / project / book / site / extensions 的字段、路径基准与输出规则。
+- [Notist Book](docs/book.not)：书籍阅读结构、README 路由、SUMMARY.not、主题与本地预览。
 - [Notist SSG](docs/ssg.not)：目录映射、站点模板、主题资源与网站构建。
 - [Workspace 与构建 Target](docs/workspaces.not)：多项目组织、Book / Site targets 与统一构建。
 - [本地模块](docs/modules.not)：相对路径 import、词法命名空间与组件资源。
 
 ```sh
-cargo run -p notist-cli -- build -p notist-docs
-cargo run -p notist-cli -- serve -p notist-docs
+cargo run -p notist-cli -- build -p notist
+cargo run -p notist-cli -- serve -p notist
 ```

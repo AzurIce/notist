@@ -1,5 +1,5 @@
 [project]
-name = "notist-docs"
+name = "notist"
 
 [[book]]
 title = "Notist"

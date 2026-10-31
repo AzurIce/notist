@@ -6,6 +6,14 @@
 
 - [Cook Book](cookbook/README.not)
   - [从 Cargo examples 生成站点（Experimental）](cookbook/ssg-extensions.not)
+
+= 工具与配置
+
+- [Notist CLI](cli.not)
+- [Notist.toml 配置](configuration.not)
+- [Workspace 与构建 Target](workspaces.not)
+- [Notist Book](book.not)
+- [Notist SSG](ssg.not)
 - [扩展 Notist（Experimental）](extensions.not)
 
 = Markup
@@ -34,9 +42,6 @@
   - [内容函数与输出绑定](designs/content-functions.not)
   - [文档扩展（Experimental）](designs/extensions.not)
 - [HTML Rendering](html.not)
-- [Notist Book](book.not)
-- [Notist SSG](ssg.not)
-- [Workspace 与构建 Target](workspaces.not)
 - [Draft](draft.not)
 
 ---

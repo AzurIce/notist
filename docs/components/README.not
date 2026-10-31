@@ -141,4 +141,4 @@ web/tests/browser.cjs 验证此 Example 的静态页面、组件更新与重连�
 
 在相同的浏览器测试环境中执行 `node web/tests/diagrams.cjs`，验证同一正文通过配置切换 Pele / Mermaid、保留项目函数身份，并且无需加载声明本身的 Web Component。
 
-web/tests/status.cjs 验证三种状态的块、行内与 cell 样式、嵌套内容、主题、窄屏、打印和无 JavaScript 呈现。运行前执行 `cargo run -p notist-cli -- build -p notist-docs --out-dir target/status-preview` 并通过 HTTP 服务仓库；Playwright、NOTIST_TEST_URL 与 NOTIST_CHROMIUM 的约定相同。
+web/tests/status.cjs 验证三种状态的块、行内与 cell 样式、嵌套内容、主题、窄屏、打印和无 JavaScript 呈现。运行前执行 `cargo run -p notist-cli -- build -p notist --out-dir target/status-preview` 并通过 HTTP 服务仓库；Playwright、NOTIST_TEST_URL 与 NOTIST_CHROMIUM 的约定相同。

@@ -34,6 +34,21 @@ struct Directory {
     directories: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct SiteContext<'a> {
+    title: &'a str,
+    base_url: &'a str,
+    pages: &'a [Page],
+    directories: &'a BTreeMap<String, Directory>,
+    data: &'a BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct PageAssets<'a> {
+    components: Option<&'a String>,
+    highlight: String,
+}
+
 fn directories(pages: &[Page], paths: &[PathBuf], content: &Path) -> BTreeMap<String, Directory> {
     let mut result = BTreeMap::new();
     for directory in paths.iter().map(|p| p.strip_prefix(content).unwrap()) {
@@ -474,15 +489,19 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     let dirs = directories(&pages, &source_dirs, &content);
-    let directory_data = serde_json::to_value(&dirs).map_err(|e| Error::Message(e.to_string()))?;
     // A site can contain tens of thousands of generated pages and large data
-    // indexes. Serialize its shared context once, not once per output page.
-    let mut context = tera::Context::from_serialize(&serde_json::json!({
-        "site": { "title": config.title, "base_url": config.base_url,
-            "pages": pages, "directories": directory_data, "data": data },
-        "page": null, "directory": null, "assets": null,
-    }))
+    // indexes. Convert borrowed data straight to Tera without an intermediate
+    // owned JSON tree, and keep that shared context for the whole build.
+    let site = tera::Value::try_from_serializable(&SiteContext {
+        title: &config.title,
+        base_url: &config.base_url,
+        pages: &pages,
+        directories: &dirs,
+        data: &data,
+    })
     .map_err(|e| Error::Message(e.to_string()))?;
+    let mut context = tera::Context::new();
+    context.insert_value("site", site);
     let mut current_directory: Option<&str> = None;
     for page in &pages {
         let template = page
@@ -493,16 +512,16 @@ pub(crate) fn build<R: Resources>(
         // Directory listings can themselves be large. Keep the current listing
         // while rendering sibling pages instead of cloning it for each sibling.
         if current_directory != Some(page.directory.as_str()) {
-            context.insert("directory", &directory_data[&page.directory]);
+            context.insert("directory", &dirs[&page.directory]);
             current_directory = Some(&page.directory);
         }
         context.insert("page", page);
         context.insert(
             "assets",
-            &serde_json::json!({
-                "components": components.get(&page.route.path),
-                "highlight": relative_url(&page.route.output, &highlight_css, false),
-            }),
+            &PageAssets {
+                components: components.get(&page.route.path),
+                highlight: relative_url(&page.route.output, &highlight_css, false),
+            },
         );
         let html = engine
             .render(template, &context)

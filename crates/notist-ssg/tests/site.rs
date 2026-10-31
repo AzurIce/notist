@@ -106,6 +106,47 @@ fn shared_template_context_keeps_page_directory_and_root_lookups_isolated() {
 }
 
 #[test]
+fn shared_context_preserves_page_bodies_directory_indexes_and_nested_data() {
+    let mut vault = vault(&[
+        ("content/index.not", "= Home"),
+        ("content/folder/index.not", "= Folder"),
+        ("content/folder/leaf.not", "= Leaf"),
+        ("content/empty/asset.txt", "asset"),
+        (
+            "data/values.json",
+            r#"{"nested":{"enabled":true,"number":42,"text":"<unsafe>"},"list":["one","two"]}"#,
+        ),
+        (
+            "templates/page.tera",
+            "{{page.title}}|{{site.directories[''].index.title}}|{{site.directories.folder.index.title}}|{% for sibling in site.directories.folder.pages %}{{sibling.title}};{% endfor %}|{{directory.path}}/{% if directory.index %}{{directory.index.title}}{% endif %}|{% for other in site.pages %}{% if other.title == page.title %}{{other.html | safe}}/{{other.headings[0].anchor}}/{{other.route.url}}{% endif %}{% endfor %}|{{site.data.values.nested.enabled}}/{{site.data.values.nested.number}}/{{site.data.values.nested.text}}/{{site.data.values.list[1]}}|{{site.directories.empty.name}}",
+        ),
+    ]);
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    for (path, title, directory, heading) in [
+        ("index.html", "Home", "/Home", "home"),
+        ("folder/index.html", "Folder", "folder/Folder", "folder"),
+        ("folder/leaf.html", "Leaf", "folder/Folder", "leaf"),
+    ] {
+        let output = html(&site, path);
+        assert!(
+            output.starts_with(&format!("{title}|Home|Folder|Leaf;|{directory}|")),
+            "{output}"
+        );
+        assert!(
+            output.contains(&format!("<h1 id=\"{heading}\">{title}</h1>"))
+                && output.contains(&format!("</section>/{heading}/")),
+            "{output}"
+        );
+        assert!(
+            output.ends_with("|true/42/&lt;unsafe&gt;/two|empty"),
+            "{output}"
+        );
+    }
+}
+
+#[test]
 fn tera_inheritance_and_native_expressions_keep_html_escaped() {
     let mut vault = vault(&[
         ("content/index.not", "@!(title: \"<Home> & title\")\n= Body"),

@@ -6,6 +6,7 @@ use notist_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 /// External function identities actually visited by rendering an evaluated tree.
 /// Errors hide their children; expanded Code boundaries render only their result.
@@ -119,24 +120,30 @@ pub enum Target {
 
 #[derive(Debug, Clone)]
 pub struct HtmlRegistry {
-    targets: BTreeMap<FunctionId, Target>,
+    targets: Arc<BTreeMap<FunctionId, Target>>,
 }
 impl Default for HtmlRegistry {
     fn default() -> Self {
-        let mut registry = Self {
-            targets: BTreeMap::new(),
-        };
-        for definition in builtins::registry().functions() {
-            registry
-                .register(
-                    definition,
-                    Target::Native(
-                        Ctor::from_name(&definition.id.name).expect("native constructor"),
-                    ),
-                )
-                .expect("valid native HTML target");
+        static NATIVE: OnceLock<Arc<BTreeMap<FunctionId, Target>>> = OnceLock::new();
+        let targets = NATIVE.get_or_init(|| {
+            let mut registry = Self {
+                targets: Arc::new(BTreeMap::new()),
+            };
+            for definition in builtins::registry().functions() {
+                registry
+                    .register(
+                        definition,
+                        Target::Native(
+                            Ctor::from_name(&definition.id.name).expect("native constructor"),
+                        ),
+                    )
+                    .expect("valid native HTML target");
+            }
+            registry.targets
+        });
+        Self {
+            targets: targets.clone(),
         }
-        registry
     }
 }
 impl HtmlRegistry {
@@ -257,7 +264,9 @@ impl HtmlRegistry {
             }
             target => target,
         };
-        self.targets.insert(definition.id.clone(), target);
+        // Native-only pages share the validated table. A page's first custom
+        // binding detaches it without changing any other page or the defaults.
+        Arc::make_mut(&mut self.targets).insert(definition.id.clone(), target);
         Ok(())
     }
 }

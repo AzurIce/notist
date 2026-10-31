@@ -69,6 +69,48 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
     );
 }
 #[test]
+fn html_registry_shares_native_targets_but_isolates_custom_bindings() {
+    use notist_html::components::Target;
+
+    let original = HtmlRegistry::default();
+    let other = HtmlRegistry::default();
+    let native = FunctionId::new("notist", "text");
+    assert!(std::ptr::eq(
+        original.get(&native).unwrap(),
+        other.get(&native).unwrap()
+    ));
+
+    let module = definitions();
+    let definition = &module.functions[0];
+    let mut first = original.clone();
+    let mut second = original.clone();
+    first.bind_component(definition, "first.js").unwrap();
+    second.bind_component(definition, "second.js").unwrap();
+    assert!(original.get(&definition.id).is_none());
+    assert!(other.get(&definition.id).is_none());
+    for (registry, url) in [(&first, "first.js"), (&second, "second.js")] {
+        let Some(Target::Component(component)) = registry.get(&definition.id) else {
+            panic!("missing component");
+        };
+        assert_eq!(component.module.url(), Some(url));
+        assert!(registry.get(&native).is_some());
+    }
+    assert!(first.bind_component(definition, "duplicate.js").is_err());
+    assert!(
+        first
+            .register(
+                notist::builtins::registry().get(&native).unwrap(),
+                Target::Native(notist::Ctor::Text),
+            )
+            .is_err()
+    );
+    let mut invalid = definition.clone();
+    invalid.id.name = "invalid".into();
+    assert!(first.bind_component(&invalid, "").is_err());
+    assert!(first.get(&invalid.id).is_none());
+}
+
+#[test]
 fn complex_values_preserve_type_order_and_exact_numeric_bits() {
     let mut dict = Dict::default();
     dict.insert("second", Value::Int(i64::MAX));

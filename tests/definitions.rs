@@ -68,6 +68,49 @@ fn registry_is_atomic_and_indexes_definition_modules() {
     );
 }
 #[test]
+fn registry_clones_share_definitions_without_sharing_module_installations() {
+    let original = builtins::registry();
+    let mut first = original.clone();
+    let mut second = original.clone();
+    let native = FunctionId::new("notist", "text");
+    assert!(std::ptr::eq(
+        first.get(&native).unwrap(),
+        original.get(&native).unwrap()
+    ));
+    let module = |name: &str| {
+        Pipeline::default()
+            .compile_module(
+                "content.not",
+                name,
+                &format!("{name}/lib.notc"),
+                "fn label() -> InlineContent;",
+            )
+            .unwrap()
+            .definitions
+    };
+    first.register(module("one")).unwrap();
+    second.register(module("two")).unwrap();
+    assert!(first.function("two", "label").is_none());
+    assert!(second.function("one", "label").is_none());
+    assert!(original.function("one", "label").is_none());
+    assert!(std::ptr::eq(
+        first.get(&native).unwrap(),
+        second.get(&native).unwrap()
+    ));
+    let mut fork = first.clone();
+    fork.register(module("three")).unwrap();
+    assert!(std::ptr::eq(
+        first.function("one", "label").unwrap(),
+        fork.function("one", "label").unwrap()
+    ));
+    assert!(first.function("three", "label").is_none());
+    let count = fork.functions().count();
+    assert!(fork.register(module("one")).is_err());
+    assert!(fork.register(module("notist")).is_err());
+    assert_eq!(fork.functions().count(), count);
+}
+
+#[test]
 fn invalid_native_defaults_never_install_partial_modules() {
     let mut m = DefinitionModule::new("native");
     m.functions.push(FunctionDef::new(

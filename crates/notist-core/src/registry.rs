@@ -2,10 +2,15 @@
 use crate::definitions::{DefinitionModule, FunctionDef, FunctionId, validate_module};
 use crate::diag::{Diagnostic, Phase};
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+type ModuleFunctions = BTreeMap<String, FunctionDef>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
-    modules: BTreeMap<String, BTreeMap<String, FunctionDef>>,
+    // Cloning a Context shares definitions. Installing a module detaches only
+    // the module index; existing modules and their checked signatures stay shared.
+    modules: Arc<BTreeMap<String, Arc<ModuleFunctions>>>,
 }
 impl Registry {
     pub fn new() -> Self {
@@ -58,13 +63,15 @@ impl Registry {
         if !errors.is_empty() {
             return Err(errors);
         }
-        self.modules.insert(
+        Arc::make_mut(&mut self.modules).insert(
             module.module,
-            module
-                .functions
-                .into_iter()
-                .map(|f| (f.id.name.clone(), f))
-                .collect(),
+            Arc::new(
+                module
+                    .functions
+                    .into_iter()
+                    .map(|f| (f.id.name.clone(), f))
+                    .collect(),
+            ),
         );
         Ok(())
     }

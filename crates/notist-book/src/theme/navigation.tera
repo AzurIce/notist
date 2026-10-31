@@ -1,0 +1,19 @@
+{% component book_navigation(node) %}
+{% if node.kind == "part" %}
+<li class="nav-part"><span role="heading" aria-level="2">{{node.title}}</span></li>
+{% elif node.kind == "separator" %}
+<li class="nav-separator" role="presentation"><hr></li>
+{% else %}
+<li class="nav-item">
+  {% if node.children %}
+  <div class="nav-label">{% include 'navigation-label' %}</div>
+  <details class="nav-branch"{% if node.expanded %} open{% endif %}>
+    <summary class="nav-disclosure" aria-label="Toggle {{node.title}}"></summary>
+    <ul class="nav-children">{% for child in node.children %}{{<book_navigation node={child}/>}}{% endfor %}</ul>
+  </details>
+  {% else %}
+  {% include 'navigation-label' %}
+  {% endif %}
+</li>
+{% endif %}
+{% endcomponent book_navigation %}

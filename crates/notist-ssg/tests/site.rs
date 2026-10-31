@@ -54,14 +54,14 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
         ),
         ("content/folder/a.not", "= A"),
         ("content/empty/asset.txt", "asset"),
-        ("theme/templates/home.hbs", "theme"),
-        ("theme/templates/part.hbs", "{{site.data.example.name}}"),
+        ("theme/templates/home.tera", "theme"),
+        ("theme/templates/part.tera", "{{site.data.example.name}}"),
         ("theme/static/style.css", "theme css"),
         ("static/style.css", "site css"),
         ("data/example.toml", "name='Example'\ncode='**strong**'"),
         (
-            "templates/home.hbs",
-            "{{page.title}}|{{> part}}|{{url 'style.css'}}|{{#each site.directories}}{{path}};{{/each}}|{{{markdown site.data.example.code}}}|{{{page.html}}}",
+            "templates/home.tera",
+            "{{page.title}}|{% include 'part' %}|{{url(path='style.css')}}|{% for path, dir in site.directories %}{{dir.path}};{% endfor %}|{{markdown(source=site.data.example.code) | safe}}|{{page.html | safe}}",
         ),
     ]);
     let config =
@@ -75,6 +75,82 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
     assert!(home.contains("<strong>strong</strong>"));
     assert!(home.contains("<h1 id=\"body\">Body</h1>"));
     assert_eq!(site.files[Path::new("style.css")], b"site css");
+}
+
+#[test]
+fn shared_template_context_keeps_page_directory_and_root_lookups_isolated() {
+    let mut vault = vault(&[
+        ("content/index.not", "= Home"),
+        ("content/items/a.not", "@!(id: \"a\")\n= A"),
+        ("content/items/b.not", "@!(id: \"b\")\n= B"),
+        ("content/other/c.not", "@!(id: \"c\")\n= C"),
+        (
+            "data/items.json",
+            r#"{"a":"Apple & pear","b":"Berry","c":"Cherry"}"#,
+        ),
+        (
+            "templates/page.tera",
+            "{{page.title}}|{{directory.path}}|{% for sibling in directory.pages %}{{sibling.title}};{% endfor %}|{% if page.attrs.id %}{{site.data.items[page.attrs.id]}}/{{page.title}}{% endif %}|{% for other in site.pages %}{{other.title}};{% endfor %}|{{assets.highlight}}",
+        ),
+    ]);
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    assert!(html(&site, "items/a.html").starts_with("A|items|A;B;|Apple &amp; pear/A|"));
+    assert!(html(&site, "items/b.html").starts_with("B|items|A;B;|Berry/B|"));
+    assert!(html(&site, "other/c.html").starts_with("C|other|C;|Cherry/C|"));
+    for path in ["items/a.html", "items/b.html", "other/c.html"] {
+        assert!(html(&site, path).ends_with("../_notist/highlight.css"));
+    }
+    assert!(html(&site, "index.html").ends_with("_notist/highlight.css"));
+}
+
+#[test]
+fn tera_inheritance_and_native_expressions_keep_html_escaped() {
+    let mut vault = vault(&[
+        ("content/index.not", "@!(title: \"<Home> & title\")\n= Body"),
+        (
+            "templates/page.tera",
+            "{% extends 'layouts/base' %}{% block body %}{% if page.title == '<Home> & title' and page.title is starting_with(pat='<') %}{{page.title ~ '!'}}{% endif %}|{{markdown(source='**bold**')}}|{{markdown(source='**bold**') | safe}}|{{url(path='next.html?a=1&b=2')}}|{{page.html | safe}}{% endblock body %}",
+        ),
+        (
+            "templates/layouts/base.tera",
+            "<main>{% block body %}base{% endblock body %}</main>",
+        ),
+    ]);
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    let output = html(&site, "index.html");
+    assert!(
+        output.starts_with("<main>&lt;Home&gt; &amp; title!|"),
+        "{output}"
+    );
+    assert!(output.contains("&lt;strong&gt;bold&lt;/strong&gt;"));
+    assert!(output.contains("<strong>bold</strong>"));
+    assert!(output.contains("next.html?a=1&amp;b=2"));
+    assert!(output.contains("<h1 id=\"body\">Body</h1>"));
+}
+
+#[test]
+fn tera_errors_and_unsafe_helper_urls_abort_publication() {
+    for template in [
+        "{{page.missing}}",
+        "{% if page.title %}unclosed",
+        "{{url(path='javascript:alert(1)')}}",
+        "{{url()}}",
+        "{{markdown()}}",
+        "{% include 'missing' %}",
+    ] {
+        let result = Builder::default().build(
+            &mut vault(&[
+                ("content/index.not", "= Home"),
+                ("templates/page.tera", template),
+            ]),
+            &SiteConfig::default(),
+        );
+        assert!(result.is_err(), "{template}");
+    }
 }
 
 #[test]
@@ -203,8 +279,8 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
             "@(id: \"explicit\")\n= One\n\n== One\n\n== One\n\n```rust\nlet x = 1 < 2;\n```",
         ),
         (
-            "templates/page.hbs",
-            "<link rel=\"stylesheet\" href=\"{{assets.highlight}}\">{{{page.html}}}{{{markdown site.data.code.source}}}",
+            "templates/page.tera",
+            "<link rel=\"stylesheet\" href=\"{{assets.highlight}}\">{{page.html | safe}}{{markdown(source=site.data.code.source) | safe}}",
         ),
         ("data/code.toml", "source='''```rust\nfn main() {}\n```'''"),
     ]);

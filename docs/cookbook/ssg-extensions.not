@@ -15,7 +15,7 @@ project/
     Notist.toml
     content/index.not
     scripts/examples.py
-    templates/page.hbs
+    templates/page.tera
 ```
 
 准备一个最小 Cargo.toml：
@@ -126,23 +126,23 @@ input.documents 的键相对于 content 目录，所以 examples/hello.md 的绝
 
 == 模板消费数据
 
-website/templates/page.hbs：
+website/templates/page.tera：
 
-```handlebars
+```tera
 <!doctype html>
 <html>
   <head><meta charset="utf-8"><title>{{page.title}} · {{site.title}}</title></head>
   <body>
-    <nav><a href="{{url 'index.html'}}">Home</a></nav>
+    <nav><a href="{{url(path='index.html')}}">Home</a></nav>
     <main>
-      {{{page.html}}}
-      {{#with (lookup site.data.examples page.attrs.example)}}
-        <pre><code>{{code}}</code></pre>
-      {{/with}}
+      {{page.html | safe}}
+      {% if page.attrs.example %}
+        <pre><code>{{site.data.examples[page.attrs.example].code}}</code></pre>
+      {% endif %}
     </main>
-    {{#if assets.components}}
+    {% if assets.components %}
       <script type="module" src="{{assets.components}}"></script>
-    {{/if}}
+    {% endif %}
   </body>
 </html>
 ```

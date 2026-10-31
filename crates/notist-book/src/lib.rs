@@ -60,13 +60,8 @@ impl From<ResourceError> for Error {
         Self::Resource(error)
     }
 }
-impl From<handlebars::TemplateError> for Error {
-    fn from(error: handlebars::TemplateError) -> Self {
-        Self::Template(error.to_string())
-    }
-}
-impl From<handlebars::RenderError> for Error {
-    fn from(error: handlebars::RenderError) -> Self {
+impl From<tera::Error> for Error {
+    fn from(error: tera::Error) -> Self {
         Self::Template(error.to_string())
     }
 }

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{page.title}} · {{site.title}}</title><link rel="stylesheet" href="{{url(path='style.css')}}"></head>
+<body>
+  <header><a href="{{url(path='/')}}">{{site.title}}</a></header>
+  <nav aria-label="Pages">{% for other in site.pages %}<a href="{{url(path=other.route.url)}}">{{other.title}}</a> {% endfor %}</nav>
+  <main>{{page.html | safe}}</main>
+  {% if assets.components %}<script type="module" src="{{assets.components}}"></script>{% endif %}
+</body>
+</html>

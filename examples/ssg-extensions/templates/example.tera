@@ -1,0 +1,7 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}}</title></head>
+<body><main>
+  <a href="{{url(path='examples/')}}">Examples</a>
+  {{page.html | safe}}
+  {{markdown(source=site.data[page.attrs.example].code) | safe}}
+</main></body></html>

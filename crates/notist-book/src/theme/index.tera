@@ -17,8 +17,8 @@
       if (Number.isFinite(width) && width > 0) root.style.setProperty('--navigation-user-width', `${width}px`);
     } catch (_) {}
   </script>
-  {{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
-  {{#each assets.scripts}}<script src="{{this}}" defer></script>{{/each}}
+  {% for style in assets.styles %}<link rel="stylesheet" href="{{style}}">{% endfor %}
+  {% for script in assets.scripts %}<script src="{{script}}" defer></script>{% endfor %}
 </head>
 <body>
   <a class="skip-link" href="#page-content">Skip to content</a>
@@ -34,35 +34,35 @@
   <div class="book-layout">
     <nav id="book-nav" class="book-navigation" aria-label="Contents">
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
-      <ul class="navigation-tree">{{#each navigation}}{{> navigation this}}{{/each}}</ul>
+      <ul class="navigation-tree">{% include 'navigation' %}{% for node in navigation %}{{<book_navigation node={node}/>}}{% endfor %}</ul>
     </nav>
-    <script>{{{assets.navigation}}}</script>
+    <script>{{assets.navigation | safe}}</script>
     <div id="nav-resize" class="navigation-resize" role="separator" tabindex="0" aria-label="Resize contents" aria-orientation="vertical" aria-controls="book-nav" title="Drag or use arrow keys to resize contents; double-click or press Home to reset"></div>
     <main id="page-content" tabindex="-1">
-      <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{{#each breadcrumbs}}<li>{{#if current}}<span aria-current="page">{{title}}</span>{{else}}{{#if url}}<a href="{{url}}">{{title}}</a>{{else}}<span>{{title}}</span>{{/if}}{{/if}}</li>{{/each}}</ol></nav>
-      {{#if outline}}
+      <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{% for crumb in breadcrumbs %}<li>{% if crumb.current %}<span aria-current="page">{{crumb.title}}</span>{% elif crumb.url %}<a href="{{crumb.url}}">{{crumb.title}}</a>{% else %}<span>{{crumb.title}}</span>{% endif %}</li>{% endfor %}</ol></nav>
+      {% if outline %}
       <details class="mobile-outline">
         <summary>On this page <span class="outline-state" aria-hidden="true"><span class="outline-show">Show</span><span class="outline-hide">Hide</span></span></summary>
-        <ol class="outline-list">{{#each outline}}<li data-level="{{level}}"><a data-outline-link href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol>
+        <ol class="outline-list">{% for heading in outline %}<li data-level="{{heading.level}}"><a data-outline-link href="#{{heading.anchor}}">{{heading.title}}</a></li>{% endfor %}</ol>
       </details>
-      {{/if}}
-      <article class="prose">{{{page.html}}}</article>
-      {{#if previous}}
+      {% endif %}
+      <article class="prose">{{page.html | safe}}</article>
+      {% if previous %}
       <nav class="adjacent" aria-label="Page navigation">
         <a rel="prev" href="{{previous.url}}" class="adjacent-link previous"><span class="adjacent-label">Previous</span><span class="adjacent-title">{{previous.title}}</span></a>
-        {{#if next}}<a rel="next" href="{{next.url}}" class="adjacent-link next"><span class="adjacent-label">Next</span><span class="adjacent-title">{{next.title}}</span></a>{{/if}}
+        {% if next %}<a rel="next" href="{{next.url}}" class="adjacent-link next"><span class="adjacent-label">Next</span><span class="adjacent-title">{{next.title}}</span></a>{% endif %}
       </nav>
-      {{else}}{{#if next}}
+      {% elif next %}
       <nav class="adjacent" aria-label="Page navigation"><a rel="next" href="{{next.url}}" class="adjacent-link next"><span class="adjacent-label">Next</span><span class="adjacent-title">{{next.title}}</span></a></nav>
-      {{/if}}{{/if}}
+      {% endif %}
     </main>
-    {{#if outline}}
+    {% if outline %}
     <aside class="page-outline" aria-label="On this page">
-      <nav id="page-outline" aria-label="Page outline"><p class="rail-label">On this page</p><ol class="outline-list">{{#each outline}}<li data-level="{{level}}"><a data-outline-link href="#{{anchor}}">{{title}}</a></li>{{/each}}</ol></nav>
+      <nav id="page-outline" aria-label="Page outline"><p class="rail-label">On this page</p><ol class="outline-list">{% for heading in outline %}<li data-level="{{heading.level}}"><a data-outline-link href="#{{heading.anchor}}">{{heading.title}}</a></li>{% endfor %}</ol></nav>
     </aside>
-    {{/if}}
+    {% endif %}
     <footer class="book-footer"><span>{{book.title}}</span><a href="#page-content">Back to top</a></footer>
   </div>
-  {{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
+  {% if assets.components %}<script type="module" src="{{assets.components}}"></script>{% endif %}
 </body>
 </html>

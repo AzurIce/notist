@@ -1,13 +1,10 @@
 use crate::{Error, SiteConfig};
-use handlebars::{
-    Context, Handlebars, Helper, HelperDef, RenderContext, RenderError, RenderErrorReason,
-    ScopedJson,
-};
 use notist::{Resources, resources::ResourceKind};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+use tera::{Kwargs, State, Tera};
 
 pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut found = vec![];
@@ -38,94 +35,51 @@ pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathB
     Ok(found)
 }
 
-struct SiteUrl(SiteConfig);
-impl HelperDef for SiteUrl {
-    fn call_inner<'reg: 'rc, 'rc>(
-        &self,
-        h: &Helper<'rc>,
-        _: &'reg Handlebars<'reg>,
-        _: &'rc Context,
-        _: &mut RenderContext<'reg, 'rc>,
-    ) -> Result<ScopedJson<'rc>, RenderError> {
-        let path = h
-            .param(0)
-            .and_then(|p| p.value().as_str())
-            .ok_or_else(|| RenderErrorReason::Other("url expects a path string".into()))?;
-        if !notist_html::is_safe_url(path) {
-            return Err(RenderErrorReason::Other("unsafe site URL".into()).into());
-        }
-        Ok(ScopedJson::Derived(self.0.url(path).into()))
+fn markdown(source: &str) -> Result<String, tera::Error> {
+    let pipeline = notist::Pipeline::default();
+    let context = notist::Context::default();
+    let analysis = pipeline
+        .analyze("template.md", source, &context)
+        .map_err(|e| tera::Error::message(e.to_string()))?;
+    if !analysis.diagnostics().is_empty() {
+        return Err(tera::Error::message(
+            analysis
+                .diagnostics()
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
     }
+    let evaluation = pipeline.evaluate(&analysis, &context);
+    if !evaluation.diagnostics.is_empty() {
+        return Err(tera::Error::message(
+            evaluation
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    let rendered = notist_html::Renderer::new()
+        .with_code_renderer(notist_html::highlight::code)
+        .render_with_diagnostics(&evaluation.root);
+    if !rendered.diagnostics.is_empty() {
+        return Err(tera::Error::message(
+            rendered
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+    }
+    Ok(rendered.html)
 }
 
-struct Markdown;
-impl HelperDef for Markdown {
-    fn call_inner<'reg: 'rc, 'rc>(
-        &self,
-        h: &Helper<'rc>,
-        _: &'reg Handlebars<'reg>,
-        _: &'rc Context,
-        _: &mut RenderContext<'reg, 'rc>,
-    ) -> Result<ScopedJson<'rc>, RenderError> {
-        let source = h
-            .param(0)
-            .and_then(|p| p.value().as_str())
-            .ok_or_else(|| RenderErrorReason::Other("markdown expects source text".into()))?;
-        let pipeline = notist::Pipeline::default();
-        let context = notist::Context::default();
-        let analysis = pipeline
-            .analyze("template.md", source, &context)
-            .map_err(|e| RenderErrorReason::Other(e.to_string()))?;
-        if !analysis.diagnostics().is_empty() {
-            return Err(RenderErrorReason::Other(
-                analysis
-                    .diagnostics()
-                    .iter()
-                    .map(|d| d.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-            .into());
-        }
-        let evaluation = pipeline.evaluate(&analysis, &context);
-        if !evaluation.diagnostics.is_empty() {
-            return Err(RenderErrorReason::Other(
-                evaluation
-                    .diagnostics
-                    .iter()
-                    .map(|d| d.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-            .into());
-        }
-        let rendered = notist_html::Renderer::new()
-            .with_code_renderer(notist_html::highlight::code)
-            .render_with_diagnostics(&evaluation.root);
-        if !rendered.diagnostics.is_empty() {
-            return Err(RenderErrorReason::Other(
-                rendered
-                    .diagnostics
-                    .iter()
-                    .map(|d| d.message.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            )
-            .into());
-        }
-        Ok(ScopedJson::Derived(rendered.html.into()))
-    }
-}
-
-handlebars::handlebars_helper!(eq: |a: Json, b: Json| a == b);
-handlebars::handlebars_helper!(concat: |*parts| parts.iter().map(|v| v.as_str().unwrap_or("")).collect::<String>());
-handlebars::handlebars_helper!(starts_with: |text: str, prefix: str| text.starts_with(prefix));
-
-pub(crate) fn load(
-    resources: &impl Resources,
-    config: &SiteConfig,
-) -> Result<Handlebars<'static>, Error> {
-    let mut templates = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title><link rel=\"stylesheet\" href=\"{{assets.highlight}}\"></head><body><main>{{{page.html}}}</main>{{#if assets.components}}<script type=\"module\" src=\"{{assets.components}}\"></script>{{/if}}</body></html>".into())]);
+pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Tera, Error> {
+    let mut templates: BTreeMap<String, String> = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title><link rel=\"stylesheet\" href=\"{{assets.highlight}}\"></head><body><main>{{page.html | safe}}</main>{% if assets.components %}<script type=\"module\" src=\"{{assets.components}}\"></script>{% endif %}</body></html>".into())]);
     let mut directories = vec![];
     if let Some(theme) = &config.theme {
         let theme = resources.resolve(theme);
@@ -140,7 +94,7 @@ pub(crate) fn load(
     directories.push(resources.resolve(&config.templates));
     for directory in directories {
         for path in files(resources, &directory)? {
-            if path.extension().is_some_and(|s| s == "hbs") {
+            if path.extension().is_some_and(|s| s == "tera") {
                 let name = path
                     .strip_prefix(&directory)
                     .unwrap()
@@ -151,16 +105,24 @@ pub(crate) fn load(
             }
         }
     }
-    let mut engine = Handlebars::new();
-    engine.register_helper("url", Box::new(SiteUrl(config.clone())));
-    engine.register_helper("markdown", Box::new(Markdown));
-    engine.register_helper("eq", Box::new(eq));
-    engine.register_helper("concat", Box::new(concat));
-    engine.register_helper("starts_with", Box::new(starts_with));
-    for (name, source) in templates {
-        engine
-            .register_template_string(&name, &source)
-            .map_err(|e| Error::Message(format!("template {name}: {e}")))?;
-    }
+    let mut engine = Tera::default();
+    engine.autoescape_on([""]);
+    let config = config.clone();
+    engine.register_function(
+        "url",
+        move |args: Kwargs, _: &State| -> Result<String, tera::Error> {
+            let path = args.must_get::<&str>("path")?;
+            if !notist_html::is_safe_url(path) {
+                return Err(tera::Error::message("unsafe site URL"));
+            }
+            Ok(config.url(path))
+        },
+    );
+    engine.register_function("markdown", |args: Kwargs, _: &State| {
+        markdown(args.must_get::<&str>("source")?)
+    });
+    engine
+        .add_raw_templates(templates)
+        .map_err(|e| Error::Message(format!("templates: {e}")))?;
     Ok(engine)
 }

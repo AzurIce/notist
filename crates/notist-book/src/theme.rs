@@ -1,14 +1,14 @@
 use crate::{BookConfig, Error, mounts::Mounts};
-use handlebars::Handlebars;
 use notist::publication::{Assets, url::relative_url};
 use notist::{Resources, resources::ResourceKind};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
+use tera::{Context, Tera};
 
 pub(crate) struct Theme {
-    environment: Handlebars<'static>,
+    environment: Tera,
     styles: Vec<PathBuf>,
     scripts: Vec<PathBuf>,
     navigation: String,
@@ -23,15 +23,15 @@ impl Theme {
         let mut templates = BTreeMap::from([
             (
                 "index".to_string(),
-                include_str!("theme/index.hbs").to_string(),
+                include_str!("theme/index.tera").to_string(),
             ),
             (
                 "navigation".to_string(),
-                include_str!("theme/navigation.hbs").to_string(),
+                include_str!("theme/navigation.tera").to_string(),
             ),
             (
                 "navigation-label".to_string(),
-                include_str!("theme/navigation-label.hbs").to_string(),
+                include_str!("theme/navigation-label.tera").to_string(),
             ),
         ]);
         let mut files = BTreeMap::from([
@@ -87,7 +87,7 @@ impl Theme {
                                 files.insert(asset.into(), resources.read(&entry)?);
                             } else if entry
                                 .extension()
-                                .is_some_and(|extension| extension == "hbs")
+                                .is_some_and(|extension| extension == "tera")
                             {
                                 templates.insert(
                                     relative
@@ -150,11 +150,10 @@ impl Theme {
                 destinations.push(destination);
             }
         }
-        let mut environment = Handlebars::new();
-        environment.set_strict_mode(true);
-        for (name, source) in templates {
-            environment.register_template_string(&name, source)?;
-        }
+        let mut environment = Tera::default();
+        // Template names omit their extension, so escape every template.
+        environment.autoescape_on([""]);
+        environment.add_raw_templates(templates)?;
         Ok(Self {
             environment,
             styles,
@@ -178,6 +177,8 @@ impl Theme {
             .collect()
     }
     pub fn render(&self, context: impl serde::Serialize) -> Result<String, Error> {
-        Ok(self.environment.render("index", &context)?)
+        Ok(self
+            .environment
+            .render("index", &Context::from_serialize(&context)?)?)
     }
 }

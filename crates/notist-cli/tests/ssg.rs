@@ -262,8 +262,8 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
     write(root, "content/index.not", "= Home");
     write(
         root,
-        "templates/page.hbs",
-        "<html><body>{{url 'style.css'}} {{{page.html}}}</body></html>",
+        "templates/page.tera",
+        "<html><body>{{url(path='style.css')}} {{page.html | safe}}</body></html>",
     );
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -300,8 +300,8 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
         assert!(home.contains("_notist/serve/client.js"));
         write(
             root,
-            "templates/page.hbs",
-            "<html><body>NEW {{{page.html}}}</body></html>",
+            "templates/page.tera",
+            "<html><body>NEW {{page.html | safe}}</body></html>",
         );
         wait("NEW");
         write(

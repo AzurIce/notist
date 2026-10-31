@@ -233,7 +233,7 @@ Book 在构建和 serve 时为显式标注语言的代码块生成高亮 HTML，
 
 默认的 _notist/theme/highlight.css 提供明暗配色，与页面主题同步；根元素未显式选择主题时跟随系统。可通过附加 CSS 覆盖 --notist-code-* 变量，或在 theme/assets/highlight.css 替换整个配色文件。高亮保留源码空白与末尾换行，语言标签和复制按钮继续显示、复制原始内容。
 
-== Handlebars 主题
+== Tera 主题
 
 主题支持三层定制：通过 CSS 变量调整配色、字体与阅读宽度；通过 additional-css / additional-js 追加文件；通过 theme 目录覆盖模板与默认资源。
 
@@ -267,16 +267,16 @@ additional-js = ["scripts/reader.js"]
 
 --navigation-width 设置侧栏默认宽度，--book-width 设置整体布局的最大宽度（默认 1440px）。读者保存的侧栏宽度优先于主题默认值；重置后重新使用 --navigation-width。
 
-默认主题在 head 中提前设置 JavaScript 标记、主题和保存的侧栏宽度，避免先绘制无脚本布局再切换。目录后紧接 assets.navigation 内联脚本，先恢复目录再加载延迟的阅读交互。它以书籍首页 URL 隔离状态，记录普通目录点击项相对侧栏的位置；刷新与历史导航保留滚动位置，无记录时显示当前章。移动端抽屉打开时由同一逻辑恢复。自定义 index.hbs 应保留这两个初始化阶段；assets/navigation.js 可以覆盖内联目录脚本。
+默认主题在 head 中提前设置 JavaScript 标记、主题和保存的侧栏宽度，避免先绘制无脚本布局再切换。目录后紧接 assets.navigation 内联脚本，先恢复目录再加载延迟的阅读交互。它以书籍首页 URL 隔离状态，记录普通目录点击项相对侧栏的位置；刷新与历史导航保留滚动位置，无记录时显示当前章。移动端抽屉打开时由同一逻辑恢复。自定义 index.tera 应保留这两个初始化阶段；assets/navigation.js 可以覆盖内联目录脚本。
 
-模板引擎使用 Handlebars。自定义主题目录可以覆盖 index.hbs、navigation.hbs、navigation-label.hbs，或添加其他 .hbs partial；模板名是相对路径去掉 .hbs。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
+模板引擎使用 Tera 2。自定义主题目录可以覆盖 index.tera、navigation.tera、navigation-label.tera，或添加其他 .tera 模板；模板名是相对路径去掉 .tera。局部模板通过 include 引用，也可使用 extends 与 block 组织布局。navigation.tera 定义 `book_navigation(node)` 模板组件，通过 `{{<book_navigation node={child}/>}}` 递归渲染；navigation-label.tera 以 node 访问当前节点。Tera 不允许循环 include。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
 
 默认资源包含独立的 status.css，为 draft、staged 与 outdate 注解提供样式。主题可通过同名资源覆盖，规则见 [HTML 内容状态](html.not#内容状态)。
 
 ```text
 theme/
-├── index.hbs
-├── title.hbs
+├── index.tera
+├── title.tera
 └── assets/
     ├── book.css
     └── extra.css
@@ -294,21 +294,21 @@ theme/
 | previous / next | title、url，或 null |
 | assets | styles（CSS URL 数组）、scripts（主题与附加脚本 URL 数组）、components（页面注册脚本 URL，或 null）、navigation（应在目录节点之后内联的初始化脚本） |
 
-attrs 来自目标文档根节点的模块注解（`@!`），不包含局部标题或正文注解；无目标文档的目录节点使用空对象。page、navigation 和 breadcrumbs 使用相同投影：字符串、布尔和数值为 JSON 标量，数组和字典递归转换，Some 展开，Unit、None 与非有限浮点数为 null。这是主题呈现数据，不使用组件的 typed JSON 协议；不参与章节排序或路由。模板默认转义输出，访问可选字段前使用 if 检查，例如在 navigation-label.hbs 中用 `{{#if attrs.subtitle}}<small>{{attrs.subtitle}}</small>{{/if}}`。
+attrs 来自目标文档根节点的模块注解（`@!`），不包含局部标题或正文注解；无目标文档的目录节点使用空对象。page、navigation 和 breadcrumbs 使用相同投影：字符串、布尔和数值为 JSON 标量，数组和字典递归转换，Some 展开，Unit、None 与非有限浮点数为 null。这是主题呈现数据，不使用组件的 typed JSON 协议；不参与章节排序或路由。模板默认转义输出，访问可选字段前使用 if 检查，例如在 navigation-label.tera 中用 `{% if node.attrs.subtitle %}<small>{{node.attrs.subtitle}}</small>{% endif %}`。
 
-```handlebars
+```tera
 <!doctype html>
 <html><head><meta charset="utf-8"><title>{{page.title}} · {{book.title}}</title>
-{{#each assets.styles}}<link rel="stylesheet" href="{{this}}">{{/each}}
-{{#each assets.scripts}}<script src="{{this}}" defer></script>{{/each}}
+{% for style in assets.styles %}<link rel="stylesheet" href="{{style}}">{% endfor %}
+{% for script in assets.scripts %}<script src="{{script}}" defer></script>{% endfor %}
 </head><body>
-{{> title page}}
-<article>{{{page.html}}}</article>
-{{#if assets.components}}<script type="module" src="{{assets.components}}"></script>{{/if}}
+{% include 'title' %}
+<article>{{page.html | safe}}</article>
+{% if assets.components %}<script type="module" src="{{assets.components}}"></script>{% endif %}
 </body></html>
 ```
 
-普通插值转义 HTML，渲染后的 page.html 使用三重花括号。未定义字段与模板语法错误使构建失败。模板上下文属于 Notist；入口名沿用 mdBook 的 index.hbs，mdBook 的主题上下文不直接兼容。
+title.tera 可使用 `{{page.title}}`。普通插值转义 HTML，渲染后的 page.html 使用 safe 过滤器。未定义字段与模板语法错误使构建失败。模板上下文属于 Notist；入口为 index.tera，mdBook 的主题模板与上下文不直接兼容。
 
 == Library 接口
 

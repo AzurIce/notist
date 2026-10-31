@@ -1,0 +1,6 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{page.title}}</title></head>
+<body><main>
+  {{page.html | safe}}
+  {% for other in site.pages %}{% if other.attrs.example %}<p><a href="{{url(path=other.route.url)}}">{{other.title}}</a></p>{% endif %}{% endfor %}
+</main></body></html>

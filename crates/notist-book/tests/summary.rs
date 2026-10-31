@@ -313,8 +313,8 @@ fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
             ("testing/check.md", "# Check"),
             ("components/widget.not", "= Widget"),
             (name, summary),
-            ("theme/index.hbs", "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
-            ("theme/tree.hbs", "[{{kind}}:{{title}}:{{expanded}}{{#each children}}{{> tree this}}{{/each}}]"),
+            ("theme/index.tera", "{% for node in navigation %}{{<tree node={node}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
+            ("theme/tree.tera", "{% component tree(node) %}[{{node.kind}}:{{node.title}}:{{node.expanded}}{% for child in node.children %}{{<tree node={child}/>}}{% endfor %}]{% endcomponent tree %}"),
         ])), &config).unwrap();
         let architecture = html(&site, "architecture/index.html");
         assert!(architecture.starts_with("[chapter:架构:true][chapter:玩法设计:true[chapter:Demo 策划案:true][chapter:多层地形与物流规则:true]][chapter:资产与表现:true[chapter:模型:true[chapter:建筑模型管线:true]]][chapter:测试与发布:true[chapter:综合工厂验收:true]][separator::true][part:附录:true][chapter:Notist 组件:false[chapter:组件:true]][chapter:空章节:true][draft:草稿:true]"), "{name}: {architecture}");
@@ -362,7 +362,7 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
             ("guide/start.not", "= Start body"),
             ("last.not", "= Last body"),
             ("SUMMARY.not", summary),
-            ("theme/index.hbs", "{{#each navigation}}[{{title}}:{{#each children}}({{title}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#each navigation}}{{#if url}}{{title}}={{expanded}};{{/if}}{{/each}}"),
+            ("theme/index.tera", "{% for node in navigation %}[{{node.title}}:{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% for node in navigation %}{% if node.url %}{{node.title}}={{node.expanded}};{% endif %}{% endfor %}"),
         ])), &config).unwrap();
         assert_eq!(
             site.pages
@@ -405,7 +405,7 @@ fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
         ("thanks.not", "= Contributors body"),
         ("license.not", "= License body"),
         (name, summary),
-        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}{{#each children}}({{kind}}:{{title}}){{/each}}]{{/each}}|{{#each breadcrumbs}}[{{title}}]{{/each}}|{{#if previous}}{{previous.title}}{{/if}}>{{#if next}}{{next.title}}{{/if}}"),
+        ("theme/index.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}({{child.kind}}:{{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
     ])), &config).unwrap();
         let home = html(&site, "index.html");
         let expected = "[chapter:Introduction][chapter:Preface][separator:][part:User guide][chapter:Installation][chapter:Guide(chapter:Advanced)(draft:Draft)][separator:][part:Reference guide][chapter:Reference][separator:][chapter:Contributors][chapter:License][separator:]";
@@ -448,7 +448,7 @@ fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
         ("guide/b.not", "= B"),
         ("end.not", "= End"),
         ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n\n= Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n= Reference\n\n- [End](end.not)"),
-        ("theme/index.hbs", "{{#each navigation}}[{{title}}{{#each children}}({{title}}){{/each}}]{{/each}}"),
+        ("theme/index.tera", "{% for node in navigation %}[{{node.title}}{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "index.html"),
@@ -470,12 +470,12 @@ fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
                 "= Summary\n\n[Home](README.not)\n\n- [History](_logs/)\n- [Empty](empty/)\n- [After](after.not)",
             ),
             (
-                "theme/index.hbs",
-                "{{#each navigation}}{{> tree this}}{{/each}}|{{#each breadcrumbs}}[{{kind}}:{{title}}]{{/each}}",
+                "theme/index.tera",
+                "{% for node in navigation %}{{<tree node={node}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.kind}}:{{crumb.title}}]{% endfor %}",
             ),
             (
-                "theme/tree.hbs",
-                "[{{kind}}:{{title}}:{{#if url}}linked{{else}}unlinked{{/if}}{{#each children}}{{> tree this}}{{/each}}]",
+                "theme/tree.tera",
+                "{% component tree(node) %}[{{node.kind}}:{{node.title}}:{% if node.url %}linked{% else %}unlinked{% endif %}{% for child in node.children %}{{<tree node={child}/>}}{% endfor %}]{% endcomponent tree %}",
             ),
         ];
         if has_home {

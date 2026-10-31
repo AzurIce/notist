@@ -819,7 +819,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
         "README.not",
         "#import \"../widgets/lib.notc\" as widgets;\n= Home\n\n#widgets.badge(\"Hello\")",
     );
-    write(&root, "theme/index.hbs", "{{page.missing}}");
+    write(&root, "theme/index.tera", "{{page.missing}}");
     write(temp.path(), "widgets/Notist.toml", "");
     write(
         temp.path(),
@@ -835,7 +835,11 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     assert!(server.get("/").starts_with("HTTP/1.1 503"));
     let mut events = server.events();
     update(&mut events, |event| event["report"]["status"] == "failed");
-    write(&root, "theme/index.hbs", "{{page.title}} {{{page.html}}}");
+    write(
+        &root,
+        "theme/index.tera",
+        "{{page.title}} {{page.html | safe}}",
+    );
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
     let path = format!(
         "/_notist/modules/{}/badge.js",

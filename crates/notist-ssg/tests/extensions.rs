@@ -21,8 +21,8 @@ fn vault() -> Vault<MemoryResources> {
             "fn message() -> InlineContent { [from module] }",
         ),
         (
-            "templates/page.hbs",
-            "{{site.data.generated.name}}|{{{page.html}}}|{{#each site.directories}}{{path}};{{/each}}",
+            "templates/page.tera",
+            "{% if site.data.generated %}{{site.data.generated.name}}{% endif %}|{{page.html | safe}}|{% for path, dir in site.directories %}{{dir.path}};{% endfor %}",
         ),
     ] {
         resources.insert(path, source.as_bytes().to_vec());

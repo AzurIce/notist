@@ -1,5 +1,0 @@
-{{#if url}}
-<a href="{{url}}"{{#if current}} aria-current="page"{{/if}}><span class="nav-title">{{title}}</span></a>
-{{else}}
-<span class="nav-{{kind}}"{{#if (eq kind "draft")}} role="link" aria-disabled="true"{{/if}}><span class="nav-title">{{title}}</span></span>
-{{/if}}

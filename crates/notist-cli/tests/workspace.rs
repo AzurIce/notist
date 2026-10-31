@@ -561,8 +561,8 @@ fn preview_selects_site_and_uses_local_base_url() {
     );
     write(
         root,
-        "website/templates/page.hbs",
-        "<!doctype html>{{{page.html}}}<a href=\"{{url 'next.html'}}\">Next</a>",
+        "website/templates/page.tera",
+        "<!doctype html>{{page.html | safe}}<a href=\"{{url(path='next.html')}}\">Next</a>",
     );
     let server = Server::start(root, "ranim-website");
     let page = server.get("/");

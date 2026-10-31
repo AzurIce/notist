@@ -14,8 +14,8 @@ fn setup(root: &Path, response: &str) -> SiteConfig {
     fs::write(root.join("content/index.not"), "= Original").unwrap();
     fs::write(root.join("data/physical.toml"), "value='loaded'").unwrap();
     fs::write(
-        root.join("templates/page.hbs"),
-        "{{site.data.generated}}|{{{page.html}}}",
+        root.join("templates/page.tera"),
+        "{{site.data.generated}}|{{page.html | safe}}",
     )
     .unwrap();
     fs::write(root.join("response.json"), response).unwrap();

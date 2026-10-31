@@ -81,7 +81,7 @@ target 名一旦被 CI 或部署配置引用就应保持稳定。默认名已经
 | `title` | string | `"Book"` | 页面标题。 |
 | `include` | string[] | `["**"]` | 参与发现的 Vault 相对 glob；`*` 不跨目录，`**` 跨目录。 |
 | `exclude` | string[] | `[]` | 排除的 Vault 相对 glob；规则与 include 相同。 |
-| `theme` | path | 内置主题 | 含 `index.hbs` 与 `assets/` 的主题目录，相对 root。 |
+| `theme` | path | 内置主题 | 含 `index.tera` 与 `assets/` 的主题目录，相对 root。 |
 | `additional-css` | path[] | `[]` | 按声明顺序在主题样式之后加载。 |
 | `additional-js` | path[] | `[]` | 在主题脚本之后延迟加载。 |
 | `[[book.mounts]]` | table[] | `[]` | 把 Vault 外的目录挂进书籍命名空间。 |

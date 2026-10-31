@@ -16,7 +16,7 @@ pub struct BookConfig {
     pub mounts: Vec<Mount>,
     /// Explicit output directory; relative paths are resolved against the Vault.
     pub output: PathBuf,
-    /// Book source directory containing optional index.hbs and assets/.
+    /// Book source directory containing optional index.tera and assets/.
     pub theme: Option<PathBuf>,
     /// Book source stylesheets, loaded last in the declared order.
     #[serde(default, rename = "additional-css")]

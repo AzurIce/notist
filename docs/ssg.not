@@ -55,11 +55,11 @@ content/guide/image.svg    -> guide/image.svg
 Page content.
 ```
 
-title 默认为第一个标题，没有标题时使用文件名。template 选择模板名，不带 .hbs 扩展名；缺席时使用配置中的 template。二者必须是字符串。其他属性作为 page.attrs 提供给模板，不改变输出路径，也不会隐式筛选页面。
+title 默认为第一个标题，没有标题时使用文件名。template 选择模板名，不带 .tera 扩展名；缺席时使用配置中的 template。二者必须是字符串。其他属性作为 page.attrs 提供给模板，不改变输出路径，也不会隐式筛选页面。
 
 == 站点模板
 
-模板采用 Handlebars。加载顺序为内置 page、theme/templates、站点 templates；同名模板由后者覆盖。所有模板同时可作为局部模板引用，子目录保留在名称中，例如 layouts/base。
+模板采用 Tera 2，文件扩展名为 .tera。加载顺序为内置 page、theme/templates、站点 templates；同名模板由后者覆盖。模板可通过 include 引用或 extends 继承，子目录保留在名称中，例如 layouts/base。模板名均不带扩展名；所有模板默认启用 HTML 转义，未定义字段的直接输出与模板语法错误使构建失败。
 
 每个页面的上下文包括：
 
@@ -75,28 +75,36 @@ title 默认为第一个标题，没有标题时使用文件名。template 选�
 
 site.directories 是以内容相对目录路径为键的映射，根目录的键是空字符串。每个目录有 path、name、index（可选入口页）、pages（其他直属页面）和 directories（直属子目录的键）。页面与目录按源路径排列，模板可以选择自己的展示方式。目录数据包括没有入口页的目录。
 
-site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径为键。例如 data/example.toml 对应 site.data.example；嵌套路径通过 lookup 访问。相同键的多个文件会报错。
+site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径为键。例如 data/example.toml 对应 site.data.example；嵌套路径通过 `site.data["folder/example"]` 访问。相同键的多个文件会报错。
 
-```handlebars
+```tera
 <!doctype html>
 <html>
   <head>
     <title>{{page.title}} · {{site.title}}</title>
     <link rel="stylesheet" href="{{assets.highlight}}">
-    <link rel="stylesheet" href="{{url 'index.css'}}">
+    <link rel="stylesheet" href="{{url(path='index.css')}}">
   </head>
   <body>
-    <main>{{{page.html}}}</main>
-    {{#if assets.components}}
+    <main>{{page.html | safe}}</main>
+    {% if assets.components %}
       <script type="module" src="{{assets.components}}"></script>
-    {{/if}}
+    {% endif %}
   </body>
 </html>
 ```
 
-普通插值默认转义，正文 HTML 使用三重大括号输出。组件注册脚本需要由模板显式加载。
+普通插值默认转义，正文 HTML 使用 safe 过滤器输出。组件注册脚本需要由模板显式加载。
 
-辅助函数 url 将发布路径连接到 base_url，并保持外部 URL；eq 比较值，concat 拼接字符串，starts_with 判断前缀。markdown 把模板数据中的 Markdown 编译为 HTML，通过三重大括号输出；它使用独立的内置文档管线，不读取文件或加载外部模块。
+=== 大型数据站的模板上下文
+
+SSG 为一次构建复用整站模板上下文，每页仅更新 page、assets 和当前 directory，避免随页面数重复复制 site.pages、site.directories 与 site.data。模板中的整站查询接口保持不变；如果模板自己为每页遍历所有页面，仍会产生相应的计算量。
+
+使用 `{% include 'header' %}` 引用局部模板；局部模板继承当前作用域，直接通过 page.title、site.title 访问页面和整站信息。循环使用显式变量，例如 `{% for other in site.pages %}{{other.title}}{% endfor %}`；目录映射使用 `{% for path, dir in site.directories %}{{dir.name}}{% endfor %}`。动态数据查询使用 `site.data.items[page.attrs.id]`，无需 lookup 或 @root。
+
+这不是取消整站上下文或将正文改成浏览器加载。数据驱动实体页仍应按正常的 prepare、路由校验、模板渲染与静态发布流程构建。XIV DB 五万级物品页实践、性能边界与复现方式见 docs/_logs/2026-10-31-xiv-db-ssg.md。
+
+辅助函数 `url(path='index.html')` 将发布路径连接到 base_url，并保持外部 URL。比较、字符串拼接与前缀判断使用 Tera 原生语法：`a == b`、`a ~ b`、`text is starting_with(pat='foo')`。`markdown(source=site.data.example.code)` 把模板数据中的 Markdown 编译为 HTML，通过 safe 过滤器输出；它使用独立的内置文档管线，不读取文件或加载外部模块。
 
 正文中的代码块与 markdown 辅助函数使用相同的构建期语法高亮。常用语言由 syntect 与 two-face 扩展语法集提供；not / notist 与 notc 使用 Notist 语法树，不执行示例代码或读取导入。输出带 z- 前缀的作用域 class，未知语言、未标注语言及 text / plaintext 等纯文本标记保持转义后的普通代码。
 

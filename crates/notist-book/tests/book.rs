@@ -358,7 +358,7 @@ fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
     let site = build(&mut Vault::new(resources(&[
         ("a.md", "# 5. A"),
         ("b.md", "# B"),
-        ("theme/index.hbs", "{{#each navigation}}[{{kind}}:{{title}}{{#each children}}[{{kind}}:{{title}}]{{/each}}]{{/each}}"),
+        ("theme/index.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}[{{child.kind}}:{{child.title}}]{% endfor %}]{% endfor %}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "a/index.html"),
@@ -738,14 +738,14 @@ fn exclude_globs_match_vault_relative_paths_at_explicit_depths() {
 }
 
 #[test]
-fn theme_overrides_use_handlebars_partials_and_escape_metadata() {
+fn theme_overrides_use_tera_includes_and_escape_metadata() {
     let mut vault = Vault::new(resources(&[
         ("README.md", "# \\<Home\\> & title\n\nBody"),
         (
-            "theme/index.hbs",
-            "{{> title page}}|{{{page.html}}}|{{#each assets.styles}}{{this}}{{/each}}",
+            "theme/index.tera",
+            "{% include 'title' %}|{{page.html | safe}}|{% for style in assets.styles %}{{style}}{% endfor %}",
         ),
-        ("theme/title.hbs", "{{title}}"),
+        ("theme/title.tera", "{{page.title}}"),
         ("theme/assets/custom.css", "body { color: green; }"),
     ]));
     let config = BookConfig {
@@ -784,8 +784,8 @@ fn document_annotations_reach_page_navigation_and_breadcrumb_templates() {
             "- [Named home](README.not)\n  - [Child](child.md)\n- Future\n",
         ),
         (
-            "theme/index.hbs",
-            "{{page.attrs.model_id}}|{{#each navigation}}{{#if attrs.model_id}}{{title}}={{attrs.model_id}}/{{attrs.enabled}}/{{attrs.rank}}/{{#if attrs.tags}}{{#each attrs.tags}}{{this}},{{/each}}{{/if}}{{#each children}};{{attrs.model_id}}{{/each}}{{/if}}{{/each}}|{{#each breadcrumbs}}{{attrs.model_id}};{{/each}}",
+            "theme/index.tera",
+            "{{page.attrs.model_id}}|{% for node in navigation %}{% if node.attrs.model_id %}{{node.title}}={{node.attrs.model_id}}/{{node.attrs.enabled}}/{{node.attrs.rank}}/{% if node.attrs.tags %}{% for tag in node.attrs.tags %}{{tag}},{% endfor %}{% endif %}{% for child in node.children %};{{child.attrs.model_id}}{% endfor %}{% endif %}{% endfor %}|{% for crumb in breadcrumbs %}{{crumb.attrs.model_id}};{% endfor %}",
         ),
     ]));
     let config = BookConfig {
@@ -807,10 +807,10 @@ fn document_annotations_reach_page_navigation_and_breadcrumb_templates() {
 
 #[test]
 fn template_errors_fail_build_instead_of_publishing_empty_values() {
-    for template in ["{{page.missing}}", "{{#if page.title}}oops"] {
+    for template in ["{{page.missing}}", "{% if page.title %}oops"] {
         let mut vault = Vault::new(resources(&[
             ("README.md", "# Home"),
-            ("theme/index.hbs", template),
+            ("theme/index.tera", template),
         ]));
         let config = BookConfig {
             theme: Some("theme".into()),

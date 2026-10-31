@@ -71,6 +71,54 @@ fn typed_output_preserves_nested_components_maps_and_published_urls() {
 }
 
 #[test]
+fn html_registry_pairs_retain_their_own_source_snapshot_environment() {
+    let mut resources = MemoryResources::new("/vault");
+    resources.insert("Notist.toml", Vec::new());
+    for directory in ["one", "two"] {
+        resources.insert(
+            format!("{directory}/lib.notc"),
+            b"fn badge(label: String) -> InlineContent;".to_vec(),
+        );
+        resources.insert(format!("{directory}/badge.js"), Vec::new());
+    }
+    let mut vault = Vault::new(resources);
+    let first = "#import \"one/lib.notc\" as ui;\n#ui.badge(\"first\")";
+    let second = "#import \"two/lib.notc\" as ui;\n#ui.badge(\"second\")";
+    let a = vault.analyze("doc.not", first).unwrap();
+    let b = vault.analyze("doc.not", second).unwrap();
+    for (source, analysis, directory) in
+        [(first, &a, "one"), (second, &b, "two"), (first, &a, "one")]
+    {
+        assert!(analysis.diagnostics().is_empty());
+        let evaluated = vault.evaluate("doc.not", analysis).unwrap();
+        let (registry, environment) = vault
+            .html_registry_and_environment("./doc.not", source, &evaluated.root)
+            .unwrap();
+        let cached = vault.environment_for("doc.not", source).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&environment, &cached));
+        let output =
+            notist_html::Renderer::from_registry(registry).render_with_diagnostics(&evaluated.root);
+        assert!(output.diagnostics.is_empty());
+        assert_eq!(output.used_components.len(), 1);
+        assert_eq!(
+            output.used_components[0].module.resource(),
+            Some(Path::new(&format!("/vault/{directory}/badge.js")))
+        );
+        assert!(
+            environment
+                .modules()
+                .contains_key(&format!("/vault/{directory}/lib.notc"))
+        );
+        let other = if directory == "one" { "two" } else { "one" };
+        assert!(
+            !environment
+                .modules()
+                .contains_key(&format!("/vault/{other}/lib.notc"))
+        );
+    }
+}
+
+#[test]
 fn nearest_configs_and_document_index_share_environment_selection() {
     let mut resources = memory();
     resources.insert("nested/Notist.toml", Vec::new());

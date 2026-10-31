@@ -575,7 +575,8 @@ fn build_inner<R: Resources>(
                 }
             }
         }
-        let registry = vault.html_registry(&page.route.source, &page.source, &page.root)?;
+        let (registry, environment) =
+            vault.html_registry_and_environment(&page.route.source, &page.source, &page.root)?;
         let rendered = Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
@@ -588,7 +589,6 @@ fn build_inner<R: Resources>(
             &rendered.diagnostics,
             &page.sources,
         );
-        let environment = vault.environment_for(&page.route.source, &page.source)?;
         let component_file = page.route.output.parent().unwrap().join("components.js");
         let registrations = assets.components(
             vault.resources(),

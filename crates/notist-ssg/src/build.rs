@@ -506,7 +506,7 @@ pub(crate) fn build<R: Resources>(
                 ))
                 .cloned()
         };
-        let registry = vault.html_registry(
+        let (registry, environment) = vault.html_registry_and_environment(
             &document.page.route.source,
             &document.source,
             &document.root,
@@ -532,7 +532,6 @@ pub(crate) fn build<R: Resources>(
                 d,
             )
         }));
-        let environment = vault.environment_for(&document.page.route.source, &document.source)?;
         let component_path = PathBuf::from("_notist/pages")
             .join(&document.page.route.path)
             .with_extension("js");

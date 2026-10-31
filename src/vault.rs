@@ -131,69 +131,69 @@ impl<R: Resources> Vault<R> {
         self
     }
     /// Keep each document source snapshot bound to its own import environment.
+    /// Callers pass an already resolved path and retain the returned handles,
+    /// rather than looking up the same path/source again for each operation.
     fn ensure_environment(
         &mut self,
         path: &Path,
         source: &str,
         imports: &[crate::Import],
-    ) -> Result<(PathBuf, Arc<str>), VaultError> {
-        let path = self.resources.resolve(path);
-        if !self
+    ) -> Result<(Arc<str>, Arc<Environment>), VaultError> {
+        if let Some((text, environment)) = self
             .environments
-            .get(&path)
-            .is_some_and(|versions| versions.contains_key(source))
+            .get(path)
+            .and_then(|versions| versions.get_key_value(source))
         {
-            let config = match &self.config {
-                Some(config) => Some(config.clone()),
-                None => discover_config_in(&self.resources, &path)?,
-            };
-            let environment = Environment::for_document(
+            return Ok((text.clone(), environment.clone()));
+        }
+        let config = match &self.config {
+            Some(config) => Some(config.clone()),
+            None => discover_config_in(&self.resources, path)?,
+        };
+        let environment = Arc::new(
+            Environment::for_document(
                 &self.resources,
                 &self.pipeline,
-                &path,
+                path,
                 source,
                 imports,
                 config.as_deref(),
                 &self.extensions,
             )
-            .map_err(VaultError::Environment)?;
-            self.environments
-                .entry(path.clone())
-                .or_default()
-                .insert(Arc::from(source), Arc::new(environment));
-        }
-        let text = self.environments[&path]
-            .get_key_value(source)
-            .unwrap()
-            .0
-            .clone();
-        Ok((path, text))
+            .map_err(VaultError::Environment)?,
+        );
+        let text: Arc<str> = Arc::from(source);
+        self.environments
+            .entry(path.to_path_buf())
+            .or_default()
+            .insert(text.clone(), environment.clone());
+        Ok((text, environment))
     }
-    fn environment_key(
+    fn environment_snapshot(
         &mut self,
         path: &Path,
         source: &str,
-    ) -> Result<(PathBuf, Arc<str>), VaultError> {
-        let path = self.resources.resolve(path);
-        if let Some((text, _)) = self
+    ) -> Result<(Arc<str>, Arc<Environment>), VaultError> {
+        if let Some((text, environment)) = self
             .environments
-            .get(&path)
+            .get(path)
             .and_then(|versions| versions.get_key_value(source))
         {
-            return Ok((path, text.clone()));
+            return Ok((text.clone(), environment.clone()));
         }
         let lowered = self
             .pipeline
-            .lower(&path, source, crate::FrontendOptions::default())?;
-        self.ensure_environment(&path, source, &lowered.imports)
+            .lower(path, source, crate::FrontendOptions::default())?;
+        self.ensure_environment(path, source, &lowered.imports)
     }
     pub fn environment_for(
         &mut self,
         path: impl AsRef<Path>,
         source: &str,
     ) -> Result<Arc<Environment>, VaultError> {
-        let (path, text) = self.environment_key(path.as_ref(), source)?;
-        Ok(self.environments[&path][text.as_ref()].clone())
+        let path = self.resources.resolve(path.as_ref());
+        self.environment_snapshot(&path, source)
+            .map(|(_, environment)| environment)
     }
     pub fn analyze(
         &mut self,
@@ -224,14 +224,10 @@ impl<R: Resources> Vault<R> {
                 capture_syntax: capture,
             },
         )?;
-        let key = self.ensure_environment(&path, source, &output.imports)?;
-        let (mut analysis, inspection) = self.pipeline.analyze_lowered(
-            &path,
-            key.1.clone(),
-            output,
-            self.environments[&key.0][key.1.as_ref()].context(),
-            capture,
-        );
+        let (text, environment) = self.ensure_environment(&path, source, &output.imports)?;
+        let (mut analysis, inspection) =
+            self.pipeline
+                .analyze_lowered(&path, text, output, environment.context(), capture);
         analysis.extend_diagnostics(crate::vault_index::check_content_paths(
             self.resources.root(),
             &path,
@@ -250,14 +246,23 @@ impl<R: Resources> Vault<R> {
         source: &str,
         root: &crate::Item,
     ) -> Result<HtmlRegistry, VaultError> {
-        let (path, text) = self.environment_key(path.as_ref(), source)?;
-        bind_html(
-            &self.environments[&path][text.as_ref()],
-            &self.resources,
-            &self.module_urls,
-            root,
-        )
-        .map_err(VaultError::Environment)
+        self.html_registry_and_environment(path, source, root)
+            .map(|(registry, _)| registry)
+    }
+
+    /// Bind HTML targets and retain the exact document environment used for
+    /// binding, so publication can use its module resources without a second
+    /// path/source lookup. No environments or lexical scopes are merged.
+    pub fn html_registry_and_environment(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+        root: &crate::Item,
+    ) -> Result<(HtmlRegistry, Arc<Environment>), VaultError> {
+        let environment = self.environment_for(path, source)?;
+        let registry = bind_html(&environment, &self.resources, &self.module_urls, root)
+            .map_err(VaultError::Environment)?;
+        Ok((registry, environment))
     }
     pub fn render_html(
         &mut self,
@@ -290,10 +295,8 @@ impl<R: Resources> Vault<R> {
             .sources()
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
-        let (path, text) = self.environment_key(&path, source)?;
-        Ok(self
-            .pipeline
-            .evaluate(analysis, self.environments[&path][text.as_ref()].context()))
+        let (_, environment) = self.environment_snapshot(&path, source)?;
+        Ok(self.pipeline.evaluate(analysis, environment.context()))
     }
 
     /// Evaluate once, then bind and render only the targets present in the result.
@@ -308,11 +311,10 @@ impl<R: Resources> Vault<R> {
             .sources()
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
-        let (path, text) = self.environment_key(&path, source)?;
-        let environment = &self.environments[&path][text.as_ref()];
+        let (_, environment) = self.environment_snapshot(&path, source)?;
         let evaluation = self.pipeline.evaluate(analysis, environment.context());
         let registry = bind_html(
-            environment,
+            &environment,
             &self.resources,
             &self.module_urls,
             &evaluation.root,

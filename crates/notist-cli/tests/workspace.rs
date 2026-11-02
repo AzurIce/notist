@@ -413,6 +413,43 @@ fn workspace_can_also_have_a_root_project_and_explicit_config() {
     assert!(root.join("dist/book/index.html").is_file());
 }
 
+#[test]
+fn serve_rejects_occupied_explicit_ports() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    workspace(root);
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = occupied.local_addr().unwrap();
+    let port = address.port().to_string();
+    let legacy = address.to_string();
+    for listen in [
+        vec!["--host", "127.0.0.1", "--port", &port],
+        vec!["--address", &legacy],
+    ] {
+        let mut args = vec!["serve", "-p", "ranim-book"];
+        args.extend(listen);
+        failure(run(root, &args), "Address already in use");
+    }
+}
+
+#[test]
+fn serve_rejects_conflicting_listen_options_and_invalid_ports() {
+    let temp = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["serve", "--address", "127.0.0.1:0", "--host", "127.0.0.1"],
+        vec!["serve", "--address", "127.0.0.1:0", "--port", "0"],
+    ] {
+        failure(run(temp.path(), &args), "cannot be used with");
+    }
+    for port in ["65536", "-1", "abc"] {
+        assert!(
+            !run(temp.path(), &["serve", "--port", port])
+                .status
+                .success()
+        );
+    }
+}
+
 struct Server {
     child: std::process::Child,
     address: String,
@@ -428,11 +465,15 @@ impl Server {
         Self::start_args(root, &["serve", "-p", project])
     }
     fn start_args(root: &Path, args: &[&str]) -> Self {
+        Self::start_with_listen(root, args, &["--host", "127.0.0.1", "--port", "0"])
+    }
+    fn start_with_listen(root: &Path, args: &[&str], listen: &[&str]) -> Self {
         use std::io::{BufRead, BufReader};
         let mut child = Command::new(env!("CARGO_BIN_EXE_notist"))
             .current_dir(root)
             .args(args)
-            .args(["--address", "127.0.0.1:0", "--no-clear-screen"])
+            .args(listen)
+            .arg("--no-clear-screen")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .spawn()

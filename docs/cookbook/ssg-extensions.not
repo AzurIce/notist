@@ -155,7 +155,7 @@ HTML 模板由普通 `{{code}}` 插值转义 Rust 源码。site.data 是扩展�
 
 ```sh
 notist build --config website/Notist.toml
-notist serve --config website/Notist.toml --address 127.0.0.1:8000
+notist serve --config website/Notist.toml --port 8000
 ```
 
 默认输出结构为：

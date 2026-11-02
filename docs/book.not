@@ -12,7 +12,7 @@ target 的 root 默认为项目配置目录，作为 Vault 根。build 写入完
 
 ```sh
 notist build
-notist serve --address 127.0.0.1:8000
+notist serve --port 8000
 ```
 
 serve 的终端输出按构建轮次显示状态、耗时和错误／警告数量；交互终端默认清除当前屏幕并展示本轮结果，保留终端滚动历史。通过 --no-clear-screen 保留每轮输出；重定向、管道和 CI 环境自动关闭清屏。开始重建时显示 Rebuilding，只有本轮检查完成后才确认错误是否解决；全部错误修复后显示 All errors resolved。

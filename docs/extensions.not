@@ -84,7 +84,7 @@ stages = ["after_check"]
 ```sh
 # 站点扩展以及最终各文档的扩展由 SSG 构建调用。
 notist build --config website/Notist.toml
-notist serve --config website/Notist.toml --address 127.0.0.1:8000
+notist serve --config website/Notist.toml --port 8000
 
 # 单文档命令只调用文档层，不调用站点 prepare。
 notist check website/content/index.not

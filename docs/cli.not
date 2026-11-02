@@ -81,24 +81,28 @@ notist build -p my-book --out-dir target/preview
 == 预览：notist serve
 
 ```sh
-notist serve [-p <project> ...] [--target <name>] [--address <addr>] [--no-clear-screen]
+notist serve [-p <project> ...] [--target <name>] [--host <host>] [--port <port>] [--no-clear-screen]
 ```
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `-p, --project <name>` | 当前项目 | 选择项目；可以重复。 |
 | `--target <name>` | 全部匹配 | 选择 target。 |
-| `--address <addr>` | `127.0.0.1:8000` | HTTP 监听地址。 |
+| `--host <host>` | `127.0.0.1` | HTTP 监听主机名或 IP 地址，IPv6 直接写 `::1`。 |
+| `--port <port>` | 优先 `8000` | 显式指定时严格使用该端口；`0` 表示由系统分配空闲端口。 |
+| `--address <addr>` | 无 | 兼容旧的 `host:port` 写法（IPv6 如 `[::1]:9000`）；不能与 `--host`、`--port` 同用。 |
 | `--no-clear-screen` | 关闭 | 保留每一轮构建的终端输出；重定向、管道和 CI 环境也会自动关闭清屏。 |
 
 选择规则与 `build` 相同，但结果必须恰好是一个 target；否则报 `serve requires exactly one target`。在纯 workspace 根使用 `-p` 或 `--target` 消歧。
+
+未指定端口时优先监听 `8000`，被占用则由系统分配空闲端口。显式指定 `--port` 或使用旧的 `--address` 时，端口不可用就报错，不自动换端口；其他监听错误也直接报错。终端输出实际监听地址。
 
 serve 在内存中生成与静态构建相同的产物，监听源文件、模板、样式、数据、配置和实际读取的模块资源。失败时保留上一次成功预览，并明确提示当前展示旧内容；修复后自动重建。预览始终使用根路径 `/`，静态构建使用 Site 的 `base_url`。
 
 ```sh
 cd book && notist serve
 notist serve -p ranim-website --target ranim-website
-notist serve --config website/Notist.toml --address 127.0.0.1:9000
+notist serve --config website/Notist.toml --host 127.0.0.1 --port 9000
 ```
 
 == 单文件命令
@@ -199,7 +203,7 @@ notist lsp
 notist build -p my-book
 
 # 本地预览，指定端口
-notist serve -p my-book --address 127.0.0.1:9000
+notist serve -p my-book --port 9000
 
 # 检查一份文档或整个目录
 notist check docs/README.not

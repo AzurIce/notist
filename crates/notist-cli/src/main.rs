@@ -21,7 +21,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use codespan_reporting::diagnostic::{Diagnostic, Label, Severity};
 use codespan_reporting::files::{SimpleFile, SimpleFiles};
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
@@ -60,8 +60,8 @@ enum Command {
         project: Vec<String>,
         #[arg(long)]
         target: Option<String>,
-        #[arg(long, default_value = "127.0.0.1:8000")]
-        address: String,
+        #[command(flatten)]
+        listen: ListenOptions,
         #[arg(long)]
         no_clear_screen: bool,
     },
@@ -86,6 +86,19 @@ enum Command {
     Lsp,
 }
 
+#[derive(Args)]
+struct ListenOptions {
+    /// Host or IP address to listen on
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    /// Listen port; defaults to 8000 with automatic fallback (0 selects any free port)
+    #[arg(long)]
+    port: Option<u16>,
+    /// Legacy host:port syntax; cannot be combined with --host or --port
+    #[arg(long, conflicts_with_all = ["host", "port"])]
+    address: Option<String>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -101,11 +114,11 @@ fn main() -> ExitCode {
         Command::Serve {
             project,
             target,
-            address,
+            listen,
             no_clear_screen,
         } => match workspace::select(config, false, &project, target.as_deref()) {
             Ok(mut targets) if targets.len() == 1 => {
-                serve::serve_target(targets.remove(0), &address, no_clear_screen)
+                serve::serve_target(targets.remove(0), &listen, no_clear_screen)
             }
             Ok(_) => {
                 eprintln!("serve requires exactly one target; select with -p and/or --target");

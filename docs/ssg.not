@@ -8,7 +8,7 @@ Site 是统一项目模型中的一种 target。命令行选择与输出规则�
 
 ```sh
 notist build
-notist serve --address 127.0.0.1:8000
+notist serve --port 8000
 ```
 
 build 发布到共享 `dist/<target>/`（目录名即 target 名，默认 `<project>-<kind>`）；`--out-dir` 相对于当前工作目录，在选中唯一 target 时覆盖输出目录。serve 在内存中预览同一套产物，监听源文件、模板、样式、数据与模块资源；失败时保留上次成功预览。预览使用根路径 `/`，静态构建使用配置的 `base_url`。

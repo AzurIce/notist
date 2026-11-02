@@ -4,6 +4,7 @@ use notify::{RecursiveMode, Watcher};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
+    net::TcpListener,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
     thread,
@@ -114,10 +115,10 @@ const CLIENT: &str = include_str!("serve.js");
 
 pub(crate) fn serve_target(
     target: crate::workspace::Target,
-    address: &str,
+    listen: &crate::ListenOptions,
     no_clear_screen: bool,
 ) -> std::process::ExitCode {
-    match run(target, address, no_clear_screen) {
+    match run(target, listen, no_clear_screen) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -125,13 +126,56 @@ pub(crate) fn serve_target(
         }
     }
 }
+
+fn bind(listen: &crate::ListenOptions) -> std::io::Result<TcpListener> {
+    if let Some(address) = &listen.address {
+        return TcpListener::bind(address);
+    }
+    if let Some(port) = listen.port {
+        return TcpListener::bind((listen.host.as_str(), port));
+    }
+    bind_default(&listen.host, 8000)
+}
+
+fn bind_default(host: &str, preferred_port: u16) -> std::io::Result<TcpListener> {
+    match TcpListener::bind((host, preferred_port)) {
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => TcpListener::bind((host, 0)),
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod listen_tests {
+    use super::*;
+
+    #[test]
+    fn default_port_falls_back_if_occupied() {
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let listener = bind_default("127.0.0.1", port).unwrap();
+        assert_ne!(listener.local_addr().unwrap().port(), port);
+    }
+
+    #[test]
+    fn default_port_is_preferred_when_available() {
+        let listener = bind_default("127.0.0.1", 0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let listener = bind_default("127.0.0.1", port).unwrap();
+        assert_eq!(listener.local_addr().unwrap().port(), port);
+    }
+}
+
 fn run(
     target: crate::workspace::Target,
-    address: &str,
+    listen: &crate::ListenOptions,
     no_clear_screen: bool,
 ) -> Result<(), Error> {
     let root = target.root.clone();
-    let server = Server::http(address).map_err(|error| Error::Message(error.to_string()))?;
+    // Keep the bound listener: probing and then rebinding would race other processes.
+    let listener = bind(listen).map_err(|error| Error::Message(error.to_string()))?;
+    let server =
+        Server::from_listener(listener, None).map_err(|error| Error::Message(error.to_string()))?;
     let terminal = Terminal::new(format!("http://{}/", server.server_addr()), no_clear_screen);
     let state = Arc::new(RwLock::new(Published {
         site: None,

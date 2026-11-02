@@ -16,6 +16,10 @@ profiling = ["notist/profiling"]
 name = "module_cache_profile"
 required-features = ["profiling"]
 
+[[example]]
+name = "module_site_profile"
+required-features = ["profiling"]
+
 [dependencies]
 notist = { path = "../.." }
 notist-html = { path = "../notist-html" }

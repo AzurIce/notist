@@ -756,7 +756,7 @@ fn host_supplied_result_defaults_keep_the_declared_inactive_type() {
         "content.not", "result", "result/lib.notc",
         "fn widget(value: Result<Int, String>) -> InlineContent; fn show() -> InlineContent { [#widget()] }",
     ).unwrap();
-    module.definitions.functions[0].parameters[0].mode =
+    std::sync::Arc::make_mut(&mut module.definitions).functions[0].parameters[0].mode =
         notist::ParameterMode::Default(Value::Ok(Box::new(Value::Int(1))));
     let context = Context::default().with_module(module).unwrap();
     let analysis = pipeline

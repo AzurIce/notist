@@ -30,7 +30,7 @@ fn context() -> Context {
         .unwrap();
     // Native metadata can express named-only parameters; source declarations
     // currently make every parameter positional. Match the full embed contract.
-    for definition in &mut module.definitions.functions {
+    for definition in &mut std::sync::Arc::make_mut(&mut module.definitions).functions {
         if matches!(definition.id.name.as_str(), "hidden" | "native") {
             for parameter in &mut definition.parameters[1..] {
                 parameter.positional = false;

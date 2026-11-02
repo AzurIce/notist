@@ -3,6 +3,7 @@ mod code;
 mod context;
 pub use code::{Evaluation, EvaluationOutcome, Limits};
 mod definitions;
+mod modules;
 mod navigation;
 
 pub mod extensions;
@@ -14,6 +15,7 @@ pub mod shape;
 
 pub use context::Context;
 pub use definitions::{CodeModule, CodeProgram};
+pub use modules::{BindingSpec, ExportTable, LinkedModule, ModuleExports, ModuleScope, bind_imports};
 
 use std::{
     path::{Path, PathBuf},
@@ -325,7 +327,7 @@ impl Pipeline {
     ) -> (Analysis, Inspection) {
         let mut diagnostics = output.diagnostics;
         let path = path.to_string_lossy().into_owned();
-        let mut sources = context.program().sources.clone();
+        let mut sources = context.program().sources();
         sources.insert(path.clone(), src.clone());
         let extension_context = DocumentContext {
             path: &path,

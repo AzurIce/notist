@@ -42,8 +42,9 @@ pub use notist_pipeline::frontend::{
     PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
 };
 pub use notist_pipeline::{
-    Analysis, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context, Evaluation,
-    EvaluationOutcome, Limits, Lowered, Pipeline, UnsupportedFormat,
+    Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,
+    Evaluation, EvaluationOutcome, ExportTable, Limits, LinkedModule, Lowered, ModuleExports,
+    ModuleScope, Pipeline, UnsupportedFormat, bind_imports,
 };
 pub use notist_syntax as syntax;
 

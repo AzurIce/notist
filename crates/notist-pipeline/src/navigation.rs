@@ -25,7 +25,7 @@ impl Pipeline {
                 return Some(definition);
             }
             for definition in &module.definitions.functions {
-                let Some(body) = module.program.bodies.get(&definition.id) else {
+                let Some(body) = module.body(&definition.id.name) else {
                     continue;
                 };
                 let bound = definition

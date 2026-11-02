@@ -59,6 +59,24 @@ Code 使用同一份 import 语法与 lowering，省略 Markup 的 `#`；原生 
 
 前端输出独立的 import 列表和内容 Expr 森林。宿主在 Parse / Lower 之后加载模块图，再建立内部 Context 并运行 Resolve → Shape → Materialize → Evaluate。Context 是签名、模块绑定、Code 实现和执行映射的分析状态，不由用户指定入口。
 
+== 模块产物与绑定
+
+模块处理分为两个独立阶段：
+
+```text
+Resources 读取源码
+    → compile_module → CodeModule
+    → 提取名称与 import 声明，宿主递归加载依赖
+    → BindingSpec + 依赖导出查询 → ModuleScope
+    → LinkedModule → Context
+```
+
+CodeModule 保存单文件的共享声明、函数体 IR、源码和未解析的 import 声明；编译不读取依赖，不执行函数体。BindingSpec 只保存本地声明名称、导入选择、宿主解析的目标身份及诊断位置，不包含函数体和签名。纯绑定器通过 ModuleExports 查询显式成员或完整公开表，产生 ModuleScope；命名空间导入不枚举目标成员，宿主仍验证整个依赖图。
+
+ModuleScope 只保存名称到模块／函数身份的绑定及公开表，不持有依赖实现。LinkedModule 共享引用本文件的 CodeModule 和 ModuleScope；Context 的 CodeProgram 按模块持有这些产物，Registry 与模块产物共享同一份定义。访问调用时先沿作用域与公开绑定取得 FunctionId，再从当前 Context 获取签名和函数体。函数体变化不改变导入身份；签名变化仍由具体实例检查处理。
+
+Rust 宿主可用 Context.with_module 安装无 import 的模块。带 import 的模块先调用 Context.link_module，按声明顺序提供每个已加载目标的规范身份，再用 with_linked_module 安装。CodeModule 不提供修改导入绑定的接口；宿主构造原生元数据时可在安装前通过 Arc 的写时复制修改独立定义。CodeProgram.sources() 汇集共享源码引用，不复制函数体。上述分层不自动提供跨修订缓存或增量调度。
+
 == 输出配置
 
 Notist.toml 保存显式函数映射与站点选项。宿主可选择最近的配置，CLI 可通过 --config 指定；配置不合并父级配置。每条映射通过自身的 imports 声明输出依赖，不向文档提供绑定。

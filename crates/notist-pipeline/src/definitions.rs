@@ -3,31 +3,54 @@
 //! comptime arguments and typed ordinary inputs.
 use crate::code::literal::resolve_literal;
 use crate::lowering::{code::expression, content::ContentLowering, literals::literal_expression};
+use crate::modules::{LinkedModule, ModuleScope};
 use notist_core::{
     builtins::Accepts,
     definitions::{
         ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, Import,
-        ImportBinding, ParameterDef, ParameterMode, Type, validate_module,
+        ParameterDef, ParameterMode, Type, validate_module,
     },
     diag::{Diagnostic, Phase, Sources},
     expr::Expr,
 };
 use notist_syntax::code::ast::{FunctionDecl, Module, Parameter, TypeRef};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodeProgram {
-    pub(crate) bodies: BTreeMap<FunctionId, CodeBody>,
-    pub(crate) sources: Sources,
-    pub(crate) modules: BTreeMap<String, String>,
-    pub(crate) imports: BTreeMap<String, BTreeMap<String, ImportBinding>>,
+    modules: Arc<BTreeMap<String, Arc<LinkedModule>>>,
+    scopes: Arc<BTreeMap<String, Arc<ModuleScope>>>,
 }
 impl CodeProgram {
-    pub fn sources(&self) -> &Sources {
-        &self.sources
+    /// Collect shared source texts at the output boundary, without copying bodies.
+    pub fn sources(&self) -> Sources {
+        self.modules
+            .values()
+            .map(|module| {
+                let code = module.code();
+                (code.source_path().to_owned(), code.source().clone())
+            })
+            .collect()
     }
     pub fn source_path(&self, module: &str) -> Option<&str> {
-        self.modules.get(module).map(String::as_str)
+        Some(self.module(module)?.code().source_path())
+    }
+    pub fn module(&self, module: &str) -> Option<&Arc<LinkedModule>> {
+        self.modules.get(module)
+    }
+    pub fn scope(&self, module: &str) -> Option<&Arc<ModuleScope>> {
+        self.scopes
+            .get(module)
+            .or_else(|| self.module(module).map(|m| m.scope()))
+    }
+    pub(crate) fn body(&self, function: &FunctionId) -> Option<&CodeBody> {
+        self.module(&function.module)?.code().body(&function.name)
+    }
+    pub(crate) fn install(&mut self, module: Arc<LinkedModule>) {
+        Arc::make_mut(&mut self.modules).insert(module.code().id().to_owned(), module);
+    }
+    pub(crate) fn with_scope(&mut self, module: String, scope: Arc<ModuleScope>) {
+        Arc::make_mut(&mut self.scopes).insert(module, scope);
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -39,25 +62,31 @@ pub(crate) struct CodeBody {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModule {
-    pub definitions: DefinitionModule,
-    pub program: CodeProgram,
-    pub imports: Vec<Import>,
+    pub definitions: Arc<DefinitionModule>,
+    pub imports: Arc<[Import]>,
+    bodies: Arc<BTreeMap<String, CodeBody>>,
+    source_path: Arc<str>,
+    source: Arc<str>,
 }
 
 impl CodeModule {
-    /// Hosts bind source imports to canonical resource identities after loading.
-    pub fn bind_import(&mut self, alias: &str, binding: ImportBinding) {
-        self.program
-            .imports
-            .entry(self.definitions.module.clone())
-            .or_default()
-            .insert(alias.into(), binding);
+    pub fn id(&self) -> &str {
+        &self.definitions.module
+    }
+    pub fn source_path(&self) -> &str {
+        &self.source_path
+    }
+    pub fn source(&self) -> &Arc<str> {
+        &self.source
+    }
+    pub(crate) fn body(&self, name: &str) -> Option<&CodeBody> {
+        self.bodies.get(name)
+    }
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = &CodeBody> {
+        self.bodies.values()
     }
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.program
-            .bodies
-            .values()
-            .flat_map(|b| b.diagnostics.iter())
+        self.bodies.values().flat_map(|b| b.diagnostics.iter())
     }
 }
 
@@ -73,9 +102,7 @@ pub(crate) fn compile_module(
     let mut diagnostics = Vec::new();
     let mut definitions = DefinitionModule::new(module);
     definitions.span = ast.range();
-    let mut program = CodeProgram::default();
-    program.sources.insert(path.into(), source.into());
-    program.modules.insert(module.into(), path.into());
+    let mut bodies = BTreeMap::new();
     let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
     let mut assigned = vec![false; parsed.diagnostics.len()];
     for function in ast.functions() {
@@ -111,8 +138,8 @@ pub(crate) fn compile_module(
                 d.source = Some(path.into());
             }
             if definition.implementation.is_code() {
-                program.bodies.insert(
-                    definition.id.clone(),
+                bodies.insert(
+                    definition.id.name.clone(),
                     CodeBody {
                         expression: expr,
                         diagnostics: body_diags,
@@ -132,9 +159,11 @@ pub(crate) fn compile_module(
     diagnostics.extend(validate_module(&definitions));
     if diagnostics.is_empty() {
         Ok(CodeModule {
-            definitions,
-            program,
-            imports,
+            definitions: Arc::new(definitions),
+            bodies: Arc::new(bodies),
+            imports: imports.into(),
+            source_path: path.into(),
+            source: source.into(),
         })
     } else {
         Err(diagnostics)

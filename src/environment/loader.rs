@@ -25,13 +25,12 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             errors: Vec::new(),
         }
     }
-    fn imports(
+    fn resolve_imports<'b>(
         &mut self,
         path: &Path,
         source: &str,
-        imports: &[Import],
-        local: Option<&crate::DefinitionModule>,
-    ) -> BTreeMap<String, crate::ImportBinding> {
+        imports: &'b [Import],
+    ) -> Vec<(&'b Import, String)> {
         let mut bindings = Vec::new();
         for import in imports {
             if Path::new(&import.path).is_absolute()
@@ -84,7 +83,16 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             }
             bindings.push((import, target.to_string_lossy().into_owned()));
         }
-        match self.context.import_bindings(bindings, local) {
+        bindings
+    }
+    fn imports(
+        &mut self,
+        path: &Path,
+        source: &str,
+        imports: &[Import],
+    ) -> BTreeMap<String, crate::ImportBinding> {
+        let bindings = self.resolve_imports(path, source, imports);
+        match self.context.import_bindings(bindings, None) {
             Ok(bindings) => bindings,
             Err(errors) => {
                 self.errors
@@ -130,7 +138,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 return;
             }
         };
-        let mut module = match self.pipeline.compile_module_with_root(
+        let module = match self.pipeline.compile_module_with_root(
             "content.not",
             &id,
             &id,
@@ -149,13 +157,28 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 return;
             }
         };
-        let text = module.program.sources()[&id].clone();
-        for (alias, target) in
-            self.imports(path, &source, &module.imports, Some(&module.definitions))
-        {
-            module.bind_import(&alias, target);
+        let before = self.errors.len();
+        let targets = self.resolve_imports(path, &source, &module.imports);
+        if self.errors.len() != before {
+            self.visiting.remove(path);
+            return;
         }
-        match std::mem::take(&mut self.context).with_module(module) {
+        let targets: Vec<_> = targets.into_iter().map(|(_, target)| target).collect();
+        let text = module.source().clone();
+        let linked = match self.context.link_module(module, targets) {
+            Ok(linked) => linked,
+            Err(errors) => {
+                self.errors
+                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
+                        path: path.into(),
+                        source: source.clone(),
+                        diagnostic,
+                    }));
+                self.visiting.remove(path);
+                return;
+            }
+        };
+        match std::mem::take(&mut self.context).with_linked_module(linked) {
             Ok(context) => {
                 self.context = context;
                 self.modules.insert(
@@ -215,7 +238,7 @@ pub(super) fn document(
 ) -> Result<Environment, Vec<SourceDiagnostic>> {
     let path = resources.resolve(path);
     let mut graph = Graph::new(resources, pipeline);
-    let bindings = graph.imports(&path, source, imports, None);
+    let bindings = graph.imports(&path, source, imports);
     let mut configured: Vec<(Arc<dyn DocumentExtension>, TextRange)> = Vec::new();
     let mut config_source = None;
     if let Some(config) = config {
@@ -242,7 +265,7 @@ pub(super) fn document(
                 } => {
                     let before = graph.errors.len();
                     let imports = graph
-                        .imports(config, &source, &imports, None)
+                        .imports(config, &source, &imports)
                         .into_iter()
                         .collect();
                     if graph.errors.len() != before {

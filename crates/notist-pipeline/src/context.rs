@@ -1,9 +1,12 @@
 //! Definitions, lexical module scopes and explicitly selected output mappings.
 use crate::extensions::ExtensionPlan;
+use crate::{
+    BindingSpec, CodeModule, ExportTable, LinkedModule, ModuleExports, ModuleScope, bind_imports,
+};
 use notist_core::extensions::DocumentExtension;
 use notist_core::{
     builtins,
-    definitions::{DefinitionModule, FunctionDef, Import, ImportBinding, ImportKind},
+    definitions::{DefinitionModule, FunctionDef, Import, ImportBinding},
     diag::{Diagnostic, Phase},
     registry::Registry,
 };
@@ -29,17 +32,58 @@ impl Context {
             resource_root: "/".into(),
         }
     }
-    /// Install a module and select it as the root lexical scope.
-    pub fn with_module(
+    /// Install a file without imports and select its lexical scope.
+    /// Files with imports must be linked against host-resolved targets first.
+    pub fn with_module(self, module: impl Into<Arc<CodeModule>>) -> Result<Self, Vec<Diagnostic>> {
+        let linked = self.link_module(module, std::iter::empty())?;
+        self.with_linked_module(linked)
+    }
+    /// Resolve a compiled file's imports against this loaded dependency view.
+    /// `targets` has one canonical module identity per source import, in order.
+    pub fn link_module(
+        &self,
+        module: impl Into<Arc<CodeModule>>,
+        targets: impl IntoIterator<Item = String>,
+    ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
+        let code = module.into();
+        let targets: Vec<_> = targets.into_iter().collect();
+        if code.imports.len() != targets.len() {
+            return Err(vec![Diagnostic::new(
+                Phase::Type,
+                code.definitions.span,
+                "module imports require one resolved target per declaration",
+            )]);
+        }
+        let errors: Vec<_> = code
+            .imports
+            .iter()
+            .zip(&targets)
+            .filter_map(|(import, target)| {
+                self.registry.module(target).is_none().then(|| {
+                    Diagnostic::new(
+                        Phase::Type,
+                        import.span,
+                        format!("import target `{target}` is not loaded"),
+                    )
+                })
+            })
+            .collect();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let spec = BindingSpec::new(code.imports.iter().zip(targets), Some(&code.definitions));
+        let scope = bind_imports(&spec, self)?;
+        Ok(Arc::new(LinkedModule { code, scope }))
+    }
+    /// Install a linked file produced for this dependency view. The caller must
+    /// not mix a scope from another dependency snapshot into this Context.
+    pub fn with_linked_module(
         mut self,
-        module: crate::definitions::CodeModule,
+        module: Arc<LinkedModule>,
     ) -> Result<Self, Vec<Diagnostic>> {
-        self.root = Some(module.definitions.module.clone());
-        self.registry.register(module.definitions)?;
-        self.program.bodies.extend(module.program.bodies);
-        self.program.sources.extend(module.program.sources);
-        self.program.modules.extend(module.program.modules);
-        self.program.imports.extend(module.program.imports);
+        self.registry.register(module.code().definitions.clone())?;
+        self.root = Some(module.code().id().to_owned());
+        self.program.install(module);
         Ok(self)
     }
     pub fn with_root(mut self, module: impl Into<String>) -> Self {
@@ -53,9 +97,10 @@ impl Context {
         imports: impl IntoIterator<Item = (String, ImportBinding)>,
     ) -> Self {
         let module = module.into();
-        self.program
-            .imports
-            .insert(module.clone(), imports.into_iter().collect());
+        self.program.with_scope(
+            module.clone(),
+            Arc::new(ModuleScope::from_bindings(imports.into_iter().collect())),
+        );
         self.root = Some(module);
         self
     }
@@ -133,16 +178,15 @@ impl Context {
         self.registry
             .function(module, name)
             .map(|f| ImportBinding::Function(f.id.clone()))
-            .or_else(|| self.program.imports.get(module)?.get(name).cloned())
+            .or_else(|| self.program.scope(module)?.imports().get(name).cloned())
     }
 
     /// Own definitions and static imports are public; the implicit prelude is not.
     pub fn public_bindings(&self, module: &str) -> BTreeMap<String, ImportBinding> {
         let mut bindings = self
             .program
-            .imports
-            .get(module)
-            .cloned()
+            .scope(module)
+            .map(|scope| scope.imports().clone())
             .unwrap_or_default();
         bindings.extend(
             self.registry
@@ -160,82 +204,7 @@ impl Context {
         imports: impl IntoIterator<Item = (&'a Import, String)>,
         local: Option<&DefinitionModule>,
     ) -> Result<BTreeMap<String, ImportBinding>, Vec<Diagnostic>> {
-        let mut bindings = BTreeMap::new();
-        let mut origins = BTreeMap::new();
-        let mut diagnostics = Vec::new();
-        if let Some(local) = local {
-            for f in &local.functions {
-                origins.insert(
-                    f.id.name.clone(),
-                    format!("local function `{}` at {:?}", f.id, f.span),
-                );
-            }
-        }
-        for (import, module) in imports {
-            let public = self.public_bindings(&module);
-            let selected = match &import.kind {
-                ImportKind::Module { alias } => vec![(
-                    alias.clone(),
-                    ImportBinding::Module(module.clone()),
-                    import.span,
-                    "module".to_owned(),
-                )],
-                ImportKind::Wildcard => public
-                    .into_iter()
-                    .map(|(name, binding)| {
-                        (
-                            name.clone(),
-                            binding,
-                            import.span,
-                            format!("member `{name}`"),
-                        )
-                    })
-                    .collect(),
-                ImportKind::Members(members) => members
-                    .iter()
-                    .filter_map(|member| match public.get(&member.name) {
-                        Some(binding) => Some((
-                            member.alias.clone(),
-                            binding.clone(),
-                            member.span,
-                            format!("member `{}`", member.name),
-                        )),
-                        None => {
-                            diagnostics.push(Diagnostic::new(
-                                Phase::Type,
-                                member.span,
-                                format!(
-                                    "module `{}` ({module}) has no public member `{}`",
-                                    import.path, member.name
-                                ),
-                            ));
-                            None
-                        }
-                    })
-                    .collect(),
-            };
-            for (name, binding, span, selected) in selected {
-                let origin = format!("{selected} from `{}` ({module}) at {span:?}", import.path);
-                if !crate::lowering::imports::valid_import_alias(&name) {
-                    diagnostics.push(Diagnostic::new(
-                        Phase::Type,
-                        span,
-                        format!("invalid or reserved import name `{name}`: {origin}"),
-                    ));
-                } else if let Some(previous) = origins.get(&name) {
-                    diagnostics.push(Diagnostic::new(Phase::Type, span,
-                        format!("import name conflict for `{name}`: {origin}; already bound by {previous}")));
-                } else {
-                    origins.insert(name.clone(), origin);
-                    bindings.insert(name, binding);
-                }
-            }
-        }
-        if diagnostics.is_empty() {
-            Ok(bindings)
-        } else {
-            Err(diagnostics)
-        }
+        bind_imports(&BindingSpec::new(imports, local), self).map(|scope| scope.imports().clone())
     }
     pub fn resolve(&self, path: &str) -> Option<&FunctionDef> {
         self.resolve_in(self.root(), path)
@@ -262,6 +231,24 @@ impl Context {
     ) -> Result<Self, Vec<Diagnostic>> {
         self.extensions = self.extensions.with_extension(extension, &self.registry)?;
         Ok(self)
+    }
+}
+impl ModuleExports for Context {
+    fn lookup(&self, module: &str, name: &str) -> Option<ImportBinding> {
+        self.public_binding(module, name)
+    }
+    fn all(&self, module: &str) -> Arc<ExportTable> {
+        // Source modules already own their public table. Native modules and
+        // explicit scope overlays retain the same registry-first semantics.
+        if let Some(linked) = self.program.module(module)
+            && self
+                .program
+                .scope(module)
+                .is_some_and(|scope| Arc::ptr_eq(scope, linked.scope()))
+        {
+            return linked.scope().exports().clone();
+        }
+        Arc::new(self.public_bindings(module))
     }
 }
 impl Default for Context {

@@ -36,7 +36,7 @@ impl<R: Resources> Vault<R> {
                 Ok(CodeAnalysis {
                     definitions: Some(definitions),
                     diagnostics: self.pipeline.check_module(&id, context),
-                    sources: context.program().sources().clone(),
+                    sources: context.program().sources(),
                 })
             }
             Err(errors) => {

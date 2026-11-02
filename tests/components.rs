@@ -1,6 +1,6 @@
 use notist::{Dict, Environment, FunctionId, Value};
 use notist_html::{HtmlRegistry, Renderer};
-fn definitions() -> notist::DefinitionModule {
+fn definitions() -> std::sync::Arc<notist::DefinitionModule> {
     notist_pipeline::Pipeline::default().compile_module("content.not", "widgets", "widgets/lib.notc", "fn panel(title: String = \"\", open: Bool = false, count: Int = 9223372036854775807, ratio: Float = 1.5, optional?: String, data: Array = (false,))[children: BlockContent] -> BlockContent; fn badge(label: String) -> InlineContent;").unwrap().definitions
 }
 #[test]

@@ -4,7 +4,11 @@ use crate::diag::{Diagnostic, Phase};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-type ModuleFunctions = BTreeMap<String, FunctionDef>;
+#[derive(Debug)]
+struct ModuleFunctions {
+    definitions: Arc<DefinitionModule>,
+    names: BTreeMap<String, usize>,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Registry {
@@ -16,12 +20,22 @@ impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn register(&mut self, module: DefinitionModule) -> Result<(), Vec<Diagnostic>> {
-        self.install(module, false)
+    pub fn register(
+        &mut self,
+        module: impl Into<Arc<DefinitionModule>>,
+    ) -> Result<(), Vec<Diagnostic>> {
+        self.install_shared(module.into(), false)
     }
     pub(crate) fn install(
         &mut self,
         module: DefinitionModule,
+        builtin: bool,
+    ) -> Result<(), Vec<Diagnostic>> {
+        self.install_shared(Arc::new(module), builtin)
+    }
+    fn install_shared(
+        &mut self,
+        module: Arc<DefinitionModule>,
         builtin: bool,
     ) -> Result<(), Vec<Diagnostic>> {
         let mut errors = validate_module(&module);
@@ -64,14 +78,16 @@ impl Registry {
             return Err(errors);
         }
         Arc::make_mut(&mut self.modules).insert(
-            module.module,
-            Arc::new(
-                module
+            module.module.clone(),
+            Arc::new(ModuleFunctions {
+                names: module
                     .functions
-                    .into_iter()
-                    .map(|f| (f.id.name.clone(), f))
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.id.name.clone(), i))
                     .collect(),
-            ),
+                definitions: module,
+            }),
         );
         Ok(())
     }
@@ -79,9 +95,15 @@ impl Registry {
         self.function(&id.module, &id.name)
     }
     pub fn function(&self, module: &str, name: &str) -> Option<&FunctionDef> {
-        self.modules.get(module)?.get(name)
+        let module = self.modules.get(module)?;
+        Some(&module.definitions.functions[*module.names.get(name)?])
+    }
+    pub fn module(&self, module: &str) -> Option<&Arc<DefinitionModule>> {
+        Some(&self.modules.get(module)?.definitions)
     }
     pub fn functions(&self) -> impl Iterator<Item = &FunctionDef> {
-        self.modules.values().flat_map(|m| m.values())
+        self.modules
+            .values()
+            .flat_map(|m| m.names.values().map(|&i| &m.definitions.functions[i]))
     }
 }

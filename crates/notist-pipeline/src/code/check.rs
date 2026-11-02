@@ -192,8 +192,8 @@ impl<'a> Checker<'a> {
         self.diagnostics
     }
     pub fn check_module(mut self, module: &str) -> Vec<Diagnostic> {
-        for (id, body) in &self.context.program().bodies {
-            if id.module == module {
+        if let Some(linked) = self.context.program().module(module) {
+            for body in linked.code().bodies() {
                 self.diagnostics.extend(body.diagnostics.iter().cloned());
             }
         }
@@ -1355,7 +1355,7 @@ impl<'a> Checker<'a> {
             self.program.instances.get_mut(&key).unwrap().checking = false;
             return;
         }
-        let body = self.context.program().bodies.get(&def.id).cloned();
+        let body = self.context.program().body(&def.id).cloned();
         let Some(body) = body else {
             self.report(def.span, "missing Code implementation");
             return;

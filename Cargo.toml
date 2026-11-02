@@ -24,6 +24,7 @@ percent-encoding = "2"
 default = ["command-extensions"]
 command-extensions = ["notist-core/serde"]
 serde = ["notist-core/serde"]
+profiling = ["notist-pipeline/profiling"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"

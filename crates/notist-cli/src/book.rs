@@ -17,6 +17,7 @@ pub(crate) fn assemble(
     target: &Target,
     recovery: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
+    notist::evict_caches(10);
     let prepared = target
         .prepare()
         .map_err(|e| (Error::Message(e), target.inputs()))?;

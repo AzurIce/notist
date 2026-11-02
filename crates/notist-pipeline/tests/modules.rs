@@ -82,10 +82,18 @@ fn unchanged_importer_uses_each_dependency_views_current_body_and_signature() {
     let changed_type = build("fn value() -> Int { 42 }");
     let old_scope = old.program().module("main").unwrap().scope();
     assert_eq!(old_scope, new.program().module("main").unwrap().scope());
+    assert!(Arc::ptr_eq(
+        old_scope,
+        new.program().module("main").unwrap().scope()
+    ));
     assert_eq!(
         old_scope,
         changed_type.program().module("main").unwrap().scope()
     );
+    assert!(Arc::ptr_eq(
+        old_scope,
+        changed_type.program().module("main").unwrap().scope()
+    ));
     for (context, expected) in [(&old, "old"), (&new, "new"), (&old, "old")] {
         assert!(Arc::ptr_eq(
             context.program().module("main").unwrap().code(),

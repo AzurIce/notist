@@ -1,21 +1,26 @@
 //! File-local import binding, independent of source loading and function bodies.
 use crate::CodeModule;
+use comemo::{Track, Tracked};
 use notist_core::{
     definitions::{DefinitionModule, FunctionId, Import, ImportBinding, ImportKind},
     diag::{Diagnostic, Phase},
 };
 use rowan::TextRange;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, LazyLock},
+};
 
 pub type ExportTable = BTreeMap<String, ImportBinding>;
 
 /// The narrow dependency surface needed by import binding. Queries perform no IO.
+#[comemo::track]
 pub trait ModuleExports {
     fn lookup(&self, module: &str, name: &str) -> Option<ImportBinding>;
     fn all(&self, module: &str) -> Arc<ExportTable>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LocalName {
     id: FunctionId,
     span: TextRange,
@@ -23,7 +28,7 @@ struct LocalName {
 
 /// Only names, import selections, resolved targets and diagnostic positions.
 /// Changing a function body does not change this specification unless positions move.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BindingSpec {
     locals: Vec<LocalName>,
     imports: Vec<(Import, String)>,
@@ -97,6 +102,35 @@ pub fn bind_imports(
     spec: &BindingSpec,
     exports: &dyn ModuleExports,
 ) -> Result<Arc<ModuleScope>, Vec<Diagnostic>> {
+    #[cfg(feature = "profiling")]
+    let _timer = crate::profiling::enter(crate::profiling::Stage::Bind);
+    if cache_enabled() && spec.locals.is_empty() && spec.imports.is_empty() {
+        // Ordinary documents without imports have nothing to hash or validate.
+        static EMPTY: LazyLock<Arc<ModuleScope>> =
+            LazyLock::new(|| Arc::new(ModuleScope::default()));
+        return Ok(EMPTY.clone());
+    }
+    bind_cached(spec, exports.track())
+}
+
+fn cache_enabled() -> bool {
+    #[cfg(feature = "profiling")]
+    {
+        crate::profiling::binding_enabled()
+    }
+    #[cfg(not(feature = "profiling"))]
+    {
+        true
+    }
+}
+
+#[comemo::memoize(enabled = cache_enabled())]
+fn bind_cached(
+    spec: &BindingSpec,
+    exports: Tracked<dyn ModuleExports + '_>,
+) -> Result<Arc<ModuleScope>, Vec<Diagnostic>> {
+    #[cfg(feature = "profiling")]
+    let _timer = crate::profiling::enter(crate::profiling::Stage::BindWork);
     let mut bindings = BTreeMap::new();
     let mut origins = BTreeMap::new();
     let mut diagnostics = Vec::new();

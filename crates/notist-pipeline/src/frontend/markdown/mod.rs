@@ -33,6 +33,9 @@ pub struct MarkdownSyntax {
 }
 
 impl Frontend for MarkdownFrontend {
+    fn cache_key(&self) -> Option<notist_core::frontend::FrontendCacheKey> {
+        Some(notist_core::frontend::FrontendCacheKey::new::<Self>("1", ""))
+    }
     fn extensions(&self) -> &[&str] {
         &["md", "markdown", "notmd", "nmd"]
     }

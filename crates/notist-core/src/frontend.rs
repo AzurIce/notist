@@ -1,6 +1,7 @@
 //! Source frontend contracts. Concrete frontends own parsing and AST lowering.
 use std::any::Any;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use crate::annotation::{Annotation, LiteralDict};
 use crate::diag::Diagnostic;
@@ -10,6 +11,25 @@ use crate::expr::Expr;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FrontendOptions {
     pub capture_syntax: bool,
+}
+
+/// In-process identity of a deterministic frontend implementation and all of its
+/// configuration. Not a display name or an instance address.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FrontendCacheKey {
+    implementation: &'static str,
+    version: &'static str,
+    configuration: Arc<str>,
+}
+
+impl FrontendCacheKey {
+    pub fn new<T: ?Sized>(version: &'static str, configuration: impl Into<Arc<str>>) -> Self {
+        Self {
+            implementation: std::any::type_name::<T>(),
+            version,
+            configuration: configuration.into(),
+        }
+    }
 }
 
 /// A frontend-owned parse tree. Tools can inspect its concrete representation
@@ -42,4 +62,12 @@ pub struct FrontendOutput {
 pub trait Frontend: Send + Sync {
     fn extensions(&self) -> &[&str];
     fn compile(&self, source: &str, options: FrontendOptions) -> FrontendOutput;
+
+    /// Opt into module compilation caching. Equal keys promise identical results
+    /// for equal explicit inputs, including ContentParser/ContentLowering behavior.
+    /// Include every configuration value; hidden IO/state must not affect output.
+    /// Custom frontends are uncached unless they explicitly make this promise.
+    fn cache_key(&self) -> Option<FrontendCacheKey> {
+        None
+    }
 }

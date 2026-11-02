@@ -343,6 +343,7 @@ impl Backend {
         base: &'a notist::FsResources,
         documents: &HashMap<Url, String>,
     ) -> notist::Vault<notist::OverlayResources<'a, notist::FsResources>> {
+        notist::evict_caches(10);
         let overlays = documents
             .iter()
             .filter_map(|(uri, source)| Some((uri.to_file_path().ok()?, source.clone())))

@@ -30,21 +30,21 @@ impl std::fmt::Display for FunctionId {
 }
 
 /// A static file-level module dependency produced by either source frontend.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Import {
     pub path: String,
     pub kind: ImportKind,
     pub span: TextRange,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportKind {
     Module { alias: String },
     Members(Vec<ImportMember>),
     Wildcard,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImportMember {
     pub name: String,
     pub alias: String,
@@ -52,7 +52,7 @@ pub struct ImportMember {
 }
 
 /// Static name binding. Functions always retain their defining identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportBinding {
     Module(String),
     Function(FunctionId),

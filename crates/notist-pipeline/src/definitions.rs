@@ -2,6 +2,7 @@
 //! Each concrete instance runs the shared Markup backend later, with known
 //! comptime arguments and typed ordinary inputs.
 use crate::code::literal::resolve_literal;
+use crate::frontend::PipelineFrontend;
 use crate::lowering::{code::expression, content::ContentLowering, literals::literal_expression};
 use crate::modules::{LinkedModule, ModuleScope};
 use notist_core::{
@@ -14,7 +15,60 @@ use notist_core::{
     expr::Expr,
 };
 use notist_syntax::code::ast::{FunctionDecl, Module, Parameter, TypeRef};
+use std::hash::{Hash, Hasher};
 use std::{collections::BTreeMap, sync::Arc};
+
+struct ContentCompiler<'a> {
+    key: notist_core::frontend::FrontendCacheKey,
+    frontend: &'a dyn ContentLowering,
+}
+
+impl Hash for ContentCompiler<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
+}
+
+pub(crate) fn compile_module(
+    module: &str,
+    path: &str,
+    source: &str,
+    resource_root: &str,
+    frontend: &dyn PipelineFrontend,
+) -> Result<CodeModule, Vec<Diagnostic>> {
+    match frontend.cache_key() {
+        Some(key) => compile_cached(
+            module,
+            path,
+            source,
+            resource_root,
+            ContentCompiler { key, frontend },
+        ),
+        None => compile_uncached(module, path, source, resource_root, frontend),
+    }
+}
+
+fn cache_enabled() -> bool {
+    #[cfg(feature = "profiling")]
+    {
+        crate::profiling::compile_enabled()
+    }
+    #[cfg(not(feature = "profiling"))]
+    {
+        true
+    }
+}
+
+#[comemo::memoize(enabled = cache_enabled())]
+fn compile_cached(
+    module: &str,
+    path: &str,
+    source: &str,
+    resource_root: &str,
+    compiler: ContentCompiler<'_>,
+) -> Result<CodeModule, Vec<Diagnostic>> {
+    compile_uncached(module, path, source, resource_root, compiler.frontend)
+}
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodeProgram {
@@ -90,13 +144,15 @@ impl CodeModule {
     }
 }
 
-pub(crate) fn compile_module(
+fn compile_uncached(
     module: &str,
     path: &str,
     source: &str,
     resource_root: &str,
     frontend: &dyn ContentLowering,
 ) -> Result<CodeModule, Vec<Diagnostic>> {
+    #[cfg(feature = "profiling")]
+    let _timer = crate::profiling::enter(crate::profiling::Stage::CompileWork);
     let parsed = notist_syntax::code::parse_module(source, frontend);
     let ast = Module::cast(parsed.syntax()).unwrap();
     let mut diagnostics = Vec::new();

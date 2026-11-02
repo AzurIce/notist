@@ -45,6 +45,8 @@ impl Context {
         module: impl Into<Arc<CodeModule>>,
         targets: impl IntoIterator<Item = String>,
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
+        #[cfg(feature = "profiling")]
+        let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
         let code = module.into();
         let targets: Vec<_> = targets.into_iter().collect();
         if code.imports.len() != targets.len() {
@@ -81,6 +83,8 @@ impl Context {
         mut self,
         module: Arc<LinkedModule>,
     ) -> Result<Self, Vec<Diagnostic>> {
+        #[cfg(feature = "profiling")]
+        let _timer = crate::profiling::enter(crate::profiling::Stage::Install);
         self.registry.register(module.code().definitions.clone())?;
         self.root = Some(module.code().id().to_owned());
         self.program.install(module);

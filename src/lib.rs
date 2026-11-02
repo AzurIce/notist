@@ -30,7 +30,7 @@ pub use notist_core::definitions::{
     ParameterDef, ParameterMode, Type, ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
-pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
+pub use notist_core::frontend::{Frontend, FrontendCacheKey, FrontendOptions, FrontendOutput, FrontendSyntax};
 pub use notist_core::inputs::{EvaluationInputs, InputError, InputRead};
 pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;
@@ -44,9 +44,11 @@ pub use notist_pipeline::frontend::{
 pub use notist_pipeline::{
     Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,
     Evaluation, EvaluationOutcome, ExportTable, Limits, LinkedModule, Lowered, ModuleExports,
-    ModuleScope, Pipeline, UnsupportedFormat, bind_imports,
+    ModuleScope, Pipeline, UnsupportedFormat, bind_imports, evict_caches,
 };
 pub use notist_syntax as syntax;
+#[cfg(feature = "profiling")]
+pub use notist_pipeline::profiling;
 
 pub mod cst_json;
 pub mod json;

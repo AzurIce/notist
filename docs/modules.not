@@ -75,7 +75,15 @@ CodeModule 保存单文件的共享声明、函数体 IR、源码和未解析的
 
 ModuleScope 只保存名称到模块／函数身份的绑定及公开表，不持有依赖实现。LinkedModule 共享引用本文件的 CodeModule 和 ModuleScope；Context 的 CodeProgram 按模块持有这些产物，Registry 与模块产物共享同一份定义。访问调用时先沿作用域与公开绑定取得 FunctionId，再从当前 Context 获取签名和函数体。函数体变化不改变导入身份；签名变化仍由具体实例检查处理。
 
-Rust 宿主可用 Context.with_module 安装无 import 的模块。带 import 的模块先调用 Context.link_module，按声明顺序提供每个已加载目标的规范身份，再用 with_linked_module 安装。CodeModule 不提供修改导入绑定的接口；宿主构造原生元数据时可在安装前通过 Arc 的写时复制修改独立定义。CodeProgram.sources() 汇集共享源码引用，不复制函数体。上述分层不自动提供跨修订缓存或增量调度。
+Rust 宿主可用 Context.with_module 安装无 import 的模块。带 import 的模块先调用 Context.link_module，按声明顺序提供每个已加载目标的规范身份，再用 with_linked_module 安装。CodeModule 不提供修改导入绑定的接口；宿主构造原生元数据时可在安装前通过 Arc 的写时复制修改独立定义。CodeProgram.sources() 汇集共享源码引用，不复制函数体。
+
+== 进程内复用
+
+单文件编译和导入绑定使用 comemo 复用成功及错误结果。编译键包含完整源码、模块身份、来源路径、逻辑根及实际前端的缓存身份；不会把整个 Context 或依赖源码加入该键。绑定键是 BindingSpec；ModuleExports.lookup 跟踪选中的公开成员，all 跟踪通配导入使用的完整公开表。导出身份不变时可以复用绑定，签名与函数体仍从当前 Context 取得。没有任何名称或导入的空作用域直接共享，不进入查询缓存。
+
+内置前端提供确定性身份；自定义前端默认不缓存，可通过 Frontend.cache_key 显式声明实现版本和完整配置。前端身份契约也涵盖 Code 内容字面量的解析与 lowering，不能用显示名称、对象地址或隐藏可变状态代替。文档前端本身的 Parse / Lower、实例检查、求值、扩展 hooks 和发布结果不在这两个缓存内。
+
+宿主仍为每轮建立输入视图并加载、校验依赖图；新 Vault 不要求清空计算缓存。evict_caches(max_age) 按轮次老化进程内 comemo 缓存，0 清空条目，不影响仍被产物持有的 Arc。CLI 在 Book／Site 装配和 LSP 输入批次间使用年龄 10；其他长期宿主自行选择时机。该操作影响进程内所有 comemo 使用者，不是每项目字节预算，也不提供跨进程、跨 Worker 持久化或增量调度。
 
 == 输出配置
 

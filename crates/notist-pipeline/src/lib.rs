@@ -5,6 +5,8 @@ pub use code::{Evaluation, EvaluationOutcome, Limits};
 mod definitions;
 mod modules;
 mod navigation;
+#[cfg(feature = "profiling")]
+pub mod profiling;
 
 pub mod extensions;
 pub mod frontend;
@@ -16,6 +18,13 @@ pub mod shape;
 pub use context::Context;
 pub use definitions::{CodeModule, CodeProgram};
 pub use modules::{BindingSpec, ExportTable, LinkedModule, ModuleExports, ModuleScope, bind_imports};
+
+/// Age and evict process-global comemo caches between host input batches.
+/// Zero clears all entries. This also affects other comemo users in this process;
+/// it is not a per-Vault byte budget or a persistent cache.
+pub fn evict_caches(max_age: usize) {
+    comemo::evict(max_age);
+}
 
 use std::{
     path::{Path, PathBuf},
@@ -173,6 +182,8 @@ impl Pipeline {
         source: &str,
         resource_root: &str,
     ) -> Result<CodeModule, Vec<Diagnostic>> {
+        #[cfg(feature = "profiling")]
+        let _timer = profiling::enter(profiling::Stage::Compile);
         let Some(frontend) = self.frontends.get(dialect_path.as_ref()) else {
             return Err(vec![Diagnostic::new(
                 notist_core::diag::Phase::Syntax,

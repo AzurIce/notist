@@ -69,6 +69,9 @@ impl crate::lowering::content::ContentLowering for NotistFrontend {
 }
 
 impl Frontend for NotistFrontend {
+    fn cache_key(&self) -> Option<notist_core::frontend::FrontendCacheKey> {
+        Some(notist_core::frontend::FrontendCacheKey::new::<Self>("1", ""))
+    }
     fn extensions(&self) -> &[&str] {
         &["not"]
     }

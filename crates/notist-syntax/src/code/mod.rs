@@ -5,6 +5,7 @@ pub mod lexer;
 pub mod parser;
 
 pub use parser::{
-    is_markup_import, parse_annotation, parse_annotation_prefix, parse_call_header,
-    parse_call_prefix, parse_content_literal, parse_import, parse_import_prefix, parse_module,
+    is_markup_for, is_markup_import, parse_annotation, parse_annotation_prefix, parse_call_header,
+    parse_call_prefix, parse_content_literal, parse_for_prefix, parse_import, parse_import_prefix,
+    parse_module,
 };

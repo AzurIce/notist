@@ -118,6 +118,9 @@ pub enum SyntaxKind {
     ComptimeExpr,
     /// A resource path literal, distinct from a dotted name `Path`.
     PathLiteral,
+    ForKeyword,
+    InKeyword,
+    ForExpr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

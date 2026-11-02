@@ -647,7 +647,9 @@ fn local_and_worker_inputs_use_the_same_real_module_signatures_and_entries() {
             .context()
             .registry()
             .functions()
-            .filter(|definition| definition.id.module != "notist")
+            .filter(|definition| {
+                definition.id.module != "notist" && !definition.id.module.starts_with("notist.")
+            })
         {
             let module = &environment.modules()[&definition.id.module];
             for entry in notist_html::components::component_entries(&definition.id.name) {

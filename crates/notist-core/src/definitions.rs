@@ -394,6 +394,8 @@ pub enum NativeFunction {
     Construct,
     ReadText,
     Panic,
+    Str,
+    ArrayLen,
     Data(crate::data::DataFunction),
 }
 impl NativeFunction {
@@ -471,7 +473,11 @@ impl From<FunctionDef> for FunctionDefWire {
             implementation: matches!(
                 d.implementation,
                 FunctionImpl::Native(
-                    NativeFunction::ReadText | NativeFunction::Panic | NativeFunction::Data(_)
+                    NativeFunction::ReadText
+                        | NativeFunction::Panic
+                        | NativeFunction::Data(_)
+                        | NativeFunction::Str
+                        | NativeFunction::ArrayLen
                 )
             )
             .then_some(d.implementation),
@@ -533,6 +539,19 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
     }
     let mut names = BTreeSet::new();
     for function in &module.functions {
+        let reserved = match function.implementation {
+            FunctionImpl::Native(NativeFunction::Str) => Some(FunctionId::new("notist", "str")),
+            FunctionImpl::Native(NativeFunction::ArrayLen) => {
+                Some(FunctionId::new("notist.array", "len"))
+            }
+            _ => None,
+        };
+        if reserved.is_some_and(|id| function.id != id) {
+            report(
+                function.span,
+                "scalar and array implementations are reserved for the standard library".into(),
+            );
+        }
         if let FunctionImpl::Native(NativeFunction::Data(kind)) = function.implementation
             && function.id != FunctionId::new("notist", kind.name())
         {

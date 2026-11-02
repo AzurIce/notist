@@ -51,8 +51,9 @@ pub enum Ctor {
     /// section after shaping. The source spelling `#section[..]` resolves to
     /// the same constructor.
     Section,
-    /// A typed content-value interpolation. Evaluation splices its forest into
-    /// the parent and removes this placeholder without creating a call boundary.
+    /// A typed content-value mount, distinct from a named function call.
+    /// Evaluation retains this group around the resulting forest, including
+    /// empty and attribute-free forests, so annotations keep their own target.
     Interpolation,
     /// A legitimate registered function, distinct from unknown-name recovery.
     Extension(ExtensionCtor),
@@ -403,6 +404,16 @@ pub struct Item {
 }
 
 impl Item {
+    /// A completed content-value mount. Unlike an unevaluated interpolation,
+    /// this is a retained transparent group, not a pending constructor call.
+    pub fn is_evaluated_interpolation(&self) -> bool {
+        self.ctor == Ctor::Interpolation
+            && self.pending.is_none()
+            && self.evaluation == Some(EvaluationState::Expanded)
+            && self.instance.is_none()
+            && self.target.is_none()
+    }
+
     /// Stable identity of a resolved content call; absent on documents and recovery nodes.
     pub fn function_id(&self) -> Option<FunctionId> {
         self.ctor.function_id()

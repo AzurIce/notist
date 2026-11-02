@@ -12,6 +12,11 @@ use notist_core::{
 use rowan::TextRange;
 
 type Scope = BTreeMap<String, TypedExpr>;
+pub(super) struct CallTarget {
+    pub(super) name: String,
+    pub(super) definition: Option<FunctionDef>,
+    pub(super) receiver: Option<TypedExpr>,
+}
 pub(super) struct CallFailure {
     pub(super) definition: Option<FunctionDef>,
     pub(super) fields: Dict,
@@ -100,6 +105,7 @@ impl<'a> Checker<'a> {
         span: TextRange,
     ) -> TypedExpr {
         TypedExpr {
+            shape: notist_core::evaluation::ContentShape::of_expr(&kind),
             ty,
             kind,
             known,
@@ -396,12 +402,13 @@ impl<'a> Checker<'a> {
                     if self.scope.contains_key(name) {
                         self.report(e.span(), format!("duplicate binding `{name}`"));
                     }
-                    let binding = self.typed(
+                    let mut binding = self.typed(
                         t.ty.clone(),
                         ExprKind::Input(name.clone()),
                         t.known.clone(),
                         e.span(),
                     );
+                    binding.shape = t.shape;
                     self.scope.insert(name.clone(), binding);
                     if t.ty != Some(Type::Type) {
                         checked.push((name.clone(), t));
@@ -649,6 +656,55 @@ impl<'a> Checker<'a> {
                 }
                 result.unwrap_or_else(|| self.failed(span, "empty match"))
             }
+            Expr::For {
+                binding,
+                subject,
+                body,
+                ..
+            } => {
+                let old_site = std::mem::replace(&mut self.site, CallSite::Code);
+                let subject = self.check(subject);
+                let element = match &subject.ty {
+                    Some(Type::Array(Some(element))) => Some((**element).clone()),
+                    _ => {
+                        self.report(subject.span, "for requires a statically typed Array<E>; erased Array and Data are not iterable");
+                        None
+                    }
+                };
+                let previous = self.scope.insert(
+                    binding.clone(),
+                    self.typed(element, ExprKind::Input(binding.clone()), None, span),
+                );
+                let body = self.check_with_hint(body, type_hint.clone());
+                match previous {
+                    Some(value) => {
+                        self.scope.insert(binding.clone(), value);
+                    }
+                    None => {
+                        self.scope.remove(binding);
+                    }
+                }
+                self.site = old_site;
+                let ty = body.ty.clone().filter(|t| t.level().is_some()).or_else(|| {
+                    (body.ty == Some(Type::Never))
+                        .then_some(type_hint)
+                        .flatten()
+                        .filter(|t| t.level().is_some())
+                });
+                if ty.is_none() {
+                    self.report(body.span, "for body must return InlineContent or BlockContent (including for empty input)");
+                }
+                self.typed(
+                    ty,
+                    ExprKind::For {
+                        binding: binding.clone(),
+                        subject: Box::new(subject),
+                        body: Box::new(body),
+                    },
+                    None,
+                    span,
+                )
+            }
             Expr::Binary {
                 op, left, right, ..
             } => {
@@ -787,9 +843,7 @@ impl<'a> Checker<'a> {
                 body,
                 ..
             } => {
-                let Some(name) = callee.name_path() else {
-                    return self.failed(span, "function values are not supported");
-                };
+                let name = callee.name_path().unwrap_or_default();
                 if matches!(name.as_str(), "Array" | "Option" | "Result") {
                     return self.check_container_type(&name, e);
                 }
@@ -930,9 +984,49 @@ impl<'a> Checker<'a> {
             )
             .cloned()
     }
+    pub(super) fn call_target(&mut self, callee: &Expr) -> CallTarget {
+        let name = callee.name_path().unwrap_or_else(|| "<method>".into());
+        if let Some(definition) = self.definition(&name) {
+            return CallTarget {
+                name,
+                definition: Some(definition),
+                receiver: None,
+            };
+        }
+        if let Expr::Member {
+            base, name: method, ..
+        } = callee
+        {
+            let receiver = self.check(base);
+            let definition = match (&receiver.ty, method.as_str()) {
+                (Some(Type::Array(_)), "len") => self
+                    .context
+                    .registry()
+                    .function("notist.array", "len")
+                    .cloned(),
+                _ => None,
+            };
+            if definition.is_none() {
+                self.report(
+                    callee.span(),
+                    format!("no method `{method}` for this receiver type"),
+                );
+            }
+            return CallTarget {
+                name,
+                definition,
+                receiver: Some(receiver),
+            };
+        }
+        CallTarget {
+            name,
+            definition: None,
+            receiver: None,
+        }
+    }
     pub(super) fn invocation(
         &mut self,
-        name: &str,
+        target: CallTarget,
         args: &[CallArg],
         ct: &[CallArg],
         children: Option<Box<TypedExpr>>,
@@ -940,7 +1034,7 @@ impl<'a> Checker<'a> {
         span: TextRange,
     ) -> Result<Invocation, Box<CallFailure>> {
         self.failures.push(Vec::new());
-        let result = self.bind_invocation(name, args, ct, children, attrs, span);
+        let result = self.bind_invocation(target, args, ct, children, attrs, span);
         let failures = self.failures.pop().unwrap();
         if let Some(frame) = self.failures.last_mut() {
             frame.extend(failures.iter().cloned());
@@ -952,14 +1046,18 @@ impl<'a> Checker<'a> {
     }
     fn bind_invocation(
         &mut self,
-        name: &str,
+        target: CallTarget,
         args: &[CallArg],
         ct: &[CallArg],
         children: Option<Box<TypedExpr>>,
         attrs: Dict,
         span: TextRange,
     ) -> Result<Invocation, Box<CallFailure>> {
-        let def = self.definition(name);
+        let CallTarget {
+            name,
+            definition: def,
+            receiver,
+        } = target;
         let Some(def) = def else {
             self.report(span, format!("unknown constructor or function `{name}`"));
             return Err(Box::new(CallFailure {
@@ -1023,11 +1121,19 @@ impl<'a> Checker<'a> {
             }
         }
         let mut arguments = BTreeMap::new();
+        let has_receiver = receiver.is_some();
+        if let Some(receiver) = receiver {
+            arguments.insert("self".into(), receiver);
+        }
         let mut pos = 0;
         for arg in args {
             let param = match arg {
                 CallArg::Positional(_) => {
-                    let p = def.parameters.iter().filter(|p| p.positional).nth(pos);
+                    let p = def
+                        .parameters
+                        .iter()
+                        .filter(|p| p.positional && !(has_receiver && p.name == "self"))
+                        .nth(pos);
                     pos += 1;
                     p
                 }
@@ -1116,6 +1222,16 @@ impl<'a> Checker<'a> {
             }
         }
         self.check_comptime(&def, &bindings, span);
+        if def.implementation == FunctionImpl::Native(NativeFunction::Str)
+            && !matches!(
+                bindings.get("T"),
+                Some(ComptimeValue::Type(
+                    Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String
+                ))
+            )
+        {
+            self.report(span, "str accepts only Unit, Bool, Int, Float or String");
+        }
         if let FunctionImpl::Native(NativeFunction::Data(kind)) = def.implementation
             && kind.decodes()
         {

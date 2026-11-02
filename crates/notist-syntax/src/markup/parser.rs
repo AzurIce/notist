@@ -594,6 +594,20 @@ impl<'a> Parser<'a> {
     /// anonymous form, producing a transparent group node. Anything else
     /// after `#` (bare `#name`, `#(..)`) is literal text.
     fn code_call(&mut self) {
+        let start = usize::from(self.state.lexed.offset(self.state.pos));
+        if crate::code::is_markup_for(&self.state.source[start..]) {
+            let limit = self.state.limit.map_or(self.state.source.len(), |i| {
+                usize::from(self.state.lexed.offset(i))
+            });
+            let parsed = self.state.lexed.embedded.remove(&start).unwrap_or_else(|| {
+                crate::code::parse_for_prefix(
+                    &self.state.source[start..limit],
+                    &crate::markup::MarkupContentParser,
+                )
+            });
+            self.import_fragment(parsed, false, None);
+            return;
+        }
         if crate::code::is_markup_import(
             &self.state.source[usize::from(self.state.lexed.offset(self.state.pos))..],
         ) {

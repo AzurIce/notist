@@ -15,6 +15,7 @@ impl Parser<'_, '_> {
         let checkpoint = self.state.builder.checkpoint();
         match self.cur() {
             Some(K::IfKeyword) => self.if_expr(),
+            Some(K::ForKeyword) => self.for_expr(),
             Some(K::MatchKeyword) => self.match_expr(),
             Some(K::ComptimeKeyword) => {
                 self.state.builder.start_node(K::ComptimeExpr.into());
@@ -55,8 +56,17 @@ impl Parser<'_, '_> {
         }
         loop {
             self.eat_trivia();
+            if self.cur() == Some(K::Dot) {
+                self.state
+                    .builder
+                    .start_node_at(checkpoint, K::MemberExpr.into());
+                self.eat();
+                self.module_expect(K::Ident, "expected a member name after `.`");
+                self.state.builder.finish_node();
+                continue;
+            }
             let call = self.cur() == Some(K::LParen)
-                || self.cur() == Some(K::LBracket)
+                || self.cur() == Some(K::LBracket) && self.loop_subject_depth != Some(self.expression_depth)
                 // In expressions an attached `<` starts compile-time arguments;
                 // comparison `<` is separated from its left operand by trivia.
                 || self.cur() == Some(K::Less)
@@ -74,7 +84,9 @@ impl Parser<'_, '_> {
                     self.expression_arguments(K::ArgumentList, K::RParen);
                     self.eat_trivia();
                 }
-                if self.cur() == Some(K::LBracket) {
+                if self.cur() == Some(K::LBracket)
+                    && self.loop_subject_depth != Some(self.expression_depth)
+                {
                     self.content_literal();
                 }
                 self.state.builder.finish_node();
@@ -243,6 +255,31 @@ impl Parser<'_, '_> {
         }
         self.eat_trivia();
         self.module_expect(K::RBrace, "expected `}` after block expression");
+        self.state.builder.finish_node();
+    }
+
+    pub(super) fn for_expr(&mut self) {
+        self.state.builder.start_node(K::ForExpr.into());
+        if self.cur() == Some(K::Hash) {
+            self.eat();
+        }
+        self.module_expect(K::ForKeyword, "expected `for`");
+        self.eat_trivia();
+        self.module_expect(
+            K::Ident,
+            "for requires one element binding; pair destructuring is not supported",
+        );
+        self.eat_trivia();
+        self.module_expect(K::InKeyword, "expected `in` after for binding");
+        let old = self.loop_subject_depth.replace(self.expression_depth + 1);
+        self.expression(0);
+        self.loop_subject_depth = old;
+        self.eat_trivia();
+        match self.cur() {
+            Some(K::LBracket) => self.content_literal(),
+            Some(K::LBrace) => self.block_expr(),
+            _ => self.module_error("expected a for body `[...]` or `{...}`"),
+        }
         self.state.builder.finish_node();
     }
 

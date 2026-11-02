@@ -119,6 +119,10 @@ fn metadata(item: &Item) -> serde_json::Value {
                 "kind": "splice", "type": expr.ty.as_ref().map(ToString::to_string),
                 "reference": match &expr.kind { notist_core::evaluation::ExprKind::Input(name) => Some(name), _ => None },
             }),
+            notist_core::evaluation::PendingEvaluation::Repeat(expr) => serde_json::json!({
+                "kind": "for", "type": expr.ty.as_ref().map(ToString::to_string),
+                "source": expr.source, "start": u32::from(expr.span.start()), "end": u32::from(expr.span.end()),
+            }),
             notist_core::evaluation::PendingEvaluation::Failure { message, .. } => serde_json::json!({"kind":"failure", "message":message}),
         }),
         "function": item.ctor.function_id().map(|id| id.to_string()),

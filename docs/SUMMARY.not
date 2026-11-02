@@ -30,6 +30,7 @@
 - [Never 与 panic](code/panic.not)
 - [Path 字面量与文本读取](code/path.not)
 - [Data 与 JSON／TOML](code/data.not)
+- [标量显示与有限遍历](code/loops.not)
 - [Types & Literals](code/types.not)
 
 = 参考与设计

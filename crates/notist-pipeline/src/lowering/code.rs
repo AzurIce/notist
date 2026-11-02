@@ -71,6 +71,19 @@ pub fn expression(
     let NodeOrToken::Node(node) = &el else {
         return literal_expression(&el, diags);
     };
+    let _for_nesting = if node.kind() == K::ForExpr {
+        let Some(guard) = notist_syntax::code::parser::ForNesting::enter() else {
+            diags.push(Diagnostic::new(
+                Phase::Syntax,
+                span,
+                "for embedding nesting limit exceeded",
+            ));
+            return None;
+        };
+        Some(guard)
+    } else {
+        None
+    };
     let parts = expressions(node);
     let child = |e: Element, d: &mut Vec<Diagnostic>| expression(e, parsed, frontend, d);
     let at = |i: usize, d: &mut Vec<Diagnostic>| child(parts.get(i)?.clone(), d);
@@ -147,6 +160,24 @@ pub fn expression(
             Expr::Block {
                 bindings,
                 value: Box::new(value.unwrap_or(Expr::Literal(Value::Unit, span))),
+                span,
+            }
+        }
+        K::ForExpr => {
+            let binding = node
+                .children_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| t.kind() == K::Ident)?
+                .text()
+                .to_string();
+            let p: Vec<_> = parts
+                .into_iter()
+                .filter(|e| !matches!(e.kind(), K::Hash | K::ForKeyword | K::InKeyword | K::Ident))
+                .collect();
+            Expr::For {
+                binding,
+                subject: Box::new(child(p.first()?.clone(), diags)?),
+                body: Box::new(child(p.get(1)?.clone(), diags)?),
                 span,
             }
         }

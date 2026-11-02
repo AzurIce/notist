@@ -171,7 +171,14 @@ fn find_inline(seq: &mut [RExpr], pos: TextSize) -> Option<&mut RExpr> {
 }
 
 fn is_content_element(expr: &RExpr) -> bool {
-    expr.pending.is_some() && !matches!(expr.ctor, Ctor::Text | Ctor::Interpolation)
+    if expr.ctor == Ctor::Interpolation {
+        return matches!(
+            expr.pending.as_deref(),
+            Some(notist_core::evaluation::PendingEvaluation::Splice(value))
+                if value.ty.as_ref().and_then(notist_core::definitions::Type::level).is_some()
+        );
+    }
+    expr.pending.is_some() && expr.ctor != Ctor::Text
 }
 
 fn contains(expr: &RExpr, span: TextRange) -> bool {

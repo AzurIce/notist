@@ -621,7 +621,8 @@ fn parse_and_projection_errors_rebind_sources_without_poisoning_cached_values() 
         assert_eq!(&text[span], "null");
         assert_eq!(error.path(), "/rows/0/v");
     }
-    assert_eq!(cache.stats().projections, 2);
+    // Only the materialized Array<Data> is memoized; scalar failures stay local.
+    assert_eq!(cache.stats().projections, 1);
     let malformed: Arc<[u8]> = Arc::from(br#"{"broken":}"#.as_slice());
     for name in ["/a.json", "/b.json"] {
         let Err(DataFailure::Error(error)) =

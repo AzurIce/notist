@@ -349,7 +349,11 @@ fn function_implementation_wire_preserves_legacy_code_flags_and_rejects_conflict
         if matches!(
             definition.implementation,
             FunctionImpl::Native(
-                NativeFunction::ReadText | NativeFunction::Panic | NativeFunction::Data(_)
+                NativeFunction::ReadText
+                    | NativeFunction::Panic
+                    | NativeFunction::Data(_)
+                    | NativeFunction::Str
+                    | NativeFunction::ArrayLen
             )
         ) {
             assert!(wire.get("implementation").is_some());

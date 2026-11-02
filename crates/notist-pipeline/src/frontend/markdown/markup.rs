@@ -105,7 +105,50 @@ fn header_crosses_paragraph(syntax: &notist_syntax::tree::SyntaxNode) -> bool {
 }
 
 /// Literal tokens make strings/comments opaque when balancing header parens.
+struct BoundaryContent;
+impl notist_syntax::content::ContentParser for BoundaryContent {
+    fn parse_content(&self, source: &str, open: TextSize) -> notist_syntax::content::ParsedContent {
+        use notist_syntax::content::{ContentFlavor, ParsedContent};
+        let end = content_end(source, usize::from(open));
+        let closed = end.is_some();
+        let end = end.unwrap_or(source.len());
+        ParsedContent {
+            range: TextRange::new(open, (end as u32).into()),
+            body: TextRange::new(
+                open + TextSize::new(1),
+                ((end - usize::from(closed)) as u32).into(),
+            ),
+            flavor: ContentFlavor::Inline,
+            closed,
+            syntax: Box::new(()),
+            diagnostics: if closed {
+                Vec::new()
+            } else {
+                vec![notist_syntax::Diagnostic {
+                    span: TextRange::empty((end as u32).into()),
+                    message: "unclosed content literal".into(),
+                }]
+            },
+        }
+    }
+}
 fn scan(src: &str) -> Scan {
+    if notist_syntax::code::is_markup_for(src) {
+        // Boundary discovery must not recursively build Markdown ASTs; the
+        // actual lowering parses the loop with the real dialect exactly once.
+        let parsed = notist_syntax::code::parse_for_prefix(src, &BoundaryContent);
+        if !parsed.diagnostics.is_empty() {
+            return Scan::Incomplete;
+        }
+        let end = usize::from(parsed.consumed());
+        return Scan::Complete(Construct {
+            header: end,
+            end,
+            body: None,
+            annotation: false,
+            import: false,
+        });
+    }
     if notist_syntax::code::is_markup_import(src) {
         let end = src.find(['\r', '\n']).unwrap_or(src.len());
         return Scan::Complete(Construct {
@@ -378,6 +421,41 @@ impl Markup {
             };
         }
         let mut local_diags = Vec::new();
+        if notist_syntax::code::is_markup_for(src) {
+            let parsed = notist_syntax::code::parse_for_prefix(src, &super::MarkdownFrontend);
+            let mut exprs = Vec::new();
+            if let Some(mut expr) = crate::lowering::code::expression(
+                parsed.syntax().into(),
+                Some(&parsed),
+                Some(&super::MarkdownFrontend),
+                &mut local_diags,
+            ) {
+                source.remap(&mut expr);
+                exprs.push(expr);
+            }
+            let mut output = super::compile_body(&src[construct.end..], false, false, false);
+            for expr in &mut output.forest {
+                shift(expr, construct.end);
+                source.remap(expr);
+            }
+            for annotation in &mut output.annotations {
+                annotation
+                    .map_spans(&mut |s| source.range(s + TextSize::new(construct.end as u32)));
+            }
+            for mut diag in output.diagnostics {
+                diag.span = source.range(diag.span + TextSize::new(construct.end as u32));
+                diagnostics.push(diag);
+            }
+            diagnostics.extend(local_diags.into_iter().map(|mut d| {
+                d.span = source.range(d.span);
+                d
+            }));
+            exprs.extend(output.forest);
+            return Lowered::Calls {
+                exprs,
+                annotations: output.annotations,
+            };
+        }
         let header = &src[..construct.header];
         let parse = if construct.annotation {
             notist_syntax::code::parse_annotation_prefix(header, &super::MarkdownFrontend)

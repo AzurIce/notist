@@ -39,7 +39,7 @@ impl Registry {
         builtin: bool,
     ) -> Result<(), Vec<Diagnostic>> {
         let mut errors = validate_module(&module);
-        if module.module == "notist" && !builtin {
+        if (module.module == "notist" || module.module.starts_with("notist.")) && !builtin {
             errors.push(Diagnostic::new(
                 Phase::Type,
                 module.span,

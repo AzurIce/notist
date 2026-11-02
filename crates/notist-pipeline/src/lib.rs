@@ -17,7 +17,9 @@ pub mod shape;
 
 pub use context::Context;
 pub use definitions::{CodeModule, CodeProgram};
-pub use modules::{BindingSpec, ExportTable, LinkedModule, ModuleExports, ModuleScope, bind_imports};
+pub use modules::{
+    BindingSpec, ExportTable, LinkedModule, ModuleExports, ModuleScope, bind_imports,
+};
 
 /// Age and evict process-global comemo caches between host input batches.
 /// Zero clears all entries. This also affects other comemo users in this process;
@@ -410,6 +412,10 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    /// Number of checked function specializations, independent of runtime records.
+    pub fn checked_instance_count(&self) -> usize {
+        self.program.instances.len()
+    }
     /// Sources retained for document/definition diagnostics without host IO.
     pub fn sources(&self) -> &Sources {
         &self.sources

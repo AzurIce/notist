@@ -163,14 +163,17 @@ impl Checker<'_> {
             r.level = level;
             return r;
         };
-        let Some(_) = callee.name_path() else {
-            self.report(callee.span(), "content calls require a named function");
+        if callee.name_path().is_none() && !matches!(callee.as_ref(), Expr::Member { .. }) {
+            self.report(
+                callee.span(),
+                "content calls require a named function or a statically resolved method",
+            );
             let mut r = RExpr::new(Ctor::Custom("<call>".into()), span)
                 .with_children(children.iter().map(|e| self.prepare(e)).collect());
             r.body = *body;
             r.attrs = attrs.clone();
             return r;
-        };
+        }
         self.prepare_call(e, true)
     }
     fn prepare_call(&mut self, e: &Expr, interpolation: bool) -> RExpr {
@@ -211,9 +214,10 @@ impl Checker<'_> {
             unreachable!()
         };
         let span = *span;
-        let name = callee.name_path().expect("named function target");
+        let target = self.call_target(callee);
+        let name = target.name.clone();
         // Signature inference uses the written mount category, never payload values.
-        let definition = self.definition(&name);
+        let definition = target.definition.as_ref();
         let structural = definition
             .as_ref()
             .is_some_and(|d| matches!(d.children, Accepts::Items | Accepts::Rows | Accepts::Cells));
@@ -264,7 +268,7 @@ impl Checker<'_> {
         } else {
             None
         };
-        let call = self.invocation(&name, args, comptime, child, attrs.clone(), span);
+        let call = self.invocation(target, args, comptime, child, attrs.clone(), span);
         let mut call = match call {
             Ok(call) => call,
             Err(failure) => {

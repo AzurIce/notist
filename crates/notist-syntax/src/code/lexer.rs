@@ -137,6 +137,8 @@ impl Lexer<'_> {
                         "import" => SyntaxKind::ImportKeyword,
                         "as" => SyntaxKind::AsKeyword,
                         "let" => SyntaxKind::LetKeyword,
+                        "for" => SyntaxKind::ForKeyword,
+                        "in" => SyntaxKind::InKeyword,
                         "if" => SyntaxKind::IfKeyword,
                         "else" => SyntaxKind::ElseKeyword,
                         "match" => SyntaxKind::MatchKeyword,

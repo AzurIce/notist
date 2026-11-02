@@ -1,0 +1,60 @@
+fn field(record: Data, key: String) -> String {
+    data_expect<String>(data_require<String>(record, key))
+}
+fn integer(record: Data, key: String) -> String {
+    str(data_expect<Int>(data_require<Int>(record, key)))
+}
+fn flag(record: Data, key: String) -> String {
+    if data_expect<Bool>(data_require<Bool>(record, key)) { "是" } else { "否" }
+}
+fn detail(source: Path, key: String) -> BlockContent {
+    let root = data_expect<Data>(read_json(source));
+    let record = data_expect<Data>(data_require<Data>(root, key));
+    table()[
+#row[#cell[id]#cell[#text(text: integer(record, "id"))]]
+#row[#cell[path]#cell[#text(text: field(record, "path"))]]
+#row[#cell[name]#cell[#text(text: field(record, "name"))]]
+#row[#cell[description]#cell[#text(text: field(record, "description"))]]
+#row[#cell[icon]#cell[#text(text: integer(record, "icon"))]]
+#row[#cell[category]#cell[#text(text: integer(record, "category"))]]
+#row[#cell[searchCategory]#cell[#text(text: integer(record, "searchCategory"))]]
+#row[#cell[equipLevel]#cell[#text(text: integer(record, "equipLevel"))]]
+#row[#cell[rarity]#cell[#text(text: integer(record, "rarity"))]]
+#row[#cell[stackSize]#cell[#text(text: integer(record, "stackSize"))]]
+#row[#cell[unique]#cell[#text(text: flag(record, "unique"))]]
+#row[#cell[untradable]#cell[#text(text: flag(record, "untradable"))]]
+#row[#cell[hq]#cell[#text(text: flag(record, "hq"))]]
+    ]
+}
+fn catalog(source: Path) -> BlockContent {
+    let records = data_expect<Array<Data>>(data_decode<Array<Data>>(data_expect<Data>(read_json(source))));
+    let rows = for record in records {
+        row()[#cell[#text(text: integer(record, "id"))]#cell[#link(field(record, "path"))[#text(text: field(record, "name"))]]#cell[#text(text: integer(record, "category"))]]
+    };
+    table()[#rows]
+}
+fn example(source: Path) -> BlockContent {
+    let record = data_expect<Data>(read_json(source));
+    let sources = data_expect<Array<Data>>(data_require<Array<Data>>(record, "sources"));
+    let previews = data_expect<Array<String>>(data_require<Array<String>>(record, "preview_imgs"));
+    let outputs = data_expect<Array<Data>>(data_require<Array<Data>>(record, "output_files"));
+    [
+#paragraph[#text(text: field(record, "name"))]
+
+#for source in sources {
+    [
+#paragraph[#text(text: field(source, "file"))]
+
+#raw<BlockContent>(text: field(source, "text"), lang: "rust")
+    ]
+}
+
+#paragraph[预览数量：#text(text: str(previews.len()))]
+
+#list[#for preview in previews { item()[#link(preview)[预览]] }]
+
+#list[#for output in outputs { item()[#link(field(output, "url"))[#text(text: field(output, "kind"))]] }]
+
+#paragraph[WASM：#text(text: flag(record, "wasm"))]
+    ]
+}

@@ -29,19 +29,27 @@ pub fn lex(src: &str) -> Lexed<'_> {
     let mut lexer = Lexer {
         src,
         stack: Vec::new(),
+        embedded: Default::default(),
+        opaque_until: 0,
+        math_failed_until: [0; 2],
     };
-    Lexed::scan(src, |offset| {
+    let mut lexed = Lexed::scan(src, |offset| {
         if lexer.stack.is_empty() {
             lexer.lex_markup(offset)
         } else {
             lexer.lex_call(offset)
         }
-    })
+    });
+    lexed.embedded = lexer.embedded;
+    lexed
 }
 
 struct Lexer<'a> {
     src: &'a str,
     stack: Vec<CallPhase>,
+    embedded: std::collections::BTreeMap<usize, crate::Parse>,
+    opaque_until: usize,
+    math_failed_until: [usize; 2],
 }
 impl Lexer<'_> {
     fn lex_literal_token(&self, offset: usize) -> (SyntaxKind, usize) {
@@ -65,6 +73,15 @@ impl Lexer<'_> {
                 (SyntaxKind::At, 1)
             }
             '#' => {
+                if i >= self.opaque_until && crate::code::is_markup_for(rest) {
+                    let parsed =
+                        crate::code::parse_for_prefix(rest, &crate::markup::MarkupContentParser);
+                    let len = usize::from(parsed.consumed());
+                    self.embedded.insert(i, parsed);
+                    // A loop is opaque to enclosing Markup delimiter scans.
+                    // The parser imports its real CST, never this marker token.
+                    return (SyntaxKind::Hash, len);
+                }
                 let next = self.src[i + 1..].chars().next();
                 match next {
                     Some(c) if c.is_alphabetic() || c == '_' => self.stack.push(CallPhase::Start),
@@ -79,6 +96,34 @@ impl Lexer<'_> {
             }
             '`' => {
                 let len = rest.len() - rest.trim_start_matches('`').len();
+                if i >= self.opaque_until {
+                    let block = len >= 3
+                        && src[..i]
+                            .rsplit('\n')
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .is_empty();
+                    let mut at = i + len;
+                    while at < src.len() {
+                        if !block && matches!(src.as_bytes()[at], b'\r' | b'\n') {
+                            break;
+                        }
+                        if src.as_bytes()[at] == b'`' {
+                            let run = src[at..].bytes().take_while(|b| *b == b'`').count();
+                            if run == len || block && run >= len {
+                                self.opaque_until = at + run;
+                                break;
+                            }
+                            at += run;
+                        } else {
+                            at += 1;
+                        }
+                    }
+                    if block && self.opaque_until <= i {
+                        self.opaque_until = src.len();
+                    }
+                }
                 (SyntaxKind::Backtick, len)
             }
             '/' => {
@@ -111,7 +156,41 @@ impl Lexer<'_> {
             '(' => (SyntaxKind::LParen, 1),
             ')' => (SyntaxKind::RParen, 1),
             '|' => (SyntaxKind::Pipe, 1),
-            '$' => (SyntaxKind::Dollar, 1),
+            '$' => {
+                if i >= self.opaque_until {
+                    let block = rest[1..].chars().next().is_some_and(char::is_whitespace);
+                    let mut failure_end = src.len();
+                    if i >= self.math_failed_until[usize::from(block)] {
+                        for (offset, c) in rest[1..].char_indices() {
+                            let end = i + 1 + offset;
+                            if !block
+                                && c == '\n'
+                                && src[end + 1..]
+                                    .trim_start_matches([' ', '\t', '\r'])
+                                    .starts_with('\n')
+                            {
+                                failure_end = end;
+                                break;
+                            }
+                            if c == '$'
+                                && src[..end]
+                                    .chars()
+                                    .next_back()
+                                    .is_some_and(char::is_whitespace)
+                                    == block
+                                && !src[i + 1..end].trim().is_empty()
+                            {
+                                self.opaque_until = end + 1;
+                                break;
+                            }
+                        }
+                        if self.opaque_until <= i {
+                            self.math_failed_until[usize::from(block)] = failure_end;
+                        }
+                    }
+                }
+                (SyntaxKind::Dollar, 1)
+            }
             '-' => (SyntaxKind::Minus, 1),
             '+' => (SyntaxKind::Plus, 1),
             '!' => (SyntaxKind::Bang, 1),

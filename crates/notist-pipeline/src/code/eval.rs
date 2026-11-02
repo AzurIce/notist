@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 #[path = "data.rs"]
 mod data;
 use crate::Context;
@@ -8,13 +9,16 @@ use notist_core::{
     diag::Phase,
     evaluation::{CallSite, ResultArm, ResultPattern},
     inputs::{EvaluationInputs, InputError, InputRead},
-    item::{EvaluationState, SourceLocation, Value},
+    item::{Ctor, EvaluationState, SourceLocation, Value},
     resource::ResourcePath,
 };
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub steps: usize,
+    /// Cumulative across nested calls and repeated mounts, including empty output.
+    pub iterations: usize,
+    pub loop_work: usize,
     /// Maximum normal nodes in a content forest, including enclosing nodes.
     /// Recovery placeholders do not consume this budget.
     pub content_nodes: usize,
@@ -29,6 +33,8 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             steps: 100_000,
+            iterations: 100_000,
+            loop_work: 1_000_000,
             content_nodes: 100_000,
             call_depth: 32,
             read_requests: 1024,
@@ -103,7 +109,7 @@ impl Failure {
 #[derive(Debug, Clone)]
 enum Runtime {
     Value(ComptimeValue),
-    Content(Type, Vec<Item>),
+    Content(Type, Arc<Vec<Item>>),
 }
 type Scope = BTreeMap<String, Runtime>;
 struct Evaluator<'a> {
@@ -112,6 +118,9 @@ struct Evaluator<'a> {
     diagnostics: Vec<Diagnostic>,
     limits: Limits,
     steps: usize,
+    iterations: usize,
+    loop_work: usize,
+    active_loops: usize,
     depth: usize,
     mode: EvaluationMode,
     inputs: Option<&'a dyn EvaluationInputs>,
@@ -148,6 +157,9 @@ pub(crate) fn run(
         diagnostics: Vec::new(),
         limits,
         steps: 0,
+        iterations: 0,
+        loop_work: 0,
+        active_loops: 0,
         depth: 0,
         mode: EvaluationMode::Runtime,
         inputs,
@@ -187,6 +199,9 @@ pub(super) fn constant(
         diagnostics: Vec::new(),
         limits: Limits::default(),
         steps: 0,
+        iterations: 0,
+        loop_work: 0,
+        active_loops: 0,
         depth: 0,
         mode: EvaluationMode::Comptime,
         inputs: None,
@@ -213,7 +228,13 @@ impl Evaluator<'_> {
         }
     }
     fn tick(&mut self) -> Result<(), Failure> {
-        self.steps += 1;
+        self.steps = self.steps.saturating_add(1);
+        if self.active_loops > 0 {
+            self.loop_work = self.loop_work.saturating_add(1);
+            if self.loop_work > self.limits.loop_work {
+                return Err("cumulative loop work limit exceeded".into());
+            }
+        }
         if self.steps > self.limits.steps {
             Err("evaluation step limit exceeded".into())
         } else {
@@ -243,8 +264,24 @@ impl Evaluator<'_> {
                 }
                 Ok(Runtime::Content(
                     t.ty.clone().unwrap(),
-                    self.bind_content(forest, scope, self.limits.content_nodes),
+                    Arc::new(self.bind_content(forest, scope, self.limits.content_nodes)),
                 ))
+            }
+            ExprKind::For { .. } => {
+                if self.mode == EvaluationMode::Comptime {
+                    return Err("content traversal cannot run during comptime evaluation".into());
+                }
+                let ty = t.ty.clone().ok_or("missing checked for result category")?;
+                let mut item = Item::new(Ctor::Interpolation, t.span);
+                item.level = ty.level().ok_or("for requires a content result")?;
+                item.origin = Some(notist_core::item::Origin {
+                    source: t.source.clone(),
+                    start: t.span.start().into(),
+                    end: t.span.end().into(),
+                    expansion: Vec::new(),
+                });
+                item.pending = Some(Box::new(PendingEvaluation::Repeat(capture_expr(t, scope))));
+                Ok(Runtime::Content(ty, Arc::new(vec![item])))
             }
             ExprKind::Block(bindings, value) => {
                 let mut local = scope.clone();
@@ -336,7 +373,7 @@ impl Evaluator<'_> {
             ExprKind::ValueCall(call) => {
                 let children = match &call.children {
                     Some(child) => match self.expr(child, scope)? {
-                        Runtime::Content(_, nodes) => nodes,
+                        Runtime::Content(_, nodes) => nodes.as_ref().clone(),
                         _ => return Err("invalid children".into()),
                     },
                     None => Vec::new(),
@@ -360,7 +397,19 @@ impl Evaluator<'_> {
                     vec![error_content(node.clone(), message.clone())]
                 }
                 Some(PendingEvaluation::Splice(expr)) => match self.expr(expr, scope) {
-                    Ok(Runtime::Content(_, nodes)) => nodes,
+                    Ok(Runtime::Content(ty, nodes))
+                        if expr.ty.as_ref() == Some(&ty) && ty.level() == Some(node.level) =>
+                    {
+                        let mut group = node.clone();
+                        group.pending = None;
+                        group.evaluation = Some(EvaluationState::Expanded);
+                        group.children = nodes.as_ref().clone();
+                        vec![group]
+                    }
+                    Ok(Runtime::Content(..)) => vec![error_content(
+                        node.clone(),
+                        "content interpolation violated its checked category".into(),
+                    )],
                     Ok(_) => vec![error_content(
                         node.clone(),
                         "content interpolation produced a data value".into(),
@@ -372,6 +421,11 @@ impl Evaluator<'_> {
                     if let Some(PendingEvaluation::Call(call)) = pending {
                         item.pending =
                             Some(Box::new(PendingEvaluation::Call(capture_call(call, scope))));
+                    }
+                    if let Some(PendingEvaluation::Repeat(expr)) = pending {
+                        item.pending = Some(Box::new(PendingEvaluation::Repeat(capture_expr(
+                            expr, scope,
+                        ))));
                     }
                     item.children =
                         self.bind_content(&node.children, scope, limit.saturating_sub(1));
@@ -420,6 +474,18 @@ impl Evaluator<'_> {
         if let Some(PendingEvaluation::Call(call)) = item.pending.as_deref() {
             return self.present_call(item, call, limit);
         }
+        if let Some(PendingEvaluation::Repeat(expr)) = item.pending.as_deref() {
+            return match self.repeat(expr, limit.saturating_sub(1), item) {
+                Ok(children) => {
+                    let mut group = item.clone();
+                    group.pending = None;
+                    group.evaluation = Some(EvaluationState::Expanded);
+                    group.children = children;
+                    vec![group]
+                }
+                Err(failure) => vec![self.error_at(item.clone(), failure)],
+            };
+        }
         if item.evaluation.is_none()
             && let Some(id) = item.function_id()
             && self.target(&id) != id
@@ -430,7 +496,89 @@ impl Evaluator<'_> {
         let mut item = item.clone();
         item.pending = None;
         item.children = self.present(&item.children, limit.saturating_sub(1));
+        if !valid_structure(&item) {
+            return vec![self.error(
+                item,
+                "evaluated content violated its checked structural role".into(),
+            )];
+        }
         vec![item]
+    }
+    fn repeat(
+        &mut self,
+        expr: &TypedExpr,
+        limit: usize,
+        group: &Item,
+    ) -> Result<Vec<Item>, Failure> {
+        let ExprKind::For {
+            binding,
+            subject,
+            body,
+        } = &expr.kind
+        else {
+            return Err("invalid deferred for computation".into());
+        };
+        if self.active_loops >= 32 {
+            return Err("for nesting limit exceeded".into());
+        }
+        self.active_loops += 1;
+        let result = (|| {
+            let Value::Array(values) = data(self.expr(subject, &Scope::new())?)? else {
+                return Err("for subject did not produce an Array".into());
+            };
+            if values.len() > self.limits.iterations.saturating_sub(self.iterations) {
+                return Err("cumulative iteration limit exceeded".into());
+            }
+            let mut result = Vec::new();
+            let mut count = 0usize;
+            let mut local = Scope::new();
+            for (index, value) in values.iter().enumerate() {
+                self.iterations = self.iterations.saturating_add(1);
+                if self.iterations > self.limits.iterations {
+                    return Err("cumulative iteration limit exceeded".into());
+                }
+                self.tick()?;
+                local.insert(
+                    binding.clone(),
+                    Runtime::Value(ComptimeValue::Data(value.clone())),
+                );
+                let value = self.expr(body, &local).map_err(|mut failure| {
+                    failure.message = format!("for iteration {index}: {}", failure.message);
+                    failure
+                })?;
+                let Runtime::Content(ty, nodes) = value else {
+                    return Err("for body produced data".into());
+                };
+                if Some(&ty) != expr.ty.as_ref() {
+                    return Err("for body violated its checked category".into());
+                }
+                let mut nodes = nodes.as_ref().clone();
+                if let Some(origin) = &group.origin {
+                    for node in &mut nodes {
+                        expand(node, &origin.expansion);
+                    }
+                }
+                let remaining = limit.saturating_sub(count);
+                let nodes = self.present(&nodes, remaining);
+                let added = content_count(&nodes);
+                if count.saturating_add(added) > limit {
+                    return Err("content size limit exceeded".into());
+                }
+                // A failed iteration never exposes a successfully assembled prefix.
+                if nodes
+                    .iter()
+                    .flat_map(Item::descendants)
+                    .any(|n| matches!(n.evaluation, Some(EvaluationState::Error(_))))
+                {
+                    return Err(format!("for iteration {index} failed").into());
+                }
+                count += added;
+                result.extend(nodes);
+            }
+            Ok(result)
+        })();
+        self.active_loops -= 1;
+        result
     }
     fn present_call(&mut self, item: &Item, call: &Invocation, limit: usize) -> Vec<Item> {
         let target = self.target(&call.instance.function);
@@ -508,6 +656,7 @@ impl Evaluator<'_> {
                 (
                     name.into(),
                     TypedExpr {
+                        shape: Default::default(),
                         ty: Some(
                             def.parameters
                                 .iter()
@@ -679,7 +828,7 @@ impl Evaluator<'_> {
         if let Some(ty) = &call.definition.children_type {
             inputs.insert(
                 "children".into(),
-                Runtime::Content(ty.clone(), children.clone()),
+                Runtime::Content(ty.clone(), Arc::new(children.clone())),
             );
         }
         let target = FunctionInstance {
@@ -703,6 +852,33 @@ impl Evaluator<'_> {
             self.depth += 1;
         }
         let result = match definition.implementation {
+            FunctionImpl::Native(NativeFunction::Str) => {
+                let text: notist_core::shared::Text = match fields.get("value") {
+                    Some(Value::Unit) => "()".into(),
+                    Some(Value::Bool(v)) => v.to_string().into(),
+                    Some(Value::Int(v)) => v.to_string().into(),
+                    Some(Value::Str(v)) => v.clone(),
+                    Some(Value::Float(v)) if v.is_nan() => "NaN".into(),
+                    Some(Value::Float(v)) if *v == f64::INFINITY => "Infinity".into(),
+                    Some(Value::Float(v)) if *v == f64::NEG_INFINITY => "-Infinity".into(),
+                    Some(Value::Float(v)) => v.to_string().into(),
+                    _ => {
+                        return Err(Failure::at(
+                            "str accepts only Unit, Bool, Int, Float or String",
+                            call,
+                        ));
+                    }
+                };
+                Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text))))
+            }
+            FunctionImpl::Native(NativeFunction::ArrayLen) => {
+                let Some(Value::Array(values)) = fields.get("self") else {
+                    return Err(Failure::at("len requires an Array receiver", call));
+                };
+                let len = i64::try_from(values.len())
+                    .map_err(|_| Failure::at("array length exceeds Int", call))?;
+                Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
+            }
             FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
             FunctionImpl::Native(NativeFunction::Data(kind)) => {
                 self.data_native(kind, call, &fields)
@@ -737,7 +913,10 @@ impl Evaluator<'_> {
                             &call.source,
                         )?;
                     }
-                    Ok(Runtime::Content(definition.returns.clone(), children))
+                    Ok(Runtime::Content(
+                        definition.returns.clone(),
+                        Arc::new(children),
+                    ))
                 }
             }
         };
@@ -786,13 +965,13 @@ impl Evaluator<'_> {
                 if let Some(origin) = &item.origin {
                     expansion.extend(origin.expansion.iter().cloned());
                 }
-                for child in &mut forest {
+                for child in Arc::make_mut(&mut forest) {
                     expand(child, &expansion);
                 }
             }
             Ok(Runtime::Content(call.definition.returns.clone(), {
-                item.children = forest;
-                vec![item]
+                item.children = Arc::unwrap_or_clone(forest);
+                Arc::new(vec![item])
             }))
         } else {
             let valid = match &result {
@@ -863,6 +1042,7 @@ fn capture_item(item: &Item, scope: &Scope) -> Item {
         Box::new(match pending {
             PendingEvaluation::Call(call) => PendingEvaluation::Call(capture_call(call, scope)),
             PendingEvaluation::Splice(expr) => PendingEvaluation::Splice(capture_expr(expr, scope)),
+            PendingEvaluation::Repeat(expr) => PendingEvaluation::Repeat(capture_expr(expr, scope)),
             failure => failure.clone(),
         })
     });
@@ -884,9 +1064,22 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
                 expr.known = Some(v.clone());
                 ExprKind::Constant(v.clone())
             }
-            Some(Runtime::Content(_, forest)) => ExprKind::Content(forest.clone()),
+            Some(Runtime::Content(_, forest)) => ExprKind::Content(forest.as_ref().clone()),
             None => expr.kind.clone(),
         },
+        ExprKind::For {
+            binding,
+            subject,
+            body,
+        } => {
+            let mut local = scope.clone();
+            local.remove(binding);
+            ExprKind::For {
+                binding: binding.clone(),
+                subject: Box::new(capture_expr(subject, scope)),
+                body: Box::new(capture_expr(body, &local)),
+            }
+        }
         ExprKind::Array(values) => {
             ExprKind::Array(values.iter().map(|e| capture_expr(e, scope)).collect())
         }
@@ -987,6 +1180,24 @@ fn content_count(forest: &[Item]) -> usize {
         .flat_map(Item::descendants)
         .filter(|i| !matches!(i.evaluation, Some(EvaluationState::Error(_))))
         .count()
+}
+fn valid_structure(item: &Item) -> bool {
+    fn children(items: &[Item], expected: &Ctor) -> bool {
+        items.iter().all(|item| {
+            matches!(item.evaluation, Some(EvaluationState::Error(_)))
+                || if item.ctor == Ctor::Node || item.is_evaluated_interpolation() {
+                    children(&item.children, expected)
+                } else {
+                    &item.ctor == expected
+                }
+        })
+    }
+    match item.ctor.accepts() {
+        Some(notist_core::builtins::Accepts::Rows) => children(&item.children, &Ctor::TableRow),
+        Some(notist_core::builtins::Accepts::Cells) => children(&item.children, &Ctor::TableCell),
+        Some(notist_core::builtins::Accepts::Items) => children(&item.children, &Ctor::ListItem),
+        _ => true,
+    }
 }
 fn expand(item: &mut Item, locations: &[SourceLocation]) {
     if let Some(origin) = &mut item.origin {
@@ -1256,8 +1467,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(pass.children.len(), 1);
+        assert!(pass.children[0].is_evaluated_interpolation());
         assert_eq!(
-            pass.children[0].fields.get("text"),
+            pass.children[0].children[0].fields.get("text"),
             Some(&Value::Str("one".into()))
         );
         assert!(evaluation.root.descendants().all(|i| i.pending.is_none()));

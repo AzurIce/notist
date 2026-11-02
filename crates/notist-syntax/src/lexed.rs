@@ -7,6 +7,9 @@ pub struct Lexed<'a> {
     src: &'a str,
     kinds: Vec<SyntaxKind>,
     starts: Vec<TextSize>,
+    /// Syntax-only embedded prefixes owned by the native Markup lexer. Keeping
+    /// the parse avoids re-parsing nested loops during boundary scans.
+    pub(crate) embedded: std::collections::BTreeMap<usize, crate::Parse>,
 }
 
 impl<'a> Lexed<'a> {
@@ -23,7 +26,12 @@ impl<'a> Lexed<'a> {
             offset += len;
         }
         starts.push(TextSize::new(src.len() as u32));
-        Self { src, kinds, starts }
+        Self {
+            src,
+            kinds,
+            starts,
+            embedded: Default::default(),
+        }
     }
     pub fn kind(&self, i: usize) -> Option<SyntaxKind> {
         self.kinds.get(i).copied()

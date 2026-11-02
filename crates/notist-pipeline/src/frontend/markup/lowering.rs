@@ -545,6 +545,7 @@ fn append_description(expr: &Expr, out: &mut String) {
             append_description(value, out)
         }
         Expr::If { .. }
+        | Expr::For { .. }
         | Expr::Match { .. }
         | Expr::Binary { .. }
         | Expr::Array(..)
@@ -742,6 +743,18 @@ fn lower_inline(
                         .with_literal_arg("target", Value::Str(target.into()))
                         .with_children(children);
                     items.push(expr);
+                    after_element = true;
+                }
+                SyntaxKind::ForExpr => {
+                    run.flush_at_element(&mut items);
+                    if let Some(expr) = crate::lowering::code::expression(
+                        node.clone().into(),
+                        Some(parsed),
+                        Some(&super::NotistFrontend),
+                        diags,
+                    ) {
+                        items.push(expr);
+                    }
                     after_element = true;
                 }
                 SyntaxKind::CodeCall => {

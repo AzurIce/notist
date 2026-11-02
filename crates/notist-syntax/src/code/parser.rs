@@ -141,6 +141,7 @@ struct Parser<'src, 'content> {
     content: Option<&'content dyn ContentParser>,
     in_comptime_args: usize,
     expression_depth: usize,
+    loop_subject_depth: Option<usize>,
 }
 
 impl<'src, 'content> Parser<'src, 'content> {
@@ -154,6 +155,7 @@ impl<'src, 'content> Parser<'src, 'content> {
             content,
             in_comptime_args: 0,
             expression_depth: 0,
+            loop_subject_depth: None,
         }
     }
 
@@ -257,6 +259,62 @@ pub fn is_markup_import(source: &str) -> bool {
             .next()
             .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-')
     })
+}
+
+pub fn is_markup_for(source: &str) -> bool {
+    source.strip_prefix("#for").is_some_and(|tail| {
+        tail.chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-')
+    })
+}
+
+thread_local! { static FOR_NESTING: Cell<usize> = const { Cell::new(0) }; }
+/// Shared syntax/lowering recursion bound across embedded frontend callbacks.
+#[doc(hidden)]
+pub struct ForNesting {
+    _private: (),
+}
+impl ForNesting {
+    pub fn enter() -> Option<Self> {
+        if FOR_NESTING.get() >= 16 {
+            return None;
+        }
+        FOR_NESTING.set(FOR_NESTING.get() + 1);
+        Some(Self { _private: () })
+    }
+}
+impl Drop for ForNesting {
+    fn drop(&mut self) {
+        FOR_NESTING.set(FOR_NESTING.get() - 1);
+    }
+}
+
+/// A complete loop expression prefix; the content dialect owns its `[]` body.
+pub fn parse_for_prefix(source: &str, content: &dyn ContentParser) -> Parse {
+    let Some(_guard) = ForNesting::enter() else {
+        let end = if source.starts_with("#for") {
+            4
+        } else if source.starts_with("for") {
+            3
+        } else {
+            source.chars().next().map_or(0, char::len_utf8)
+        };
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(SyntaxKind::ForExpr.into());
+        builder.token(SyntaxKind::Error.into(), &source[..end]);
+        builder.finish_node();
+        return Parse::new(
+            builder.finish(),
+            vec![Diagnostic {
+                span: TextRange::new(0.into(), (end as u32).into()),
+                message: "for syntax nesting limit exceeded".into(),
+            }],
+        );
+    };
+    let mut parser = Parser::new(source, false, Some(content));
+    parser.for_expr();
+    parser.state.finish()
 }
 
 /// Parse a single import prefix, optionally including the Markup `#` marker.

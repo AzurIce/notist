@@ -16,6 +16,68 @@ pub struct TypedExpr {
     #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
     pub source: String,
+    /// Local checked forest evidence, not a public function return contract.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub shape: ContentShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ContentShape {
+    Empty,
+    Rows,
+    Cells,
+    Items,
+    #[default]
+    Other,
+}
+impl ContentShape {
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, s) | (s, Self::Empty) => s,
+            (a, b) if a == b => a,
+            _ => Self::Other,
+        }
+    }
+    pub fn of_items(items: &[Item]) -> Self {
+        use crate::item::Ctor;
+        items.iter().fold(Self::Empty, |shape, item| {
+            shape.join(match item.ctor {
+                Ctor::TableRow => Self::Rows,
+                Ctor::TableCell => Self::Cells,
+                Ctor::ListItem => Self::Items,
+                Ctor::Node => Self::of_items(&item.children),
+                Ctor::Interpolation => match item.pending.as_deref() {
+                    Some(PendingEvaluation::Splice(expr) | PendingEvaluation::Repeat(expr)) => {
+                        expr.shape
+                    }
+                    _ => Self::Other,
+                },
+                _ => Self::Other,
+            })
+        })
+    }
+    pub fn of_expr(kind: &ExprKind) -> Self {
+        match kind {
+            ExprKind::Content(items) => Self::of_items(items),
+            ExprKind::Block(_, value) => value.shape,
+            ExprKind::For { body, .. } => body.shape,
+            ExprKind::If(_, yes, no) => {
+                if yes.ty == Some(Type::Never) {
+                    no.shape
+                } else if no.ty == Some(Type::Never) {
+                    yes.shape
+                } else {
+                    yes.shape.join(no.shape)
+                }
+            }
+            ExprKind::MatchResult { arms, .. } => arms
+                .iter()
+                .filter(|arm| arm.body.ty != Some(Type::Never))
+                .fold(Self::Empty, |shape, arm| shape.join(arm.body.shape)),
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +104,11 @@ pub enum ExprKind {
     },
     ValueCall(Box<Invocation>),
     Content(Vec<Item>),
+    For {
+        binding: String,
+        subject: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
     Failure(String),
 }
 
@@ -107,7 +174,12 @@ impl CallSite {
 pub enum PendingEvaluation {
     Call(Invocation),
     Splice(TypedExpr),
-    Failure { ty: Option<Type>, message: String },
+    /// Captured content traversal, interpreted only when the forest is mounted.
+    Repeat(TypedExpr),
+    Failure {
+        ty: Option<Type>,
+        message: String,
+    },
 }
 
 #[cfg(feature = "serde")]

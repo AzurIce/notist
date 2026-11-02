@@ -116,7 +116,18 @@ impl ParsedDataCache for DataCache {
     fn decode(&self, data: &Data, target: &Type, limits: DataLimits) -> Result<Value, DataFailure> {
         // Data targets must return the caller's exact view, never a cached
         // source from another document or an owning cycle inside Document.
-        if *target == Type::Data {
+        // Scalar views and optional scalar views cost O(depth), share their
+        // backing strings, and must not retain one memo entry per record.
+        fn cheap(target: &Type) -> bool {
+            match target {
+                Type::Data | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String => {
+                    true
+                }
+                Type::Option(element) => cheap(element),
+                _ => false,
+            }
+        }
+        if cheap(target) {
             return data.decode(target, limits);
         }
         let key = (

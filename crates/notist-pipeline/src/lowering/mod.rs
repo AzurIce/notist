@@ -74,7 +74,7 @@ pub fn call_header(
             args.push(CallArg::Positional(value));
         }
     }
-    let callee = call
+    let mut callee = call
         .callee()
         .and_then(|node| {
             code::expression(NodeOrToken::Node(node), Some(parsed), Some(frontend), diags)
@@ -86,6 +86,15 @@ pub fn call_header(
             .children_with_tokens()
             .any(|e| matches!(e.kind(), SyntaxKind::LParen | SyntaxKind::ComptimeArguments))
     {
+        // A bare interpolation owns the whole `#value` occurrence, including
+        // the hash. Its content group is an adjacent annotation target, not
+        // just the identifier token inside that occurrence.
+        match &mut callee {
+            Expr::Ref { span: range, .. }
+            | Expr::Member { span: range, .. }
+            | Expr::Literal(_, range) => *range = span,
+            _ => {}
+        }
         return callee;
     }
     let comptime = call

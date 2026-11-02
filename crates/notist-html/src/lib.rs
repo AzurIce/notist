@@ -780,9 +780,14 @@ impl State<'_, '_> {
         for child in children {
             if is_error(child) {
                 result.push(child);
-            } else if child.ctor == Ctor::Node {
+            } else if child.ctor == Ctor::Node || child.is_evaluated_interpolation() {
                 if attributes::has_html_attrs(&child.attrs) {
-                    self.diagnostic(child, format!("node attributes omitted inside `{parent}`: HTML has no wrapper for this structural sequence"));
+                    let group = if child.ctor == Ctor::Node {
+                        "node"
+                    } else {
+                        "content group"
+                    };
+                    self.diagnostic(child, format!("{group} attributes omitted inside `{parent}`: HTML has no wrapper for this structural sequence"));
                 }
                 result.extend(self.structural(&child.children, expected, parent));
             } else {

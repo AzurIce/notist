@@ -326,6 +326,26 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
         .push(ParameterDef::new("message", Ty::String, Mode::Required));
     module.functions.push(panic);
     module.functions.extend(crate::data::definitions());
+    let mut string = FunctionDef::new(
+        FunctionId::new("notist", "str"),
+        Accepts::Nothing,
+        Ty::String,
+    );
+    string.implementation =
+        crate::definitions::FunctionImpl::Native(crate::definitions::NativeFunction::Str);
+    string.comptime.push(ComptimeParameter {
+        name: "T".into(),
+        ty: Ty::Type,
+        default: None,
+        constraint: ValueConstraint::Any,
+        span: string.span,
+    });
+    string.parameters.push(ParameterDef::new(
+        "value",
+        Ty::Parameter("T".into()),
+        Mode::Required,
+    ));
+    module.functions.push(string);
     module
 }
 
@@ -337,6 +357,23 @@ pub fn registry() -> &'static crate::registry::Registry {
         registry
             .install(definitions(), true)
             .expect("native content definitions must be valid");
+        let mut array = crate::definitions::DefinitionModule::new("notist.array");
+        let mut len = crate::definitions::FunctionDef::new(
+            crate::definitions::FunctionId::new("notist.array", "len"),
+            Accepts::Nothing,
+            crate::definitions::Type::Int,
+        );
+        len.implementation =
+            crate::definitions::FunctionImpl::Native(crate::definitions::NativeFunction::ArrayLen);
+        len.parameters.push(crate::definitions::ParameterDef::new(
+            "self",
+            crate::definitions::Type::Array(None),
+            crate::definitions::ParameterMode::Required,
+        ));
+        array.functions.push(len);
+        registry
+            .install(array, true)
+            .expect("native array methods must be valid");
         registry
     })
 }

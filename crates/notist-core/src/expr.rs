@@ -102,6 +102,13 @@ pub enum Expr {
         #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
         span: TextRange,
     },
+    For {
+        binding: String,
+        subject: Box<Expr>,
+        body: Box<Expr>,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
+        span: TextRange,
+    },
     Binary {
         op: String,
         left: Box<Expr>,
@@ -239,6 +246,7 @@ impl Expr {
             | Self::Block { span, .. }
             | Self::If { span, .. }
             | Self::Match { span, .. }
+            | Self::For { span, .. }
             | Self::Binary { span, .. }
             | Self::Unary { span, .. }
             | Self::Comptime { span, .. }
@@ -328,6 +336,16 @@ impl Expr {
                     a.map_spans(map);
                     b.map_spans(map);
                 }
+            }
+            Self::For {
+                subject,
+                body,
+                span,
+                ..
+            } => {
+                *span = map(*span);
+                subject.map_spans(map);
+                body.map_spans(map);
             }
             Self::Binary {
                 left, right, span, ..

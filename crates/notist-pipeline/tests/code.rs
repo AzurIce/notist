@@ -244,8 +244,7 @@ fn shape_is_finished_before_repeated_block_forest_splicing() {
         .unwrap();
     assert_eq!(
         twice
-            .children
-            .iter()
+            .descendants()
             .filter(|i| i.ctor == notist_core::item::Ctor::Section)
             .count(),
         2
@@ -253,7 +252,7 @@ fn shape_is_finished_before_repeated_block_forest_splicing() {
 }
 
 #[test]
-fn nested_literals_splice_without_adding_call_nodes() {
+fn nested_literals_keep_mount_groups_without_adding_named_call_nodes() {
     let c = context(
         "fn f()[children: InlineContent] -> InlineContent { let a = [#children]; let b = [#a]; [#b] }",
     );
@@ -266,7 +265,14 @@ fn nested_literals_splice_without_adding_call_nodes() {
         .find(|i| i.function_id() == Some(FunctionId::new("demo", "f")))
         .unwrap();
     assert_eq!(f.children.len(), 1);
-    assert_eq!(f.children[0].ctor, notist_core::item::Ctor::Text);
+    let mut group = &f.children[0];
+    for _ in 0..3 {
+        assert!(group.is_evaluated_interpolation());
+        assert!(group.function_id().is_none());
+        assert_eq!(group.children.len(), 1);
+        group = &group.children[0];
+    }
+    assert_eq!(group.ctor, notist_core::item::Ctor::Text);
 }
 #[test]
 fn shared_interpolation_grammar_has_context_specific_validation() {

@@ -207,6 +207,7 @@ fn validate_output(root: &Item, limit: usize) -> ExtensionResult {
     } else if root.descendants().any(|node| {
         node.pending.is_some()
             || (node.ctor == Ctor::Interpolation
+                && !node.is_evaluated_interpolation()
                 && !matches!(node.evaluation, Some(EvaluationState::Error(_))))
     }) {
         Some("output contains unevaluated content; insert expressions in before_check instead")

@@ -80,7 +80,18 @@ Array 可以省略元素类型，此时不能静态收窄为 Array<E>；已知�
 
 字面量的 Inline / Block 类别由 flank 判定，值域规则见 [Types & Literals](types.not)。类别决定片段结构：InlineContent 的根序列只含行内片段；BlockContent 按硬分隔划分内容片段，全 Inline 片段生成段落，单个 Block 表达式保留其森林。
 
-内容值是森林，不带字面量容器节点。Code 字面量内的 `#name` 按既有类别拼接内容森林，保留内部段落、section 与调用身份；数据必须通过 text 等内容函数显式转换。独立 Markup 的插值只允许内容函数调用，两种入口共用语法解析，在检查阶段区分合法位置。
+内容值本身是森林，构造、绑定或返回值不额外建立字面量容器。Code 字面量内的 `#name` 将内容值挂载为一个 Interpolation 分组，实际森林位于该分组的 children 中；空内容和无属性内容也保留这一层，不进行树简化。分组保留内部段落、section 与调用身份；数据必须通过 text 等内容函数显式转换。独立 Markup 的插值只允许内容函数调用，两种入口共用语法解析，在检查阶段区分合法位置。
+
+插值前的行内或块注解落在这次挂载的分组上，标记整个内容贡献，不只标记第一个子节点，也不复制给所有子节点。内容内部原有注解保持原位置。同一个值可以多次挂载，各次分组的属性互不影响；空内容也有独立的属性落点。
+
+```notc
+fn marked() -> InlineContent {
+    let part = [#strong[A]#emph[B]];
+    [@(id: "part")#part]
+}
+```
+
+Interpolation 没有具名函数身份，不等同于显式 node 调用。`#f[...]` 的输入已有函数调用边界，不因这条规则再添加重复分组。HTML 可以省略无属性分组的包装标签，但这不删除 Item 树中的分组。普通段落、section、Inline／Block 类别和片段检查规则不因此改变；不新增内容加法或匿名调用语法。[有限 for](loops.not) 使用相同的挂载分组。
 
 同一片段内不允许混合 Inline / Block 或并列多个 Block 表达式；空行或显式分段分隔片段，单换行不分隔。片段规则在解析调用的具体类型后检查，与函数体展开无关。
 
@@ -88,11 +99,13 @@ Array 可以省略元素类型，此时不能静态收窄为 Array<E>；已知�
 
 每个内容调用建立一个边界节点，包括无 children 的调用。已知普通参数保存在 fields，待求值实参表达式保存在 pending，求值后得到具体字段；输入森林挂载为 children。边界对外类别取 O，输入契约取 C。数据函数调用不产生 Item。Code 直接内容调用与字面量插值共用调用绑定、输入类别和公开结构角色校验。
 
-Code 的分析分为 Parse / Lower 与具体实例检查。阶段一通过 ContentParser 确定字面量边界并取得前端语法树，再经 ContentLowering 生成 Markup IR₁，作为 Expr.Content 的森林、注解 side list 和 body flavor 嵌入 Code Expr 树。阶段二在编译期参数、局部绑定与词法作用域已知时，将 IR₁ 交给共享 Markup 内容管线，经 Resolve → Shape → Materialize 产生 Item 森林，嵌入 TypedExpr 的 Content 分支。所有分支的 Parse / Lower 在第一阶段完成；依赖环境的解析和类型检查只处理具体实例选中的分支，不重复调用前端。节点直接保存待求值的调用实参或内容插值表达式。内容值插值使用 Interpolation 占位节点，其类别在 Shape 前确定；求值时以实际森林替换并消除占位。插值与返回不重新 Shape。
+Code 的分析分为 Parse / Lower 与具体实例检查。阶段一通过 ContentParser 确定字面量边界并取得前端语法树，再经 ContentLowering 生成 Markup IR₁，作为 Expr.Content 的森林、注解 side list 和 body flavor 嵌入 Code Expr 树。阶段二在编译期参数、局部绑定与词法作用域已知时，将 IR₁ 交给共享 Markup 内容管线，经 Resolve → Shape → Materialize 产生 Item 森林，嵌入 TypedExpr 的 Content 分支。所有分支的 Parse / Lower 在第一阶段完成；依赖环境的解析和类型检查只处理具体实例选中的分支，不重复调用前端。节点直接保存待求值的调用实参或内容插值表达式。Interpolation 的类别在 Shape 前确定，源码范围包含完整的 `#name`；求值后保留范围与属性，将实际森林装入 children，清除 pending 并标记为 Expanded。插值与返回不重新 Shape。
 
 Markup 降糖生成的调用使用规范内置函数身份，不受模块同名函数影响；显式调用按词法 Context 解析。
 
 列表、表格与行使用公开 item、row、cell 角色检查结构序列；BlockContent 本身不证明这些角色。node 具有内建结构透明契约；用户函数不能靠私有实现取得角色；同签名映射也必须保留 node 的结构透明契约。结构槽的方括号承载结构序列，检查不依赖其书写留白。
+
+已检查的局部内容、for 模板及运行期分支保留内部结构证据，经 let／块尾值传递；Rows、Cells、Items 只能与相同角色或同类别空内容连接。空数组仍检查模板。普通函数签名仍只承诺 InlineContent／BlockContent，不从私有函数体推断公开角色。证据由正常 Resolve／Shape／Materialize 产生，求值后的结构槽另作内核校验，不依赖 Renderer 或 after_evaluate 插入节点。
 
 @(id: "对-item-与-shape-的契约")
 == 对 Item 与 Shape 的契约
@@ -104,13 +117,15 @@ Markup 降糖生成的调用使用规范内置函数身份，不受模块同名�
 
 两阶段共用 Item。Item 保留原调用的实例与函数身份、返回类别、字段、注解、源码位置；pending 保存已检查的调用、森林插值或失败信息。求值完成的节点清除 pending，另记执行目标与 Native、Expanded 或 Error 状态。来源包含定义文件及调用展开链，不能把定义范围当作调用文档中的范围。
 
-Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数体、诊断与来源源码。Evaluate 接收 Analysis 和同一 Context，直接根据 Item.pending 计算实参、拼接内容值森林并替换调用边界内的 children，产出 Item 表示树。内容值绑定将自由输入绑定到当前调用环境，保留不透明调用；各次调用独立实例化函数体中的 Item 森林。映射目标按需补查的字面量先完成 Shape，再执行其实现；已有 Item 结构不重新 Shape。C → C 只承诺类别一致；直接返回 children 也保留调用边界。原生终端使用自身挂载契约，Expanded 边界由 Renderer 透明呈现或承载其注解。
+Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数体、诊断与来源源码。Evaluate 接收 Analysis 和同一 Context，直接根据 Item.pending 计算实参，填充内容值插值分组与函数调用边界内的 children，产出 Item 表示树。内容值绑定将自由输入绑定到当前调用环境，保留不透明调用；各次调用独立实例化函数体中的 Item 森林。映射目标按需补查的字面量先完成 Shape，再执行其实现；已有 Item 结构不重新 Shape。C → C 只承诺类别一致；直接返回 children 也保留调用边界。原生终端使用自身挂载契约，Expanded 边界由 Renderer 透明呈现或承载其注解。保留的插值分组计入内容节点预算，分组存在不放宽 row／cell／item 结构角色检查。
 
 [Replace 扩展](../designs/extensions.not) 在 Evaluate 中按同签名函数映射选择执行目标。Item 的语义身份保持原调用，目标单独记录，不增加调用层级。
 
 == 错误冒泡与恢复
 
 失败沿值与调用依赖向外冒泡，在最近的内容插值调用边界恢复为错误 Item。错误节点保持原调用类别、身份、注解与来源；其余独立插值继续求值和呈现。已恢复的错误随森林挂载与转发，不再次冒泡。函数内部某个内容插值失败不会抹掉父函数的整个结果；只有父调用自身的计算失败才继续向外传播。
+
+for 是受检的整体组装：任一迭代的计算或挂载失败会丢弃该循环已经组装的前缀，保留来源诊断，并将循环挂载恢复为错误；循环外的独立内容仍按原有边界处理。迭代次数与循环工作额度跨嵌套调用、重复挂载累计，不随普通内容调用的步数重置。
 
 诊断的产生阶段与恢复状态分别记录。recovered 表示失败已被内容边界容纳，包含函数体解析、lowering、检查或求值错误；预览据此保留可呈现的结果。错误节点优先按错误状态呈现，包括列表、表格和透明结构轴，不再按其保留的构造类别解释。
 

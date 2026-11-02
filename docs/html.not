@@ -37,6 +37,7 @@ renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留�
 | divider | hr |
 | table / row / cell | table / tr / td 或 th；表格上下文决定 cell 的映射 |
 | node | children；有可映射属性时按内容使用 span 或 div |
+| 已求值的 Interpolation | children；有可映射属性时按内容使用 span 或 div，Item 中的分组保持不变 |
 | Extension | 按 HtmlRegistry 的规范函数身份生成组件；缺少目标时保留 children 并诊断 |
 | Custom | 保留 children 的恢复容器，并产生渲染诊断 |
 
@@ -59,7 +60,7 @@ raw 的 lang 字段取首个逗号或空白分隔片段生成 language-* 类，�
 
 [Path](code/path.not) 是编译输入的逻辑资源身份，不是公开 URL。含 Path 的属性或组件数据（包括嵌套集合）不会输出，并产生渲染诊断；IR 调试 JSON 使用显式 Path 标记，不将其隐式转成字符串。
 
-普通 node 无可映射属性时透明展开；有属性时生成一个包装元素保留身份。在 list、table、row 的结构槽中，node 展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处 node 的可映射属性不输出，并产生诊断；child 的属性照常保留。
+普通 node 和已求值的 Interpolation 无可映射属性时只输出 children；有属性时生成一个包装元素保留标注范围。这是 HTML 呈现选择，不会简化或修改 Item 树。在 list、table、row 的结构槽中，透明分组展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处分组的可映射属性不输出，并产生诊断；child 的属性照常保留。尚未求值的 Interpolation 仍产生诊断，不能冒充已完成的内容分组。
 
 @(id: "内容状态")
 === 内容状态

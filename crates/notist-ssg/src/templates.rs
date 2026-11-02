@@ -35,49 +35,6 @@ pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathB
     Ok(found)
 }
 
-fn markdown(source: &str) -> Result<String, tera::Error> {
-    let pipeline = notist::Pipeline::default();
-    let context = notist::Context::default();
-    let analysis = pipeline
-        .analyze("template.md", source, &context)
-        .map_err(|e| tera::Error::message(e.to_string()))?;
-    if !analysis.diagnostics().is_empty() {
-        return Err(tera::Error::message(
-            analysis
-                .diagnostics()
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
-    }
-    let evaluation = pipeline.evaluate(&analysis, &context);
-    if !evaluation.diagnostics.is_empty() {
-        return Err(tera::Error::message(
-            evaluation
-                .diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
-    }
-    let rendered = notist_html::Renderer::new()
-        .with_code_renderer(notist_html::highlight::code)
-        .render_with_diagnostics(&evaluation.root);
-    if !rendered.diagnostics.is_empty() {
-        return Err(tera::Error::message(
-            rendered
-                .diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ));
-    }
-    Ok(rendered.html)
-}
-
 pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Tera, Error> {
     let mut templates: BTreeMap<String, String> = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title><link rel=\"stylesheet\" href=\"{{assets.highlight}}\"></head><body><main>{{page.html | safe}}</main>{% if assets.components %}<script type=\"module\" src=\"{{assets.components}}\"></script>{% endif %}</body></html>".into())]);
     let mut directories = vec![];
@@ -118,9 +75,6 @@ pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Te
             Ok(config.url(path))
         },
     );
-    engine.register_function("markdown", |args: Kwargs, _: &State| {
-        markdown(args.must_get::<&str>("source")?)
-    });
     engine
         .add_raw_templates(templates)
         .map_err(|e| Error::Message(format!("templates: {e}")))?;

@@ -106,9 +106,11 @@ SSG 为一次构建复用整站模板上下文，不先构造完整的 JSON 中�
 
 这不是取消整站上下文或将正文改成浏览器加载。数据驱动实体页仍应按正常的 prepare、路由校验、模板渲染与静态发布流程构建。XIV DB 五万级物品页实践、性能边界与复现方式见 docs/_logs/2026-10-31-xiv-db-ssg.md。
 
-辅助函数 `url(path='index.html')` 将发布路径连接到 base_url，并保持外部 URL。比较、字符串拼接与前缀判断使用 Tera 原生语法：`a == b`、`a ~ b`、`text is starting_with(pat='foo')`。`markdown(source=site.data.example.code)` 把模板数据中的 Markdown 编译为 HTML，通过 safe 过滤器输出；它使用独立的内置文档管线，不读取文件或加载外部模块。
+辅助函数 `url(path='index.html')` 将发布路径连接到 base_url，并保持外部 URL。比较、字符串拼接与前缀判断使用 Tera 原生语法：`a == b`、`a ~ b`、`text is starting_with(pat='foo')`。
 
-正文中的代码块与 markdown 辅助函数使用相同的构建期语法高亮。常用语言由 syntect 与 two-face 扩展语法集提供；not / notist 与 notc 使用 Notist 语法树，不执行示例代码或读取导入。输出带 z- 前缀的作用域 class，未知语言、未标注语言及 text / plaintext 等纯文本标记保持转义后的普通代码。
+模板负责页面外壳、布局与导航，只放置已经渲染好的 page.html，不承担正文生成，也不提供将字符串编译为正文的 markdown 辅助函数。扩展正文应生成或修改进入 Notist 内容管线的文档源码或内容树；site.data 及其扩展能力保留，用于页面呈现，而不是另一条正文输入通道。
+
+正文中的代码块使用构建期语法高亮。常用语言由 syntect 与 two-face 扩展语法集提供；not / notist 与 notc 使用 Notist 语法树，不执行示例代码或读取导入。输出带 z- 前缀的作用域 class，未知语言、未标注语言及 text / plaintext 等纯文本标记保持转义后的普通代码。
 
 构建自动发布 _notist/highlight.css，模板上下文的 assets.highlight 是相对于当前页面的样式 URL；默认模板自动加载，自定义模板按上例显式加载，也可以使用自己的作用域配色。默认样式支持系统明暗偏好和根元素 data-theme=light / dark，颜色可通过 --notist-code-* CSS 变量覆盖。
 

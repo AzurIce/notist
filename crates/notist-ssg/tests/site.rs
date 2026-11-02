@@ -174,10 +174,10 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
         ("theme/templates/part.tera", "{{site.data.example.name}}"),
         ("theme/static/style.css", "theme css"),
         ("static/style.css", "site css"),
-        ("data/example.toml", "name='Example'\ncode='**strong**'"),
+        ("data/example.toml", "name='Example'"),
         (
             "templates/home.tera",
-            "{{page.title}}|{% include 'part' %}|{{url(path='style.css')}}|{% for path, dir in site.directories %}{{dir.path}};{% endfor %}|{{markdown(source=site.data.example.code) | safe}}|{{page.html | safe}}",
+            "{{page.title}}|{% include 'part' %}|{{url(path='style.css')}}|{% for path, dir in site.directories %}{{dir.path}};{% endfor %}|{{page.html | safe}}",
         ),
     ]);
     let config =
@@ -188,7 +188,6 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
     assert!(home.contains("Home &amp; more|Example|https://example.com/project/style.css"));
     assert!(home.contains("folder;"));
     assert!(home.contains("empty;"));
-    assert!(home.contains("<strong>strong</strong>"));
     assert!(home.contains("<h1 id=\"body\">Body</h1>"));
     assert_eq!(site.files[Path::new("style.css")], b"site css");
 }
@@ -268,7 +267,7 @@ fn tera_inheritance_and_native_expressions_keep_html_escaped() {
         ("content/index.not", "@!(title: \"<Home> & title\")\n= Body"),
         (
             "templates/page.tera",
-            "{% extends 'layouts/base' %}{% block body %}{% if page.title == '<Home> & title' and page.title is starting_with(pat='<') %}{{page.title ~ '!'}}{% endif %}|{{markdown(source='**bold**')}}|{{markdown(source='**bold**') | safe}}|{{url(path='next.html?a=1&b=2')}}|{{page.html | safe}}{% endblock body %}",
+            "{% extends 'layouts/base' %}{% block body %}{% if page.title == '<Home> & title' and page.title is starting_with(pat='<') %}{{page.title ~ '!'}}{% endif %}|{{page.html}}|{{url(path='next.html?a=1&b=2')}}|{{page.html | safe}}{% endblock body %}",
         ),
         (
             "templates/layouts/base.tera",
@@ -283,8 +282,7 @@ fn tera_inheritance_and_native_expressions_keep_html_escaped() {
         output.starts_with("<main>&lt;Home&gt; &amp; title!|"),
         "{output}"
     );
-    assert!(output.contains("&lt;strong&gt;bold&lt;/strong&gt;"));
-    assert!(output.contains("<strong>bold</strong>"));
+    assert!(output.contains("&lt;h1 id=&quot;body&quot;&gt;Body&lt;/h1&gt;"));
     assert!(output.contains("next.html?a=1&amp;b=2"));
     assert!(output.contains("<h1 id=\"body\">Body</h1>"));
 }
@@ -297,6 +295,7 @@ fn tera_errors_and_unsafe_helper_urls_abort_publication() {
         "{{url(path='javascript:alert(1)')}}",
         "{{url()}}",
         "{{markdown()}}",
+        "{{markdown(source='**bold**') | safe}}",
         "{% include 'missing' %}",
     ] {
         let result = Builder::default().build(
@@ -429,7 +428,7 @@ fn native_components_publish_their_resources_and_registration_script() {
 }
 
 #[test]
-fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown() {
+fn evaluated_heading_ids_and_code_highlighting_are_rendered_from_content() {
     let mut vault = vault(&[
         (
             "content/index.not",
@@ -437,9 +436,8 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
         ),
         (
             "templates/page.tera",
-            "<link rel=\"stylesheet\" href=\"{{assets.highlight}}\">{{page.html | safe}}{{markdown(source=site.data.code.source) | safe}}",
+            "<link rel=\"stylesheet\" href=\"{{assets.highlight}}\">{{page.html | safe}}",
         ),
-        ("data/code.toml", "source='''```rust\nfn main() {}\n```'''"),
     ]);
     let site = Builder::default()
         .build(&mut vault, &SiteConfig::default())
@@ -448,7 +446,7 @@ fn evaluated_heading_ids_and_code_highlighting_are_shared_with_template_markdown
     assert_eq!(page.matches("id=\"explicit\"").count(), 1);
     assert!(page.contains("id=\"one\""));
     assert!(page.contains("id=\"one-2\""));
-    assert_eq!(page.matches("class=\"z-source z-rust\"").count(), 2);
+    assert_eq!(page.matches("class=\"z-source z-rust\"").count(), 1);
     assert!(page.contains("&lt;"));
     assert!(page.contains("href=\"_notist/highlight.css\""));
     assert_eq!(

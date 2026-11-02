@@ -50,6 +50,7 @@ def generate(request, manifest_path):
             f"`{path.name}`\n\n```rust\n{path.read_text().rstrip()}\n```"
             for path in sources if path.is_file()
         )
+        site["documents"][page.as_posix()] += "\n" + code + "\n"
         data = site["data"].setdefault(name, {})
         data.update(name=name, code=code)
         data["wasm"] = (Path(request["root"]) / "static" / "examples" / name / "pkg" / "ranim_example.js").is_file()

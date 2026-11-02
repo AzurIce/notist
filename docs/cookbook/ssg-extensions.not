@@ -104,7 +104,7 @@ def prepare(request, manifest_path):
         quoted_name = json.dumps(name, ensure_ascii=False)
         documents[f"examples/{name}.md"] = (
             f"@!(title: {quoted_name}, example: {quoted_name})\n\n"
-            f"# {name}\n"
+            f"# {name}\n\n```rust\n{source.rstrip()}\n```\n"
         )
         site["data"]["examples"][name] = {"name": name, "code": source}
         links.append(f"- [{name}]({name}.md)")
@@ -131,14 +131,15 @@ website/templates/page.tera：
 ```tera
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>{{page.title}} · {{site.title}}</title></head>
+  <head>
+    <meta charset="utf-8">
+    <title>{{page.title}} · {{site.title}}</title>
+    <link rel="stylesheet" href="{{assets.highlight}}">
+  </head>
   <body>
     <nav><a href="{{url(path='index.html')}}">Home</a></nav>
     <main>
       {{page.html | safe}}
-      {% if page.attrs.example %}
-        <pre><code>{{site.data.examples[page.attrs.example].code}}</code></pre>
-      {% endif %}
     </main>
     {% if assets.components %}
       <script type="module" src="{{assets.components}}"></script>
@@ -147,7 +148,7 @@ website/templates/page.tera：
 </html>
 ```
 
-HTML 模板由普通 `{{code}}` 插值转义 Rust 源码。site.data 是扩展生成的 JSON，模板直接查表，不负责读取 Cargo.toml 或 Rust 文件。这里只显示源码；如需代码高亮，可以使用站点正文或 markdown 辅助函数承载带语言标记的代码块，见 [站点模板](../ssg.not#站点模板)。
+Rust 源码由扩展作为带语言标记的代码块写入文档源码，经过正常正文编译获得语法高亮；模板只放置 page.html，不再生成正文。site.data 是扩展生成的 JSON，仍可供页面外壳与呈现使用，模板不负责读取 Cargo.toml 或 Rust 文件，见 [站点模板](../ssg.not#站点模板)。
 
 == 构建与检查
 

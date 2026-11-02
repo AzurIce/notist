@@ -30,6 +30,8 @@ impl std::fmt::Display for Phase {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DiagnosticCode {
     OutsideVault,
+    /// An explicit local embed has no public URL selected by its host.
+    UnpublishedResource,
 }
 
 /// The shared diagnostic type of the whole pipeline: `notist-syntax`'s own

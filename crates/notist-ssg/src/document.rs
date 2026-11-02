@@ -54,13 +54,17 @@ fn value(input: &Value) -> serde_json::Value {
     use serde_json::{Value as Json, json};
     match input {
         Value::Unit | Value::None => Json::Null,
+        // Logical resource identities are not public template values or URLs.
+        Value::Path(_) | Value::Data(_) | Value::DataError(_) => Json::Null,
         Value::Bool(v) => json!(v),
         Value::Int(v) => json!(v),
         Value::Float(v) => json!(v),
-        Value::Str(v) => json!(v),
+        Value::Str(v) => json!(v.as_str()),
         Value::Array(v) => Json::Array(v.iter().map(value).collect()),
         Value::Dict(v) => Json::Object(v.iter().map(|(k, v)| (k.into(), value(v))).collect()),
         Value::Some(v) => value(v),
+        Value::Ok(v) => json!({"ok":value(v)}),
+        Value::Err(v) => json!({"err":value(v)}),
     }
 }
 
@@ -104,7 +108,7 @@ fn headings(
         let title = text(item);
         let inherited_target = item.attrs.get("id").is_none() && inherited.is_some();
         let explicit = match item.attrs.get("id") {
-            Some(Value::Str(id)) => Some(id.clone()),
+            Some(Value::Str(id)) => Some(id.to_string()),
             _ => inherited,
         };
         let id = explicit.unwrap_or_else(|| {
@@ -119,7 +123,7 @@ fn headings(
         });
         // A section's explicit ID already provides the heading's link target.
         if !inherited_target {
-            item.attrs.insert("id", Value::Str(id.clone()));
+            item.attrs.insert("id", Value::Str(id.clone().into()));
         }
         let level = match item.fields.get("level") {
             Some(Value::Int(n)) => *n,
@@ -134,7 +138,7 @@ fn headings(
     }
     let section_id = if item.ctor == Ctor::Section {
         match item.attrs.get("id") {
-            Some(Value::Str(id)) => Some(id.clone()),
+            Some(Value::Str(id)) => Some(id.to_string()),
             _ => None,
         }
     } else {
@@ -158,6 +162,11 @@ impl Document {
         sources: Sources,
     ) -> Result<Self, Error> {
         let mut errors = vec![];
+        for (key, value) in root.attrs.iter() {
+            if value.contains_data_views() {
+                errors.push(Diagnostic::new(notist::Phase::Type, root.span, format!("Data or DataError in template attribute `{key}` must be decoded to ordinary values")));
+            }
+        }
         let index = notist::index::Index::build(&root, &mut errors);
         if !errors.is_empty() {
             return Err(Error::Diagnostics(
@@ -225,5 +234,19 @@ impl Document {
             sources,
             ids,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_variants_survive_template_projection() {
+        let nested = Value::Ok(Box::new(Value::Err(Box::new(Value::Str("bad".into())))));
+        assert_eq!(value(&nested), serde_json::json!({"ok":{"err":"bad"}}));
+        let path = notist::ResourcePath::resolve("/private", "doc.not", "data.txt").unwrap();
+        let nested = Value::Err(Box::new(Value::Path(path)));
+        assert_eq!(value(&nested), serde_json::json!({"err":null}));
     }
 }

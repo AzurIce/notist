@@ -367,6 +367,12 @@ MarkdownFrontend 独立解析 `.md`、`.markdown`、`.notmd` 与 `.nmd`，使用
 
 Markdown 扩展支持 `@(dict)`、`@!(dict)`、`#name(args)[body]`、包限定调用与透明 `#node[body]`。`[正文]` 是行内槽；两端内侧均留白的 `[ 正文 ]` 是块槽，可以包含空行、标题、列表、引用和代码块。位置映射将移除容器前缀后的局部位置还原为原始源码范围。
 
+=== Wiki 链接
+
+Markdown 支持与原生 Markup 相同的 `[[target]]` 与 `[[target|显示文本]]`，均 lower 为普通 link；不增加按笔记名搜索或省略扩展名补全的语义。target 保留原始文字并去掉首尾空白，不解码标点转义或字符引用；显示文本按 Markdown 行内规则解析，无显示文本时不生成 children，由渲染器显示 target。
+
+Wiki 链接不能跨行，未闭合的括号保留为普通文字；代码与数学 payload 内不识别链接，转义的开括号不触发 Wiki 链接。GFM 表格仍以未转义的管道符分列，带显示文本的链接在单元格中写作 `[[page.not\|显示文本]]`。
+
 === 调用与注解的探测
 
 Markdown 扩展扫描调用头时用共用字面量 lexer 屏蔽 String / 注释中的圆括号；扫描 body 时按 Markdown 的转义、反引号代码片段、代码围栏与行内数学片段屏蔽方括号。它使用 Markdown 容器提供的源码范围，原生 Balanced / BlockRun 的 token 上下文只用于原生 Markup。
@@ -394,6 +400,7 @@ Markdown 扩展扫描调用头时用共用字面量 lexer 屏蔽 String / 注释
 | 原生文档 lowering | `crates/notist-pipeline/src/frontend/markup/lowering.rs` |
 | 共用注解与调用头 lowering | `crates/notist-pipeline/src/lowering/mod.rs` |
 | Markdown 扩展扫描与位置映射 | `crates/notist-pipeline/src/frontend/markdown/markup.rs` |
+| Markdown Wiki 链接 | `crates/notist-pipeline/src/frontend/markdown/wikilink.rs` |
 | Markdown 文字解码与段落分段 | `crates/notist-pipeline/src/frontend/markdown/strings.rs`、`breaks.rs` |
 | 注解挂载与 Item 生成 | `crates/notist-pipeline/src/materialize.rs` |
 | 结构槽的清理与校验 | `crates/notist-pipeline/src/resolve.rs` |

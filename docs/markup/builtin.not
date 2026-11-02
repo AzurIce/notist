@@ -186,6 +186,14 @@ ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
 
 匹配和恢复使用 MatchedInline。Markdown 对应 `~...~` / `~~...~~`。
 
+=== underline
+
+```signature
+underline()[children: InlineContent] -> InlineContent
+```
+
+为行内内容添加下划线，显式调用 `#underline[需要下划线的文字]`；没有独立语法糖，`_..._` 仍表示 emph。HTML 输出为带 `text-decoration: underline` 样式的 span，不赋予链接或强调语义。
+
 === raw
 
 ```signature
@@ -429,7 +437,7 @@ Markdown 的行内、引用式链接均匹配 MD.Link。
 === embed
 
 ```signature
-embed(target: String, description?: String, title?: String) -> InlineContent
+embed(target: ResourceTarget, description?: String, title?: String, query?: String, fragment?: String) -> InlineContent
 ```
 
 target 可使用第一个位置参数。
@@ -447,7 +455,9 @@ ast MD_Image -> MD.Image(target, body, title) => embed(target: decode_once(targe
 
 `embed_title` 取 link 小节的 destination_parts.title。`description` 对 label 先 lower，再按文档顺序递归：Literal 追加其字符串值；Call 优先追加字符串 text 字段，缺少时追加字符串 description 字段，再遍历 children。Markdown 的 plain_text 对 lower 后的 Call 使用同样的字段优先顺序与 children 递归，忽略 Literal；空描述为 `""`，可选标题保留。
 
-embed 表示资源引用；降糖不读取资源或按扩展名推断类型，具体呈现由渲染器决定。
+embed 表示资源引用；降糖不读取资源或按扩展名推断类型，具体呈现由渲染器决定。ResourceTarget 接受 [Path](../code/path.not) 或 String；本地字符串在 Resolve／Evaluate 的 embed 构造边界绑定资源身份，远程 URL 保持 String，解析与 lowering 仍只依赖文本。
+
+`#embed(p"./image.svg", fragment: "detail")` 的 Path 不包含 URL 后缀语义：文件名内的 `?`、`#`、`%` 不拆分、不解码。query 与 fragment 使用独立参数；旧的本地字符串与两种前端的图片语法仍按 URL 拆分后缀，路径和 fragment 百分号解码一次。重复提供同一后缀产生诊断。宿主发布时选择、编码公开 URL 并附加后缀，资源身份本身不授予访问或发布权限。
 
 ```recover
 recover Embed on Miss when kind(rule_start) == Bang {

@@ -23,6 +23,25 @@ test("missing, empty and false scalar parameters remain distinct", () => {
   assert.equal(readParameter(element, "ratio", "Float"), Infinity);
 });
 
+test("Result protocol keeps both variants and recursively decodes their payloads", () => {
+  assert.deepEqual(decodeValue(["ok", ["int", "9223372036854775807"]]), { kind: "ok", value: 9223372036854775807n });
+  assert.deepEqual(decodeValue(["err", ["none"]]), { kind: "err", value: undefined });
+  assert.deepEqual(decodeValue(["ok", ["err", ["string", "error"]]]), { kind: "ok", value: { kind: "err", value: "error" } });
+  const fields = new Map([["notist-protocol", "2"], ["notist-result", JSON.stringify(["err", ["string", "invalid"]])]]);
+  const element = { getAttribute: name => fields.get(name) ?? null };
+  assert.deepEqual(readParameter(element, "result", "Result"), { kind: "err", value: "invalid" });
+  assert.equal(readParameter(element, "missing", "Result"), undefined);
+  assert.throws(() => decodeValue(["ok", ["path", { root: "/private", path: "data.txt" }]]), /Unknown Notist value type: path/);
+});
+
+test("resource target URL parameters decode without exposing Path identities", () => {
+  const fields = new Map([["notist-protocol", "2"], ["notist-target", "https://example.test/a.svg?q=1#part"]]);
+  const element = { getAttribute: name => fields.get(name) ?? null };
+  assert.equal(readParameter(element, "target", "ResourceTarget"), "https://example.test/a.svg?q=1#part");
+  assert.equal(readParameter(element, "missing", "ResourceTarget"), undefined);
+  assert.throws(() => decodeValue(["path", { root: "/private", path: "a.svg" }]), /Unknown Notist value type: path/);
+});
+
 test("distributed runtime registers once and rejects missing URLs or conflicting implementations", async () => {
   const previous = globalThis.customElements;
   const constructors = new Map();

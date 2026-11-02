@@ -183,6 +183,7 @@ fn validate_lowered(
     for annotation in &mut document.annotations {
         annotation.map_spans(&mut check);
     }
+    document.attrs.map_spans(&mut check);
     if invalid {
         Err(vec![Diagnostic::new(
             Phase::Semantic,

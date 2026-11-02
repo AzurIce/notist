@@ -9,8 +9,124 @@ fn vault(files: &[(&str, &str)]) -> Vault<MemoryResources> {
     }
     Vault::new(resources)
 }
+
+#[test]
+fn structured_records_are_build_time_bodies_not_published_data_and_keep_error_sources() {
+    let page = "#import \"../views/lib.notc\" as view;\n#view.show()";
+    let module = "fn show(source:Path=p\"../private/items.json\")->BlockContent{let root=data_expect<Data>(read_json(source));let name=data_expect<String>(data_require<String>(root,\"name\"));[ #text(text:name) ]}";
+    let mut host = vault(&[
+        ("content/index.not", page),
+        ("content/two.not", page),
+        ("views/lib.notc", module),
+        (
+            "private/items.json",
+            r#"{"name":"static <&>","private":"SECRET"}"#,
+        ),
+    ]);
+    let site = Builder::default()
+        .build(&mut host, &SiteConfig::default())
+        .unwrap();
+    for path in ["index.html", "two.html"] {
+        let output = html(&site, path);
+        assert!(output.contains("static &lt;&amp;&gt;"));
+        assert!(!output.contains("SECRET"));
+    }
+    assert!(!site.files.keys().any(|p| p.ends_with("items.json")));
+    assert_eq!(host.input_session().data_cache_stats().parses, 1);
+    let data = r#"{"name":false}"#;
+    let mut host = vault(&[
+        ("content/index.not", page),
+        ("views/lib.notc", module),
+        ("private/items.json", data),
+    ]);
+    let Err(notist_ssg::Error::Diagnostics(errors)) =
+        Builder::default().build(&mut host, &SiteConfig::default())
+    else {
+        panic!("expected data diagnostic")
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == Path::new("/site/private/items.json")
+                && e.source == data
+                && e.diagnostic.message.contains("/name")),
+        "{errors:?}"
+    );
+}
 fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
+}
+
+#[test]
+fn embeds_use_content_roots_bound_module_defaults_and_independent_suffixes() {
+    let mut vault = vault(&[
+        (
+            "content/pages/start.not",
+            r#"= Start
+
+#import "../views/lib.notc" as view;
+#view.defaulted()
+
+#view.picture(p"../assets/a?b#c%20.svg", fragment: "one") #embed(p"/assets/a?b#c%20.svg", query: "v=2", fragment: "two")
+
+![Legacy](/assets/a%3Fb%23c%2520.svg#three) #embed("https://cdn.test/a.svg#remote")
+
+#embed(p"../other.not", fragment: "part%one")
+"#,
+        ),
+        (
+            "content/views/lib.notc",
+            r#"fn picture(target: Path, fragment?: String) -> InlineContent { [#embed(target, fragment: fragment)] }
+fn defaulted(target: Path = p"./default.svg") -> InlineContent { [#self.picture(target)] }"#,
+        ),
+        ("content/views/default.svg", "default image"),
+        ("content/assets/a?b#c%20.svg", "caller image"),
+        ("content/other.not", "@(id: \"part%one\")\n= Other"),
+    ]);
+    let site = Builder::default()
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    assert!(site.warnings.is_empty(), "{:?}", site.warnings);
+    let output = html(&site, "pages/start.html");
+    for url in [
+        "../views/default.svg",
+        "../assets/a%3Fb%23c%2520.svg#one",
+        "../assets/a%3Fb%23c%2520.svg?v=2#two",
+        "../assets/a%3Fb%23c%2520.svg#three",
+        "https://cdn.test/a.svg#remote",
+    ] {
+        assert!(
+            output.contains(&format!("src=\"{url}\"")),
+            "{url}: {output}"
+        );
+    }
+    assert!(output.contains("href=\"../other.html#part%25one\""));
+    assert_eq!(
+        site.files[Path::new("assets/a?b#c%20.svg")],
+        b"caller image"
+    );
+    assert!(!output.contains("/site"));
+}
+
+#[test]
+fn typed_embeds_do_not_publish_missing_private_or_outside_content_resources() {
+    for source in [
+        r#"#embed(p"./missing.svg")"#,
+        r#"#embed(p"./private.notc")"#,
+        r#"#embed("../outside.svg")"#,
+        r#"#embed(p"./other.not", fragment: "missing")"#,
+    ] {
+        let result = Builder::default().build(
+            &mut vault(&[
+                ("content/index.not", source),
+                ("content/private.notc", "private module"),
+                ("content/other.not", "= Other"),
+                ("outside.svg", "not published"),
+            ]),
+            &SiteConfig::default(),
+        );
+        assert!(result.is_err(), "{source}");
+    }
 }
 
 #[test]

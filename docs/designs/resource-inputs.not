@@ -1,0 +1,72 @@
+= 资源输入与求值
+
+Path 只标识逻辑资源，不携带权限、输入 revision 或发布 URL。解析和 lowering 保持文本输入；Resolve 按源文件和逻辑根绑定 Path，转发不重新绑定。用户语法见 [Path 与文本读取](../code/path.not)。
+
+== 统一函数与读取能力
+
+FunctionDef 保存规范身份、签名和 Code／Native 实现来源；CodeProgram 在函数身份之外保存 Code 函数体，NativeFunction 选择受信的 Rust 实现。返回数据或 Content 不划分函数类别。所有调用共用绑定、具体实例、执行入口与结果检查；内容结果才需要 Shape、Item 边界及呈现绑定。
+
+`read_text(source: Path) -> String` 是标准库的 Rust-native 函数，仅接受 Path，不执行 String 转换。text／embed 也是 Rust-native 函数，但返回 Content。分号声明本身不赋予读取实现，JS／HTML 只描述 Content 节点的呈现。
+
+CallSite 明确区分 Markup 与 Code；独立 Markup 只传字面量参数，读取在 notc 函数体中发生。求值器另以 Runtime／Comptime 表达能力阶段；comptime 不允许直接或间接读取。函数别名、重导出、文件后缀或模块标签不会改变能力。
+
+FunctionDef 内部只有一份实现信息。serde 保留 Code／Content 构造声明的旧 code 字段，read_text 另携带实现信息；输入同时包含新旧字段且冲突时拒绝。
+
+== 同步输入接口
+
+core 定义不依赖宿主资源系统的接口：
+
+```rust
+trait EvaluationInputs {
+    fn file(&self, path: &ResourcePath) -> InputRead;
+}
+
+enum InputRead {
+    Ready(Arc<[u8]>),
+    Failed(InputError),
+    Pending,
+}
+```
+
+查询只接受已绑定的身份，不重新解释相对路径，不提供目录枚举、写入或网络。宿主返回共享不可变字节，read_text 负责 UTF-8 解码并构造受既有值大小预算约束的 String。InputError 只保存资源事实，不缓存某个页面的 span 或 Diagnostic。
+
+Pipeline.evaluate_with_inputs 及带 Limits 的入口返回 Complete(Evaluation) 或 NeedResources。未准备的读取不会暴露部分树，也不运行 after_evaluate。普通 evaluate 不访问磁盘或 CWD，仅在实际执行读取时诊断缺少能力。
+
+Evaluation.dependencies 记录实际请求的 ResourcePath，包括缓存命中、缺失与拒绝；未消费 Path 或未执行分支不构成读取依赖。读取失败使用实际 read_text 调用的来源和范围，沿已有内容错误边界恢复，保留展开链；其余兄弟内容继续呈现。
+
+== 宿主会话
+
+Vault 为一个不可变输入批次持有 ResourceSession，各页面及源码加载共用成功字节、原始错误与版本记录。直接构造 ResourceSession 时默认没有数据授权；Vault.new 明确授予项目根。Vault.with_read_roots 替换授权列表，空列表拒绝所有数据读取。读取根、Resources.source_root 的词法绑定根和 publication／Book mounts 的发布根互不授予能力。
+
+Resources.read_root 返回显式的 ResourceReader。第三方后端必须保证有界读取，并提供不可变快照或可验证的 revision；默认实现拒绝数据能力，不通过无限 read 假冒有界接口。旧 Resources.read 仅保留在不支持该接口的第三方源码加载兼容路径中，不能为 read_text 提供数据能力。
+
+FsResources 使用 cap-std 的目录 capability，将授权检查与实际打开维持在同一根边界内；允许根内 symlink，不允许指向根外，拒绝非普通文件。读取至多取得 limit + 1 字节，以判断超限；Memory／Overlay 先检查已知长度，再复制。单文件、会话缓存和请求数分别受限：
+
+| 预算 | 默认值 |
+| --- | --- |
+| 单文件字节 | 16 MiB |
+| 会话缓存字节 | 128 MiB |
+| 会话请求数 | 16384 |
+| 单次 Evaluate 的读取请求数 | 1024 |
+
+宿主通过 InputLimits 与 Limits 调整预算；缓存命中也消耗请求额度。拒绝判断发生在缓存访问之前，缓存已有源码不会扩大数据权限。实际输入字节不自动进入 Assets、组件参数或公开 URL；读取内容只有被 Code 显式转换为 Content 后才成为正文。
+
+物理输入按需固定已观察结果，以文件身份、大小和修改元数据检测读取期间及构建结束前的变化，包括缺失文件后来出现；变化要求重建新会话。它不是整个目录的原子快照。新构建应创建新 Vault，不在旧会话替换字节。
+
+显式逻辑路径加源码是文档覆盖输入，不要求落盘。求值读取自身时使用该 Analysis 的准确源码快照；其他页面可读取会话已知的唯一源码版本。多个显式修订可以用于编辑器分析，但跨文档读取存在歧义时要求新输入批次。SSG 先登记全部生成／编辑页面，再求值，避免页面排序影响源码读取。
+
+== 浏览器准备
+
+PreparedInputs 复用 files，另以 failures 保存 NotFound、AccessDenied、NotFile、TooLarge 或 IO 失败；incomplete 表示允许的缺失字节尚未准备。未指定这些字段的旧协议仍是闭合快照，缺失就是 NotFound。read_roots 可显式替换项目根授权。module_urls 只表示呈现入口可用，不声称已经准备空文件，也不授予数据访问。
+
+describe_prepared、render_prepared 和 analyze_prepared 遇到未准备输入时返回同一协议，不返回可发布的部分结果：
+
+```json
+{"need_resources":[{"root":"/project","path":"data/intro.txt"}]}
+```
+
+web/project-inputs.js 将该逻辑身份与宿主声明的目录 URL 映射核对，在单文件与总量限制内准备字节或明确失败，然后创建新视图同步重跑。默认只允许 rootURL 的逻辑根；额外 resourceRoots 显式声明逻辑根与 URL，不从 import 或组件目录推导数据权限。
+
+准备过程限制请求数、重试轮次和读取字节，不重复获取确认失败，不进行无进展重试。AbortSignal 与文档 generation 防止过期结果覆盖新修订；输入批次之间不共享旧的成功或失败缓存。未完成时保留上一份完整预览。
+
+本接口不提供 JSON 解码、语言级 Bytes、通用集合访问、文件写入、任意网络 I/O 或完整增量引擎。

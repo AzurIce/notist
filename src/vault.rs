@@ -19,6 +19,9 @@ pub enum VaultError {
     Environment(Vec<SourceDiagnostic>),
     Unsupported(UnsupportedFormat),
     Resource(ResourceError),
+    /// Incomplete prepared hosts must load these identities and retry. This is
+    /// not a recoverable content error or a publishable partial evaluation.
+    NeedResources(Vec<crate::ResourcePath>),
 }
 impl std::fmt::Display for VaultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,6 +37,9 @@ impl std::fmt::Display for VaultError {
             }
             Self::Unsupported(error) => error.fmt(f),
             Self::Resource(error) => error.fmt(f),
+            Self::NeedResources(paths) => {
+                write!(f, "{} resource inputs need preparation", paths.len())
+            }
         }
     }
 }
@@ -59,8 +65,8 @@ impl Default for RenderOptions {
     }
 }
 
-/// Analysis, evaluation and render diagnostics refer to this document source. Module/config
-/// failures instead return source-bearing VaultError::Environment entries.
+/// Diagnostics carry their actual source, including evaluated Code definitions.
+/// Module/config loading failures return source-bearing VaultError::Environment entries.
 #[derive(Debug)]
 pub struct HtmlOutput {
     pub path: PathBuf,
@@ -80,26 +86,64 @@ pub struct ItemOutput {
 /// Environment assembly is retained within this view; replace the Vault when
 /// inputs change. No mutable source cache or incremental compiler is implied.
 pub struct Vault<R = FsResources> {
-    resources: R,
+    resources: crate::ResourceSession<R>,
     pipeline: Pipeline,
     extensions: Vec<Arc<dyn DocumentExtension>>,
     environments: BTreeMap<PathBuf, BTreeMap<Arc<str>, Arc<Environment>>>,
     config: Option<PathBuf>,
     module_urls: BTreeMap<PathBuf, String>,
+    evaluation_limits: crate::Limits,
 }
 impl<R: Resources> Vault<R> {
     pub fn new(resources: R) -> Self {
+        let root = resources.root().to_path_buf();
         Self {
-            resources,
+            // The host's project-root read grant is explicit and independent of
+            // lexical Path roots and of embed/publication mounts.
+            resources: crate::ResourceSession::new(resources).with_read_root(root),
             pipeline: Pipeline::default(),
             extensions: Vec::new(),
             environments: BTreeMap::new(),
             config: None,
             module_urls: BTreeMap::new(),
+            evaluation_limits: Default::default(),
         }
     }
     pub fn resources(&self) -> &R {
+        self.resources.resources()
+    }
+    pub fn input_session(&self) -> &crate::ResourceSession<R> {
         &self.resources
+    }
+    /// Replace data grants; importing or publishing a directory never adds one.
+    pub fn with_read_roots(mut self, roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.resources = self.resources.with_read_roots(roots);
+        self
+    }
+    pub fn with_input_limits(mut self, limits: crate::InputLimits) -> Self {
+        self.resources = self.resources.with_limits(limits);
+        self
+    }
+    pub fn with_evaluation_limits(mut self, limits: crate::Limits) -> Self {
+        self.evaluation_limits = limits;
+        self
+    }
+    pub fn with_data_cache_limits(mut self, bytes: usize, entries: usize) -> Self {
+        self.resources = self.resources.with_data_cache_limits(bytes, entries);
+        self
+    }
+    /// Load source bytes from the same input view used by `read_text`.
+    pub fn source(&self, path: impl AsRef<Path>) -> Result<String, ResourceError> {
+        self.resources.source(path.as_ref())
+    }
+    pub fn validate_inputs(&self) -> Result<(), VaultError> {
+        self.resources.validate().map_err(|error| {
+            ResourceError::Access {
+                path: self.resources.root().into(),
+                message: error.to_string(),
+            }
+            .into()
+        })
     }
     /// Whether the configured document pipeline handles this file format.
     pub fn supports(&self, path: impl AsRef<Path>) -> bool {
@@ -163,6 +207,7 @@ impl<R: Resources> Vault<R> {
             .map_err(VaultError::Environment)?,
         );
         let text: Arc<str> = Arc::from(source);
+        self.resources.observe_source(path, text.clone());
         self.environments
             .entry(path.to_path_buf())
             .or_default()
@@ -200,7 +245,20 @@ impl<R: Resources> Vault<R> {
         path: impl AsRef<Path>,
         source: &str,
     ) -> Result<Analysis, VaultError> {
-        self.compile(path.as_ref(), source, false)
+        self.compile(path.as_ref(), source, false, None)
+            .map(|(analysis, _)| analysis)
+    }
+    /// Analyze a document under a host-selected logical resource root, without
+    /// changing module roots, import resolution or the Vault's access boundary.
+    /// Site hosts use their content directory for root-relative embed references.
+    pub fn analyze_with_resource_root(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+        resource_root: impl AsRef<Path>,
+    ) -> Result<Analysis, VaultError> {
+        let root = self.resources.resolve(resource_root.as_ref());
+        self.compile(path.as_ref(), source, false, Some(&root))
             .map(|(analysis, _)| analysis)
     }
     pub fn inspect(
@@ -208,13 +266,14 @@ impl<R: Resources> Vault<R> {
         path: impl AsRef<Path>,
         source: &str,
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
-        self.compile(path.as_ref(), source, true)
+        self.compile(path.as_ref(), source, true, None)
     }
     fn compile(
         &mut self,
         path: &Path,
         source: &str,
         capture: bool,
+        resource_root: Option<&Path>,
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
         let path = self.resources.resolve(path);
         let output = self.pipeline.lower(
@@ -225,9 +284,19 @@ impl<R: Resources> Vault<R> {
             },
         )?;
         let (text, environment) = self.ensure_environment(&path, source, &output.imports)?;
-        let (mut analysis, inspection) =
-            self.pipeline
-                .analyze_lowered(&path, text, output, environment.context(), capture);
+        let context = resource_root.map(|root| {
+            environment
+                .context()
+                .clone()
+                .with_resource_root(root.to_string_lossy())
+        });
+        let (mut analysis, inspection) = self.pipeline.analyze_lowered(
+            &path,
+            text,
+            output,
+            context.as_ref().unwrap_or(environment.context()),
+            capture,
+        );
         analysis.extend_diagnostics(crate::vault_index::check_content_paths(
             self.resources.root(),
             &path,
@@ -236,7 +305,7 @@ impl<R: Resources> Vault<R> {
         Ok((analysis, inspection))
     }
     pub fn analyze_resource(&mut self, path: impl AsRef<Path>) -> Result<Analysis, VaultError> {
-        let source = self.resources.source(path.as_ref())?;
+        let source = self.source(path.as_ref())?;
         self.analyze(path, &source)
     }
     /// Bind only native targets visited by HTML rendering of this evaluated tree.
@@ -296,7 +365,28 @@ impl<R: Resources> Vault<R> {
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
-        Ok(self.pipeline.evaluate(analysis, environment.context()))
+        self.evaluate_in(&path, source, analysis, environment.context())
+    }
+    fn evaluate_in(
+        &self,
+        path: &Path,
+        source: &str,
+        analysis: &Analysis,
+        context: &crate::Context,
+    ) -> Result<Evaluation, VaultError> {
+        self.validate_inputs()?;
+        let inputs = self.resources.for_document(path, source);
+        let result = self.pipeline.evaluate_with_inputs_and_limits(
+            analysis,
+            context,
+            &inputs,
+            self.evaluation_limits,
+        );
+        self.validate_inputs()?;
+        match result {
+            crate::EvaluationOutcome::Complete(evaluation) => Ok(*evaluation),
+            crate::EvaluationOutcome::NeedResources(paths) => Err(VaultError::NeedResources(paths)),
+        }
     }
 
     /// Evaluate once, then bind and render only the targets present in the result.
@@ -312,7 +402,16 @@ impl<R: Resources> Vault<R> {
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
-        let evaluation = self.pipeline.evaluate(analysis, environment.context());
+        let mut evaluation = self.evaluate_in(&path, source, analysis, environment.context())?;
+        let outside =
+            crate::vault_index::check_embed_paths(self.resources.root(), &path, &evaluation.root);
+        for diagnostic in &outside {
+            if !analysis.diagnostics().contains(diagnostic)
+                && !evaluation.diagnostics.contains(diagnostic)
+            {
+                evaluation.diagnostics.push(diagnostic.clone());
+            }
+        }
         let registry = bind_html(
             &environment,
             &self.resources,
@@ -320,11 +419,24 @@ impl<R: Resources> Vault<R> {
             &evaluation.root,
         )
         .map_err(VaultError::Environment)?;
-        let mut renderer = Renderer::from_registry(registry);
+        let mut renderer = Renderer::from_registry(registry).with_resource_resolver(|_, target| {
+            let target = PathBuf::from(target.logical_path());
+            target
+                .starts_with(self.resources.root())
+                .then(|| crate::publication::url::relative_url(&path, &target, false))
+        });
         if options.source_map {
             renderer = renderer.with_source_map();
         }
-        let rendered = renderer.render_with_diagnostics(&evaluation.root);
+        let mut rendered = renderer.render_with_diagnostics(&evaluation.root);
+        // The host's boundary diagnostic is more precise than the renderer's
+        // missing binding. Keep one error for an unauthorized embed reference.
+        rendered.diagnostics.retain(|diagnostic| {
+            diagnostic.code != Some(crate::DiagnosticCode::UnpublishedResource)
+                || !outside
+                    .iter()
+                    .any(|error| error.span == diagnostic.span && error.source == diagnostic.source)
+        });
         Ok(ItemOutput {
             evaluation,
             rendered,
@@ -406,7 +518,7 @@ pub(crate) fn bind_html(
         .filter_map(|id| environment.context().registry().get(id))
         .filter(|definition| {
             definition.id.module != "notist"
-                && !definition.code
+                && !definition.implementation.is_code()
                 && (definition.returns.level().is_some()
                     || matches!(definition.returns, crate::Type::Parameter(_)))
         })

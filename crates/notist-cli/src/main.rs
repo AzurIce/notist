@@ -229,28 +229,39 @@ fn main() -> ExitCode {
                 Ok(src) => src,
                 Err(code) => return code,
             };
-            let output =
-                match vault.render_html(&file, &src, notist::RenderOptions { source_map: false }) {
-                    Ok(output) => output,
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::FAILURE;
-                    }
+            let analysis = match vault.analyze(&file, &src) {
+                Ok(analysis) => analysis,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if !analysis.diagnostics().is_empty() {
+                emit_source(&file, &src, analysis.diagnostics(), Severity::Error);
+                return ExitCode::FAILURE;
+            }
+            let evaluation = match vault.evaluate(&file, &analysis) {
+                Ok(evaluation) => evaluation,
+                Err(error) => return emit_vault_error(error),
+            };
+            if !evaluation.diagnostics.is_empty() {
+                emit_diagnostics(&file, &src, &evaluation.diagnostics, &evaluation.sources);
+                return ExitCode::FAILURE;
+            }
+            let (registry, environment) =
+                match vault.html_registry_and_environment(&file, &src, &evaluation.root) {
+                    Ok(binding) => binding,
+                    Err(error) => return emit_vault_error(error),
                 };
-            if !output.analysis.diagnostics().is_empty() {
-                emit_source(&file, &src, output.analysis.diagnostics(), Severity::Error);
-                return ExitCode::FAILURE;
-            }
-            if !output.evaluation.diagnostics.is_empty() {
-                emit_source(&file, &src, &output.evaluation.diagnostics, Severity::Error);
-                return ExitCode::FAILURE;
-            }
-            let environment = vault
-                .environment_for(&file, &src)
-                .expect("assembled environment");
             let resources = publication::Files::new(vault.resources().root());
-            let publication =
-                html::assemble(output.rendered, &environment, &resources, &file, &out_dir);
+            let publication = html::assemble(
+                &evaluation.root,
+                registry,
+                &environment,
+                &resources,
+                &file,
+                &out_dir,
+            );
             match publication.and_then(|publication| {
                 publication::publish(&publication, &out_dir, vault.resources().root())?;
                 Ok(out_dir.join("index.html"))

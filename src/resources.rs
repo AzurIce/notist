@@ -1,6 +1,20 @@
 //! Read-only logical resources. Async hosts can prepare a MemoryResources snapshot.
+use crate::{InputError, InputRead};
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
+/// A backend-specific version of an observed file, not part of Path identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceRevision(pub String);
+
+/// A host-created, rooted reader. Paths are relative to this capability's root.
+/// Implementations must bound allocation before reading/copying and either be
+/// immutable snapshots or report revisions, including changes to failed reads.
+pub trait ResourceReader: Send + Sync {
+    fn read_bounded(&self, path: &Path, limit: usize) -> InputRead;
+    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceKind {
@@ -31,9 +45,22 @@ impl std::error::Error for ResourceError {}
 pub trait Resources {
     /// An absolute logical root; resolved identities must be stable on re-resolution.
     fn root(&self) -> &Path;
+    /// Lexical Path root for a loaded source; this conveys no read permission.
+    fn source_root(&self, path: &Path) -> PathBuf {
+        if path.starts_with(self.root()) {
+            self.root().into()
+        } else {
+            path.parent().unwrap_or(self.root()).into()
+        }
+    }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError>;
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError>;
     fn entries(&self, directory: &Path) -> Result<Vec<PathBuf>, ResourceError>;
+    /// Explicit bounded data capability. Legacy backends remain source-only;
+    /// there is intentionally no default that calls the unbounded `read`.
+    fn read_root(&self, _root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        Err(InputError::Unavailable)
+    }
     fn resolve(&self, path: &Path) -> PathBuf {
         normalize(&self.root().join(path))
     }
@@ -59,24 +86,30 @@ impl<R: Resources + ?Sized> Resources for &R {
     fn resolve(&self, path: &Path) -> PathBuf {
         (**self).resolve(path)
     }
+    fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        (**self).read_root(root)
+    }
+    fn source_root(&self, path: &Path) -> PathBuf {
+        (**self).source_root(path)
+    }
 }
 
 /// A prepared, owned resource snapshot suitable for an analysis Worker.
 #[derive(Debug, Clone)]
 pub struct MemoryResources {
     root: PathBuf,
-    files: BTreeMap<PathBuf, Vec<u8>>,
+    files: Arc<BTreeMap<PathBuf, Vec<u8>>>,
 }
 impl MemoryResources {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: normalize(&Path::new("/").join(root)),
-            files: BTreeMap::new(),
+            files: Arc::default(),
         }
     }
     pub fn insert(&mut self, path: impl AsRef<Path>, contents: impl Into<Vec<u8>>) {
-        self.files
-            .insert(self.resolve(path.as_ref()), contents.into());
+        let path = self.resolve(path.as_ref());
+        Arc::make_mut(&mut self.files).insert(path, contents.into());
     }
     pub fn files(&self) -> &BTreeMap<PathBuf, Vec<u8>> {
         &self.files
@@ -131,6 +164,51 @@ impl Resources for MemoryResources {
         }
         Ok(entries.into_iter().collect())
     }
+    fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        Ok(Arc::new(MemoryReader {
+            root: self.resolve(root),
+            files: self.files.clone(),
+        }))
+    }
+}
+
+struct MemoryReader {
+    root: PathBuf,
+    files: Arc<BTreeMap<PathBuf, Vec<u8>>>,
+}
+impl MemoryReader {
+    fn bytes(&self, path: &Path) -> Result<&[u8], InputError> {
+        let path = within(&self.root, path)?;
+        self.files.get(&path).map(Vec::as_slice).ok_or_else(|| {
+            if path == self.root || self.files.keys().any(|p| p.starts_with(&path)) {
+                InputError::NotFile
+            } else {
+                InputError::NotFound
+            }
+        })
+    }
+}
+impl ResourceReader for MemoryReader {
+    fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
+        match self.bytes(path) {
+            Ok(bytes) if bytes.len() <= limit => InputRead::Ready(Arc::from(bytes)),
+            Ok(_) => InputRead::Failed(InputError::TooLarge),
+            Err(error) => InputRead::Failed(error),
+        }
+    }
+    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
+        self.bytes(path).map(|_| None)
+    }
+}
+
+fn within(root: &Path, relative: &Path) -> Result<PathBuf, InputError> {
+    if relative
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(InputError::AccessDenied);
+    }
+    Ok(root.join(relative))
 }
 
 /// Filesystem adapter. Its root determines relative-path resolution, not a
@@ -196,13 +274,126 @@ impl Resources for FsResources {
         entries.sort();
         Ok(entries)
     }
+    fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let directory = cap_std::fs::Dir::open_ambient_dir(
+                self.resolve(root),
+                cap_std::ambient_authority(),
+            )
+            .map_err(input_io)?;
+            Ok(Arc::new(FsReader(directory)))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = root;
+            Err(InputError::Unavailable)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn input_io(error: std::io::Error) -> InputError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => InputError::NotFound,
+        std::io::ErrorKind::PermissionDenied => InputError::AccessDenied,
+        std::io::ErrorKind::IsADirectory | std::io::ErrorKind::NotADirectory => InputError::NotFile,
+        _ => InputError::Io(error.to_string()),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct FsReader(cap_std::fs::Dir);
+#[cfg(not(target_arch = "wasm32"))]
+impl FsReader {
+    fn open(&self, path: &Path) -> Result<cap_std::fs::File, InputError> {
+        within(Path::new(""), path)?;
+        if path.as_os_str().is_empty() {
+            return Err(InputError::NotFile);
+        }
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true);
+        // Opening a FIFO must not block before the regular-file check.
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+        }
+        let file = self.0.open_with(path, &options).map_err(input_io)?;
+        if !file.metadata().map_err(input_io)?.is_file() {
+            return Err(InputError::NotFile);
+        }
+        Ok(file)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl ResourceReader for FsReader {
+    fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
+        use std::io::Read;
+        let read = (|| {
+            let file = self.open(path)?;
+            let metadata = file.metadata().map_err(input_io)?;
+            if metadata.len() > limit as u64 {
+                return Err(InputError::TooLarge);
+            }
+            let before = fs_revision(&metadata);
+            let mut bytes = Vec::new();
+            (&file)
+                .take((limit as u64).saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(input_io)?;
+            if bytes.len() > limit {
+                return Err(InputError::TooLarge);
+            }
+            if before != fs_revision(&file.metadata().map_err(input_io)?) {
+                return Err(InputError::Changed);
+            }
+            Ok(Arc::from(bytes))
+        })();
+        match read {
+            Ok(bytes) => InputRead::Ready(bytes),
+            Err(error) => InputRead::Failed(error),
+        }
+    }
+    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
+        self.open(path)?
+            .metadata()
+            .map(|m| Some(fs_revision(&m)))
+            .map_err(input_io)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn fs_revision(metadata: &cap_std::fs::Metadata) -> ResourceRevision {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        ResourceRevision(format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        ResourceRevision(format!(
+            "{}:{:?}:{:?}",
+            metadata.len(),
+            metadata.modified(),
+            metadata.created()
+        ))
+    }
 }
 
 /// Unsaved text takes precedence over the underlying resources, including a
 /// configuration or declaration that does not yet exist on disk.
 pub struct OverlayResources<'a, R: ?Sized> {
     base: &'a R,
-    sources: BTreeMap<PathBuf, String>,
+    sources: Arc<BTreeMap<PathBuf, String>>,
 }
 impl<'a, R: Resources + ?Sized> OverlayResources<'a, R> {
     pub fn new(base: &'a R, sources: &BTreeMap<PathBuf, String>) -> Self {
@@ -211,13 +402,17 @@ impl<'a, R: Resources + ?Sized> OverlayResources<'a, R> {
             sources: sources
                 .iter()
                 .map(|(path, source)| (base.resolve(path), source.clone()))
-                .collect(),
+                .collect::<BTreeMap<_, _>>()
+                .into(),
         }
     }
 }
 impl<R: Resources + ?Sized> Resources for OverlayResources<'_, R> {
     fn root(&self) -> &Path {
         self.base.root()
+    }
+    fn source_root(&self, path: &Path) -> PathBuf {
+        self.base.source_root(path)
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
         let path = self.resolve(path);
@@ -268,6 +463,44 @@ impl<R: Resources + ?Sized> Resources for OverlayResources<'_, R> {
         entries.sort();
         entries.dedup();
         Ok(entries)
+    }
+    fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        let root = self.resolve(root);
+        Ok(Arc::new(OverlayReader {
+            base: self.base.read_root(&root),
+            sources: self.sources.clone(),
+            root,
+        }))
+    }
+}
+
+struct OverlayReader {
+    root: PathBuf,
+    sources: Arc<BTreeMap<PathBuf, String>>,
+    base: Result<Arc<dyn ResourceReader>, InputError>,
+}
+impl ResourceReader for OverlayReader {
+    fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
+        let absolute = match within(&self.root, path) {
+            Ok(path) => path,
+            Err(error) => return InputRead::Failed(error),
+        };
+        match self.sources.get(&absolute) {
+            Some(source) if source.len() <= limit => InputRead::Ready(Arc::from(source.as_bytes())),
+            Some(_) => InputRead::Failed(InputError::TooLarge),
+            None => match &self.base {
+                Ok(base) => base.read_bounded(path, limit),
+                Err(error) => InputRead::Failed(error.clone()),
+            },
+        }
+    }
+    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
+        let absolute = within(&self.root, path)?;
+        if self.sources.contains_key(&absolute) {
+            Ok(None)
+        } else {
+            self.base.as_ref().map_err(Clone::clone)?.revision(path)
+        }
     }
 }
 

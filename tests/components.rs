@@ -116,11 +116,10 @@ fn complex_values_preserve_type_order_and_exact_numeric_bits() {
     dict.insert("second", Value::Int(i64::MAX));
     dict.insert("first", Value::Float(-0.0));
     dict.insert("unit", Value::Unit);
-    let encoded = notist_html::components::encode_parameter(&Value::Array(vec![
-        Value::Dict(dict),
-        Value::Bool(false),
-        Value::Str("".into()),
-    ]));
+    let encoded = notist_html::components::encode_parameter(&Value::Array(
+        vec![Value::Dict(dict), Value::Bool(false), Value::Str("".into())].into(),
+    ))
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(json[0], "array");
     assert_eq!(json[1][0][0], "dict");
@@ -271,6 +270,7 @@ fn fail[children: InlineContent] -> InlineContent { compile_error("broken") }
             config: None,
             files: inputs.files().clone(),
             module_urls: Default::default(),
+            ..Default::default()
         };
         prepared
             .files
@@ -314,6 +314,7 @@ fn browser_host_uses_explicit_sources_and_urls_and_supports_module_inspection() 
             "widgets/panel.js".into(),
             "https://example.test/panel.js".into(),
         )]),
+        ..Default::default()
     };
     let message = serde_json::to_string(&inputs).unwrap();
     let preview: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(

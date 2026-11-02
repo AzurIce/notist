@@ -728,6 +728,7 @@ fn prepared_preview_renders_direct_members_with_the_defining_component_url() {
             "parts/issue.js".into(),
             "https://example.test/parts/issue.js".into(),
         )]),
+        ..Default::default()
     };
     let inputs = serde_json::to_string(&inputs).unwrap();
     for path in ["doc.not", "doc.md"] {

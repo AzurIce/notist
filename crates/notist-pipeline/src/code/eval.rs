@@ -1,10 +1,15 @@
 use super::*;
+#[path = "data.rs"]
+mod data;
 use crate::Context;
 use notist_core::{
     builtins::Level,
-    definitions::ParameterMode,
+    definitions::{FunctionImpl, NativeFunction, ParameterMode},
     diag::Phase,
+    evaluation::{CallSite, ResultArm, ResultPattern},
+    inputs::{EvaluationInputs, InputError, InputRead},
     item::{EvaluationState, SourceLocation, Value},
+    resource::ResourcePath,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +20,10 @@ pub struct Limits {
     pub content_nodes: usize,
     /// The recursive interpreter additionally caps physical call depth at 32.
     pub call_depth: usize,
+    /// Requests count even when the host serves them from its shared cache.
+    pub read_requests: usize,
+    pub value_bytes: usize,
+    pub data: notist_core::data::DataLimits,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -22,6 +31,9 @@ impl Default for Limits {
             steps: 100_000,
             content_nodes: 100_000,
             call_depth: 32,
+            read_requests: 1024,
+            value_bytes: 16 * 1024 * 1024,
+            data: Default::default(),
         }
     }
 }
@@ -29,6 +41,61 @@ impl Default for Limits {
 pub struct Evaluation {
     pub root: Item,
     pub diagnostics: Vec<Diagnostic>,
+    pub dependencies: std::collections::BTreeSet<ResourcePath>,
+    /// Exact-version data texts attached only when errors are upgraded.
+    pub sources: notist_core::diag::Sources,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EvaluationOutcome {
+    Complete(Box<Evaluation>),
+    /// No partial tree or output hooks are exposed when an input is unprepared.
+    NeedResources(Vec<ResourcePath>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvaluationMode {
+    Runtime,
+    Comptime,
+}
+
+#[derive(Debug)]
+pub(super) struct Failure {
+    pub(super) message: String,
+    pub(super) location: Option<SourceLocation>,
+    expansion: Vec<SourceLocation>,
+}
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            location: None,
+            expansion: Vec::new(),
+        }
+    }
+}
+impl From<&str> for Failure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl Failure {
+    fn at(message: impl Into<String>, call: &Invocation) -> Self {
+        Self {
+            message: message.into(),
+            location: Some(SourceLocation {
+                source: call.source.clone(),
+                start: call.span.start().into(),
+                end: call.span.end().into(),
+            }),
+            expansion: Vec::new(),
+        }
+    }
 }
 
 /// Content values retain opaque calls. Constructing or binding a forest does
@@ -46,7 +113,13 @@ struct Evaluator<'a> {
     limits: Limits,
     steps: usize,
     depth: usize,
-    runtime: bool,
+    mode: EvaluationMode,
+    inputs: Option<&'a dyn EvaluationInputs>,
+    requests: usize,
+    dependencies: std::collections::BTreeSet<ResourcePath>,
+    needed: std::collections::BTreeSet<ResourcePath>,
+    sources: notist_core::diag::Sources,
+    data_retention: notist_core::data::DataRetention,
 }
 
 pub(crate) fn evaluate(
@@ -55,6 +128,20 @@ pub(crate) fn evaluate(
     context: &Context,
     limits: Limits,
 ) -> Evaluation {
+    match run(root, program, context, limits, None) {
+        EvaluationOutcome::Complete(evaluation) => *evaluation,
+        EvaluationOutcome::NeedResources(_) => {
+            unreachable!("a missing input capability never requests preparation")
+        }
+    }
+}
+pub(crate) fn run(
+    root: &Item,
+    program: &CheckedProgram,
+    context: &Context,
+    limits: Limits,
+    inputs: Option<&dyn EvaluationInputs>,
+) -> EvaluationOutcome {
     let mut e = Evaluator {
         context,
         program: program.clone(),
@@ -62,7 +149,13 @@ pub(crate) fn evaluate(
         limits,
         steps: 0,
         depth: 0,
-        runtime: true,
+        mode: EvaluationMode::Runtime,
+        inputs,
+        requests: 0,
+        dependencies: Default::default(),
+        needed: Default::default(),
+        sources: Default::default(),
+        data_retention: program.data_retention.clone(),
     };
     let forest = e.bind_content(
         std::slice::from_ref(root),
@@ -70,19 +163,24 @@ pub(crate) fn evaluate(
         limits.content_nodes,
     );
     let mut roots = e.present(&forest, limits.content_nodes);
+    if !e.needed.is_empty() {
+        return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
+    }
     for diagnostic in &mut e.diagnostics {
         diagnostic.recovered = true;
     }
-    Evaluation {
+    EvaluationOutcome::Complete(Box::new(Evaluation {
         root: roots.remove(0),
         diagnostics: e.diagnostics,
-    }
+        dependencies: e.dependencies,
+        sources: e.sources,
+    }))
 }
 pub(super) fn constant(
     t: &TypedExpr,
     program: &CheckedProgram,
     context: &Context,
-) -> Result<ComptimeValue, String> {
+) -> Result<ComptimeValue, Failure> {
     let mut e = Evaluator {
         context,
         program: program.clone(),
@@ -90,7 +188,13 @@ pub(super) fn constant(
         limits: Limits::default(),
         steps: 0,
         depth: 0,
-        runtime: false,
+        mode: EvaluationMode::Comptime,
+        inputs: None,
+        requests: 0,
+        dependencies: Default::default(),
+        needed: Default::default(),
+        sources: Default::default(),
+        data_retention: program.data_retention.clone(),
     };
     match e.expr(t, &Scope::new())? {
         Runtime::Value(v) => Ok(v),
@@ -102,13 +206,13 @@ impl Evaluator<'_> {
         &self,
         id: &notist_core::definitions::FunctionId,
     ) -> notist_core::definitions::FunctionId {
-        if self.runtime {
+        if self.mode == EvaluationMode::Runtime {
             self.context.extensions().target(id)
         } else {
             id.clone()
         }
     }
-    fn tick(&mut self) -> Result<(), String> {
+    fn tick(&mut self) -> Result<(), Failure> {
         self.steps += 1;
         if self.steps > self.limits.steps {
             Err("evaluation step limit exceeded".into())
@@ -116,21 +220,25 @@ impl Evaluator<'_> {
             Ok(())
         }
     }
-    fn expr(&mut self, t: &TypedExpr, scope: &Scope) -> Result<Runtime, String> {
+    fn expr(&mut self, t: &TypedExpr, scope: &Scope) -> Result<Runtime, Failure> {
         self.tick()?;
         if let Some(v) = &t.known {
-            check_value_size(v)?;
+            check_value_size(v, self.limits.value_bytes)?;
+            if let ComptimeValue::Data(value) = v {
+                self.data_retention
+                    .observe(value, self.limits.data.working_bytes)
+                    .map_err(|e| Failure::from(e.to_string()))?;
+            }
             return Ok(Runtime::Value(v.clone()));
         }
         let result = match &t.kind {
             ExprKind::Constant(v) => Ok(Runtime::Value(v.clone())),
-            ExprKind::Input(name) => scope
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("runtime input `{name}` is unavailable at compile time")),
-            ExprKind::Failure(m) => Err(m.clone()),
+            ExprKind::Input(name) => scope.get(name).cloned().ok_or_else(|| {
+                format!("runtime input `{name}` is unavailable at compile time").into()
+            }),
+            ExprKind::Failure(m) => Err(m.clone().into()),
             ExprKind::Content(forest) => {
-                if !self.runtime {
+                if self.mode == EvaluationMode::Comptime {
                     return Err("content cannot be constructed at compile time".into());
                 }
                 Ok(Runtime::Content(
@@ -152,7 +260,7 @@ impl Evaluator<'_> {
             },
             ExprKind::Unary(op, value) => {
                 let v = value_of(self.expr(value, scope)?)?;
-                unary(op, &v).map(Runtime::Value)
+                unary(op, &v).map(Runtime::Value).map_err(Into::into)
             }
             ExprKind::Binary(op, left, right) => {
                 let left = value_of(self.expr(left, scope)?)?;
@@ -162,12 +270,17 @@ impl Evaluator<'_> {
                     return Ok(Runtime::Value(left));
                 }
                 let right = value_of(self.expr(right, scope)?)?;
-                binary(op, &left, &right).map(Runtime::Value)
+                binary(op, &left, &right)
+                    .map(Runtime::Value)
+                    .map_err(Into::into)
             }
             ExprKind::Array(values) => {
                 let values = values
                     .iter()
-                    .map(|v| self.expr(v, scope).and_then(data))
+                    .map(|v| {
+                        self.expr(v, scope)
+                            .and_then(|value| data(value).map_err(Into::into))
+                    })
                     .collect::<Result<_, _>>()?;
                 Ok(Runtime::Value(ComptimeValue::Data(Value::Array(values))))
             }
@@ -175,7 +288,7 @@ impl Evaluator<'_> {
                 let values = values
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), data(self.expr(v, scope)?)?)))
-                    .collect::<Result<_, String>>()?;
+                    .collect::<Result<_, Failure>>()?;
                 Ok(Runtime::Value(ComptimeValue::Data(Value::Dict(values))))
             }
             ExprKind::Some(value) => {
@@ -188,6 +301,38 @@ impl Evaluator<'_> {
                 Value::Some(value) => Ok(Runtime::Value(ComptimeValue::Data(*value))),
                 _ => Err("match arm requires `some`".into()),
             },
+            ExprKind::Ok(value) | ExprKind::Err(value) => {
+                let value = Box::new(data(self.expr(value, scope)?)?);
+                let value = if matches!(&t.kind, ExprKind::Ok(_)) {
+                    Value::Ok(value)
+                } else {
+                    Value::Err(value)
+                };
+                Ok(Runtime::Value(ComptimeValue::Data(value)))
+            }
+            ExprKind::MatchResult { subject, arms } => {
+                let (ok, value) = match data(self.expr(subject, scope)?)? {
+                    Value::Ok(value) => (true, value),
+                    Value::Err(value) => (false, value),
+                    _ => return Err("Result match requires a Result value".into()),
+                };
+                let mut selected = None;
+                for arm in arms {
+                    let binding = match &arm.pattern {
+                        ResultPattern::Ok(name) if ok => Some(name),
+                        ResultPattern::Err(name) if !ok => Some(name),
+                        ResultPattern::Wildcard => None,
+                        _ => continue,
+                    };
+                    let mut local = scope.clone();
+                    if let Some(name) = binding.filter(|name| name.as_str() != "_") {
+                        local.insert(name.clone(), Runtime::Value(ComptimeValue::Data(*value)));
+                    }
+                    selected = Some(self.expr(&arm.body, &local));
+                    break;
+                }
+                selected.unwrap_or_else(|| Err("non-exhaustive Result match".into()))
+            }
             ExprKind::ValueCall(call) => {
                 let children = match &call.children {
                     Some(child) => match self.expr(child, scope)? {
@@ -200,7 +345,7 @@ impl Evaluator<'_> {
             }
         }?;
         if let Runtime::Value(v) = &result {
-            check_value_size(v)?;
+            check_value_size(v, self.limits.value_bytes)?;
         }
         Ok(result)
     }
@@ -220,7 +365,7 @@ impl Evaluator<'_> {
                         node.clone(),
                         "content interpolation produced a data value".into(),
                     )],
-                    Err(m) => vec![error_content(node.clone(), m)],
+                    Err(failure) => vec![failure_content(node.clone(), failure)],
                 },
                 pending => {
                     let mut item = node.clone();
@@ -289,7 +434,11 @@ impl Evaluator<'_> {
     }
     fn present_call(&mut self, item: &Item, call: &Invocation, limit: usize) -> Vec<Item> {
         let target = self.target(&call.instance.function);
-        let expands = self.context.registry().get(&target).is_some_and(|d| d.code);
+        let expands = self
+            .context
+            .registry()
+            .get(&target)
+            .is_some_and(|d| d.implementation.is_code());
         if expands && self.depth >= self.limits.call_depth.min(32) {
             return vec![self.error(item.clone(), "evaluation call-depth limit exceeded".into())];
         }
@@ -307,7 +456,7 @@ impl Evaluator<'_> {
         let result = match result {
             Ok(Runtime::Content(_, nodes)) => self.present(&nodes, limit),
             Ok(_) => vec![self.error(item.clone(), "content call produced a data value".into())],
-            Err(m) => vec![self.error(item.clone(), m)],
+            Err(failure) => vec![self.error_at(item.clone(), failure)],
         };
         if expands {
             self.depth -= 1;
@@ -344,6 +493,9 @@ impl Evaluator<'_> {
             .collect();
         def.returns = def.returns.substitute(&bindings);
         def.children_type = def.children_type.as_ref().map(|t| t.substitute(&bindings));
+        for parameter in &mut def.parameters {
+            parameter.ty = parameter.ty.substitute(&bindings);
+        }
         let source = item
             .origin
             .as_ref()
@@ -356,7 +508,13 @@ impl Evaluator<'_> {
                 (
                     name.into(),
                     TypedExpr {
-                        ty: Some(Type::of(v)),
+                        ty: Some(
+                            def.parameters
+                                .iter()
+                                .find(|p| p.name == name)
+                                .map(|p| p.ty.clone())
+                                .unwrap_or_else(|| Type::of(v)),
+                        ),
                         known: Some(ComptimeValue::Data(v.clone())),
                         kind: ExprKind::Constant(ComptimeValue::Data(v.clone())),
                         span: item.span,
@@ -373,6 +531,8 @@ impl Evaluator<'_> {
             attrs: item.attrs.clone(),
             span: item.span,
             source,
+            site: notist_core::evaluation::CallSite::Markup,
+            resource_root: Some(self.context.resource_root().into()),
             invalid: None,
         })
     }
@@ -391,16 +551,72 @@ impl Evaluator<'_> {
         item.children.clear();
         item
     }
+    fn error_at(&mut self, item: Item, failure: Failure) -> Item {
+        let item = failure_content(item, failure);
+        let Some(EvaluationState::Error(message)) = &item.evaluation else {
+            unreachable!()
+        };
+        self.error(item.clone(), message.clone())
+    }
+    fn read_text(&mut self, call: &Invocation, fields: &Dict) -> Result<Runtime, Failure> {
+        if self.mode == EvaluationMode::Comptime {
+            return Err(Failure::at(
+                "resource reading is not permitted during comptime evaluation",
+                call,
+            ));
+        }
+        if call.site != CallSite::Code {
+            return Err(Failure::at(
+                "read_text can only be called from notc Code",
+                call,
+            ));
+        }
+        self.requests += 1;
+        if self.requests > self.limits.read_requests {
+            return Err(Failure::at("resource request limit exceeded", call));
+        }
+        let Some(Value::Path(path)) = fields.get("source") else {
+            return Err(Failure::at("read_text requires a Path", call));
+        };
+        self.dependencies.insert(path.clone());
+        let data = match self
+            .inputs
+            .map(|inputs| inputs.file(path))
+            .unwrap_or(InputRead::Failed(InputError::Unavailable))
+        {
+            InputRead::Ready(data) => data,
+            InputRead::Failed(error) => {
+                return Err(Failure::at(
+                    format!("read_text `{}`: {error}", path.path()),
+                    call,
+                ));
+            }
+            InputRead::Pending => {
+                self.needed.insert(path.clone());
+                return Err(Failure::at("resource input is not prepared", call));
+            }
+        };
+        if data.len() > self.limits.value_bytes {
+            return Err(Failure::at("value size limit exceeded", call));
+        }
+        let text = std::str::from_utf8(&data).map_err(|_| {
+            Failure::at(
+                format!("read_text `{}`: resource is not valid UTF-8", path.path()),
+                call,
+            )
+        })?;
+        Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text.into()))))
+    }
     fn execute(
         &mut self,
         call: &Invocation,
         scope: &Scope,
         children: Vec<Item>,
         prototype: Option<Item>,
-    ) -> Result<Runtime, String> {
+    ) -> Result<Runtime, Failure> {
         self.tick()?;
         if let Some(m) = &call.invalid {
-            return Err(m.clone());
+            return Err(m.clone().into());
         }
         let mut inputs = Scope::new();
         let mut fields = Dict::default();
@@ -420,7 +636,8 @@ impl Evaluator<'_> {
                         return Err(format!(
                             "invalid option for `{}.{}`",
                             call.instance.function, name
-                        ));
+                        )
+                        .into());
                     }
                 }
             } else {
@@ -431,10 +648,9 @@ impl Evaluator<'_> {
                 && let Runtime::Value(ComptimeValue::Data(value)) = &value
                 && !param.accepts(value)
             {
-                return Err(format!(
-                    "invalid value for `{}.{name}`",
-                    call.instance.function
-                ));
+                return Err(
+                    format!("invalid value for `{}.{name}`", call.instance.function).into(),
+                );
             }
             if let Runtime::Value(ComptimeValue::Data(v)) = &value {
                 fields.insert(name, v.clone());
@@ -479,24 +695,6 @@ impl Evaluator<'_> {
         {
             fields.insert("level", v.clone());
         }
-        if !definition.code {
-            if definition.returns.level().is_none() {
-                return Err(format!(
-                    "native value function `{}` has no implementation",
-                    definition.id
-                ));
-            }
-            let mut item = prototype.ok_or("missing materialized content call boundary")?;
-            item.fields = fields;
-            item.children = children;
-            item.pending = None;
-            item.target = Some(target);
-            item.evaluation = Some(EvaluationState::Native);
-            return Ok(Runtime::Content(
-                call.definition.returns.clone(),
-                vec![item],
-            ));
-        }
         let value_call = call.definition.returns.level().is_none();
         if value_call {
             if self.depth >= self.limits.call_depth.min(32) {
@@ -504,14 +702,63 @@ impl Evaluator<'_> {
             }
             self.depth += 1;
         }
-        let result = match body {
-            Some(body) => self.expr(&body, &inputs),
-            None => Err("missing checked body".into()),
+        let result = match definition.implementation {
+            FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
+            FunctionImpl::Native(NativeFunction::Data(kind)) => {
+                self.data_native(kind, call, &fields)
+            }
+            FunctionImpl::Native(NativeFunction::Panic) => {
+                let Some(Value::Str(message)) = fields.get("message") else {
+                    return Err(Failure::at("panic requires a String message", call));
+                };
+                Err(Failure::at(message.clone(), call))
+            }
+            FunctionImpl::Code => match body {
+                Some(body) => self.expr(&body, &inputs),
+                None => Err("missing checked body".into()),
+            },
+            FunctionImpl::Native(NativeFunction::Construct) => {
+                if definition.returns.level().is_none() {
+                    Err(format!(
+                        "native value function `{}` has no implementation",
+                        definition.id
+                    )
+                    .into())
+                } else if self.mode == EvaluationMode::Comptime {
+                    Err("content cannot be constructed at compile time".into())
+                } else {
+                    if definition.id == notist_core::definitions::FunctionId::new("notist", "embed")
+                    {
+                        notist_core::embed::normalize(
+                            &mut fields,
+                            call.resource_root
+                                .as_deref()
+                                .unwrap_or(self.context.resource_root()),
+                            &call.source,
+                        )?;
+                    }
+                    Ok(Runtime::Content(definition.returns.clone(), children))
+                }
+            }
         };
         if value_call {
             self.depth -= 1;
         }
-        let result = result?;
+        let result = result.map_err(|mut failure| {
+            if failure.location.is_some() {
+                let location = SourceLocation {
+                    source: call.source.clone(),
+                    start: call.span.start().into(),
+                    end: call.span.end().into(),
+                };
+                if failure.location.as_ref() != Some(&location)
+                    && failure.expansion.last() != Some(&location)
+                {
+                    failure.expansion.push(location);
+                }
+            }
+            failure
+        })?;
         if call.definition.returns.level().is_some() {
             let Runtime::Content(ty, mut forest) = result else {
                 return Err("content implementation produced a data value".into());
@@ -523,37 +770,66 @@ impl Evaluator<'_> {
             item.fields = fields;
             item.pending = None;
             item.target = Some(target);
-            item.evaluation = Some(EvaluationState::Expanded);
-            let mut expansion = vec![SourceLocation {
-                source: call.source.clone(),
-                start: call.span.start().into(),
-                end: call.span.end().into(),
-            }];
-            if let Some(origin) = &item.origin {
-                expansion.extend(origin.expansion.iter().cloned());
-            }
-            for child in &mut forest {
-                expand(child, &expansion);
+            let native =
+                definition.implementation == FunctionImpl::Native(NativeFunction::Construct);
+            item.evaluation = Some(if native {
+                EvaluationState::Native
+            } else {
+                EvaluationState::Expanded
+            });
+            if !native {
+                let mut expansion = vec![SourceLocation {
+                    source: call.source.clone(),
+                    start: call.span.start().into(),
+                    end: call.span.end().into(),
+                }];
+                if let Some(origin) = &item.origin {
+                    expansion.extend(origin.expansion.iter().cloned());
+                }
+                for child in &mut forest {
+                    expand(child, &expansion);
+                }
             }
             Ok(Runtime::Content(call.definition.returns.clone(), {
                 item.children = forest;
                 vec![item]
             }))
         } else {
+            let valid = match &result {
+                Runtime::Value(ComptimeValue::Data(value)) => {
+                    call.definition.returns.accepts(value)
+                }
+                Runtime::Value(ComptimeValue::Type(_)) => call.definition.returns == Type::Type,
+                Runtime::Content(..) => false,
+            };
+            if !valid {
+                return Err("implementation violated its data result type".into());
+            }
             Ok(result)
         }
     }
     fn implementation(
         &mut self,
         instance: &FunctionInstance,
-    ) -> Result<(FunctionDef, Option<TypedExpr>), String> {
+    ) -> Result<(FunctionDef, Option<TypedExpr>), Failure> {
+        if instance
+            .arguments
+            .iter()
+            .any(|v| matches!(v, ComptimeValue::Data(v) if v.contains_data_views()))
+        {
+            return Err("Data and DataError views cannot be comptime value arguments".into());
+        }
         let key = instance.key();
         if !self.program.instances.contains_key(&key) {
+            // Runtime specializations share the same retained backing-store
+            // budget, including comptime views in currently unselected arms.
+            self.program.data_retention = self.data_retention.clone();
             let mut checker = super::check::Checker::with_program(
                 self.context,
                 std::mem::take(&mut self.program),
             );
             checker.install(instance);
+            self.data_retention = checker.program.data_retention.clone();
             self.diagnostics.extend(checker.diagnostics);
             self.program = checker.program;
         }
@@ -563,7 +839,7 @@ impl Evaluator<'_> {
             .get(&key)
             .ok_or("missing function instance")?;
         if let Some(d) = record.diagnostics.first() {
-            return Err(format!("{}: {}", instance.function, d.message));
+            return Err(format!("{}: {}", instance.function, d.message).into());
         }
         Ok((record.definition.clone(), record.body.clone()))
     }
@@ -623,6 +899,27 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
         ExprKind::Unary(op, e) => ExprKind::Unary(op.clone(), Box::new(capture_expr(e, scope))),
         ExprKind::Some(e) => ExprKind::Some(Box::new(capture_expr(e, scope))),
         ExprKind::Unwrap(e) => ExprKind::Unwrap(Box::new(capture_expr(e, scope))),
+        ExprKind::Ok(e) => ExprKind::Ok(Box::new(capture_expr(e, scope))),
+        ExprKind::Err(e) => ExprKind::Err(Box::new(capture_expr(e, scope))),
+        ExprKind::MatchResult { subject, arms } => ExprKind::MatchResult {
+            subject: Box::new(capture_expr(subject, scope)),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    let mut local = scope.clone();
+                    match &arm.pattern {
+                        ResultPattern::Ok(name) | ResultPattern::Err(name) => {
+                            local.remove(name);
+                        }
+                        ResultPattern::Wildcard => {}
+                    }
+                    ResultArm {
+                        pattern: arm.pattern.clone(),
+                        body: capture_expr(&arm.body, &local),
+                    }
+                })
+                .collect(),
+        },
         ExprKind::Binary(op, l, r) => ExprKind::Binary(
             op.clone(),
             Box::new(capture_expr(l, scope)),
@@ -654,6 +951,30 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
     expr
 }
 
+fn failure_content(mut item: Item, failure: Failure) -> Item {
+    if let Some(location) = failure.location {
+        let mut expansion = failure.expansion;
+        if let Some(origin) = &item.origin {
+            let location = SourceLocation {
+                source: origin.source.clone(),
+                start: origin.start,
+                end: origin.end,
+            };
+            if expansion.last() != Some(&location) {
+                expansion.push(location);
+            }
+            expansion.extend(origin.expansion.iter().cloned());
+        }
+        item.span = rowan::TextRange::new(location.start.into(), location.end.into());
+        item.origin = Some(notist_core::item::Origin {
+            source: location.source,
+            start: location.start,
+            end: location.end,
+            expansion,
+        });
+    }
+    error_content(item, failure.message)
+}
 fn error_content(mut item: Item, message: String) -> Item {
     item.evaluation = Some(EvaluationState::Error(message));
     item.pending = None;
@@ -752,7 +1073,7 @@ pub(super) fn binary(
                 if a.len().saturating_add(b.len()) > 16 * 1024 * 1024 {
                     return Err("value size limit exceeded".into());
                 }
-                Ok(D(Value::Str(format!("{a}{b}"))))
+                Ok(D(Value::Str(format!("{a}{b}").into())))
             }
             "==" => boolean(a == b),
             "!=" => boolean(a != b),
@@ -761,6 +1082,11 @@ pub(super) fn binary(
             ">" => boolean(a > b),
             ">=" => boolean(a >= b),
             _ => Err("invalid string operator".into()),
+        },
+        (D(Value::Path(a)), D(Value::Path(b))) => match op {
+            "==" => boolean(a == b),
+            "!=" => boolean(a != b),
+            _ => Err("Path only supports equality".into()),
         },
         (D(Value::Bool(a)), D(Value::Bool(b))) => match op {
             "&&" => boolean(*a && *b),
@@ -784,26 +1110,33 @@ pub(super) fn binary(
             "!=" => boolean(true),
             _ => Err("Option only supports equality".into()),
         },
+        (D(Value::Ok(a)), D(Value::Ok(b))) | (D(Value::Err(a)), D(Value::Err(b))) => match op {
+            "==" => boolean(a == b),
+            "!=" => boolean(a != b),
+            _ => Err("Result only supports equality".into()),
+        },
+        (D(Value::Ok(_)), D(Value::Err(_))) | (D(Value::Err(_)), D(Value::Ok(_))) => match op {
+            "==" => boolean(false),
+            "!=" => boolean(true),
+            _ => Err("Result only supports equality".into()),
+        },
+        (D(Value::Data(a)), D(Value::Data(b))) => match op {
+            "==" => boolean(a == b),
+            "!=" => boolean(a != b),
+            _ => Err("Data only supports equality".into()),
+        },
+        (D(Value::DataError(a)), D(Value::DataError(b))) => match op {
+            "==" => boolean(a == b),
+            "!=" => boolean(a != b),
+            _ => Err("DataError only supports equality".into()),
+        },
         _ => Err("operator requires matching scalar operands".into()),
     }
 }
 
-fn check_value_size(value: &ComptimeValue) -> Result<(), String> {
-    fn size(v: &Value) -> usize {
-        match v {
-            Value::Str(s) => s.len(),
-            Value::Array(v) => v
-                .iter()
-                .fold(v.len().saturating_mul(8), |n, v| n.saturating_add(size(v))),
-            Value::Dict(v) => v.iter().fold(0usize, |n, (k, v)| {
-                n.saturating_add(k.len()).saturating_add(size(v))
-            }),
-            Value::Some(v) => size(v).saturating_add(8),
-            _ => 8,
-        }
-    }
+fn check_value_size(value: &ComptimeValue, limit: usize) -> Result<(), String> {
     if let ComptimeValue::Data(v) = value
-        && size(v) > 16 * 1024 * 1024
+        && v.logical_size() > limit
     {
         return Err("value size limit exceeded".into());
     }
@@ -814,6 +1147,19 @@ fn check_value_size(value: &ComptimeValue) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::Pipeline;
+
+    #[test]
+    fn both_result_payloads_count_towards_the_value_size_limit() {
+        for value in [
+            Value::Ok(Box::new(Value::Str("x".repeat(16 * 1024 * 1024).into()))),
+            Value::Err(Box::new(Value::Str("x".repeat(16 * 1024 * 1024).into()))),
+        ] {
+            assert_eq!(
+                check_value_size(&ComptimeValue::Data(value), 16 * 1024 * 1024).unwrap_err(),
+                "value size limit exceeded",
+            );
+        }
+    }
 
     #[test]
     fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {

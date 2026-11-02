@@ -546,7 +546,11 @@ fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
     );
     // The pure graph API enforces the same boundary on Pipeline-only results.
     let analysis = notist::Pipeline::default()
-        .analyze("notes/page.not", source, &notist::Context::default())
+        .analyze(
+            "notes/page.not",
+            source,
+            &notist::Context::default().with_resource_root("/repo/docs"),
+        )
         .unwrap();
     let pure =
         notist::VaultIndex::from_documents("/repo/docs", [("notes/page.not".into(), analysis)]);
@@ -562,6 +566,7 @@ fn local_links_and_embeds_outside_the_vault_are_diagnosed_without_loading() {
         config: None,
         files: resources.files().clone(),
         module_urls: BTreeMap::new(),
+        ..Default::default()
     };
     let inputs_json = serde_json::to_string(&inputs).unwrap();
     for render in [
@@ -658,6 +663,7 @@ fn local_and_worker_inputs_use_the_same_real_module_signatures_and_entries() {
         config: None,
         files,
         module_urls: BTreeMap::new(),
+        ..Default::default()
     };
     // Exercise the transport, independent of filesystem availability in the Worker.
     let json = serde_json::to_string(&inputs).unwrap();
@@ -762,6 +768,7 @@ fn ordinary_browser_and_worker_adapters_preserve_the_complete_render_result() {
                 "https://host.test/badge.js".into(),
             ),
         ]),
+        ..Default::default()
     };
     let message = serde_json::to_string(&inputs).unwrap();
     let plain: serde_json::Value = serde_json::from_str(&notist::preview::render_prepared(

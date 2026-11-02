@@ -7,6 +7,10 @@ lex Digit -> [`0`-`9`];
 lex Number -> Digit+ (`.` Digit+)?;
 """#)
 
+== 不返回的类型
+
+Never 不含任何值，表示不能正常返回；不是 Unit，也没有运行期字面量。控制流与诊断见 [Never 与 panic](panic.not)。
+
 == 标量
 
 - Unit — 唯一值 `()`
@@ -35,6 +39,18 @@ UTF-8，四种形态，产出同一类型：
 
 String 由 Code、原生 Markup 与 Markdown 扩展参数共享的字面量扫描器识别为一个 STR token，字符串中的标点不参与外层括号平衡。raw 的闭界定符使用与开界定符相同数量的 `#`；多行形式使用三个引号。字符串的值转换和非法转义诊断由对应的字面量 lowering 执行；文档中由结果构造描述。
 
+== Path 与资源目标
+
+`p"./image.svg"` 产生 Path，按字面量所在源文件和宿主逻辑根绑定资源身份。Path 可转发、比较并保存在集合中，但不与 String 隐式转换，也不会自动读取或发布文件。语义和示例见 [Path 字面量](path.not)。
+
+ResourceTarget 是接受 Path 或 String 的输入类型，用于 embed 及转发它的函数；不新增运行期值种类。embed 将本地 URL 字符串兼容转换为已绑定的 Path，远程 URL 保持 String。普通 String 参数和 link 不接受 Path。
+
+== 外部结构化数据
+
+Data 表示 JSON／受支持 TOML 的共享只读节点视图，DataError 表示受检读取／访问错误。它们是新的内置静态类型，不是普通 Dict 或 Any；没有直接的源码值字面量。显式目标类型解码、nullable、Result 与保留来源的诊断见 [Data 与 JSON／TOML](data.not)。
+
+String／Array／Dict 的运行期存储同样共享不可变内容；克隆不改变既有有序语义、结构判等与逻辑大小预算。
+
 == 内容
 
 `[...]` 在调用后的 body 槽挂载为 children；`#node[...]` 是显式 node 调用。其正文使用所在前端的语法：.not 使用 Notist Markup，.md / .markdown / .notmd / .nmd 使用 Markdown 及其 Notist 扩展，见 [文档前端](../designs/frontends.not)。flank（两端内侧有无空白）决定 flavor：
@@ -62,6 +78,7 @@ Code 的内容值是森林；字面量内 `#value` 拼接森林，每个内容�
 - Array — 有序不可变：`(1, 2, 3)`；单元素须尾逗号 `(1,)`；空 `(,)`
 - Dict — 有序不可变：`("k": v)`；裸标识符 key 是字符串 key 的糖；空 `(:)`；重复 key 后者覆盖、位置不动
 - Option<T> — 可选数据值：`some(v)` 携带载荷 T，`none` 表示缺席；`some` 按载荷判等，`none == none`，与 T 不同型。边界与分解规则见 [Option 类型](option.not)
+- Result<T, E> — 可失败的数据结果：`ok(v)` 携带 T，`err(e)` 携带 E；错误值不自行抛出，使用 match 显式处理。构造、类型上下文与覆盖规则见 [Result 类型](result.not)
 
 集合字面量判别完全局部：出现 `k: v` 项 → Dict；否则出现逗号 → Array；否则为 grouping（`(x)` 永远不是集合，`()` 是 Unit）。
 

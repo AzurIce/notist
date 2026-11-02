@@ -124,6 +124,13 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
         },
     ),
     (
+        "underline",
+        CtorSignature {
+            accepts: Accepts::Inline,
+            level: Level::Inline,
+        },
+    ),
+    (
         "link",
         CtorSignature {
             accepts: Accepts::Inline,
@@ -176,6 +183,7 @@ pub const BUILTINS: &[(&str, CtorSignature)] = &[
 
 /// The signature of a builtin constructor by source name (`None` for custom).
 pub fn builtin_signature(name: &str) -> Option<CtorSignature> {
+    crate::item::Ctor::from_name(name)?;
     let definition = registry().function("notist", name)?;
     Some(CtorSignature {
         accepts: definition.children,
@@ -247,12 +255,16 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
                 parameter("text", Ty::String, Mode::Required, true);
                 parameter("lang", Ty::String, Mode::Optional, false);
             }
-            "link" | "embed" => {
+            "link" => {
                 parameter("target", Ty::String, Mode::Required, true);
-                if name == "embed" {
-                    parameter("description", Ty::String, Mode::Optional, false);
-                }
                 parameter("title", Ty::String, Mode::Optional, false);
+            }
+            "embed" => {
+                parameter("target", Ty::ResourceTarget, Mode::Required, true);
+                parameter("description", Ty::String, Mode::Optional, false);
+                parameter("title", Ty::String, Mode::Optional, false);
+                parameter("query", Ty::String, Mode::Optional, false);
+                parameter("fragment", Ty::String, Mode::Optional, false);
             }
             "heading" => {
                 function.comptime.push(ComptimeParameter {
@@ -292,6 +304,28 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
         }
         module.functions.push(function);
     }
+    let mut read = FunctionDef::new(
+        FunctionId::new("notist", "read_text"),
+        Accepts::Nothing,
+        Ty::String,
+    );
+    read.implementation =
+        crate::definitions::FunctionImpl::Native(crate::definitions::NativeFunction::ReadText);
+    read.parameters
+        .push(ParameterDef::new("source", Ty::Path, Mode::Required));
+    module.functions.push(read);
+    let mut panic = FunctionDef::new(
+        FunctionId::new("notist", "panic"),
+        Accepts::Nothing,
+        Ty::Never,
+    );
+    panic.implementation =
+        crate::definitions::FunctionImpl::Native(crate::definitions::NativeFunction::Panic);
+    panic
+        .parameters
+        .push(ParameterDef::new("message", Ty::String, Mode::Required));
+    module.functions.push(panic);
+    module.functions.extend(crate::data::definitions());
     module
 }
 

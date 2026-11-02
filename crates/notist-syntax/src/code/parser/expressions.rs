@@ -31,7 +31,7 @@ impl Parser<'_, '_> {
                 self.state.builder.finish_node();
             }
             Some(K::Ident) => self.path(),
-            Some(K::Str | K::Number) => self.eat(),
+            Some(K::Str | K::PathLiteral | K::Number) => self.eat(),
             Some(K::LParen) => self.expression_group(),
             _ => {
                 self.module_error("expected an expression");

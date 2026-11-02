@@ -8,6 +8,8 @@ Option<T> 不是联合类型。`String`、`Option<String>` 与 `some("x")` 的�
 
 `Option<T>` 是内置名义泛型，T 限数据类型（不含内容类型）。身份规则：`Option<A> == Option<B>` 当且仅当 `A == B`。
 
+`Option<T>` 也可作为编译期 Type 表达式，用于显式泛型实参，例如 `Result<Option<String>, String>`。
+
 两个变体：
 
 | 变体 | 含义 | 构造 |
@@ -63,7 +65,7 @@ match 臂左部本来就是 `Expr`，语法零改动：检查器只在 subject �
 
 == 诊断
 
-- `none` 出现在无法确定 T 的位置（既非 `?: T` 实参，也无已定型的姊妹分支或声明返回类型）：诊断"无法确定 none 的类型"。
+- `none` 出现在无法确定 T 的位置（没有已知的 Option 实参／元素类型、已定型的姊妹分支或声明返回类型）：诊断"无法确定 none 的类型"。独立 let 不从后续用途反向推断。
 - `Option<T>` 传给非 `?` 的 T 参数、或 `some(v)` / `none` 与 T 混用：按普通类型不匹配诊断，无隐式包装或拆包。
 - 运行期 match 的 Option subject 缺少 `none` 臂与 `_`：沿用 match 覆盖诊断。
 
@@ -73,4 +75,3 @@ match 臂左部本来就是 `Expr`，语法零改动：检查器只在 subject �
 - Option 的方法族（没有闭包；map / unwrap_or 用 match 表达）。
 - 编译期 Option 参数；Option 包裹内容类型。
 - `Option<Option<T>>` 自然成立，不做特殊规则。
-

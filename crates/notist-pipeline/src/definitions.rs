@@ -1,7 +1,8 @@
 //! Module registration lowers Code bodies and embedded Markup to IR₁.
 //! Each concrete instance runs the shared Markup backend later, with known
 //! comptime arguments and typed ordinary inputs.
-use crate::lowering::{code::expression, content::ContentLowering, literals::syntax_value};
+use crate::code::literal::resolve_literal;
+use crate::lowering::{code::expression, content::ContentLowering, literals::literal_expression};
 use notist_core::{
     builtins::Accepts,
     definitions::{
@@ -34,6 +35,7 @@ pub(crate) struct CodeBody {
     pub expression: Option<Expr>,
     pub diagnostics: Vec<Diagnostic>,
     pub source: String,
+    pub resource_root: String,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModule {
@@ -63,6 +65,7 @@ pub(crate) fn compile_module(
     module: &str,
     path: &str,
     source: &str,
+    resource_root: &str,
     frontend: &dyn ContentLowering,
 ) -> Result<CodeModule, Vec<Diagnostic>> {
     let parsed = notist_syntax::code::parse_module(source, frontend);
@@ -93,7 +96,9 @@ pub(crate) fn compile_module(
                 assigned[i] = true;
             }
         }
-        if let Some(definition) = lower_function(module, &function, &mut diagnostics) {
+        if let Some(definition) =
+            lower_function(module, &function, resource_root, path, &mut diagnostics)
+        {
             let expr = body.and_then(|n| {
                 expression(
                     rowan::NodeOrToken::Node(n),
@@ -105,13 +110,14 @@ pub(crate) fn compile_module(
             for d in &mut body_diags {
                 d.source = Some(path.into());
             }
-            if definition.code {
+            if definition.implementation.is_code() {
                 program.bodies.insert(
                     definition.id.clone(),
                     CodeBody {
                         expression: expr,
                         diagnostics: body_diags,
                         source: path.into(),
+                        resource_root: resource_root.into(),
                     },
                 );
             }
@@ -151,21 +157,43 @@ fn lower_type(
     if name == "Option" && args.len() == 1 {
         return Some(Type::Option(Box::new(lower_type(&args[0], params, diags)?)));
     }
+    if name == "Result" && args.len() == 2 {
+        return Some(Type::Result(
+            Box::new(lower_type(&args[0], params, diags)?),
+            Box::new(lower_type(&args[1], params, diags)?),
+        ));
+    }
+    if matches!(name.as_str(), "Option" | "Result") {
+        diags.push(Diagnostic::new(
+            Phase::Type,
+            t.range(),
+            format!(
+                "{name} requires {} type arguments",
+                if name == "Result" { 2 } else { 1 }
+            ),
+        ));
+        return None;
+    }
     if !args.is_empty() {
         diags.push(Diagnostic::new(
             Phase::Type,
             t.range(),
-            "type constructors only support Array<T> and Option<T>",
+            "type constructors only support Array<T>, Option<T> and Result<T, E>",
         ));
         return None;
     }
     Some(match name.as_str() {
         "Type" => Type::Type,
+        "Never" => Type::Never,
+        "Data" => Type::Data,
+        "DataError" => Type::DataError,
         "Unit" => Type::Unit,
         "Bool" => Type::Bool,
         "Int" => Type::Int,
         "Float" => Type::Float,
         "String" => Type::String,
+        "Path" => Type::Path,
+        "ResourceTarget" => Type::ResourceTarget,
         "Dict" => Type::Dict,
         "InlineContent" => Type::InlineContent,
         "BlockContent" => Type::BlockContent,
@@ -180,18 +208,29 @@ fn lower_type(
         }
     })
 }
-fn ct_default(p: &Parameter, ty: &Type, diags: &mut Vec<Diagnostic>) -> Option<ComptimeValue> {
+fn ct_default(
+    p: &Parameter,
+    ty: &Type,
+    root: &str,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ComptimeValue> {
     let el = p.default_value()?.value()?;
     if *ty == Type::Type {
         let name = el.to_string();
         let ty = match name.as_str() {
             "Type" => Type::Type,
+            "Never" => Type::Never,
+            "Data" => Type::Data,
+            "DataError" => Type::DataError,
             "InlineContent" => Type::InlineContent,
             "BlockContent" => Type::BlockContent,
             "Bool" => Type::Bool,
             "Int" => Type::Int,
             "Float" => Type::Float,
             "String" => Type::String,
+            "Path" => Type::Path,
+            "ResourceTarget" => Type::ResourceTarget,
             "Dict" => Type::Dict,
             "Unit" => Type::Unit,
             _ => {
@@ -205,18 +244,35 @@ fn ct_default(p: &Parameter, ty: &Type, diags: &mut Vec<Diagnostic>) -> Option<C
         };
         Some(ComptimeValue::Type(ty))
     } else {
-        syntax_value(&el, diags).map(ComptimeValue::Data)
+        default_value(&el, root, source, diags).map(ComptimeValue::Data)
+    }
+}
+fn default_value(
+    el: &rowan::NodeOrToken<notist_syntax::tree::SyntaxNode, notist_syntax::tree::SyntaxToken>,
+    root: &str,
+    source: &str,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<notist_core::item::Value> {
+    let expr = literal_expression(el, diags)?;
+    match resolve_literal(&expr, root, source) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            diags.push(error);
+            None
+        }
     }
 }
 fn lower_function(
     module: &str,
     f: &FunctionDecl,
+    resource_root: &str,
+    source: &str,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<FunctionDef> {
     let mut comptime = Vec::new();
     for p in f.comptime_parameters() {
         let ty = lower_type(&p.ty()?, &comptime, diags)?;
-        let default = ct_default(&p, &ty, diags);
+        let default = ct_default(&p, &ty, resource_root, source, diags);
         comptime.push(ComptimeParameter {
             constraint: Default::default(),
             name: p.name()?.text().into(),
@@ -249,11 +305,18 @@ fn lower_function(
     definition.comptime = comptime;
     definition.children_type = children_type;
     definition.span = f.range();
-    definition.code = f.body().is_some();
+    if f.body().is_some() {
+        definition.implementation = notist_core::definitions::FunctionImpl::Code;
+    }
     for p in f.parameters() {
         let ty = lower_type(&p.ty()?, &definition.comptime, diags)?;
         let mode = if let Some(default) = p.default_value() {
-            ParameterMode::Default(syntax_value(&default.value()?, diags)?)
+            ParameterMode::Default(default_value(
+                &default.value()?,
+                resource_root,
+                source,
+                diags,
+            )?)
         } else if p.is_optional() {
             ParameterMode::Optional
         } else {

@@ -30,6 +30,10 @@ pub(crate) fn write_value(out: &mut String, value: &Value) {
             "null".into()
         }),
         Value::Str(s) => out.push_str(&json_escape(s)),
+        Value::Data(_) | Value::DataError(_) => out.push_str(&self::value(value).to_string()),
+        Value::Path(path) => out.push_str(
+            &serde_json::json!({"$path":{"root":path.root(),"path":path.path()}}).to_string(),
+        ),
         Value::Array(items) => {
             out.push('[');
             for (i, v) in items.iter().enumerate() {
@@ -54,6 +58,16 @@ pub(crate) fn write_value(out: &mut String, value: &Value) {
         }
         Value::Some(value) => write_value(out, value),
         Value::None => out.push_str("null"),
+        Value::Ok(value) => {
+            out.push_str("{\"ok\":");
+            write_value(out, value);
+            out.push('}');
+        }
+        Value::Err(value) => {
+            out.push_str("{\"err\":");
+            write_value(out, value);
+            out.push('}');
+        }
     }
 }
 
@@ -65,7 +79,14 @@ fn value(value: &Value) -> serde_json::Value {
         Value::Float(value) => serde_json::Number::from_f64(*value)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        Value::Str(value) => value.clone().into(),
+        Value::Str(value) => value.to_string().into(),
+        Value::Path(path) => serde_json::json!({"$path":{"root":path.root(),"path":path.path()}}),
+        Value::Data(data) => {
+            serde_json::json!({"$data":{"kind":data.kind(),"nodes":data.node_count(),"bytes":data.logical_size()}})
+        }
+        Value::DataError(error) => {
+            serde_json::json!({"$data_error":{"kind":error.kind().as_str()}})
+        }
         Value::Array(values) => serde_json::Value::Array(values.iter().map(self::value).collect()),
         Value::Dict(values) => serde_json::Value::Object(
             values
@@ -75,6 +96,8 @@ fn value(value: &Value) -> serde_json::Value {
         ),
         Value::Some(value) => self::value(value),
         Value::None => serde_json::Value::Null,
+        Value::Ok(v) => serde_json::json!({"ok":self::value(v)}),
+        Value::Err(v) => serde_json::json!({"err":self::value(v)}),
     }
 }
 
@@ -125,4 +148,25 @@ pub fn item(item: &Item) -> serde_json::Value {
     object["attrs"] = value(&Value::Dict(item.attrs.clone()));
     object["children"] = serde_json::Value::Array(item.children.iter().map(self::item).collect());
     object
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_tags_survive_both_presentation_json_paths() {
+        for value in [
+            Value::Ok(Box::new(Value::Some(Box::new(Value::Str("\"\\\n".into()))))),
+            Value::Err(Box::new(Value::Ok(Box::new(Value::Int(i64::MAX))))),
+        ] {
+            let mut out = String::new();
+            write_value(&mut out, &value);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&out).unwrap(),
+                super::value(&value)
+            );
+            assert!(out.starts_with("{\"ok\":") || out.starts_with("{\"err\":"));
+        }
+    }
 }

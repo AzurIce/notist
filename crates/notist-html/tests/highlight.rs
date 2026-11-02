@@ -130,6 +130,11 @@ fn native_snippets_use_syntax_without_evaluation_or_losing_incomplete_input() {
             &["z-keyword", "z-string"],
         ),
         ("not", "#call(\"未完成\"\n", &["z-string"]),
+        (
+            "notc",
+            "fn source(p: Path = p\"./missing.json\") -> Path { p }",
+            &["z-type", "z-string"],
+        ),
     ] {
         let item = raw(language, source);
         let before = item.clone();

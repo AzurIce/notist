@@ -1,0 +1,2 @@
+#import "views.notc" as view;
+#view.item(p"./private/items.json", "42")

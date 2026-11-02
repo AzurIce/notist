@@ -1,6 +1,6 @@
 = 内容函数与输出绑定
 
-原生内容声明提供静态签名，HTML 实现由输出阶段绑定。Code 函数体由 Evaluate 执行；其 Expanded 边界呈现返回的森林，无须对应组件。类型、实例与错误边界见 [Code 类型与函数系统](../code/functions.not)，导入与目录布局见 [本地模块](../modules.not)。
+函数共用静态签名、参数绑定、实例化、调用和结果检查，实现来源只有 Code 与 Rust native。原生内容声明绑定构造 Content 的 Rust 实现，HTML 再为返回节点选择呈现方式；read_text 同样是 Rust-native 函数，但返回 String，不建立内容节点或查找组件。Code 函数体由 Evaluate 执行，其 Expanded 边界呈现返回的森林，无须对应组件。类型、实例与错误边界见 [Code 类型与函数系统](../code/functions.not)，导入与目录布局见 [本地模块](../modules.not)。
 
 == HTML 绑定
 
@@ -33,6 +33,8 @@ HTML 属性承载字符串，因此映射协议需要定义如何保留 Value。
 | Array / Dict | 保留 Value 类型的版本化 JSON |
 
 基本值由签名中的参数类型解释，例如 String 的 "null" 仍然是字符串。复杂值的 JSON 保留整数精度和 Dict 的键值顺序。组件辅助库 web/component-protocol.js 提供 readParameter(element, name, type)，缺失属性返回 undefined，Int 返回 BigInt，Dict 返回保序 Map；组件也可按契约直接读取。
+
+Path 是逻辑资源身份，不能通过组件属性导出，包括嵌套在集合中的 Path；renderer 诊断并省略它，不泄漏资源根或隐式生成 URL。ResourceTarget 输入的 String 分支按字符串协议读取，Path 分支同样禁止导出。原生 embed 的资源映射是宿主显式发布能力，不是组件参数的自动转换。
 
 恢复树中的非法参数值不能按合法签名强制转成另一种 Value。renderer 为不匹配的参数产生诊断并省略对应属性，继续渲染 children；保留原值的完整 IR 仍可用于 debug 与分析。
 

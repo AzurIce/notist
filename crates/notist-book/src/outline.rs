@@ -49,7 +49,7 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
     let ids = root
         .descendants()
         .filter_map(|node| match node.attrs.get("id") {
-            Some(Value::Str(id)) => Some(id.clone()),
+            Some(Value::Str(id)) => Some(id.to_string()),
             _ => None,
         })
         .collect();
@@ -68,7 +68,7 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
                 outline.title = title.clone();
             }
             let id = match node.attrs.get("id") {
-                Some(Value::Str(id)) => Some(id.clone()),
+                Some(Value::Str(id)) => Some(id.to_string()),
                 _ => inherited,
             };
             let id = id.unwrap_or_else(|| {
@@ -80,7 +80,7 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
                     n += 1;
                 }
                 outline.ids.insert(value.clone());
-                node.attrs.insert("id", Value::Str(value.clone()));
+                node.attrs.insert("id", Value::Str(value.clone().into()));
                 value
             });
             let level = match node.fields.get("level") {
@@ -91,7 +91,7 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
         }
         let section_id = if node.ctor == Ctor::Section {
             match node.attrs.get("id") {
-                Some(Value::Str(id)) => Some(id.clone()),
+                Some(Value::Str(id)) => Some(id.to_string()),
                 _ => None,
             }
         } else {

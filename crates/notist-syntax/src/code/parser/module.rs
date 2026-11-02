@@ -233,6 +233,7 @@ impl Parser<'_, '_> {
             self.cur(),
             Some(
                 SyntaxKind::Str
+                    | SyntaxKind::PathLiteral
                     | SyntaxKind::Number
                     | SyntaxKind::Ident
                     | SyntaxKind::Minus

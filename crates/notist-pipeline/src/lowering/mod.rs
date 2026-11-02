@@ -7,10 +7,11 @@ pub mod content;
 use content::ContentLowering;
 pub mod literals;
 
-use literals::{key_text, syntax_value, value_children};
+use literals::{key_text, literal_expression, value_children};
+use notist_core::annotation::LiteralDict;
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, CallArg, Expr};
-use notist_core::item::{Dict, Value};
+use notist_core::item::Dict;
 use notist_syntax::tree::SyntaxKind;
 use notist_syntax::{
     Parse,
@@ -19,8 +20,8 @@ use notist_syntax::{
 use rowan::NodeOrToken;
 
 /// The dict carried by an `@(dict)` annotation (stray members diagnosed).
-pub fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> Dict {
-    let mut dict = Dict::default();
+pub fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> LiteralDict {
+    let mut dict = LiteralDict::default();
     if let Some(node) = annotation.payload_dict() {
         for el in value_children(&node) {
             // the colon of the empty-dict spelling `(:)` is structural
@@ -35,8 +36,10 @@ pub fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> 
                 });
             }
         }
-        if let Some(Value::Dict(d)) = syntax_value(&NodeOrToken::Node(node), diags) {
-            dict = d;
+        if let Some(Expr::Dict(fields, _)) = literal_expression(&NodeOrToken::Node(node), diags) {
+            for (key, value) in fields {
+                dict.insert_expr(key, value);
+            }
         }
     }
     dict

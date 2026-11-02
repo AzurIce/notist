@@ -24,6 +24,8 @@ Parse / Lower → 静态 import 装配 → before_check
 
 LoweredDocument 保存 forest、annotations 与 attrs，.not 和 Markdown 共用同一表示。静态 imports 在进入 `before_check` 前已装配，扩展生成的名称使用文档的原作用域。扩展不能在这里改变 import 图；Code 模块与内容字面量不单独触发文档扩展。
 
+forest 可以保留尚未 Resolve 的 PathLiteral；注解与根属性使用 LiteralDict 保存数据字面量 Expr。`before_check` 对它们的修改进入正常 Resolve：相对路径使用所属源文件，属性表达式不允许执行任意调用。复制已绑定的 Value::Path 保持资源身份；跨来源插入路径字面量时必须明确原来源，不能按接收文档重新解释。
+
 `after_check` 保持只读：语义 Item 携带具体实例身份与待求值计算，直接编辑会绕过类型检查。需要调用函数、插入表达式或改变结构时，在 `before_check` 完成。`after_evaluate` 不重新执行 Resolve、Shape 或 Evaluate；调用方负责具体节点的字段和内容契约，管线检查 Doc 根、禁止嵌套 Doc 与待求值内容、重复 id 及输出节点预算。
 
 DocumentContext 提供文档身份、文档与模块的源码快照以及只读 Registry。核心接口不读取文件、不启动进程，也不依赖终端或站点实现。生成 Expr 的 span 必须位于当前文档的 UTF-8 边界内；无对应原文的内容可以用插入位置的空范围锚定。
@@ -112,6 +114,8 @@ command 是程序与独立参数的数组，不经过 shell。进程的工作目
 source 默认为当前文档，code 与 recovered 可以省略；管线将扩展失败标记为未恢复。非零退出状态、启动或通信失败、无效 JSON、版本不符和错误阶段表示都会转成扩展诊断。
 
 协议直接使用核心类型的 serde 表示，保留类型与范围信息，与 CLI 调试用 JSON 的 core / ir1 / tree 展示格式分别定义。span 为 `[start,end]` UTF-8 字节范围，枚举使用 Rust serde 的外部标签形式，例如 `{"Str":"text"}`、`{"Ref":{"name":"notist.text","span":[0,0]}}`；Dict 是有序键值对数组，空值为 `[]`。Item 同时保留 span 与 origin。输入、修改后输出及往返结果遵循相同的数据表示。
+
+LiteralDict 中的普通字面量沿用 Value 的键值对格式；需要来源的元数据表达式使用 `{"expression": <Expr>}` 包装。例如未解析路径为 `{"expression":{"PathLiteral":{"text":"./data.json","span":[0,13]}}}`。已经绑定的值使用 `{"Path":{"root":"/project","path":"data.json"}}`，反序列化会验证规范形式；资源身份不是读取权限。
 
 Rust 编写的外部命令可以使用 notist.command_extension 的 Request / Response 类型，文档模型使用 notist-core 的 serde feature。notist 的默认 command-extensions feature 提供进程适配；不支持进程的 WASM 宿主和禁用该 feature 的构建显式报告不可用。核心与管线仍保持无 IO。
 

@@ -9,6 +9,113 @@ fn analyze(src: &str) -> (notist_core::item::Item, Vec<notist_core::diag::Diagno
 }
 
 #[test]
+fn markdown_wikilinks_lower_to_normal_links_with_raw_targets() {
+    use notist_core::item::{Ctor, Value};
+    let src =
+        "前文 [[ page.not ]]，[[目录/笔记.md#节|显示 **粗体**]] [[a\\!b&copy;.not]] [[page.not|]]";
+    let (root, diagnostics) = analyze(src);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let links: Vec<_> = root
+        .descendants()
+        .filter(|n| n.ctor == Ctor::Link)
+        .collect();
+    assert_eq!(links.len(), 4);
+    for (link, target, source) in [
+        (links[0], "page.not", "[[ page.not ]]"),
+        (
+            links[1],
+            "目录/笔记.md#节",
+            "[[目录/笔记.md#节|显示 **粗体**]]",
+        ),
+        (links[2], "a\\!b&copy;.not", "[[a\\!b&copy;.not]]"),
+        (links[3], "page.not", "[[page.not|]]"),
+    ] {
+        assert_eq!(link.fields.get("target"), Some(&Value::Str(target.into())));
+        assert_eq!(
+            &src[usize::from(link.span.start())..usize::from(link.span.end())],
+            source
+        );
+    }
+    assert!(links[0].children.is_empty());
+    assert!(links[3].children.is_empty());
+    let strong = links[1].find(|n| n.ctor == Ctor::Strong).unwrap();
+    assert_eq!(
+        &src[usize::from(strong.span.start())..usize::from(strong.span.end())],
+        "**粗体**"
+    );
+}
+
+#[test]
+fn markdown_wikilinks_respect_code_escapes_and_line_boundaries() {
+    use notist_core::item::{Ctor, Value};
+    let src = "`[[code.not]]` \\[[escaped.not]] [[unclosed\nnext]]\n\n```text\n[[fenced.not]]\n```\n\n[普通](normal.not) [[valid.not]]";
+    let (root, diagnostics) = analyze(src);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let targets: Vec<_> = root
+        .descendants()
+        .filter(|n| n.ctor == Ctor::Link)
+        .map(|n| n.fields.get("target").unwrap().clone())
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            Value::Str("normal.not".into()),
+            Value::Str("valid.not".into())
+        ]
+    );
+}
+
+#[test]
+fn markdown_wikilinks_inside_containers_and_content_keep_offsets() {
+    use notist_core::item::{Ctor, Value};
+    for src in [
+        "> [[page.not|显示]]\n",
+        "- [[page.not|显示]]\n",
+        "# 标题 [[page.not|显示]]\n",
+        "#strong[[[page.not|显示]]]",
+        "| 链接 |\n| --- |\n| [[page.not\\|显示]] |\n",
+    ] {
+        let (root, diagnostics) = analyze(src);
+        assert!(diagnostics.is_empty(), "{src:?}: {diagnostics:?}");
+        let link = root.find(|n| n.ctor == Ctor::Link).unwrap();
+        assert_eq!(
+            link.fields.get("target"),
+            Some(&Value::Str("page.not".into()))
+        );
+        assert_eq!(
+            link.children[0].fields.get("text"),
+            Some(&Value::Str("显示".into()))
+        );
+        let source = &src[usize::from(link.span.start())..usize::from(link.span.end())];
+        assert!(source.starts_with("[[page.not"), "{src:?}: {source:?}");
+        assert!(source.ends_with("]]"), "{src:?}: {source:?}");
+        assert!(link.descendants().all(|n| link.span.contains_range(n.span)));
+    }
+}
+
+#[test]
+fn markdown_wikilink_labels_keep_annotations_calls_and_diagnostic_offsets() {
+    use notist_core::item::{Ctor, Value};
+    let src = "前文 [[page.not|@(id: \"label\")**粗体** #emph[显示]]]";
+    let (root, diagnostics) = analyze(src);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let strong = root.find(|n| n.ctor == Ctor::Strong).unwrap();
+    assert_eq!(strong.attrs.get("id"), Some(&Value::Str("label".into())));
+    let emph = root.find(|n| n.ctor == Ctor::Emph).unwrap();
+    assert_eq!(
+        &src[usize::from(emph.span.start())..usize::from(emph.span.end())],
+        "#emph[显示]"
+    );
+    let src = "前文 [[page.not|#missing[]]]";
+    let (_, diagnostics) = analyze(src);
+    assert!(!diagnostics.is_empty());
+    for diagnostic in diagnostics {
+        assert!(usize::from(diagnostic.span.start()) >= src.find('#').unwrap());
+        assert!(usize::from(diagnostic.span.end()) <= src.len());
+    }
+}
+
+#[test]
 fn markdown_lowering() {
     let src = "# 标题 *em*\n\n段落 **粗** _斜_ `代码` [链接](x.not)。\n\n- 项一\n- 项二\n\n```rust\nfn main() {}\n```\n";
     let (item, diags) = analyze(src);

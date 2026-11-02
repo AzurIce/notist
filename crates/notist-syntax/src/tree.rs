@@ -116,6 +116,8 @@ pub enum SyntaxKind {
     UnaryExpr,
     InvokeExpr,
     ComptimeExpr,
+    /// A resource path literal, distinct from a dotted name `Path`.
+    PathLiteral,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -11,18 +11,69 @@ use notist_core::{
     item::{Ctor, ExtensionCtor, Value},
 };
 impl Checker<'_> {
-    pub(super) fn compile_call(&mut self, call: &Expr) -> Item {
+    pub(super) fn compile_call(&mut self, expression: &Expr) -> TypedExpr {
         let start = self.content_annotations.len();
-        let r = self.prepare_call(call, false);
-        let mut shaped = crate::shape::shape_inline(vec![r]);
+        let bound = self.bind_call(expression);
         let annotations = self.content_annotations.split_off(start);
-        crate::materialize::materialize(
+        let annotations = self.resolve_annotations(&annotations);
+        let span = expression.span();
+        let r = match bound {
+            Ok((mut call, children)) if call.definition.returns.level().is_none() => {
+                let mut shaped = if call.children.as_ref().and_then(|c| c.ty.as_ref())
+                    == Some(&Type::InlineContent)
+                {
+                    crate::shape::shape_inline(children)
+                } else {
+                    crate::shape::shape(children)
+                };
+                let children = crate::materialize::materialize(
+                    &mut shaped,
+                    &annotations,
+                    &self.source,
+                    &mut self.diagnostics,
+                );
+                call.children = call.definition.children_type.as_ref().map(|ty| {
+                    Box::new(self.typed(Some(ty.clone()), ExprKind::Content(children), None, span))
+                });
+                let ty = if call
+                    .arguments
+                    .iter()
+                    .any(|(_, arg)| arg.ty == Some(Type::Never))
+                {
+                    Type::Never
+                } else {
+                    call.definition.returns.clone()
+                };
+                return self.typed(Some(ty), ExprKind::ValueCall(Box::new(call)), None, span);
+            }
+            Ok((call, children)) => self.call_node(expression, call, children, false),
+            Err(r) => {
+                if let Some(PendingEvaluation::Failure { ty, message }) = r.pending.as_deref()
+                    && ty.as_ref().is_none_or(|ty| ty.level().is_none())
+                {
+                    return self.typed(ty.clone(), ExprKind::Failure(message.clone()), None, span);
+                }
+                *r
+            }
+        };
+        let mut shaped = crate::shape::shape_inline(vec![r]);
+        let node = crate::materialize::materialize(
             &mut shaped,
             &annotations,
             &self.source,
             &mut self.diagnostics,
         )
-        .remove(0)
+        .remove(0);
+        self.typed(
+            Some(if node.level == Level::Inline {
+                Type::InlineContent
+            } else {
+                Type::BlockContent
+            }),
+            ExprKind::Content(vec![node]),
+            None,
+            span,
+        )
     }
     pub(crate) fn content(
         &mut self,
@@ -32,6 +83,9 @@ impl Checker<'_> {
     ) -> (Vec<Item>, Vec<RExpr>) {
         let start = self.content_annotations.len();
         let r: Vec<_> = forest.iter().map(|e| self.prepare(e)).collect();
+        let mut all_annotations = annotations.to_vec();
+        all_annotations.extend(self.content_annotations.split_off(start));
+        let all_annotations = self.resolve_annotations(&all_annotations);
         let mut shaped = if body == BodyFlavor::Block {
             crate::shape::shape(r)
         } else {
@@ -44,8 +98,6 @@ impl Checker<'_> {
                 }
             }
         }
-        let mut all_annotations = annotations.to_vec();
-        all_annotations.extend(self.content_annotations.split_off(start));
         let items = crate::materialize::materialize(
             &mut shaped,
             &all_annotations,
@@ -89,14 +141,25 @@ impl Checker<'_> {
         else {
             let value = self.check(e);
             let level = value.ty.as_ref().and_then(Type::level);
-            if level.is_none() && value.ty.is_some() {
+            let invalid = level.is_none()
+                && value.ty.is_some()
+                && !(value.ty == Some(Type::Never)
+                    && self.site == notist_core::evaluation::CallSite::Code);
+            if invalid {
                 self.report(
                     span,
                     "content interpolation requires InlineContent or BlockContent",
                 );
             }
             let mut r = RExpr::new(Ctor::Interpolation, span);
-            r.pending = Some(Box::new(PendingEvaluation::Splice(value)));
+            r.pending = Some(Box::new(if invalid {
+                PendingEvaluation::Failure {
+                    ty: value.ty,
+                    message: "content interpolation requires InlineContent or BlockContent".into(),
+                }
+            } else {
+                PendingEvaluation::Splice(value)
+            }));
             r.level = level;
             return r;
         };
@@ -111,6 +174,30 @@ impl Checker<'_> {
         self.prepare_call(e, true)
     }
     fn prepare_call(&mut self, e: &Expr, interpolation: bool) -> RExpr {
+        match self.bind_call(e) {
+            Ok((call, _))
+                if call.definition.returns == Type::Never
+                    && self.site == notist_core::evaluation::CallSite::Code =>
+            {
+                // A divergent interpolation is a pending computation, never a
+                // data constructor or a claim to a structural content role.
+                let value = self.typed(
+                    Some(Type::Never),
+                    ExprKind::ValueCall(Box::new(call)),
+                    None,
+                    e.span(),
+                );
+                let mut r = RExpr::new(Ctor::Interpolation, e.span());
+                r.pending = Some(Box::new(PendingEvaluation::Splice(value)));
+                r
+            }
+            Ok((call, children)) => self.call_node(e, call, children, interpolation),
+            Err(node) => *node,
+        }
+    }
+    /// Every function uses this binding path, before its result is placed in a
+    /// value expression or the content forest. Value calls never need a Ctor.
+    fn bind_call(&mut self, e: &Expr) -> Result<(Invocation, Vec<RExpr>), Box<RExpr>> {
         let Expr::Call {
             callee,
             args,
@@ -201,15 +288,9 @@ impl Checker<'_> {
                     ty,
                     message: failure.message,
                 }));
-                return r;
+                return Err(Box::new(r));
             }
         };
-        if interpolation && call.definition.returns.level().is_none() {
-            let message = "content interpolation requires a content result";
-            self.report(span, message);
-            call.invalid = Some(message.into());
-        }
-        call.children = None;
         if call.definition.children_type == Some(Type::InlineContent)
             && prepared.iter().any(contains_block)
         {
@@ -217,6 +298,28 @@ impl Checker<'_> {
             self.report(span, &message);
             call.invalid = Some(message);
         }
+        Ok((call, prepared))
+    }
+    fn call_node(
+        &mut self,
+        e: &Expr,
+        mut call: Invocation,
+        prepared: Vec<RExpr>,
+        interpolation: bool,
+    ) -> RExpr {
+        let Expr::Call {
+            attrs, body, span, ..
+        } = e
+        else {
+            unreachable!()
+        };
+        let span = *span;
+        if interpolation && call.definition.returns.level().is_none() {
+            let message = "content interpolation requires a content result";
+            self.report(span, message);
+            call.invalid = Some(message.into());
+        }
+        call.children = None;
 
         let mut fields = known_fields(
             &call.definition,
@@ -260,7 +363,7 @@ fn contains_block(r: &RExpr) -> bool {
 
 fn resolved_ctor(definition: &FunctionDef) -> Ctor {
     if definition.id.module == "notist" {
-        return Ctor::from_name(&definition.id.name).unwrap();
+        return Ctor::from_name(&definition.id.name).unwrap_or(Ctor::Interpolation);
     }
     let accepts = match definition.children {
         Accepts::Any => match definition.children_type.as_ref().and_then(Type::level) {

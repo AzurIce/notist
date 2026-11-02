@@ -2,8 +2,10 @@
 mod check;
 mod content;
 pub(crate) mod eval;
+pub(crate) mod literal;
+mod result;
 pub(crate) use check::Checker;
-pub use eval::{Evaluation, Limits};
+pub use eval::{Evaluation, EvaluationOutcome, Limits};
 use notist_core::{
     definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
     diag::Diagnostic,
@@ -20,7 +22,13 @@ pub(crate) struct InstanceRecord {
     pub diagnostics: Vec<Diagnostic>,
     pub checking: bool,
 }
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CheckedProgram {
     pub instances: BTreeMap<String, InstanceRecord>,
+    pub data_retention: notist_core::data::DataRetention,
+}
+impl PartialEq for CheckedProgram {
+    fn eq(&self, other: &Self) -> bool {
+        self.instances == other.instances
+    }
 }

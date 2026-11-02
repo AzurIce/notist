@@ -1,7 +1,7 @@
 //! Source-to-document pipeline. All inputs are explicit; no filesystem or browser IO.
 mod code;
 mod context;
-pub use code::{Evaluation, Limits};
+pub use code::{Evaluation, EvaluationOutcome, Limits};
 mod definitions;
 mod navigation;
 
@@ -76,9 +76,24 @@ impl Pipeline {
     /// Compile a content-literal prefix to an Item forest without a Doc root.
     /// Parse / Lower produces IR₁ first; the shared Markup backend then runs
     /// Resolve through Materialize in the supplied lexical Context.
+    /// The path also identifies this standalone source; use
+    /// [`Self::analyze_content_literal_at`] to select syntax independently.
     pub fn analyze_content_literal(
         &self,
         dialect_path: impl AsRef<Path>,
+        source: &str,
+        context: &Context,
+    ) -> Result<(ContentAnalysis, notist_syntax::Parse), UnsupportedFormat> {
+        let path = dialect_path.as_ref();
+        self.analyze_content_literal_at(path, &path.to_string_lossy(), source, context)
+    }
+
+    /// Analyze a standalone content fragment with an explicit owning source.
+    /// `dialect_path` selects syntax only, never a base for resource literals.
+    pub fn analyze_content_literal_at(
+        &self,
+        dialect_path: impl AsRef<Path>,
+        source_path: &str,
         source: &str,
         context: &Context,
     ) -> Result<(ContentAnalysis, notist_syntax::Parse), UnsupportedFormat> {
@@ -107,7 +122,7 @@ impl Pipeline {
         } else {
             (Lowered::default(), notist_core::expr::BodyFlavor::None)
         };
-        let mut checker = code::Checker::for_content(context, &path.to_string_lossy());
+        let mut checker = code::Checker::for_content(context, source_path);
         let (forest, _) = checker.content(&lowered.forest, &lowered.annotations, body);
         diagnostics.extend(checker.diagnostics);
         Ok((
@@ -144,6 +159,18 @@ impl Pipeline {
         source_path: &str,
         source: &str,
     ) -> Result<CodeModule, Vec<Diagnostic>> {
+        self.compile_module_with_root(dialect_path, module, source_path, source, "/")
+    }
+    /// Compile a module with its host-declared logical resource root. Defaults
+    /// and body literals retain this root even when imported by another host.
+    pub fn compile_module_with_root(
+        &self,
+        dialect_path: impl AsRef<Path>,
+        module: &str,
+        source_path: &str,
+        source: &str,
+        resource_root: &str,
+    ) -> Result<CodeModule, Vec<Diagnostic>> {
         let Some(frontend) = self.frontends.get(dialect_path.as_ref()) else {
             return Err(vec![Diagnostic::new(
                 notist_core::diag::Phase::Syntax,
@@ -151,7 +178,7 @@ impl Pipeline {
                 "unsupported content dialect",
             )]);
         };
-        definitions::compile_module(module, source_path, source, frontend)
+        definitions::compile_module(module, source_path, source, resource_root, frontend)
     }
     /// Check all Code definitions whose compile-time parameters have defaults.
     /// Other generic instances are checked when called with concrete arguments.
@@ -180,6 +207,9 @@ impl Pipeline {
     ) -> Evaluation {
         let mut evaluation =
             code::eval::evaluate(&analysis.root, &analysis.program, context, limits);
+        let mut sources = analysis.sources.clone();
+        sources.append(&mut evaluation.sources);
+        evaluation.sources = sources;
         if analysis.extensions_valid {
             context.extensions().after_evaluate(
                 &DocumentContext {
@@ -193,6 +223,53 @@ impl Pipeline {
             );
         }
         evaluation
+    }
+
+    /// Evaluate against an explicit host input view. An incomplete view requests
+    /// preparation without exposing a partial tree or running output extensions.
+    pub fn evaluate_with_inputs(
+        &self,
+        analysis: &Analysis,
+        context: &Context,
+        inputs: &dyn notist_core::inputs::EvaluationInputs,
+    ) -> EvaluationOutcome {
+        self.evaluate_with_inputs_and_limits(analysis, context, inputs, Limits::default())
+    }
+    pub fn evaluate_with_inputs_and_limits(
+        &self,
+        analysis: &Analysis,
+        context: &Context,
+        inputs: &dyn notist_core::inputs::EvaluationInputs,
+        limits: Limits,
+    ) -> EvaluationOutcome {
+        let outcome = code::eval::run(
+            &analysis.root,
+            &analysis.program,
+            context,
+            limits,
+            Some(inputs),
+        );
+        match outcome {
+            EvaluationOutcome::NeedResources(paths) => EvaluationOutcome::NeedResources(paths),
+            EvaluationOutcome::Complete(mut evaluation) => {
+                let mut sources = analysis.sources.clone();
+                sources.append(&mut evaluation.sources);
+                evaluation.sources = sources;
+                if analysis.extensions_valid {
+                    context.extensions().after_evaluate(
+                        &DocumentContext {
+                            path: &analysis.path,
+                            sources: &analysis.sources,
+                            registry: context.registry(),
+                        },
+                        &mut evaluation.root,
+                        &mut evaluation.diagnostics,
+                        limits.content_nodes,
+                    );
+                }
+                EvaluationOutcome::Complete(evaluation)
+            }
+        }
     }
 
     /// Collect frontend-owned syntax and debug stages in the same source-to-IR pass.

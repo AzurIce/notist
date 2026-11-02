@@ -44,6 +44,8 @@ content/guide/image.svg    -> guide/image.svg
 
 文档之间的本地链接按源身份解析，再映射到 HTML 输出路径；query 与 fragment 保留，标题锚点自动生成并消除重复。以 / 开头的本地路径相对于内容及发布根目录。缺失超链接产生警告，缺失嵌入资源阻止构建。输出路径冲突、文件与目录冲突、内容与输出重叠都会阻止发布。
 
+本地 embed 使用 [Path](code/path.not) 资源身份，旧字符串和 Markup／Markdown 图片语法在构造边界兼容绑定。SSG 显式将文档逻辑资源根设为 content，因此文档中的 `p"/image.svg"` 与 `![图](/image.svg)` 都选择 content/image.svg。模块保留自己的定义根与默认值身份，转发 Path 不按页面位置重新解释。query／fragment 与资源身份分开；文件名内的 `?`、`#`、`%` 作为文件名编码，SVG fragment 按每次引用附加。远程 URL 不请求本地资源，Path 本身不扩大内容发布范围，未发布或缺失的本地嵌入目标仍阻止构建。
+
 == 文档属性
 
 .not 与 Markdown 共用根注解：

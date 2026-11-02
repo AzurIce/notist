@@ -1,7 +1,7 @@
 //! Materialize a shaped content forest: attach annotations and build Items.
 //! This stage preserves the final structure and never resolves or evaluates calls.
 
-use notist_core::annotation::{Annotation, AnnotationKind};
+use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
 use notist_core::item::{Ctor, Item, Origin};

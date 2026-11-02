@@ -1,15 +1,17 @@
 //! Book presentation of image resources; other embeds retain the resource link.
-use notist::{Item, Value};
+use notist::{Item, ResourcePath, Value};
 use notist_html::{escape_attribute, is_safe_url};
 use std::{collections::BTreeMap, path::Path};
 
-pub(crate) fn image(item: &Item, resolved: &BTreeMap<String, String>) -> Option<String> {
-    let Value::Str(target) = item.fields.get("target")? else {
-        return None;
+pub(crate) fn image(item: &Item, resolved: &BTreeMap<ResourcePath, String>) -> Option<String> {
+    let base = match item.fields.get("target")? {
+        Value::Path(path) => resolved.get(path)?.as_str(),
+        Value::Str(url) => url.as_str(),
+        _ => return None,
     };
-    let url = resolved.get(target).map_or(target.as_str(), String::as_str);
+    let url = notist::embed::append_suffix(base, &item.fields).ok()?;
     // Returning None preserves the renderer's diagnostics for unsafe URLs.
-    if !is_safe_url(target) || !is_safe_url(url) {
+    if !is_safe_url(base) || !is_safe_url(&url) {
         return None;
     }
     let path = url.split(['?', '#']).next()?;
@@ -28,7 +30,7 @@ pub(crate) fn image(item: &Item, resolved: &BTreeMap<String, String>) -> Option<
     };
     Some(format!(
         "<img src=\"{}\" alt=\"{}\">",
-        escape_attribute(url),
+        escape_attribute(&url),
         escape_attribute(description)
     ))
 }

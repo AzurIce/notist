@@ -21,7 +21,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             pipeline,
             visiting: Default::default(),
             modules: Default::default(),
-            context: Context::default(),
+            context: Context::default().with_resource_root(resources.root().to_string_lossy()),
             errors: Vec::new(),
         }
     }
@@ -130,10 +130,13 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 return;
             }
         };
-        let mut module = match self
-            .pipeline
-            .compile_module("content.not", &id, &id, &source)
-        {
+        let mut module = match self.pipeline.compile_module_with_root(
+            "content.not",
+            &id,
+            &id,
+            &source,
+            &self.resources.source_root(path).to_string_lossy(),
+        ) {
             Ok(module) => module,
             Err(errors) => {
                 self.errors

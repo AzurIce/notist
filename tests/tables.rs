@@ -284,7 +284,7 @@ fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
         );
         let math = &cell.children[0];
         assert_eq!(math.level, Level::Block);
-        assert_eq!(math.fields.get("text"), Some(&Value::Str(payload)));
+        assert_eq!(math.fields.get("text"), Some(&Value::Str(payload.into())));
         assert_eq!(
             &source[usize::from(math.span.start())..usize::from(math.span.end())],
             formula
@@ -401,7 +401,10 @@ fn multiline_strings_keep_their_payload_and_following_cells_and_rows() {
             let raw = table.children[1].children[1]
                 .find(|node| node.ctor == Ctor::RawInline)
                 .unwrap();
-            assert_eq!(raw.fields.get("text"), Some(&Value::Str(payload.clone())));
+            assert_eq!(
+                raw.fields.get("text"),
+                Some(&Value::Str(payload.clone().into()))
+            );
             assert_eq!(text(&table.children[1].children[2]), "tail");
             assert_eq!(text(&table.children[2]), "nextplainend");
             assert_eq!(text(&root.children[1]), "after");

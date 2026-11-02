@@ -1,6 +1,6 @@
 import init, { analyze_prepared, source_imports, describe_prepared } from "./pkg/notist.js";
 
-import { emptyInputs, loadInputs } from "./project-inputs.js";
+import { emptyInputs, loadInputs, readSourceResponse } from "./project-inputs.js";
 
 const srcEl = document.querySelector("#src");
 const tokensEl = document.querySelector("#tokens");
@@ -17,6 +17,7 @@ let projectInputs = emptyInputs();
 let projectLoadGeneration = 0;
 let renderGeneration = 0;
 let activeProject = null;
+let preparationController = null;
 const pathEl = document.querySelector("#path");
 const configEl = document.querySelector("#config-url");
 const rootEl = document.querySelector("#root-url");
@@ -205,12 +206,14 @@ corpusEl.addEventListener("change", async () => {
 
 async function render() {
   const generation = ++renderGeneration;
+  preparationController?.abort();
+  preparationController = new AbortController();
   const path = pathEl.value;
   const source = srcEl.value;
   let preparationError;
   if (activeProject) {
     try {
-      const inputs = await loadInputs(new URL(path, activeProject.rootURL), { ...activeProject, source_imports, describe_prepared, source }, activeProject.fetcher);
+      const inputs = await loadInputs(new URL(path, activeProject.rootURL), { ...activeProject, source_imports, describe_prepared, source, signal: preparationController.signal }, activeProject.fetcher);
       if (generation !== renderGeneration) return;
       projectInputs = inputs;
     } catch (error) {
@@ -220,6 +223,11 @@ async function render() {
     }
   }
   const data = JSON.parse(analyze_prepared(pathEl.value, srcEl.value, JSON.stringify(projectInputs)));
+  if (data.need_resources) {
+    // Incomplete evaluations never replace the previous complete preview.
+    renderDiags([preparationError ?? { phase: 'project', start: 0, end: 0, message: 'Resource inputs need preparation' }]);
+    return;
+  }
   if (preparationError) (data.diagnostics ??= []).push(preparationError);
   if (data.error || !data.core && !data.tree) {
     renderDiags(data.diagnostics ?? [{phase: "project", start: 0, end: 0, message: data.error}]);
@@ -234,14 +242,14 @@ async function render() {
   ir1El.replaceChildren(...(data.ir1 ? [renderTreeNode(data.ir1)] : []));
   ir2El.replaceChildren(...(data.ir2 ? [renderTreeNode(data.ir2)] : []));
   coreEl.replaceChildren(...(data.core ? [renderTreeNode(data.core)] : []));
-  renderDiags(data.diagnostics ?? []);
+  renderDiags(data.diagnostics ?? [], data.path ?? pathEl.value.trim());
   const components = JSON.stringify(data.used_components ?? []).replace(/</g, "\\u003c");
   const protocol = new URL("./component-protocol.js", import.meta.url).href;
   const statusStyles = new URL("./pkg/status.css", import.meta.url).href;
   previewEl.srcdoc = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="${statusStyles}"><body>${data.html ?? ""}<script type="module">import {registerComponents} from ${JSON.stringify(protocol)}; registerComponents(${components}).catch(error => { const message = document.createElement("pre"); message.textContent = error.message; document.body.append(message); });<\/script>`;
 }
 
-function renderDiags(diags) {
+function renderDiags(diags, documentPath = pathEl.value.trim()) {
   diagsEl.replaceChildren();
   if (!diags.length) {
     const ok = document.createElement("div");
@@ -253,8 +261,11 @@ function renderDiags(diags) {
   for (const d of diags) {
     const el = document.createElement("div");
     el.className = `diag ${d.phase}`;
-    el.dataset.s = d.start;
-    el.dataset.e = d.end;
+    // Data/module ranges belong to those exact sources, not the open editor.
+    if (!d.path || d.path === documentPath) {
+      el.dataset.s = d.start;
+      el.dataset.e = d.end;
+    }
     el.textContent = `${d.path ? d.path + ": " : ""}error[${d.phase}] @${d.start}..${d.end}: ${d.message}`;
     diagsEl.appendChild(el);
   }
@@ -286,16 +297,13 @@ async function loadProject() {
   }
   const rootURL = new URL(rootEl.value.replace(/\/?$/, '/'), location.href);
   const configURL = configEl.value.trim() ? new URL(configEl.value, rootURL) : null;
-  const cache = new Map();
-  const fetcher = async (url, options) => {
-    const key = `${options?.method ?? 'GET'} ${url}`;
-    if (!cache.has(key)) cache.set(key, fetch(url, options));
-    return (await cache.get(key)).clone();
-  };
+  // Each preparation call owns a new input batch; do not reuse resource results
+  // (including failures) from an earlier document revision.
+  const fetcher = (url, options) => fetch(url, options);
   try {
     const documentURL = new URL(sourcePath, rootURL);
     const response = await fetcher(documentURL);
-    const source = response.ok ? await response.text() : originalSource;
+    const source = response.ok ? await readSourceResponse(response) : originalSource;
     const inputs = await loadInputs(documentURL, { rootURL, configURL, source, source_imports, describe_prepared }, fetcher);
     if (generation !== projectLoadGeneration) return;
     activeProject = { rootURL, configURL, fetcher };

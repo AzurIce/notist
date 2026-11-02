@@ -71,11 +71,21 @@ pub enum Type {
     Int,
     Float,
     String,
+    Path,
+    /// An embed input: a bound resource Path or a URL string. No implicit
+    /// String/Path conversion applies outside the embed boundary.
+    ResourceTarget,
     /// None accepts any Value elements; Some checks elements recursively.
     Array(Option<Box<Type>>),
     /// Nominal optional data; identity requires equal payload types.
     Option(Box<Type>),
+    /// Nominal fallible data; both success and error types are part of identity.
+    Result(Box<Type>, Box<Type>),
     Dict,
+    /// Uninhabited data: expressions of this type cannot return normally.
+    Never,
+    Data,
+    DataError,
 }
 
 impl Type {
@@ -86,12 +96,18 @@ impl Type {
             | (Self::Int, Value::Int(_))
             | (Self::Float, Value::Float(_))
             | (Self::String, Value::Str(_))
-            | (Self::Dict, Value::Dict(_)) => true,
-            (Self::Array(element), Value::Array(values)) => element
-                .as_ref()
-                .is_none_or(|ty| values.iter().all(|value| ty.accepts(value))),
+            | (Self::Path, Value::Path(_))
+            | (Self::ResourceTarget, Value::Path(_) | Value::Str(_))
+            | (Self::Dict, Value::Dict(_))
+            | (Self::Data, Value::Data(_))
+            | (Self::DataError, Value::DataError(_)) => true,
+            (Self::Array(element), Value::Array(values)) => {
+                element.as_ref().is_none_or(|ty| values.accepts(ty))
+            }
             (Self::Option(element), Value::Some(value)) => element.accepts(value),
             (Self::Option(_), Value::None) => true,
+            (Self::Result(ok, _), Value::Ok(value)) => ok.accepts(value),
+            (Self::Result(_, err), Value::Err(value)) => err.accepts(value),
             _ => false,
         }
     }
@@ -104,15 +120,21 @@ impl std::fmt::Display for Type {
             Self::InlineContent => f.write_str("InlineContent"),
             Self::BlockContent => f.write_str("BlockContent"),
             Self::Parameter(name) => f.write_str(name),
+            Self::Never => f.write_str("Never"),
+            Self::Data => f.write_str("Data"),
+            Self::DataError => f.write_str("DataError"),
             Self::Unit => f.write_str("Unit"),
             Self::Bool => f.write_str("boolean"),
             Self::Int => f.write_str("integer"),
             Self::Float => f.write_str("float"),
             Self::String => f.write_str("string"),
+            Self::Path => f.write_str("Path"),
+            Self::ResourceTarget => f.write_str("ResourceTarget"),
             Self::Dict => f.write_str("dict"),
             Self::Array(None) => f.write_str("array"),
             Self::Array(Some(element)) => write!(f, "array of {element}"),
             Self::Option(element) => write!(f, "option of {element}"),
+            Self::Result(ok, err) => write!(f, "Result<{ok}, {err}>"),
         }
     }
 }
@@ -132,9 +154,9 @@ impl ValueConstraint {
         match (self, value) {
             (Self::Any, _) => true,
             (Self::PositiveInt, Value::Int(value)) => *value > 0,
-            (Self::ArrayStrings(allowed), Value::Array(values)) => values
-                .iter()
-                .all(|value| matches!(value, Value::Str(value) if allowed.contains(value))),
+            (Self::ArrayStrings(allowed), Value::Array(values)) => values.iter().all(
+                |value| matches!(value, Value::Str(value) if allowed.iter().any(|s| s == value)),
+            ),
             _ => false,
         }
     }
@@ -223,6 +245,8 @@ impl ComptimeValue {
                 ),
                 Value::Some(v) => format!("o{}", data(v)),
                 Value::None => "o-".into(),
+                Value::Ok(v) => format!("r+{}", data(v)),
+                Value::Err(v) => format!("r-{}", data(v)),
                 v => format!("{v:?}"),
             }
         }
@@ -265,6 +289,9 @@ impl FunctionInstance {
 }
 
 impl Type {
+    /// Describe unannotated data. Absent Option/Result payload types use Unit
+    /// placeholders; checked expressions and declared contracts retain the full
+    /// nominal type and must not reconstruct it from this approximation.
     pub fn of(value: &Value) -> Self {
         match value {
             Value::Unit => Self::Unit,
@@ -272,19 +299,19 @@ impl Type {
             Value::Int(_) => Self::Int,
             Value::Float(_) => Self::Float,
             Value::Str(_) => Self::String,
+            Value::Path(_) => Self::Path,
             Value::Dict(_) => Self::Dict,
-            Value::Array(v) => {
-                let first = v.first().map(Self::of);
-                Self::Array(
-                    first
-                        .filter(|t| v.iter().all(|v| Self::of(v) == *t))
-                        .map(Box::new),
-                )
-            }
+            Value::Data(_) => Self::Data,
+            Value::DataError(_) => Self::DataError,
+            Value::Array(v) => v.inferred_type(),
             Value::Some(v) => Self::Option(Box::new(Self::of(v))),
             // A bare none carries no payload type; checked expressions keep
             // their static Option<T> instead of deriving it here.
             Value::None => Self::Option(Box::new(Self::Unit)),
+            // Like none, a variant alone cannot recover the absent payload
+            // type. Checked expressions retain the complete nominal type.
+            Value::Ok(v) => Self::Result(Box::new(Self::of(v)), Box::new(Self::Unit)),
+            Value::Err(v) => Self::Result(Box::new(Self::Unit), Box::new(Self::of(v))),
         }
     }
     pub fn level(&self) -> Option<Level> {
@@ -299,6 +326,7 @@ impl Type {
             Self::Parameter(_) => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::concrete),
             Self::Option(t) => t.concrete(),
+            Self::Result(ok, err) => ok.concrete() && err.concrete(),
             _ => true,
         }
     }
@@ -307,6 +335,7 @@ impl Type {
             Self::Type | Self::Parameter(_) | Self::InlineContent | Self::BlockContent => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::data),
             Self::Option(t) => t.data(),
+            Self::Result(ok, err) => ok.data() && err.data(),
             _ => true,
         }
     }
@@ -315,6 +344,7 @@ impl Type {
             Self::Type | Self::Parameter(_) => false,
             Self::Array(t) => t.as_deref().is_none_or(Self::data),
             Self::Option(t) => t.data(),
+            Self::Result(ok, err) => ok.data() && err.data(),
             _ => true,
         }
     }
@@ -326,13 +356,58 @@ impl Type {
             },
             Self::Array(t) => Self::Array(t.as_ref().map(|t| Box::new(t.substitute(bindings)))),
             Self::Option(t) => Self::Option(Box::new(t.substitute(bindings))),
+            Self::Result(ok, err) => Self::Result(
+                Box::new(ok.substitute(bindings)),
+                Box::new(err.substitute(bindings)),
+            ),
             _ => self.clone(),
         }
     }
 }
 
+/// Implementation origin is independent of the function's result type.
+/// Code bodies remain in CodeProgram; native ids select trusted Rust code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum FunctionImpl {
+    Code,
+    Native(NativeFunction),
+}
+
+impl Default for FunctionImpl {
+    fn default() -> Self {
+        Self::Native(NativeFunction::Construct)
+    }
+}
+
+impl FunctionImpl {
+    pub fn is_code(self) -> bool {
+        self == Self::Code
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum NativeFunction {
+    /// Construct a semantic content node, including host-bound components.
+    #[default]
+    Construct,
+    ReadText,
+    Panic,
+    Data(crate::data::DataFunction),
+}
+impl NativeFunction {
+    pub fn reads_resources(self) -> bool {
+        matches!(self, Self::ReadText) || matches!(self, Self::Data(f) if f.reads_resources())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "FunctionDefWire", into = "FunctionDefWire")
+)]
 pub struct FunctionDef {
     pub id: FunctionId,
     pub parameters: Vec<ParameterDef>,
@@ -340,9 +415,7 @@ pub struct FunctionDef {
     pub returns: Type,
     pub comptime: Vec<ComptimeParameter>,
     pub children_type: Option<Type>,
-    /// Body expressions live in CodeProgram, keyed by this function's identity.
-    pub code: bool,
-    #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
+    pub implementation: FunctionImpl,
     pub span: TextRange,
 }
 
@@ -359,9 +432,78 @@ impl FunctionDef {
                 Accepts::Nothing => None,
                 _ => Some(Type::BlockContent),
             },
-            code: false,
+            implementation: FunctionImpl::Native(NativeFunction::Construct),
             span: TextRange::empty(0.into()),
         }
+    }
+}
+
+// Preserve the previous wire representation for Code and content constructors.
+// `code` is a compatibility projection, never a second internal source of truth.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FunctionDefWire {
+    id: FunctionId,
+    parameters: Vec<ParameterDef>,
+    children: Accepts,
+    returns: Type,
+    comptime: Vec<ComptimeParameter>,
+    children_type: Option<Type>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    implementation: Option<FunctionImpl>,
+    #[serde(with = "crate::evaluation::span")]
+    span: TextRange,
+}
+
+#[cfg(feature = "serde")]
+impl From<FunctionDef> for FunctionDefWire {
+    fn from(d: FunctionDef) -> Self {
+        Self {
+            id: d.id,
+            parameters: d.parameters,
+            children: d.children,
+            returns: d.returns,
+            comptime: d.comptime,
+            children_type: d.children_type,
+            code: Some(d.implementation.is_code()),
+            implementation: matches!(
+                d.implementation,
+                FunctionImpl::Native(
+                    NativeFunction::ReadText | NativeFunction::Panic | NativeFunction::Data(_)
+                )
+            )
+            .then_some(d.implementation),
+            span: d.span,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<FunctionDefWire> for FunctionDef {
+    type Error = &'static str;
+    fn try_from(d: FunctionDefWire) -> Result<Self, Self::Error> {
+        let implementation = d.implementation.unwrap_or_else(|| {
+            if d.code == Some(true) {
+                FunctionImpl::Code
+            } else {
+                FunctionImpl::default()
+            }
+        });
+        if d.code.is_some_and(|code| code != implementation.is_code()) {
+            return Err("conflicting function implementation and legacy code flag");
+        }
+        Ok(Self {
+            id: d.id,
+            parameters: d.parameters,
+            children: d.children,
+            returns: d.returns,
+            comptime: d.comptime,
+            children_type: d.children_type,
+            implementation,
+            span: d.span,
+        })
     }
 }
 
@@ -391,6 +533,30 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
     }
     let mut names = BTreeSet::new();
     for function in &module.functions {
+        if let FunctionImpl::Native(NativeFunction::Data(kind)) = function.implementation
+            && function.id != FunctionId::new("notist", kind.name())
+        {
+            report(
+                function.span,
+                "data implementations are reserved for the standard library".into(),
+            );
+        }
+        if function.implementation == FunctionImpl::Native(NativeFunction::ReadText)
+            && function.id != FunctionId::new("notist", "read_text")
+        {
+            report(
+                function.span,
+                "read_text implementation is reserved for the standard library".into(),
+            );
+        }
+        if function.implementation == FunctionImpl::Native(NativeFunction::Panic)
+            && function.id != FunctionId::new("notist", "panic")
+        {
+            report(
+                function.span,
+                "panic implementation is reserved for the standard library".into(),
+            );
+        }
         if function.id.module != module.module {
             report(
                 function.span,
@@ -463,7 +629,8 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
                 && match default {
                     ComptimeValue::Type(_) => parameter.ty != Type::Type,
                     ComptimeValue::Data(v) => {
-                        parameter.ty.concrete() && !parameter.ty.accepts(v)
+                        v.contains_data_views()
+                            || parameter.ty.concrete() && !parameter.ty.accepts(v)
                             || !parameter.constraint.accepts(v)
                     }
                 }
@@ -486,6 +653,10 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
                     Type::InlineContent | Type::BlockContent => false,
                     _ => check(t, names),
                 },
+                Type::Result(ok, err) => [ok, err].iter().all(|t| {
+                    !matches!(t.as_ref(), Type::InlineContent | Type::BlockContent)
+                        && check(t, names)
+                }),
                 _ => true,
             }
         }
@@ -500,6 +671,7 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
                 Type::Parameter(_) => true,
                 Type::Array(t) => t.as_deref().is_none_or(data),
                 Type::Option(t) => data(t),
+                Type::Result(ok, err) => data(ok) && data(err),
                 _ => t.data(),
             }
         }

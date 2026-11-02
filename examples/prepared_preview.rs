@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "https://assets.example/notist-doc/badge.js".into(),
             ),
         ]),
+        ..Default::default()
     };
     // This round-trip stands in for a Worker message. Notist does no network IO.
     let message = serde_json::to_string(&inputs)?;

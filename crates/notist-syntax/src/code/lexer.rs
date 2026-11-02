@@ -60,6 +60,17 @@ impl Lexer<'_> {
                 }
             }
             '"' => self.lex_code_string(i, 0),
+            'p' if rest.starts_with("p\"") => {
+                // Paths are single-line even when malformed input starts with
+                // triple quotes. Do not swallow subsequent declarations.
+                let line_end = rest.find(['\r', '\n']).unwrap_or(rest.len());
+                let scanner = Lexer {
+                    src: &rest[1..line_end],
+                    module: self.module,
+                };
+                let (_, len) = scanner.lex_code_string(0, 0);
+                (SyntaxKind::PathLiteral, len + 1)
+            }
             'r' if raw_string_hashes(&self.src[i..]).is_some() => {
                 let hashes = raw_string_hashes(&self.src[i..]).unwrap();
                 self.lex_code_string(i, hashes)

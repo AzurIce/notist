@@ -31,6 +31,29 @@ fn text_of(item: &Item) -> String {
 }
 
 #[test]
+fn underline_function_supports_nested_inline_content_and_attrs() {
+    for name in ["underline", "notist.underline"] {
+        let root = analyze(&format!(
+            "@(id: \"underlined\")#{name}[*粗体* _强调_ [链接](target)]"
+        ));
+        let underline = root.find(|node| node.ctor == Ctor::Underline).unwrap();
+        assert_eq!(
+            underline.attrs.get("id"),
+            Some(&Value::Str("underlined".into()))
+        );
+        assert_eq!(underline.ctor.level(), Some(Level::Inline));
+        assert_eq!(underline.ctor.accepts(), Some(Accepts::Inline));
+        assert_eq!(text_of(underline), "粗体 强调 链接");
+        assert!(underline.find(|node| node.ctor == Ctor::Strong).is_some());
+        assert!(underline.find(|node| node.ctor == Ctor::Emph).is_some());
+        assert!(underline.find(|node| node.ctor == Ctor::Link).is_some());
+    }
+    let root = analyze("_仍是强调_");
+    assert!(root.find(|node| node.ctor == Ctor::Emph).is_some());
+    assert!(root.find(|node| node.ctor == Ctor::Underline).is_none());
+}
+
+#[test]
 fn strike_sugar_and_function_support_nested_inline_content_and_attrs() {
     for src in [
         "@(id: \"removed\")~*粗体* _强调_ [链接](target)~",
@@ -179,6 +202,7 @@ fn new_functions_report_invalid_children_mounts() {
     for (src, message) in [
         ("#divider[x]", "`divider` takes no children"),
         ("#strike[ padded ]", "`strike` takes inline content"),
+        ("#underline[ padded ]", "`underline` takes inline content"),
     ] {
         let document = Pipeline::default()
             .analyze("test.not", src, &notist::Context::default())
@@ -366,7 +390,7 @@ fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
         assert_eq!(equation.ctor, Ctor::Math);
         assert_eq!(
             equation.fields.get("text"),
-            Some(&Value::Str(format!("x +{newline}  y")))
+            Some(&Value::Str(format!("x +{newline}  y").into()))
         );
         assert_eq!(item.children[0].ctor, Ctor::Paragraph);
         assert_eq!(item.children[2].ctor, Ctor::Paragraph);
@@ -427,7 +451,7 @@ fn block_math_owns_blank_lines_block_markers_and_brackets_within_containers() {
             assert_eq!(equation.level, Level::Block);
             assert_eq!(
                 equation.fields.get("text"),
-                Some(&Value::Str(payload.clone()))
+                Some(&Value::Str(payload.clone().into()))
             );
             assert!(root.find(|n| n.ctor == Ctor::Strong).is_none());
             let source_formula =
@@ -608,7 +632,7 @@ fn notist_embed_sugar_preserves_nested_description_attrs_and_spans() {
     let embed = root.find(|node| node.ctor == Ctor::Embed).unwrap();
     assert_eq!(
         embed.fields.get("target"),
-        Some(&Value::Str("asset(1).pdf".into()))
+        Some(&local_embed_path("asset(1).pdf"))
     );
     assert_eq!(
         embed.fields.get("description"),
@@ -642,7 +666,7 @@ fn notist_embed_sugar_preserves_nested_description_attrs_and_spans() {
     let embed = root.find(|node| node.ctor == Ctor::Embed).unwrap();
     assert_eq!(
         embed.fields.get("target"),
-        Some(&Value::Str("Bob's(1).pdf".into()))
+        Some(&local_embed_path("Bob's(1).pdf"))
     );
     assert_eq!(
         embed.fields.get("description"),
@@ -749,20 +773,35 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
         );
 
         let embed = md.root().find(|node| node.ctor == Ctor::Embed).unwrap();
-        assert_eq!(embed.fields.get("target"), Some(&Value::Str(target.into())));
+        let (path, fragment) = target
+            .split_once('#')
+            .map_or((target, None), |(p, f)| (p, Some(f)));
+        let expected = if target.starts_with("https://") {
+            Value::Str(target.into())
+        } else {
+            local_embed_path(path)
+        };
+        assert_eq!(embed.fields.get("target"), Some(&expected));
+        assert_eq!(
+            embed.fields.get("fragment"),
+            fragment.map(|f| Value::Str(f.into())).as_ref()
+        );
         assert_eq!(
             embed.fields.get("description"),
             Some(&Value::Str("资源".into()))
         );
         assert_eq!(embed.fields.get("title"), Some(&Value::Str("说明".into())));
-        assert_eq!(embed.fields.iter().count(), 3);
+        assert_eq!(
+            embed.fields.iter().count(),
+            3 + usize::from(fragment.is_some())
+        );
         assert!(embed.children.is_empty());
         assert_eq!(embed.ctor.level(), Some(Level::Inline));
         assert_eq!(embed.ctor.accepts(), Some(Accepts::Nothing));
 
         let positional = analyze(&format!("#embed(\"{target}\")"));
         let embed = positional.find(|node| node.ctor == Ctor::Embed).unwrap();
-        assert_eq!(embed.fields.get("target"), Some(&Value::Str(target.into())));
+        assert_eq!(embed.fields.get("target"), Some(&expected));
     }
 }
 
@@ -787,12 +826,12 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
     );
     assert_eq!(
         embeds[0].fields.get("target"),
-        Some(&Value::Str("asset".into()))
+        Some(&local_embed_path("asset"))
     );
     assert!(embeds[0].fields.get("title").is_none());
     assert_eq!(
         embeds[1].fields.get("target"),
-        Some(&Value::Str("clip.mp4".into()))
+        Some(&local_embed_path("clip.mp4"))
     );
     assert_eq!(
         embeds[1].fields.get("title"),
@@ -800,7 +839,7 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
     );
     assert_eq!(
         embeds[2].fields.get("description"),
-        Some(&Value::Str(String::new()))
+        Some(&Value::Str(String::new().into()))
     );
     assert!(embeds.iter().all(|e| e.children.is_empty()));
 
@@ -864,10 +903,18 @@ fn markdown_embed_decodes_fields_once_and_keeps_code_payload_literal() {
     );
     assert_eq!(
         embed.fields.get("target"),
-        Some(&Value::Str("asset(1)?a=1&b=2".into()))
+        Some(&local_embed_path("asset(1)"))
+    );
+    assert_eq!(
+        embed.fields.get("query"),
+        Some(&Value::Str("a=1&b=2".into()))
     );
     assert_eq!(
         embed.fields.get("title"),
         Some(&Value::Str("A \"title\"".into()))
     );
+}
+
+fn local_embed_path(path: &str) -> Value {
+    Value::Path(notist::ResourcePath::resolve("/", "test.not", path).unwrap())
 }

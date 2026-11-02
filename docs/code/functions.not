@@ -1,12 +1,12 @@
 = Code 函数系统
 
-Code 采用纯函数求值模型。每个具体实例中的正常表达式具有唯一静态类型；没有联合类型、运行期 Type 或 InlineContent 到 BlockContent 的隐式转换。语法见 [Code Syntax](syntax.not)，数据流见 [文档管线](../designs/pipeline.not)。
+Code 采用不可变的函数求值模型，资源读取依赖显式的宿主输入。每个具体实例中的正常表达式具有唯一静态类型；没有联合类型、运行期 Type 或 InlineContent 到 BlockContent 的隐式转换。语法见 [Code Syntax](syntax.not)，数据流见 [文档管线](../designs/pipeline.not)。
 
 == 类型与阶段
 
 | 类型 | 表示与用途 |
 | --- | --- |
-| Unit、Bool、Int、Float、String、Array<E>、Dict | 普通数据；参数、局部计算与 Item 字段 |
+| Unit、Bool、Int、Float、String、Path、Array<E>、Dict | 普通数据；参数、局部计算与 Item 字段 |
 | InlineContent、BlockContent | 对应类别的有序 Item 森林 |
 | Type | 规范化类型身份的编译期值；内建 Type : Type |
 
@@ -14,7 +14,7 @@ Type 仅可作为 `<...>` 中参数的类型。类型值可参与类型注解、
 
 静态类型与值的可用性分别记录。编译期参数为已知值；函数体检查中的普通参数与 children 仅有类型，即使某次调用传入字面量，也不会据此选择类型分支。不可变 let 绑定继承其表达式的可用性。
 
-普通运算在操作数已知时计算；否则保留经过检查的运算。普通值函数调用默认保留到执行期。`comptime expr` 和编译期实参可执行已检查的普通值函数，要求所需输入完全已知；不能构造编译期内容。
+普通运算在操作数已知时计算；否则保留经过检查的运算。普通值函数调用默认保留到执行期。`comptime expr` 和编译期实参可执行已检查的普通值函数，要求所需输入完全已知；不能构造编译期内容或读取资源。read_text 的结果依赖宿主输入，不标记为编译期已知；间接调用也受同一能力限制。
 
 == 签名与实例
 
@@ -31,7 +31,9 @@ fn foo<x: T>(arg: E)[children: C] -> O {
 | `[children: C]` | 唯一内容槽，C 为 InlineContent 或 BlockContent |
 | `-> O` | 唯一确定的数据或内容类型 |
 
-普通参数列表、编译期参数列表和 children 槽均可省略。花括号提供 Code 实现；分号声明由原生输出实现绑定。参数名在同一签名内唯一，普通参数可声明具体字面量默认值；`?` 声明可省略参数：调用方按参数类型提供或省略，Code 函数体内接收对应的 Option 值，见 [Option 类型](option.not)。
+普通参数列表、编译期参数列表和 children 槽均可省略。花括号提供 Code 实现；分号声明只提供签名，已有内容声明由宿主绑定原生的 Content 构造实现，JS／HTML 负责呈现返回节点，不是第三类函数。仅声明同名 read_text 不会取得标准库实现。参数名在同一签名内唯一，普通参数可声明具体字面量默认值；`?` 声明可省略参数：调用方按参数类型提供或省略，Code 函数体内接收对应的 Option 值，见 [Option 类型](option.not)。
+
+函数实现来源只有 Code 与 Rust native，与返回数据或 Content 正交。所有函数共用签名、参数绑定、编译期实例化、调用入口和结果检查，最后才分派到 Code 函数体或 Rust 实现。text、embed 与 read_text 都是 Rust-native 函数；read_text 返回 String，不建立 Item 边界。读取能力及宿主协议见 [Path 与文本读取](path.not)。
 
 输入类别 C 与输出类别 O 独立。函数体按具体实例的 O 检查，不从函数体或返回上下文推导、合并或扩大返回类型。
 
@@ -47,7 +49,7 @@ Parse / Lower 先产生 CodeModule，其中包含签名、静态 imports 与未�
 
 == 表达式与检查
 
-Code 支持数据与内容字面量、名称引用、模块成员访问、具名调用、不可变 let、标量运算、Bool 运算、if、match 和 comptime。没有可变状态、宿主 I/O、Function 值或闭包；模块顶层支持静态 import，相对路径、导出和词法名称解析见 [本地模块](../modules.not)。
+Code 支持数据与内容字面量、名称引用、模块成员访问、具名调用、不可变 let、标量运算、Bool 运算、if、match 和 comptime。没有可变状态、任意宿主 I/O、Function 值或闭包；read_text 仅消费受限的显式输入能力。模块顶层支持静态 import，相对路径、导出和词法名称解析见 [本地模块](../modules.not)。
 
 | 分支条件 | 检查规则 |
 | --- | --- |
@@ -116,6 +118,6 @@ Analysis 保存一棵求值前 Item 树，以及具体实例的已检查函数�
 
 == 实现边界
 
-Registry 保存公开签名与实现种类；Context 组合 Registry、CodeProgram 和 ExtensionPlan。Checker 的可变会话状态保存当前模块、编译期实参、参数与局部绑定及 CheckedProgram；具体实例的 TypedExpr 保存在 InstanceRecord.body 中。文档入口将 CheckedProgram 随 Item 树保存在 Analysis，Code 文件检查入口仅导出声明、诊断与来源源码组成的 CodeAnalysis。Evaluate 可以为映射目标补查实例。Context 和管线均不读取文件；配置、源码、依赖与组件资源由宿主提供。
+Registry 保存公开签名及 Code／Native 实现来源；Context 组合 Registry、CodeProgram 和 ExtensionPlan，不保存宿主文件对象或资源缓存。Checker 的可变会话状态保存当前模块、编译期实参、参数与局部绑定及 CheckedProgram；具体实例的 TypedExpr 保存在 InstanceRecord.body 中。文档入口将 CheckedProgram 随 Item 树保存在 Analysis，Code 文件检查入口仅导出声明、诊断与来源源码组成的 CodeAnalysis。Evaluate 可以为映射目标补查实例；需要资源时仅查询显式的 EvaluationInputs，文件或网络访问仍由宿主负责。
 
 Type 返回值、通用 Set、运行期类型反射、可变状态、多内容槽、一般集合访问和用户结构角色不在本版范围。可选值模型见 [Option 类型](option.not)。

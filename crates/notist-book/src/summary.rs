@@ -149,7 +149,7 @@ fn interpret_label(
             }
             let label = text_of(link);
             let target = match link.fields.get("target") {
-                Some(Value::Str(target)) => target.clone(),
+                Some(Value::Str(target)) => target.to_string(),
                 _ => String::new(),
             };
             Some(((!label.is_empty()).then_some(label), Some(target)))
@@ -307,7 +307,7 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                 suffix |= chapters_started;
                 for link in links {
                     let target = match link.fields.get("target") {
-                        Some(Value::Str(target)) => target.clone(),
+                        Some(Value::Str(target)) => target.to_string(),
                         _ => String::new(),
                     };
                     if target.ends_with('/') {

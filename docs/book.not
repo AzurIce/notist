@@ -65,6 +65,8 @@ source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同
 
 挂载只扩展书籍发布范围，不改变文档身份或源码 import 的解析基准。统一构建入口对所有页面显式应用选中 target 的文档扩展配置；不会合并挂载目录中的其他项目配置。serve 监听挂载目录中的修改、新增与删除，使用与 build 相同的章节和资源规则。
 
+挂载文档的 Path 字面量以该挂载源目录为逻辑资源根：相对 Path 按源文档目录绑定，以 `/` 开头的 Path 从挂载根定位；`..` 仍不能逃出该根。Vault 文档中的 Path 仍使用 Vault 根，宿主发布时可以将其已声明的虚拟挂载路径映射到挂载源文件。路径身份不会绕过挂载或文件检查。
+
 === 输出与配置作用域
 
 Book target 配置章节发现与展示；项目的顶层 extensions 和 book.extensions 通过独立 imports 选择文档输出实现，字段与路径基准见 [Notist.toml 配置](configuration.not#扩展)。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 选择项目或 workspace 配置，不改变文档的导入绑定。
@@ -217,7 +219,9 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 
 Book 将 `![描述](assets/example.png "标题")`（Markdown 与 Markup 均支持）及 `#embed` 引用的图片渲染为 img，description 作为 alt，title 保留在外层 span。按 URL 路径扩展名识别 PNG、JPEG（jpg / jpeg）、GIF、SVG、WebP、AVIF、APNG、BMP 和 ICO，忽略大小写及 query / fragment；本地与远程图片均适用。其他资源仍显示为链接；无图片扩展名的远程 URL 也使用链接。build 与 serve 预览使用相同呈现。
 
-link 与 embed 的本地目标相对于源文档解析。指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。远程 URL 保留，URL 安全检查仍由 renderer 执行。求值后的错误节点保留原身份与字段，Notist Book 按错误表示呈现，跳过其链接、资源及标题解释。
+link 的本地 String 目标按既有源文档规则解析。embed 使用已绑定的 [Path](code/path.not) 身份：文档实参相对调用文档，Path 默认值及函数体字面量相对定义模块，转发不会重绑定；Markup／Markdown 图片语法和旧本地字符串在 embed 操作处兼容绑定。Path 文件名内的 `?`、`#`、`%` 不是 URL 后缀，query／fragment 使用独立字段。
+
+指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。embed 的基础 URL 按 ResourcePath 映射，后缀按每次引用独立附加；文件名与 fragment 由宿主编码，不输出逻辑资源根。远程 URL 保留，URL 安全检查仍由 renderer 执行。求值后的错误节点保留原身份与字段，Notist Book 按错误表示呈现，跳过其资源及标题解释；Expanded 包装的原始 embed 输入不触发资源发布。
 
 输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
 

@@ -99,7 +99,7 @@ widgets/
 
 组件标签和发布资源路径从规范模块身份生成；模块别名、成员重命名及通配导入都保留定义文件对应的资源根。输出映射继续按原始函数身份选择实现，同一函数的不同导入写法共享组件注册和发布资源。同名函数来自不同目录时可以共存；目录组件的辅助资源保持相对路径。具体映射与参数协议见 [Content Function Extensions](designs/content-functions.not)。
 
-Vault 根限定正文与本地内容引用；Code 模块和组件资源可以位于根外。加载外部模块不会把其 README 或其他文档纳入正文索引。宿主通过 Resources 读取源码、递归加载 import 并装配 Environment / Context；纯 Pipeline 只接收显式源码与 Context。内存宿主使用 MemoryResources，PreparedInputs 将完整输入视图传给 Worker；两者复用同一加载路径。
+Vault 根限定正文与本地内容引用；Code 模块和组件资源可以位于根外。加载外部模块不会把其 README 或其他文档纳入正文索引，也不授予相邻数据文件的读取权限。宿主通过 Resources 与共享 ResourceSession 读取源码、递归加载 import 并装配 Environment / Context；Pipeline 显式接收源码、Context 及求值所需的 EvaluationInputs。内存宿主使用 MemoryResources，PreparedInputs 将输入快照及准备状态传给 Worker；两者复用同一加载路径。数据授权和发布映射相互独立，见 [资源输入与求值](designs/resource-inputs.not)。
 
 仓库的 modules/ 存放普通本地模块及实现资源。模块可另带 Rust crate 或构建脚本，它们不构成 Notist 的包机制；包注册表、版本与分发留待单独设计。
 

@@ -1,10 +1,76 @@
 //! Literal conversion shared by document calls and Code declaration defaults.
 
 use notist_core::diag::{Diagnostic, Phase};
+use notist_core::expr::Expr;
 use notist_core::item::{Dict, Value};
 use notist_syntax::code::ast::Entry;
 use notist_syntax::tree::{SyntaxKind, SyntaxNode, SyntaxToken};
 use rowan::{NodeOrToken, TextRange};
+
+/// Preserve source literals until Resolve; this does not require a source id.
+pub fn literal_expression(
+    element: &NodeOrToken<SyntaxNode, SyntaxToken>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    let span = element.text_range();
+    if let NodeOrToken::Token(token) = element
+        && token.kind() == SyntaxKind::PathLiteral
+    {
+        let text = token.text().strip_prefix('p')?;
+        if text.starts_with("\"\"\"") {
+            diags.push(Diagnostic::new(
+                Phase::Semantic,
+                span,
+                "path literals must be single-line quoted strings",
+            ));
+            return None;
+        }
+        return unquote(text, span, diags).map(|text| Expr::PathLiteral { text, span });
+    }
+    if let NodeOrToken::Node(node) = element {
+        match node.kind() {
+            SyntaxKind::Array => {
+                return Some(Expr::Array(
+                    value_children(node)
+                        .filter_map(|el| literal_expression(&el, diags))
+                        .collect(),
+                    span,
+                ));
+            }
+            SyntaxKind::Dict => {
+                let mut fields = Vec::new();
+                for el in value_children(node) {
+                    if el.kind() == SyntaxKind::Colon {
+                        continue;
+                    }
+                    let Some(entry) = el.clone().into_node().and_then(Entry::cast) else {
+                        diags.push(Diagnostic::new(
+                            Phase::Semantic,
+                            el.text_range(),
+                            "dict members must be `key: value`",
+                        ));
+                        continue;
+                    };
+                    if let (Some(key), Some(value)) = (entry.key_token(), entry.value())
+                        && let (Some(key), Some(value)) =
+                            (key_text(&key, diags), literal_expression(&value, diags))
+                    {
+                        fields.push((key, value));
+                    }
+                }
+                return Some(Expr::Dict(fields, span));
+            }
+            SyntaxKind::Group => {
+                let children: Vec<_> = value_children(node).collect();
+                if let [child] = children.as_slice() {
+                    return literal_expression(child, diags);
+                }
+            }
+            _ => {}
+        }
+    }
+    syntax_value(element, diags).map(|value| Expr::Literal(value, span))
+}
 
 /// code CST → Value. The four string forms are resolved here (escapes, raw,
 /// multiline framing).
@@ -14,7 +80,9 @@ pub fn syntax_value(
 ) -> Option<Value> {
     match element {
         NodeOrToken::Token(token) => match token.kind() {
-            SyntaxKind::Str => unquote(token.text(), token.text_range(), diags).map(Value::Str),
+            SyntaxKind::Str => {
+                unquote(token.text(), token.text_range(), diags).map(|s| Value::Str(s.into()))
+            }
             SyntaxKind::Number => {
                 let text = token.text();
                 let parsed = if text.contains('.') {
@@ -101,7 +169,7 @@ pub fn syntax_value(
                         items.push(value);
                     }
                 }
-                Some(Value::Array(items))
+                Some(Value::Array(items.into()))
             }
             SyntaxKind::Dict => {
                 let mut dict = Dict::default();

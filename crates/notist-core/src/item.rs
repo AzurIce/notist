@@ -23,6 +23,7 @@ pub enum Ctor {
     Strong,
     Emph,
     Strike,
+    Underline,
     Math,
     Link,
     /// An unresolved resource embedding. `target` identifies the resource;
@@ -74,6 +75,7 @@ impl Ctor {
             Ctor::Strong => "strong",
             Ctor::Emph => "emph",
             Ctor::Strike => "strike",
+            Ctor::Underline => "underline",
             Ctor::Math => "math",
             Ctor::Link => "link",
             Ctor::Embed => "embed",
@@ -99,6 +101,7 @@ impl Ctor {
             "strong" => Ctor::Strong,
             "emph" => Ctor::Emph,
             "strike" => Ctor::Strike,
+            "underline" => Ctor::Underline,
             "math" => Ctor::Math,
             "link" => Ctor::Link,
             "embed" => Ctor::Embed,
@@ -149,6 +152,7 @@ impl Ctor {
             Ctor::Strong => "Strong",
             Ctor::Emph => "Emph",
             Ctor::Strike => "Strike",
+            Ctor::Underline => "Underline",
             Ctor::Math => "Math",
             Ctor::Link => "Link",
             Ctor::Embed => "Embed",
@@ -191,21 +195,88 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Float(#[cfg_attr(feature = "serde", serde(with = "float_serde"))] f64),
-    Str(String),
-    Array(Vec<Value>),
+    Str(crate::shared::Text),
+    Path(crate::resource::ResourcePath),
+    Array(crate::shared::Array),
     Dict(Dict),
     Some(Box<Value>),
     None,
+    Ok(Box<Value>),
+    Err(Box<Value>),
+    Data(crate::data::Data),
+    DataError(crate::data::DataError),
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Dict(Vec<(String, Value)>);
+pub use crate::shared::Dict;
+
+impl Value {
+    /// Resource identities must not be implicitly exposed as HTML or wire data.
+    pub fn contains_path(&self) -> bool {
+        self.metrics().path
+    }
+    pub fn contains_data_views(&self) -> bool {
+        self.metrics().data
+    }
+    pub fn logical_size(&self) -> usize {
+        self.metrics().bytes
+    }
+    /// Conservative owned container/string storage, excluding Data backings
+    /// accounted once per document by input caches and DataRetention.
+    pub fn resident_size(&self) -> usize {
+        self.metrics().resident
+    }
+    pub(crate) fn metrics(&self) -> crate::shared::Metrics {
+        use crate::shared::Metrics;
+        match self {
+            Self::Data(data) => Metrics {
+                bytes: data.logical_size(),
+                path: false,
+                data: true,
+                resident: 0,
+            },
+            Self::DataError(error) => Metrics {
+                bytes: error.logical_size(),
+                path: false,
+                data: true,
+                resident: error.logical_size().saturating_add(128),
+            },
+            Self::Str(text) => Metrics {
+                bytes: text.len(),
+                resident: text.len().saturating_add(16),
+                ..Default::default()
+            },
+            Self::Path(path) => Metrics {
+                bytes: path.root().len().saturating_add(path.path().len()),
+                path: true,
+                data: false,
+                resident: path
+                    .root()
+                    .len()
+                    .saturating_add(path.path().len())
+                    .saturating_add(32),
+            },
+            Self::Array(values) => values.metrics(),
+            Self::Dict(dict) => dict.metrics(),
+            Self::Some(value) | Self::Ok(value) | Self::Err(value) => {
+                let mut metrics = value.metrics();
+                metrics.bytes = metrics.bytes.saturating_add(8);
+                metrics.resident = metrics
+                    .resident
+                    .saturating_add(std::mem::size_of::<Value>());
+                metrics
+            }
+            _ => Metrics {
+                bytes: 8,
+                ..Default::default()
+            },
+        }
+    }
+}
 
 // Keep existing finite-float JSON while allowing every f64 to round-trip through
 // serializers (including JSON, whose number grammar excludes NaN/infinity).
 #[cfg(feature = "serde")]
-mod float_serde {
+pub(crate) mod float_serde {
     use serde::{Deserialize, Serialize};
     pub fn serialize<S: serde::Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
         if !serializer.is_human_readable() || value.is_finite() {
@@ -244,38 +315,6 @@ mod float_serde {
     }
 }
 
-impl Dict {
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
-        let key = key.into();
-        match self.0.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, v)) => *v = value,
-            None => self.0.push((key, value)),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v))
-    }
-
-    pub fn extend(&mut self, other: Dict) {
-        for (k, v) in other.0 {
-            self.insert(k, v);
-        }
-    }
-
-    pub fn take(&mut self) -> Dict {
-        std::mem::take(self)
-    }
-}
-
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -284,6 +323,9 @@ impl std::fmt::Display for Value {
             Value::Int(i) => write!(f, "{i}"),
             Value::Float(x) => write!(f, "{x}"),
             Value::Str(s) => write!(f, "{s:?}"),
+            Value::Path(path) => write!(f, "path({:?}, {:?})", path.root(), path.path()),
+            Value::Data(data) => write!(f, "{data:?}"),
+            Value::DataError(error) => write!(f, "{error:?}"),
             Value::Array(items) => {
                 write!(f, "(")?;
                 for (i, item) in items.iter().enumerate() {
@@ -306,6 +348,8 @@ impl std::fmt::Display for Value {
             }
             Value::Some(value) => write!(f, "some({value})"),
             Value::None => f.write_str("none"),
+            Value::Ok(value) => write!(f, "ok({value})"),
+            Value::Err(value) => write!(f, "err({value})"),
         }
     }
 }
@@ -387,7 +431,7 @@ impl Item {
     }
 
     pub fn text(text: String, span: TextRange) -> Self {
-        Item::new(Ctor::Text, span).with_field("text", Value::Str(text))
+        Item::new(Ctor::Text, span).with_field("text", Value::Str(text.into()))
     }
 
     pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
@@ -440,15 +484,5 @@ impl Item {
     /// The first descendant (self included) matching `pred`.
     pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
         self.descendants().find(|item| pred(item))
-    }
-}
-
-impl FromIterator<(String, Value)> for Dict {
-    fn from_iter<T: IntoIterator<Item = (String, Value)>>(iter: T) -> Self {
-        let mut d = Self::default();
-        for (k, v) in iter {
-            d.insert(k, v);
-        }
-        d
     }
 }

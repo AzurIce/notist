@@ -1,0 +1,112 @@
+= Data：JSON／TOML 与受检访问
+
+Data 是新增的内置静态类型，表示外部数据的共享只读节点视图；DataError 是专用的不可变错误类型。它们不是 Any，也不是普通 Dict。Data 不能隐式用于算术、字符串、Path 或正文，文件内容不会改变表达式的静态类型。
+
+JSON 和受支持的 TOML 共用 `Null | Bool | Int | Float | String | Array | Object` 节点树。子树访问只复制句柄，保留数据内路径和来源；句柄不携带继续读取资源的能力。对象成员保留输入顺序，数据判等忽略来源，但保留对象与数组顺序。
+
+== 读取与解析
+
+```notc
+fn read_json(source: Path) -> Result<Data, DataError>;
+fn read_toml(source: Path) -> Result<Data, DataError>;
+fn parse_json(text: String) -> Result<Data, DataError>;
+fn parse_toml(text: String) -> Result<Data, DataError>;
+```
+
+这些是标准库 Rust-native 签名，不是用户声明即可取得的实现。读取仅允许在 notc Code 中求值，复用 [Path 与读取授权](path.not)；独立 Markup 仍只调用内容函数并传入数据字面量。检查、Parse／Lower 与 LSP 不读取数据，comptime 不能读取资源。纯 parse_json／parse_toml 不读取资源，可参与 comptime。
+
+```notc
+fn title(source: Path) -> String {
+    let root = data_expect<Data>(read_json(source));
+    data_expect<String>(data_require<String>(root, "title"))
+}
+```
+
+== 显式目标类型
+
+```notc
+fn data_decode<T: Type>(data: Data) -> Result<T, DataError>;
+```
+
+T 必须在调用的 `<>` 中给出。允许 Data、Unit、Bool、Int、Float、String，以及这些类型递归组成的 `Array<E>`／`Option<E>`。
+
+- Data 返回同一节点的视图，不承诺它是对象。
+- Unit 只接收原始 Null；Option<E> 将 Null 解码为 none，将非 null 解码为 some(E)。这是解码边界规则，不是普通 notc 赋值或参数的隐式转换。
+- 标量严格匹配种类，不自动解析数字字符串，不做 Int→Float 或标量→String 转换。
+- Array<E> 递归验证每个元素；Array<Data> 可以保存异构原始数组的节点句柄，不复制整棵子树。
+- Dict、擦除的 Array、Never、Result、DataError、Path、ResourceTarget、Type、Content 均不是解码目标，嵌套使用也不允许。空数组或 null 不会放宽限制。
+
+解码结果保留调用指定的完整静态类型，不从缺少载荷的 none／ok／err 重新猜类型。Data 解码器不负责从普通 Code Dict 中恢复已擦除的任意名义类型。
+
+== 对象与数组
+
+```notc
+fn data_require<T: Type>(object: Data, key: String) -> Result<T, DataError>;
+fn data_get<T: Type>(object: Data, key: String) -> Result<Option<T>, DataError>;
+fn data_has(object: Data, key: String) -> Result<Bool, DataError>;
+fn data_keys(object: Data) -> Result<Array<String>, DataError>;
+fn data_require_index<T: Type>(array: Data, index: Int) -> Result<T, DataError>;
+fn data_index<T: Type>(array: Data, index: Int) -> Result<Option<T>, DataError>;
+fn data_len(array: Data) -> Result<Int, DataError>;
+fn data_kind(data: Data) -> String;
+```
+
+require 表示字段／索引必须存在，不表示自动 panic。get／index 只有缺失／越界返回 ok(none)，存在但类型错误仍返回 err；节点不是所需的 Object／Array 也返回 err。has 不解码值，但验证 Object 形状；keys 保持成员顺序。索引从 0 开始，负数是无效查询，不当作缺席。data_len 只接收数组；data_kind 返回节点种类名称，不产生类型流收窄。
+
+原始 Null、字段缺失、语言 Unit 和 Option 的 none 不混用：
+
+- `data_get<String>`：缺失→ok(none)，null→err，字符串 s→ok(some(s))。
+- `data_get<Option<String>>`：缺失→ok(none)，null→ok(some(none))，字符串 s→ok(some(some(s)))。
+- `data_require<Option<String>>`：字段必须存在，但允许 null。
+
+== 错误值与诊断升级
+
+```notc
+fn data_error_kind(error: DataError) -> String;
+fn data_error_message(error: DataError) -> String;
+fn data_error_path(error: DataError) -> String;
+fn data_fail(error: DataError) -> Never;
+fn data_expect<T: Type>(value: Result<T, DataError>) -> T;
+```
+
+data_expect 成功时返回 T，失败时执行 data_fail。也可用普通 Code 的 match 选择回退；被处理的 err 不留下构建错误诊断：
+
+```notc
+fn optional_title(source: Path) -> String {
+    match read_json(source) {
+        err(error) => "unavailable",
+        ok(root) => match data_get<String>(root, "title") {
+            err(error) => "invalid title",
+            ok(value) => match value { none => "untitled", some(title) => title },
+        },
+    }
+}
+```
+
+错误类别使用稳定字符串，如 not_found、access_denied、syntax、number_range、duplicate_key、unsupported_value、type_mismatch、missing_key、out_of_range、invalid_query。data_error_path 使用 RFC 6901 路径，根为空字符串。
+
+data_fail 保留实际数据文件范围、同版本源码和读取／调用展开链；无精确节点范围时使用数据文件的空范围。纯文本解析或来源已移除的 wire 视图降级到升级调用点，不把数据内部偏移套到 notc 源码上。普通 `panic(data_error_message(error))` 仍可用，但字符串化后不会恢复数据来源。
+
+文件缺失、拒绝访问、非文件、普通 IO、UTF-8／格式和受检访问错误返回 err。Pending 仍是宿主 NeedResources，不能提前发布 fallback；缺少读取能力、输入批次失效及文件／请求／缓存／解析／解码／求值的硬预算失败仍走宿主或求值失败通道，Result 不能捕获它们。
+
+== 格式政策
+
+- JSON 支持所有根种类；拒绝重复键和 UTF-8 BOM。整数语法必须在 i64 范围内，不能溢出后改作 Float；小数／指数语法按有限 f64 解码，不根据数值是否恰为整数改变类型。非有限或溢出结果拒绝。
+- TOML 根是 Object。支持 table、inline table、array、array of tables、string、bool、i64 和有限 f64。日期／时间／时区值及非有限浮点明确拒绝，不自动字符串化。TOML 解析库可能将某些格式／数字问题报告为 syntax。
+- 字符串不再解释为 Markup，也不构造 Path、Type 或 Content。
+
+== 缓存、预算与公开边界
+
+同一 Vault／ResourceSession 输入批次共享字节、成功／失败的解析结果，以及按不可变节点和完整目标类型缓存的投影。命中缓存前仍执行读取授权、请求额度、依赖登记与版本检查。换输入版本须创建新批次；PreparedInputs 重试同样使用新的不可变视图。没有缓存的 EvaluationInputs 保持相同语义。
+
+默认单数据输入和单逻辑值上限为 16 MiB，原始树／投影最多 250,000 个逻辑节点，数据深度 64；共享句柄按所代表的逻辑数据计费，不能按指针大小绕过限额。解析工作集默认 128 MiB；JSON 在分配前保守估算字符串／节点／索引空间，TOML 临时格式树按输入长度 64 倍估算，另计共享树，较大输入可能先触及工作集限额。批次数据缓存默认 128 MiB／4096 条目，命中不会取消调用自身预算。
+
+Rust 宿主可通过 Limits.value_bytes／Limits.data、Vault.with_evaluation_limits、with_input_limits 和 with_data_cache_limits 显式调整限额；这不是取消默认边界或增量引擎。缓存不进入文档引用环，来源绑定不保存在共享语义树中。
+
+逻辑子树大小与背后驻留的整份文档分开计费：求值／comptime 检查还在工作集额度内保留并核算所引用的解析文档和错误源码，不能通过收集许多小子树隐藏大文档。物化容器缓存计入字符串、容器及有界类型验证摘要的保守驻留额度，不把逻辑字节数当成真实内存大小。
+
+原始 Data／DataError 及包含它们的集合不能作为 `<>` 的值实参；它们的 Type 值可以作为类型实参。可在 comptime 解析／投影后传递普通标量或集合。
+
+Data／DataError 及其容器不能自动导出成 HTML 属性、组件参数或模板数据，须先显式选择并解码普通值。inspection 只展示有界摘要，不输出原始整库或私有来源。可信 IR wire 新增 Data／DataError 标签，Data 只序列化选中子树的有界前缀快照；不序列化内部节点编号、来源、授权或会话，反序列化后不会重读磁盘补来源。旧 Value 的 string／array／有序 Dict 和浮点协议不变。
+
+完整的单条记录例子见仓库 examples/structured-data 与 `cargo run --example structured_data`。这一切片不包含通用 for／内容序列生成、用户 record／schema、自动 site.data 迁移或整站页面枚举；既有 Shape、row／cell／item 角色和内容错误边界保持不变。

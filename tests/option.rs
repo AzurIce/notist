@@ -137,7 +137,7 @@ fn evaluate_text(source: &str) -> String {
         .root
         .descendants()
         .find_map(|item| match item.fields.get("text") {
-            Some(Value::Str(text)) => Some(text.clone()),
+            Some(Value::Str(text)) => Some(text.to_string()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("{source}: no text output"))

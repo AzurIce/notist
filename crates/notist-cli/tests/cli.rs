@@ -3,6 +3,120 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
+fn json_toml_html_export_is_static_and_data_diagnostics_use_data_text() {
+    let root = tempfile::tempdir().unwrap();
+    for (name, source) in [
+        ("doc.not", "#import \"view.notc\" as view;\n#view.show()"),
+        (
+            "view.notc",
+            "fn show()->InlineContent{let json=data_expect<Data>(read_json(p\"private.json\"));let config=data_expect<Data>(read_toml(p\"config.toml\"));let name=data_expect<String>(data_require<String>(json,\"name\"));let prefix=data_expect<String>(data_require<String>(config,\"title\"));[#text(text:prefix+name)]}",
+        ),
+        (
+            "private.json",
+            r#"{"name":"static <&>","private":"SECRET"}"#,
+        ),
+        ("config.toml", "title='title:'"),
+    ] {
+        std::fs::write(root.path().join(name), source).unwrap();
+    }
+    let out = tempfile::tempdir().unwrap();
+    let export = || {
+        Command::new(env!("CARGO_BIN_EXE_notist"))
+            .env("NO_COLOR", "1")
+            .current_dir(root.path())
+            .args(["html", "doc.not", "--out-dir"])
+            .arg(out.path())
+            .output()
+            .unwrap()
+    };
+    let success = export();
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let html = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+    assert!(html.contains("title:static &lt;&amp;&gt;"));
+    assert!(!html.contains("SECRET"));
+    assert!(!out.path().join("private.json").exists());
+    std::fs::write(root.path().join("private.json"), r#"{"name":false}"#).unwrap();
+    let failed = export();
+    assert!(!failed.status.success());
+    let error = String::from_utf8_lossy(&failed.stderr);
+    assert!(error.contains("private.json"));
+    assert!(error.contains("false"));
+    assert!(error.contains("/name"));
+    assert_eq!(
+        std::fs::read_to_string(out.path().join("index.html")).unwrap(),
+        html
+    );
+    std::fs::remove_file(root.path().join("private.json")).unwrap();
+    let checked = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["check", "doc.not"])
+        .output()
+        .unwrap();
+    assert!(checked.status.success());
+}
+
+#[test]
+fn text_reading_uses_host_inputs_while_check_is_static_and_html_does_not_publish_inputs() {
+    let root = tempfile::tempdir().unwrap();
+    for (path, source) in [
+        (
+            "doc.not",
+            "#import \"view.notc\" as view;\n#view.show(p\"./private.txt\")",
+        ),
+        (
+            "view.notc",
+            "fn show(source: Path) -> BlockContent { [ #text(text: read_text(source)) ] }",
+        ),
+        ("private.txt", "read body <&>"),
+    ] {
+        std::fs::write(root.path().join(path), source).unwrap();
+    }
+    let output = tempfile::tempdir().unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["html", "doc.not", "--out-dir"])
+        .arg(output.path())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let html = std::fs::read_to_string(output.path().join("index.html")).unwrap();
+    assert!(html.contains("read body &lt;&amp;&gt;"));
+    assert!(!html.contains("private.txt"));
+    assert!(!output.path().join("_notist/resources/private.txt").exists());
+    std::fs::remove_file(root.path().join("private.txt")).unwrap();
+    let checked = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["check", "doc.not"])
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    let failed = Command::new(env!("CARGO_BIN_EXE_notist"))
+        .current_dir(root.path())
+        .args(["html", "doc.not", "--out-dir"])
+        .arg(output.path())
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("resource not found"));
+    assert_eq!(
+        std::fs::read_to_string(output.path().join("index.html")).unwrap(),
+        html
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn configured_command_extensions_run_through_the_cli() {
     let root = tempfile::tempdir().unwrap();
@@ -167,6 +281,106 @@ fn html_command_publishes_used_components_and_relative_assets() {
     assert_eq!(html.matches(&format!("<{katex_tag} ")).count(), 1);
     assert_eq!(html.matches(&format!("<{typst_tag} ")).count(), 2);
     assert_eq!(registrations.matches(&panel_tag).count(), 1);
+}
+
+#[test]
+fn html_export_publishes_typed_local_embeds_but_not_remote_or_unused_resources() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("pages")).unwrap();
+    std::fs::create_dir_all(root.path().join("views")).unwrap();
+    std::fs::write(root.path().join("Notist.toml"), "").unwrap();
+    std::fs::write(
+        root.path().join("views/lib.notc"),
+        r#"fn image(target: Path = p"./default.svg") -> InlineContent { [#embed(target)] }"#,
+    )
+    .unwrap();
+    std::fs::write(root.path().join("views/default.svg"), "default image").unwrap();
+    std::fs::write(root.path().join("pages/a?b#c%20.svg"), "caller image").unwrap();
+    std::fs::write(root.path().join("pages/unused.svg"), "not requested").unwrap();
+    for extension in ["not", "md"] {
+        let document = format!("pages/virtual.{extension}");
+        std::fs::write(root.path().join(&document), r#"#import "../views/lib.notc" as view;
+#view.image()
+
+#embed(p"./a?b#c%20.svg", query: "v=1&raw=2", fragment: "one") ![Legacy](a%3Fb%23c%2520.svg#two) #embed("https://cdn.test/a.svg#remote")"#).unwrap();
+        let output = root.path().join(format!("public-{extension}"));
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root.path())
+            .args(["html", &document, "--out-dir"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let html = std::fs::read_to_string(output.join("index.html")).unwrap();
+        assert!(
+            html.contains("href=\"_notist/resources/views/default.svg\""),
+            "{html}"
+        );
+        assert!(
+            html.contains("href=\"_notist/resources/pages/a%3Fb%23c%2520.svg?v=1&amp;raw=2#one\""),
+            "{html}"
+        );
+        assert!(html.contains("href=\"_notist/resources/pages/a%3Fb%23c%2520.svg#two\""));
+        assert!(html.contains("href=\"https://cdn.test/a.svg#remote\""));
+        assert_eq!(
+            std::fs::read(output.join("_notist/resources/pages/a?b#c%20.svg")).unwrap(),
+            b"caller image"
+        );
+        assert_eq!(
+            std::fs::read(output.join("_notist/resources/views/default.svg")).unwrap(),
+            b"default image"
+        );
+        assert!(!output.join("_notist/resources/pages/unused.svg").exists());
+        assert!(!output.join("_notist/resources/views/lib.notc").exists());
+        assert!(!html.contains(&root.path().to_string_lossy().to_string()));
+        // A missing explicit resource must not replace the previous publication.
+        std::fs::write(root.path().join(&document), r#"#embed(p"./missing.svg")"#).unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root.path())
+            .args(["html", &document, "--out-dir"])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert_eq!(
+            std::fs::read_to_string(output.join("index.html")).unwrap(),
+            html
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn html_export_does_not_copy_embed_symlinks_or_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("Notist.toml"), "").unwrap();
+    std::fs::write(outside.path().join("private.svg"), "not authorized").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("private.svg"),
+        root.path().join("symlink.svg"),
+    )
+    .unwrap();
+    std::fs::create_dir(root.path().join("images")).unwrap();
+    std::fs::write(root.path().join("images/private.svg"), "not requested").unwrap();
+    for target in ["symlink.svg", "images"] {
+        std::fs::write(
+            root.path().join("doc.not"),
+            format!("#embed(p\"./{target}\")"),
+        )
+        .unwrap();
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root.path())
+            .args(["html", "doc.not", "--out-dir", "public"])
+            .output()
+            .unwrap();
+        assert!(!result.status.success(), "{target}");
+        assert!(!root.path().join("public").exists());
+    }
 }
 
 #[test]

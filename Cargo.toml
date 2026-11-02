@@ -28,6 +28,12 @@ serde = ["notist-core/serde"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cap-std = "4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 insta = "1"
 tempfile = "3"

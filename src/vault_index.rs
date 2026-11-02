@@ -89,14 +89,45 @@ pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Check local document and embed references against the logical Vault root.
-/// This requires no resource reads; module dependencies are not content references.
+/// Check bound embed identities against the Vault root, without resource reads.
+pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
+    let source = normalize(&root.join(path)).to_string_lossy().into_owned();
+    crate::embed::targets(item)
+        .filter_map(|node| {
+            let Some(Value::Path(target)) = node.fields.get("target") else {
+                return None;
+            };
+            if Path::new(&target.logical_path()).starts_with(root) {
+                return None;
+            }
+            let mut diagnostic = Diagnostic::new(
+                Phase::Semantic,
+                node.span,
+                format!(
+                    "local embedded resource is outside Vault root `{}`",
+                    root.display()
+                ),
+            );
+            diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
+            diagnostic.source = node
+                .origin
+                .as_ref()
+                .map(|origin| origin.source.clone())
+                .or_else(|| Some(source.clone()));
+            Some(diagnostic)
+        })
+        .collect()
+}
+
+/// Source-level link checks retain their existing String rules; embeds use their
+/// bound identities. Module dependencies are not content references.
 pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
     let path = normalize(&root.join(path));
     let file_dir = path.parent().unwrap_or(root);
     let source = path.to_string_lossy().into_owned();
-    item.descendants()
-        .filter(|node| matches!(node.ctor, Ctor::Link | Ctor::Embed))
+    let mut diagnostics: Vec<_> = item
+        .descendants()
+        .filter(|node| node.ctor == Ctor::Link)
         .filter_map(|node| {
             let Some(Value::Str(target)) = node.fields.get("target") else {
                 return None;
@@ -118,7 +149,9 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
                 _ => None,
             }
         })
-        .collect()
+        .collect();
+    diagnostics.extend(check_embed_paths(root, &path, item));
+    diagnostics
 }
 
 /// Same-document link checks, shared by single-file checks and the vault.

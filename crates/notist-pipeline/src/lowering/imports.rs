@@ -72,7 +72,7 @@ pub fn lower_imports(
                     .alias()
                     .map(|t| t.text().to_owned())
                     .unwrap_or_else(|| {
-                        std::path::Path::new(&path)
+                        std::path::Path::new(path.as_str())
                             .file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or_default()
@@ -89,7 +89,7 @@ pub fn lower_imports(
                 ImportKind::Module { alias }
             };
             Some(Import {
-                path,
+                path: path.to_string(),
                 kind,
                 span: decl.range(),
             })

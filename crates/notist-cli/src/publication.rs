@@ -1,25 +1,25 @@
 //! Filesystem resources and safe publication shared by HTML and books.
 use notist::{
-    FsResources, Resources,
+    FsResources, InputError, InputRead, Resources,
     publication::Error,
-    resources::{ResourceError, ResourceKind, normalize},
+    resources::{ResourceError, ResourceKind, ResourceReader, ResourceRevision, normalize},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 pub(crate) struct Files {
     base: FsResources,
-    observed: Mutex<BTreeSet<PathBuf>>,
+    observed: Arc<Mutex<BTreeSet<PathBuf>>>,
     configuration: Option<(PathBuf, Vec<u8>)>,
 }
 impl Files {
     pub fn new(root: &Path) -> Self {
         Self {
             base: FsResources::new(root),
-            observed: Mutex::default(),
+            observed: Arc::default(),
             configuration: None,
         }
     }
@@ -87,6 +87,50 @@ impl Resources for Files {
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
         self.base.entries(&self.inspect(path)?)
+    }
+    fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
+        let root = self.resolve(root);
+        Ok(Arc::new(ObservedReader {
+            base: self.base.read_root(&root)?,
+            root,
+            observed: self.observed.clone(),
+            configuration: self.configuration.clone(),
+        }))
+    }
+}
+
+struct ObservedReader {
+    root: PathBuf,
+    base: Arc<dyn ResourceReader>,
+    observed: Arc<Mutex<BTreeSet<PathBuf>>>,
+    configuration: Option<(PathBuf, Vec<u8>)>,
+}
+impl ResourceReader for ObservedReader {
+    fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
+        let absolute = self.root.join(path);
+        self.observed.lock().unwrap().insert(absolute.clone());
+        if let Some((config, source)) = &self.configuration
+            && *config == absolute
+        {
+            return if source.len() <= limit {
+                InputRead::Ready(Arc::from(source.as_slice()))
+            } else {
+                InputRead::Failed(InputError::TooLarge)
+            };
+        }
+        self.base.read_bounded(path, limit)
+    }
+    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
+        let absolute = self.root.join(path);
+        self.observed.lock().unwrap().insert(absolute.clone());
+        if self
+            .configuration
+            .as_ref()
+            .is_some_and(|(config, _)| *config == absolute)
+        {
+            return Ok(None);
+        }
+        self.base.revision(path)
     }
 }
 

@@ -88,10 +88,12 @@ fn presentation_value(value: &Value) -> serde_json::Value {
     use serde_json::{Value as Json, json};
     match value {
         Value::Unit | Value::None => Json::Null,
+        // Logical resource identities are not public template values or URLs.
+        Value::Path(_) | Value::Data(_) | Value::DataError(_) => Json::Null,
         Value::Bool(value) => json!(value),
         Value::Int(value) => json!(value),
         Value::Float(value) => json!(value),
-        Value::Str(value) => json!(value),
+        Value::Str(value) => json!(value.as_str()),
         Value::Array(values) => Json::Array(values.iter().map(presentation_value).collect()),
         Value::Dict(values) => Json::Object(
             values
@@ -100,6 +102,8 @@ fn presentation_value(value: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::Some(value) => presentation_value(value),
+        Value::Ok(value) => json!({"ok":presentation_value(value)}),
+        Value::Err(value) => json!({"err":presentation_value(value)}),
     }
 }
 
@@ -308,7 +312,7 @@ fn build_inner<R: Resources>(
     }
     let mut errors = vec![];
     let summary = if let Some(summary_path) = summary_path {
-        let source = vault.resources().source(&summary_path)?;
+        let source = vault.source(&summary_path)?;
         let analysis = vault.analyze(&summary_path, &source)?;
         append(
             &mut errors,
@@ -367,8 +371,15 @@ fn build_inner<R: Resources>(
     let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
-        let source = vault.resources().source(&route.source)?;
-        let analysis = vault.analyze(&route.source, &source)?;
+        let source = vault.source(&route.source)?;
+        // A mounted document has an explicitly declared logical resource root.
+        // This binds its Path literals without granting access outside that root.
+        let resource_root = mounts
+            .roots()
+            .find(|(root, _)| route.source.starts_with(root))
+            .expect("selected document belongs to the Vault or a mount")
+            .0;
+        let analysis = vault.analyze_with_resource_root(&route.source, &source, resource_root)?;
         // Publication checks the evaluated references below. Defer the Vault's
         // source-level boundary checks so hyperlinks can warn and retain URLs.
         append(
@@ -396,7 +407,7 @@ fn build_inner<R: Resources>(
             &route.source,
             &source,
             &evaluation.diagnostics,
-            analysis.sources(),
+            &evaluation.sources,
         );
         let mut content = evaluation.root;
         let fallback = if route.url == "/" {
@@ -410,8 +421,15 @@ fn build_inner<R: Resources>(
             source: analysis.sources()[&route.source.to_string_lossy().into_owned()].clone(),
             root: content,
             outline,
-            sources: analysis.sources().clone(),
+            sources: evaluation.sources,
         });
+    }
+    for page in &prepared {
+        for (key, value) in page.root.attrs.iter() {
+            if value.contains_data_views() {
+                errors.push(content_diagnostic(page, &page.root, format!("Data or DataError in template attribute `{key}` must be decoded to ordinary values")));
+            }
+        }
     }
     if recover {
         let (local, fatal): (Vec<_>, Vec<_>) =
@@ -449,14 +467,34 @@ fn build_inner<R: Resources>(
     };
     for (page, metadata) in prepared.iter().zip(&pages) {
         let mut resolved = BTreeMap::new();
-        for node in page.root.descendants().filter(|node| {
-            matches!(node.ctor, Ctor::Link | Ctor::Embed)
-                && !matches!(node.evaluation, Some(EvaluationState::Error(_)))
-        }) {
-            let Some(Value::Str(value)) = node.fields.get("target") else {
-                continue;
+        let mut resource_urls = BTreeMap::new();
+        let links = page.root.descendants().filter(|node| {
+            node.ctor == Ctor::Link && !matches!(node.evaluation, Some(EvaluationState::Error(_)))
+        });
+        for node in links.chain(notist::embed::targets(&page.root)) {
+            let resource = match node.fields.get("target") {
+                Some(Value::Path(path)) if notist::embed::is_embed(node) => Some(path),
+                _ => None,
             };
-            match routes::target(&page.route.source, value) {
+            let value = match node.fields.get("target") {
+                Some(Value::Str(value)) => value.as_str(),
+                Some(Value::Path(path)) if resource.is_some() => path.path(),
+                _ => continue,
+            };
+            let target = if let Some(path) = resource {
+                Ok(routes::Target::Local {
+                    path: PathBuf::from(path.logical_path()),
+                    query: String::new(),
+                    fragment: notist::embed::string(&node.fields, "fragment").map(str::to_owned),
+                })
+            } else if notist::embed::is_embed(node) {
+                // URL embeds do not request local files. Unsafe URLs remain
+                // visible to the renderer's existing URL safety diagnostics.
+                continue;
+            } else {
+                routes::target(&page.route.source, value)
+            };
+            match target {
                 Ok(routes::Target::External) => {}
                 Err(message) => errors.push(content_diagnostic(page, node, message)),
                 Ok(routes::Target::Local {
@@ -563,6 +601,10 @@ fn build_inner<R: Resources>(
                             false,
                         )
                     };
+                    if let Some(resource) = resource {
+                        resource_urls.insert(resource.clone(), url);
+                        continue;
+                    }
                     url.push_str(&query);
                     if let Some(anchor) = fragment {
                         url.push('#');
@@ -571,7 +613,7 @@ fn build_inner<R: Resources>(
                     if url.is_empty() {
                         url.push_str("./");
                     }
-                    resolved.insert(value.clone(), url);
+                    resolved.insert(value.to_owned(), url);
                 }
             }
         }
@@ -580,7 +622,8 @@ fn build_inner<R: Resources>(
         let rendered = Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
-            .with_embed_renderer(|item| embeds::image(item, &resolved))
+            .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
+            .with_embed_renderer(|item| embeds::image(item, &resource_urls))
             .render_with_diagnostics(&page.root);
         append(
             &mut errors,
@@ -622,6 +665,7 @@ fn build_inner<R: Resources>(
     let mut site = finish(assets, layout.ordered_pages(pages))?;
     site.diagnostics = recovered;
     site.warnings = warnings;
+    vault.validate_inputs()?;
     Ok(site)
 }
 
@@ -640,5 +684,22 @@ impl From<publication::Error> for Error {
             publication::Error::Message(message) => Self::Message(message),
             publication::Error::Resource(error) => Self::Resource(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn result_variants_survive_template_projection() {
+        let value = Value::Ok(Box::new(Value::Err(Box::new(Value::Str("bad".into())))));
+        assert_eq!(
+            presentation_value(&value),
+            serde_json::json!({"ok":{"err":"bad"}})
+        );
+        let path = notist::ResourcePath::resolve("/private", "doc.not", "data.txt").unwrap();
+        let value = Value::Err(Box::new(Value::Path(path)));
+        assert_eq!(presentation_value(&value), serde_json::json!({"err":null}));
     }
 }

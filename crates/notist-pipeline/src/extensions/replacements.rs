@@ -45,6 +45,10 @@ fn normalized(t: &Type, d: &FunctionDef) -> Type {
                 .unwrap_or_else(|| n.clone()),
         ),
         Type::Array(t) => Type::Array(t.as_ref().map(|t| Box::new(normalized(t, d)))),
+        Type::Option(t) => Type::Option(Box::new(normalized(t, d))),
+        Type::Result(ok, err) => {
+            Type::Result(Box::new(normalized(ok, d)), Box::new(normalized(err, d)))
+        }
         _ => t.clone(),
     }
 }

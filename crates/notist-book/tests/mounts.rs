@@ -25,6 +25,77 @@ fn html(site: &BuildOutput, path: &str) -> String {
 }
 
 #[test]
+fn publication_mounts_do_not_grant_text_reading_and_text_grants_do_not_publish_files() {
+    let files = resources(&[
+        ("README.not", "= Home"),
+        (
+            "../art/README.not",
+            "= Art\n\n#import \"view.notc\" as view;\n#view.show(p\"./private.txt\")",
+        ),
+        (
+            "../art/view.notc",
+            "fn show(source: Path) -> BlockContent { [ #text(text: read_text(source)) ] }",
+        ),
+        ("../art/private.txt", "mounted private input"),
+    ]);
+    let failure = build(&mut Vault::new(files.clone()), &config())
+        .unwrap_err()
+        .to_string();
+    assert!(failure.contains("access denied"), "{failure}");
+    let mut vault = Vault::new(files).with_read_roots(["/repo/docs".into(), "/repo/art".into()]);
+    let site = build(&mut vault, &config()).unwrap();
+    assert!(html(&site, "art/index.html").contains("mounted private input"));
+    assert!(!site.files.contains_key(Path::new("art/private.txt")));
+}
+
+#[test]
+fn typed_and_legacy_embed_identities_still_require_mount_authorization() {
+    let files = resources(&[
+        (
+            "README.not",
+            r#"= Home
+
+#embed(p"/art/a?b#c%.svg", fragment: "typed") ![Legacy](../art/a%3Fb%23c%25.svg#legacy)"#,
+        ),
+        ("../art/a?b#c%.svg", "mounted image"),
+    ]);
+    let site = build(&mut Vault::new(files.clone()), &config()).unwrap();
+    let output = html(&site, "index.html");
+    assert!(
+        output.contains("src=\"art/a%3Fb%23c%25.svg#typed\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("src=\"art/a%3Fb%23c%25.svg#legacy\""),
+        "{output}"
+    );
+    assert_eq!(site.files[Path::new("art/a?b#c%.svg")], b"mounted image");
+    assert!(build(&mut Vault::new(files), &BookConfig::new("../public")).is_err());
+}
+
+#[test]
+fn mounted_documents_bind_path_literals_under_the_declared_mount_root() {
+    let mut vault = Vault::new(resources(&[
+        ("README.not", "= Home"),
+        (
+            "../art/models/README.not",
+            r#"= Model
+
+#embed(p"./a?b#c%.svg", fragment: "one") #embed(p"/models/a?b#c%.svg", fragment: "two")"#,
+        ),
+        ("../art/models/a?b#c%.svg", "mounted image"),
+    ]));
+    let site = build(&mut vault, &config()).unwrap();
+    let output = html(&site, "art/models/index.html");
+    assert!(output.contains("src=\"a%3Fb%23c%25.svg#one\""), "{output}");
+    assert!(output.contains("src=\"a%3Fb%23c%25.svg#two\""), "{output}");
+    assert_eq!(
+        site.files[Path::new("art/models/a?b#c%.svg")],
+        b"mounted image"
+    );
+}
+
+#[test]
 fn mounted_pages_resolve_real_and_mounted_links_and_copy_only_used_resources() {
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&[

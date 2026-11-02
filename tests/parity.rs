@@ -38,6 +38,20 @@ fn equal(not: &str, md: &str) {
 }
 
 #[test]
+fn wikilinks_share_native_link_semantics() {
+    for (not, md) in [
+        ("[[page.not]]", "[[page.not]]"),
+        ("[[ page.not ]]", "[[ page.not ]]"),
+        ("[[目录/页.md#节|显示文本]]", "[[目录/页.md#节|显示文本]]"),
+        ("[[page.not|*粗体*]]", "[[page.not|**粗体**]]"),
+        ("[[page.not|]]", "[[page.not|]]"),
+        ("[[a\\!b&copy;.not]]", "[[a\\!b&copy;.not]]"),
+    ] {
+        equal(not, md);
+    }
+}
+
+#[test]
 fn lists_share_block_content_across_sugar_functions_and_frontends() {
     for (not, md) in [
         ("- xxx\n  continued\n", "- xxx\n  continued\n"),

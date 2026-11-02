@@ -1,0 +1,16 @@
+fn item(source: Path, id: String, config: Path = p"./private/config.toml") -> BlockContent {
+    let items = data_expect<Data>(read_json(source));
+    let row = data_expect<Data>(data_require<Data>(items, id));
+    let name = data_expect<String>(data_require<String>(row, "name"));
+    let description = match data_expect<Option<String>>(data_get<String>(row, "description")) {
+        some(value) => value,
+        none => "",
+    };
+    let settings = data_expect<Data>(read_toml(config));
+    let prefix = data_expect<String>(data_require<String>(settings, "title"));
+    [
+#heading<2>[#text(text: prefix + name)]
+
+#text(text: description)
+    ]
+}

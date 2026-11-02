@@ -2,10 +2,9 @@
 use std::any::Any;
 use std::fmt::Debug;
 
-use crate::annotation::Annotation;
+use crate::annotation::{Annotation, LiteralDict};
 use crate::diag::Diagnostic;
 use crate::expr::Expr;
-use crate::item::Dict;
 
 /// Optional parse-tree capture for tools; ordinary compilation retains only IR₁.
 #[derive(Debug, Default, Clone, Copy)]
@@ -33,7 +32,7 @@ pub struct FrontendOutput {
     pub forest: Vec<Expr>,
     /// Node annotations in source order; attached after shaping.
     pub annotations: Vec<Annotation>,
-    pub module_attrs: Dict,
+    pub module_attrs: LiteralDict,
     pub diagnostics: Vec<Diagnostic>,
     pub syntax: Option<Box<dyn FrontendSyntax>>,
 }

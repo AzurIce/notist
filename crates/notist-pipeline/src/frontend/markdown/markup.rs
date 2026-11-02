@@ -5,7 +5,6 @@ use std::{cell::RefCell, fmt};
 use notist_core::annotation::Annotation as CoreAnnotation;
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, Expr};
-use notist_core::item::Dict;
 use notist_syntax::code::ast::{Annotation, CodeCall};
 use notist_syntax::code::lexer::lex;
 use notist_syntax::tree::SyntaxKind;
@@ -286,7 +285,7 @@ pub(crate) enum Lowered {
         span: TextRange,
     },
     Annotation {
-        attrs: Dict,
+        attrs: notist_core::annotation::LiteralDict,
         module: bool,
         block: bool,
         span: TextRange,
@@ -393,8 +392,10 @@ impl Markup {
         );
         let result = if construct.annotation {
             let annotation = Annotation::cast(parse.syntax()).unwrap();
+            let mut attrs = crate::lowering::annotation_dict(&annotation, &mut local_diags);
+            attrs.map_spans(&mut |span| source.range(span));
             Lowered::Annotation {
-                attrs: crate::lowering::annotation_dict(&annotation, &mut local_diags),
+                attrs,
                 module: annotation.is_module(),
                 block: self.block,
                 span: source.range(annotation.range()),

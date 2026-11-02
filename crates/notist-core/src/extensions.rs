@@ -3,11 +3,11 @@
 //! The stages, Rust API and serialized models are provisional. Concrete use
 //! cases have not yet established their design; compatibility is not promised.
 use crate::{
-    annotation::Annotation,
+    annotation::{Annotation, LiteralDict},
     definitions::FunctionId,
     diag::{Diagnostic, Sources},
     expr::Expr,
-    item::{Dict, Item},
+    item::Item,
     registry::Registry,
 };
 use rowan::TextRange;
@@ -30,7 +30,7 @@ pub struct DocumentContext<'a> {
 pub struct LoweredDocument {
     pub forest: Vec<Expr>,
     pub annotations: Vec<Annotation>,
-    pub attrs: Dict,
+    pub attrs: LiteralDict,
 }
 
 /// One same-signature implementation selection, applied only during evaluation.

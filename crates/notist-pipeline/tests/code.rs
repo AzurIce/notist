@@ -13,6 +13,31 @@ fn context(src: &str) -> Context {
         .unwrap()
 }
 #[test]
+fn underline_is_available_to_code_content_functions() {
+    let c = context(
+        "fn underlined[children: InlineContent] -> InlineContent { [#underline[#children]] }",
+    );
+    let p = Pipeline::default();
+    let a = p.analyze("doc.not", "#self.underlined[内容]", &c).unwrap();
+    assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
+    let e = p.evaluate(&a, &c);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+    let underline = e
+        .root
+        .find(|i| i.ctor == notist_core::item::Ctor::Underline)
+        .unwrap();
+    assert_eq!(
+        underline.function_id(),
+        Some(FunctionId::new("notist", "underline"))
+    );
+    assert!(
+        underline
+            .descendants()
+            .any(|i| i.fields.get("text") == Some(&Value::Str("内容".into())))
+    );
+}
+
+#[test]
 fn code_bodies_are_opaque_until_evaluation() {
     let c = context("fn greet(name: String) -> InlineContent { [Hello #text(text: name)] }");
     let p = Pipeline::default();

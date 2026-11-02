@@ -1,0 +1,94 @@
+@!(title: "Path 字面量")
+
+= Path 字面量
+
+`p"./data.json"` 是 `Path` 类型的字面量，与普通字符串不同，没有隐式转换。
+创建 Path 只确定逻辑资源身份，不读取文件、不检查存在性，也不自动发布资源。
+
+```notc
+fn identity(source: Path) -> Path { source }
+
+fn view(source: Path = p"./default.json") -> BlockContent {
+    // Path 可以转发给其他 notc 函数；不会随调用位置重新解释。
+    let input = identity(source);
+    [静态正文]
+}
+```
+
+```not
+#import "../views/lib.notc" as view;
+#view.view(source: p"./data.json")
+```
+
+== 相对位置
+
+- 文档中写下的 Path 相对该文档所在目录。
+- 默认参数和函数体中的 Path 相对定义模块所在目录。
+- 以 `/` 开头的字面量相对宿主指定的逻辑资源根，不是操作系统根。
+- `.`、`..` 和多余的 `/` 按词法规范化；不访问文件系统，不跟随符号链接。
+- 不允许通过 `..` 逃出所属逻辑根。相同规范身份的 Path 可以用 `==` 和 `!=` 比较。
+
+Path 可以出现在参数、返回值、数组、字典和属性注解中；注解和默认值仍只接受字面量，不执行任意表达式。
+
+第一版只支持紧邻的单行 `p"..."`，复用普通字符串转义，不支持 raw、多行或插值形式。
+路径使用 `/`，不接受反斜杠、控制字符、空路径、URL 或盘符路径。`p` 本身不是保留字。
+
+== 编译与宿主边界
+
+解析和 lowering 仍只依赖文本。未绑定的 Path 字面量进入现有 Resolve，再根据源文件身份和逻辑根构造真正的 Path 值。
+没有额外的整树绑定阶段，也不会在实际读取时按被调用函数的位置重新解释路径。
+
+独立 Pipeline 默认使用虚拟逻辑根 `/`，不使用进程工作目录。宿主可以用 `Context.with_resource_root` 指定文档逻辑根，
+用 `Pipeline.compile_module_with_root` 指定模块逻辑根；Vault 使用其 Resources 的根。
+独立内容片段可通过 `Pipeline.analyze_content_literal_at` 明确提供来源，方言占位路径只用于选择语法。
+生成页面仍然只需提供逻辑路径和 Markup 源码，不必落盘。
+
+Path 不会自动变成 HTML 属性、组件参数或公开 URL；这类导出会产生诊断。IR／调试 JSON 使用显式的 Path 标记，保留资源身份。
+前端注解和根属性现在使用保留 Expr 的 LiteralDict，`before_check` 修改它们后仍进入正常的字面量检查。
+
+== 本地 embed
+
+`embed` 是显式的资源消费边界，接受 Path 或 URL 字符串：
+
+```not
+#embed(p"./images/chart.svg", description: "图表", fragment: "detail")
+#embed(p"./file?name#part%.svg", query: "raw=1", fragment: "detail")
+#embed("https://example.com/chart.svg#detail")
+```
+
+Path 中的 `?`、`#` 和 `%` 都属于文件名，不拆分也不做 URL 解码。query 是不带 `?` 的 URL 查询文本，不能包含控制字符或 `#`；fragment 是不带 `#` 的语义片段，发布时编码一次。
+
+Markup／Markdown 的 `![描述](image.svg?raw=1#detail)` 与旧的 `#embed("image.svg?raw=1#detail")` 继续可用。
+本地字符串在 embed 构造边界按该操作所在的源文件绑定为 Path；URL 路径和 fragment 百分号解码一次，query 保留 URL 文本。远程 URL 保持字符串，不作为本地资源。
+同一 query／fragment 不能同时在 URL 和显式参数中提供。转发已经绑定的 Path 不重新解析；转发普通本地字符串则在最终 embed 操作处解释，因此可复用函数推荐使用 Path 参数和 Path 默认值。
+
+`ResourceTarget` 是接受 Path 或 String 的输入类型，不是另一种运行期 Value，也不提供两者之间的转换。
+资源存在性、Vault／mount 授权和发布 URL 仍由宿主负责。独立 Renderer 需要 `with_resource_resolver` 选择本地资源的公开 URL；没有映射时诊断并省略链接，不直接输出 Path。
+
+link 仍接受 String，其目标分类与校验单独设计。
+
+== 读取文本
+
+`read_text(source: Path) -> String` 读取宿主提供的 UTF-8 字节。它是普通的 Rust-native 函数，与 Code 实现共用签名、实参绑定、实例化和返回类型检查；不属于内容 Ctor，也不查找浏览器组件。
+
+```notc
+fn from_file(source: Path = p"./intro.txt") -> BlockContent {
+    let body = read_text(source);
+    [ #text(text: body) ]
+}
+```
+
+```not
+#import "views/lib.notc" as view;
+#view.from_file(p"./private/intro.txt")
+```
+
+Markup 只能把 Path 传给 notc 内容函数，不能直接调用 read_text，或在实参、别名及编译期实参中隐藏读取。comptime 没有读取能力，通过 Code 包装函数间接调用也会失败。普通分析、check 和 LSP 不为检查函数体读取数据；未执行分支和未使用的内容不会触发读取。
+
+结果是普通 String，不会再次当作 Markup 解析；text 显式将其变成正文，HTML 正常转义。缺失、拒绝、目录、超限和非法 UTF-8 都在实际读取调用的位置诊断，并沿既有内容边界恢复。
+
+Vault 为一个输入批次持有共享 ResourceSession，默认显式允许项目根内的数据读取；外部模块、Book mounts 和发布 URL 不自动扩大授权。读取不调用 Assets，不复制私有输入，不为 Path 创建公开 URL。原生文件、MemoryResources、OverlayResources 与逻辑路径加源码的虚拟文档使用同一求值入口。
+
+独立 Pipeline 可使用 evaluate_with_inputs 接收宿主输入；不带 inputs 的 evaluate 仍可执行无读取的文档，实际读取时报告能力不可用。浏览器按 NeedResources 准备字节或明确失败，再以新视图重试，不发布部分结果。接口、预算与一致性规则见 [资源输入与求值](../designs/resource-inputs.not)。
+
+JSON 解码、语言级 Bytes、通用文件写入与完整增量构建不在本版范围。

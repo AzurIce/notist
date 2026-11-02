@@ -1,5 +1,5 @@
 //! Browser adapter. Native hosts can use PreparedInputs and Vault directly.
-use crate::{MemoryResources, PreparedInputs, RenderOptions, Vault, VaultError};
+use crate::{PreparedInputs, PreparedResources, RenderOptions, Vault, VaultError};
 use serde_json::{Value, json};
 
 /// Discover source imports or extension-local configuration imports without IO.
@@ -51,14 +51,14 @@ pub(crate) fn import_json(import: &crate::Import) -> Value {
     }
     data
 }
-fn prepare(inputs: &str) -> Result<Vault<MemoryResources>, Value> {
+fn prepare(inputs: &str) -> Result<Vault<PreparedResources>, Value> {
     serde_json::from_str::<PreparedInputs>(inputs)
         .map(PreparedInputs::into_vault)
         .map_err(|error| json!({"error":error.to_string()}))
 }
 
 /// Describe HTML components actually required by this document's evaluated tree.
-/// This stage uses only source inputs; the host subsequently probes these entries.
+/// This stage may request data inputs; after it completes the host probes entries.
 pub fn describe_prepared(path: &str, inputs: &str) -> String {
     if path.ends_with(".notc") {
         return json!({"functions": [], "diagnostics": []}).to_string();
@@ -68,14 +68,14 @@ pub fn describe_prepared(path: &str, inputs: &str) -> String {
         Err(error) => return error.to_string(),
     };
     let result = (|| -> Result<Value, VaultError> {
-        let source = crate::Resources::source(vault.resources(), std::path::Path::new(path))?;
+        let source = vault.source(path)?;
         let analysis = vault.analyze(path, &source)?;
         let evaluated = vault.evaluate(path, &analysis)?;
         let environment = vault.environment_for(path, &source)?;
         let functions: Vec<_> = notist_html::components::component_ids(&evaluated.root)
             .iter()
             .filter_map(|id| environment.context().registry().get(id))
-            .filter(|definition| !definition.code)
+            .filter(|definition| !definition.implementation.is_code())
             .map(|definition| {
                 json!({
                     "module": definition.id.module,
@@ -156,6 +156,20 @@ fn annotate_analysis(data: &mut Value, path: &str) {
     }
 }
 fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Evaluation) {
+    // Only texts actually used by diagnostics; a successful read never exposes
+    // its private data through the preview/inspection transport.
+    let sources: serde_json::Map<String, Value> = output
+        .diagnostics
+        .iter()
+        .filter_map(|d| d.source.as_ref())
+        .filter_map(|name| {
+            output
+                .sources
+                .get(name)
+                .map(|text| (name.clone(), json!(text.as_ref())))
+        })
+        .collect();
+    data["diagnostic_sources"] = Value::Object(sources);
     data["diagnostics"].as_array_mut().unwrap().extend(
         output
             .diagnostics
@@ -178,6 +192,9 @@ pub(crate) fn error_json(error: VaultError) -> Value {
     match error {
         VaultError::Environment(errors) => {
             json!({"diagnostics":errors.iter().map(|error|diagnostic_json(&error.path.to_string_lossy(),"environment",&error.diagnostic)).collect::<Vec<_>>()})
+        }
+        VaultError::NeedResources(paths) => {
+            json!({"need_resources": paths.iter().map(|path| json!({"root": path.root(), "path": path.path()})).collect::<Vec<_>>() })
         }
         error => json!({"error":error.to_string()}),
     }

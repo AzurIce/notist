@@ -2,7 +2,7 @@
 //! the shared content backend runs later in each concrete lexical environment.
 use super::{
     ContentLowering,
-    literals::{key_text, syntax_value},
+    literals::{key_text, literal_expression, syntax_value},
 };
 use notist_core::{
     diag::{Diagnostic, Phase},
@@ -69,7 +69,7 @@ pub fn expression(
 ) -> Option<Expr> {
     let span = el.text_range();
     let NodeOrToken::Node(node) = &el else {
-        return syntax_value(&el, diags).map(|v| Expr::Literal(v, span));
+        return literal_expression(&el, diags);
     };
     let parts = expressions(node);
     let child = |e: Element, d: &mut Vec<Diagnostic>| expression(e, parsed, frontend, d);

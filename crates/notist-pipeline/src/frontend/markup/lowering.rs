@@ -1,7 +1,7 @@
 use rowan::{NodeOrToken, TextRange, TextSize};
 
 use crate::lowering::{annotation_dict, call_header};
-use notist_core::annotation::{Annotation, AnnotationKind};
+use notist_core::annotation::{Annotation, AnnotationKind, LiteralDict};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_syntax::Parse;
 use notist_syntax::code::ast::Annotation as SyntaxAnnotation;
@@ -10,7 +10,7 @@ use notist_syntax::markup::ast::{Document, Embed, Heading, Link, List, ListItem,
 use notist_syntax::tree::{SyntaxKind, SyntaxNode, SyntaxToken};
 
 use notist_core::expr::{BodyFlavor, Expr};
-use notist_core::item::{Dict, Value};
+use notist_core::item::Value;
 
 fn tokens_text(tokens: &[SyntaxToken]) -> String {
     tokens
@@ -31,7 +31,7 @@ fn tokens_text(tokens: &[SyntaxToken]) -> String {
 pub fn lower_document(
     parsed: &Parse,
     diags: &mut Vec<Diagnostic>,
-) -> (Vec<Expr>, Dict, Vec<Annotation>) {
+) -> (Vec<Expr>, LiteralDict, Vec<Annotation>) {
     let document = Document::cast(parsed.syntax()).expect("native content has a Document root");
     let elements: Vec<_> = document.elements().collect();
     let mut annotations = Vec::new();
@@ -91,9 +91,9 @@ fn lower_blocks(
     parsed: &Parse,
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
-) -> (Vec<Expr>, Dict) {
+) -> (Vec<Expr>, LiteralDict) {
     let mut forest = Vec::new();
-    let mut module_attrs = Dict::default();
+    let mut module_attrs = LiteralDict::default();
     let mut seen_content = false;
     let mut run: Vec<NodeOrToken<SyntaxNode, SyntaxToken>> = Vec::new();
 
@@ -305,9 +305,9 @@ fn lower_raw_block(node: &SyntaxNode) -> Expr {
     };
     let mut expr = Expr::call("notist.raw", node.text_range())
         .with_category(notist_core::definitions::Type::BlockContent)
-        .with_literal_arg("text", Value::Str(text));
+        .with_literal_arg("text", Value::Str(text.into()));
     if !tag.is_empty() {
-        expr = expr.with_literal_arg("lang", Value::Str(tag));
+        expr = expr.with_literal_arg("lang", Value::Str(tag.into()));
     }
     expr
 }
@@ -532,7 +532,7 @@ impl TextRun {
 fn append_description(expr: &Expr, out: &mut String) {
     match expr {
         Expr::Literal(value, _) => out.push_str(&value.to_string()),
-        Expr::Ref { .. } | Expr::Member { .. } => {}
+        Expr::Ref { .. } | Expr::Member { .. } | Expr::PathLiteral { .. } => {}
         Expr::Content { forest, .. }
         | Expr::Fragment {
             children: forest, ..
@@ -642,7 +642,7 @@ fn lower_inline(
                         .map(|t| t.text())
                         .collect();
                     let expr = Expr::call("notist.raw", node.text_range())
-                        .with_literal_arg("text", Value::Str(text));
+                        .with_literal_arg("text", Value::Str(text.into()));
                     items.push(expr);
                     after_element = true;
                 }
@@ -680,7 +680,7 @@ fn lower_inline(
                     if block {
                         expr = expr.with_category(notist_core::definitions::Type::BlockContent);
                     }
-                    let expr = expr.with_literal_arg("text", Value::Str(text));
+                    let expr = expr.with_literal_arg("text", Value::Str(text.into()));
                     items.push(expr);
                     after_element = true;
                 }
@@ -715,10 +715,10 @@ fn lower_inline(
                         append_description(expr, &mut description);
                     }
                     let mut expr = Expr::call("notist.embed", embed.range())
-                        .with_literal_arg("target", Value::Str(target))
-                        .with_literal_arg("description", Value::Str(description));
+                        .with_literal_arg("target", Value::Str(target.into()))
+                        .with_literal_arg("description", Value::Str(description.into()));
                     if let Some(title) = title {
-                        expr = expr.with_literal_arg("title", Value::Str(title));
+                        expr = expr.with_literal_arg("title", Value::Str(title.into()));
                     }
                     items.push(expr);
                     after_element = true;
@@ -739,7 +739,7 @@ fn lower_inline(
                         )
                     };
                     let expr = Expr::call("notist.link", node.text_range())
-                        .with_literal_arg("target", Value::Str(target))
+                        .with_literal_arg("target", Value::Str(target.into()))
                         .with_children(children);
                     items.push(expr);
                     after_element = true;

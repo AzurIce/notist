@@ -78,7 +78,7 @@ fn name_of(key: &str) -> Option<Cow<'_, str>> {
 fn value_of(key: &str, value: &Value) -> Option<String> {
     if matches!(key, "class" | "tags") {
         return match value {
-            Value::Str(s) if key == "class" => Some(s.clone()),
+            Value::Str(s) if key == "class" => Some(s.to_string()),
             Value::Array(values) => Some(
                 values
                     .iter()
@@ -97,10 +97,10 @@ fn value_of(key: &str, value: &Value) -> Option<String> {
     }
     if matches!(key, "id" | "title" | "lang" | "dir") {
         return if let Value::Str(s) = value {
-            Some(s.clone())
+            Some(s.to_string())
         } else {
             None
         };
     }
-    Some(encode_parameter(value))
+    encode_parameter(value).ok()
 }

@@ -33,6 +33,46 @@ fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
 }
 
+#[test]
+fn generated_documents_share_text_inputs_and_source_versions_without_publication() {
+    #[derive(Debug)]
+    struct Pages;
+    impl SiteExtension for Pages {
+        fn name(&self) -> &str {
+            "text-pages"
+        }
+        fn prepare(&self, _: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
+            // Read a later-sorted virtual page and an edited on-disk page. All
+            // sources must be registered before the first page is evaluated.
+            input.documents.insert("a.not".into(), "#import \"../views/lib.notc\" as view;\n#view.show()\n\n#view.show(p\"./z.not\")\n\n#view.show(p\"./old.not\")".into());
+            input
+                .documents
+                .insert("z.not".into(), "virtual page text".into());
+            input
+                .documents
+                .insert("old.not".into(), "edited source text".into());
+            Ok(())
+        }
+    }
+    let mut resources = MemoryResources::new("/site");
+    resources.insert("content/old.not", "stale disk source");
+    resources.insert("views/lib.notc", "fn show(source: Path = p\"../private/input.txt\") -> BlockContent { [ #text(text: read_text(source)) ] }");
+    resources.insert("private/input.txt", "private body <&>");
+    let mut vault = Vault::new(resources);
+    let site = Builder::default()
+        .with_extension(Pages)
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    let output = html(&site, "a.html");
+    assert!(output.contains("private body &lt;&amp;&gt;"));
+    assert!(output.contains("virtual page text"));
+    assert!(output.contains("edited source text"));
+    assert!(!output.contains("stale disk source"));
+    assert!(!output.contains("input.txt"));
+    assert!(!site.files.contains_key(Path::new("private/input.txt")));
+    assert_eq!(vault.input_session().dependencies().len(), 3);
+}
+
 #[derive(Debug)]
 struct Generate;
 impl SiteExtension for Generate {
@@ -96,6 +136,50 @@ fn source_edits_use_normal_imports_routes_links_directories_and_template_data() 
     assert!(html(&original, "index.html").contains("Original"));
     assert!(original.files.contains_key(Path::new("removed.html")));
     assert!(!original.files.contains_key(Path::new("new/deep/page.html")));
+}
+
+#[test]
+fn generated_documents_resolve_typed_and_sugar_embeds_without_source_files() {
+    #[derive(Debug)]
+    struct Page;
+    impl SiteExtension for Page {
+        fn name(&self) -> &str {
+            "page"
+        }
+        fn prepare(&self, _: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
+            input.documents.insert(
+                "generated/deep/page.md".into(),
+                r#"# Generated
+
+#embed(p"../../image%20.svg", fragment: "one") ![Legacy](/image%2520.svg#two)"#
+                    .into(),
+            );
+            Ok(())
+        }
+    }
+    let mut resources = MemoryResources::new("/site");
+    resources.insert("content/image%20.svg", "image");
+    let mut vault = Vault::new(resources);
+    let site = Builder::default()
+        .with_extension(Page)
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    let output = html(&site, "generated/deep/page.html");
+    assert!(
+        output.contains("src=\"../../image%2520.svg#one\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("src=\"../../image%2520.svg#two\""),
+        "{output}"
+    );
+    assert!(
+        vault
+            .resources()
+            .kind(Path::new("content/generated/deep/page.md"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[derive(Debug)]

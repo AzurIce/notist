@@ -16,25 +16,34 @@
 //! The `notist-cli` crate provides the executable, static-page publication and
 //! language-server host. This library has no terminal or LSP dependencies.
 
+pub use notist_core::data::{
+    Data, DataCache, DataCacheStats, DataError, DataErrorKind, DataFormat, DataLimits,
+    ParsedDataCache,
+};
+pub use notist_core::shared::{Array, Text};
 pub use rowan::{TextRange, TextSize};
 
-pub use notist_core::annotation::{Annotation, AnnotationKind};
+pub use notist_core::annotation::{Annotation, AnnotationKind, LiteralDict};
 pub use notist_core::definitions::{
-    ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionInstance,
-    Import, ImportBinding, ImportKind, ImportMember, ParameterDef, ParameterMode, Type,
-    ValueConstraint,
+    ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionImpl,
+    FunctionInstance, Import, ImportBinding, ImportKind, ImportMember, NativeFunction,
+    ParameterDef, ParameterMode, Type, ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
 pub use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput, FrontendSyntax};
+pub use notist_core::inputs::{EvaluationInputs, InputError, InputRead};
 pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;
-pub use notist_core::{annotation, builtins, diag, dump, evaluation, expr, index, item, registry};
+pub use notist_core::resource::ResourcePath;
+pub use notist_core::{
+    annotation, builtins, diag, dump, embed, evaluation, expr, index, item, registry,
+};
 pub use notist_pipeline::frontend::{
     PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
 };
 pub use notist_pipeline::{
     Analysis, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context, Evaluation,
-    Limits, Lowered, Pipeline, UnsupportedFormat,
+    EvaluationOutcome, Limits, Lowered, Pipeline, UnsupportedFormat,
 };
 pub use notist_syntax as syntax;
 
@@ -42,7 +51,7 @@ pub mod cst_json;
 pub mod json;
 pub mod prepared;
 pub mod preview;
-pub use prepared::PreparedInputs;
+pub use prepared::{PreparedFailure, PreparedInputs, PreparedResources};
 #[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
 pub mod command_extension;
 pub mod environment;
@@ -51,7 +60,9 @@ pub mod stdio;
 pub use notist_core::extensions;
 pub mod publication;
 pub mod query;
+pub mod resource_session;
 pub mod resources;
+pub use resource_session::{InputLimits, ResourceSession};
 pub mod vault;
 pub mod vault_index;
 pub use environment::{Environment, ModuleSource, SourceDiagnostic};

@@ -119,6 +119,9 @@ impl<'a> ParserState<'a> {
             && !crate::code::lexer::string_closed(text)
         {
             Some("unclosed string")
+        } else if kind == SyntaxKind::PathLiteral && !crate::code::lexer::string_closed(&text[1..])
+        {
+            Some("unclosed path literal")
         } else {
             None
         };

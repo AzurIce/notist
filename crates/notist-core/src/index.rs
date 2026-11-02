@@ -20,7 +20,7 @@ impl Index {
         for node in item.descendants() {
             if let Some(Value::Str(id)) = node.attrs.get("id") {
                 use std::collections::hash_map::Entry;
-                match index.by_id.entry(id.clone()) {
+                match index.by_id.entry(id.to_string()) {
                     Entry::Vacant(entry) => {
                         entry.insert(node.span);
                     }
@@ -34,7 +34,11 @@ impl Index {
             if let Some(Value::Array(tags)) = node.attrs.get("tags") {
                 for tag in tags {
                     if let Value::Str(tag) = tag {
-                        index.by_tag.entry(tag.clone()).or_default().push(node.span);
+                        index
+                            .by_tag
+                            .entry(tag.to_string())
+                            .or_default()
+                            .push(node.span);
                     }
                 }
             }

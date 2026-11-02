@@ -56,7 +56,7 @@ pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
                     out.push('}');
                 }
                 out.push(']');
-                out.push_str(&format!(",\"code\":{},\"returns\":{},\"children_type\":{},\"comptime\":{}",function.code,type_json(&function.returns),function.children_type.as_ref().map(type_json).unwrap_or_default(),serde_json::json!(function.comptime.iter().map(|p|serde_json::json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>())));
+                out.push_str(&format!(",\"code\":{},\"returns\":{},\"children_type\":{},\"comptime\":{}",function.implementation.is_code(),type_json(&function.returns),function.children_type.as_ref().map(type_json).unwrap_or_default(),serde_json::json!(function.comptime.iter().map(|p|serde_json::json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>())));
                 out.push('}');
             }
             out.push_str("],\"diagnostics\":");
@@ -140,6 +140,9 @@ fn type_json(ty: &crate::Type) -> serde_json::Value {
     use serde_json::json;
     match ty {
         Type::Type => json!({"kind":"Type"}),
+        Type::Never => json!({"kind":"Never"}),
+        Type::Data => json!({"kind":"Data"}),
+        Type::DataError => json!({"kind":"DataError"}),
         Type::InlineContent => json!({"kind":"InlineContent"}),
         Type::BlockContent => json!({"kind":"BlockContent"}),
         Type::Parameter(name) => json!({"kind":"Parameter","name":name}),
@@ -148,11 +151,14 @@ fn type_json(ty: &crate::Type) -> serde_json::Value {
         Type::Int => json!({"kind":"Int"}),
         Type::Float => json!({"kind":"Float"}),
         Type::String => json!({"kind":"String"}),
+        Type::Path => json!({"kind":"Path"}),
+        Type::ResourceTarget => json!({"kind":"ResourceTarget"}),
         Type::Dict => json!({"kind":"Dict"}),
         Type::Array(element) => {
             json!({"kind":"Array", "element":element.as_ref().map(|element| type_json(element))})
         }
         Type::Option(element) => json!({"kind":"Option", "element":type_json(element)}),
+        Type::Result(ok, err) => json!({"kind":"Result", "ok":type_json(ok), "err":type_json(err)}),
     }
 }
 
@@ -506,6 +512,12 @@ fn write_expr(out: &mut String, expr: &Expr) {
             out.push_str(&format!(
                 "{{\"kind\":\"Literal\",\"start\":{start},\"end\":{end},\"label\":{}}}",
                 escape(&value.to_string())
+            ));
+        }
+        Expr::PathLiteral { text, .. } => {
+            out.push_str(&format!(
+                "{{\"kind\":\"PathLiteral\",\"start\":{start},\"end\":{end},\"label\":{}}}",
+                escape(text)
             ));
         }
         Expr::Member { base, name, .. } => {

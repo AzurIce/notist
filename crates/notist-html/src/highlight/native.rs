@@ -66,7 +66,7 @@ fn class(token: &SyntaxToken) -> Option<&'static str> {
     match token.kind() {
         K::Whitespace | K::Newline => return None,
         K::LineComment | K::BlockComment => return Some("z-comment"),
-        K::Str => return Some("z-string"),
+        K::Str | K::PathLiteral => return Some("z-string"),
         K::Number => return Some("z-constant z-numeric"),
         K::FnKeyword
         | K::ImportKeyword

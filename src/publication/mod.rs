@@ -53,11 +53,17 @@ impl Assets {
         }
     }
     pub fn generated(&mut self, path: PathBuf, bytes: Vec<u8>) -> Result<(), Error> {
-        if self
+        // Check exact/ancestor files, then the first possible descendant in the
+        // ordered map. A full scan here makes publishing N pages quadratic.
+        let ancestor_exists = path
+            .ancestors()
+            .any(|parent| self.files.contains_key(parent));
+        let descendant_exists = self
             .files
-            .keys()
-            .any(|previous| previous.starts_with(&path) || path.starts_with(previous))
-        {
+            .range(path.clone()..)
+            .next()
+            .is_some_and(|(previous, _)| previous.starts_with(&path));
+        if ancestor_exists || descendant_exists {
             return Err(Error::Message(format!(
                 "output collision at `{}`",
                 path.display()
@@ -168,5 +174,41 @@ impl Assets {
             registrations.push_str(&format!("import Component{index} from {url};\n{{ const tag = {tag}; const existing = customElements.get(tag); if (existing && existing !== Component{index}) throw new Error(`Conflicting Notist component: ${{tag}}`); if (!existing) customElements.define(tag, Component{index}); }}\n"));
         }
         Ok(registrations)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Assets;
+
+    #[test]
+    fn generated_paths_reject_exact_and_ancestor_collisions_in_both_orders() {
+        for (first, second) in [
+            ("items/a.html", "items/a.html"),
+            ("items", "items/a.html"),
+            ("items/a.html", "items"),
+            ("items/deep/a.html", "items"),
+        ] {
+            let mut assets = Assets::new("dist".into());
+            assets.generated(first.into(), vec![]).unwrap();
+            assert!(
+                assets.generated(second.into(), vec![]).is_err(),
+                "{first} / {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_paths_compare_components_not_string_prefixes() {
+        let mut assets = Assets::new("dist".into());
+        for path in [
+            "items/a.html",
+            "items/a.html-more",
+            "items-other/a.html",
+            "items/b.html",
+        ] {
+            assets.generated(path.into(), vec![]).unwrap();
+        }
+        assert_eq!(assets.finish().unwrap().len(), 5);
     }
 }

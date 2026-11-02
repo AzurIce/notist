@@ -2,6 +2,24 @@ use notist::{Ctor, Item, Pipeline, Value};
 use notist_html::{Renderer, escape_attribute, escape_text, is_safe_url, render};
 
 #[test]
+fn underline_function_renders_in_both_frontends_without_changing_emphasis() {
+    for extension in ["not", "md"] {
+        let root = analyze(
+            extension,
+            "@(id: \"underlined\")#underline[文字 & #strong[粗体]] _强调_",
+        );
+        let before = root.clone();
+        let output = Renderer::new().render_with_diagnostics(&root);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert_eq!(
+            output.html,
+            "<p><span id=\"underlined\" style=\"text-decoration: underline\">文字 &amp; <strong>粗体</strong></span> <em>强调</em></p>"
+        );
+        assert_eq!(root, before);
+    }
+}
+
+#[test]
 fn code_renderer_preserves_the_shell_and_escapes_fallbacks() {
     let root = analyze(
         "md",
@@ -52,8 +70,10 @@ fn publication_url_resolver_preserves_url_safety_and_source_tree() {
     let output = Renderer::new()
         .with_url_resolver(|_, url| match url {
             "guide.not" => Some("../guide/".into()),
-            "picture.svg" => Some("../media/picture.svg".into()),
             _ => None,
+        })
+        .with_resource_resolver(|_, path| {
+            (path.path() == "picture.svg").then(|| "../media/picture.svg".into())
         })
         .render_with_diagnostics(&root);
     assert!(output.diagnostics.is_empty());
@@ -62,6 +82,7 @@ fn publication_url_resolver_preserves_url_safety_and_source_tree() {
     assert_eq!(root, before);
     let output = Renderer::new()
         .with_url_resolver(|_, _| Some("javascript:bad".into()))
+        .with_resource_resolver(|_, _| Some("javascript:bad".into()))
         .render_with_diagnostics(&root);
     assert_eq!(output.diagnostics.len(), 2);
     assert!(!output.html.contains("href="));
@@ -92,9 +113,11 @@ fn analyze(extension: &str, src: &str) -> Item {
 fn both_frontends_render_the_same_complete_document() {
     let not = "= Title\n\n*bold* _italic_ ~removed~ `a < b` $x$ [label](https://example.com/?a=1&b=2)\n\n- first\n\n  second\n  + nested\n\n---\n\n#callout(kind: \"quote\")[ quoted ]\n\n![asset](file.pdf \"title\")\n\n```rust\na < b\n```\n";
     let md = "# Title\n\n**bold** *italic* ~~removed~~ `a < b` $x$ [label](https://example.com/?a=1&b=2)\n\n- first\n\n  second\n  1. nested\n\n---\n\n> quoted\n\n![asset](file.pdf \"title\")\n\n```rust\na < b\n```\n";
-    let result = Renderer::new().render_with_diagnostics(&analyze("not", not));
+    let renderer = Renderer::new()
+        .with_resource_resolver(|_, path| (path.path() == "file.pdf").then(|| "file.pdf".into()));
+    let result = renderer.render_with_diagnostics(&analyze("not", not));
     assert!(result.diagnostics.is_empty());
-    assert_eq!(result.html, render(&analyze("md", md)));
+    assert_eq!(result.html, renderer.render(&analyze("md", md)));
     assert_eq!(
         result.html,
         concat!(
@@ -225,7 +248,7 @@ fn custom_annotations_map_to_data_attributes_with_values_and_reserved_names_pres
     root.attrs.insert("optional", Value::Unit);
     root.attrs.insert(
         "context",
-        Value::Array(vec![Value::Int(i64::MAX), Value::Float(-0.0)]),
+        Value::Array(vec![Value::Int(i64::MAX), Value::Float(-0.0)].into()),
     );
     root.attrs.insert("data-notist-node", Value::Int(999));
     root.attrs.insert("notist-node", Value::Int(998));
@@ -302,7 +325,9 @@ fn escaping_occurs_after_frontend_decoding_and_in_all_attributes() {
         "#embed(\"file\", description: \"<asset>\", title: \"\\\"<&\")",
     );
     assert_eq!(
-        render(&root),
+        Renderer::new()
+            .with_resource_resolver(|_, path| (path.path() == "file").then(|| "file".into()))
+            .render(&root),
         "<p><span class=\"notist-embed\" title=\"&quot;&lt;&amp;\"><a href=\"file\">&lt;asset&gt;</a></span></p>"
     );
 }
@@ -356,18 +381,15 @@ fn callbacks_override_selected_resources_and_preserve_outer_attributes() {
     let prefix = "resources/";
     let renderer = Renderer::new()
         .with_embed_renderer(|item| {
-            let Value::Str(target) = item.fields.get("target")? else {
+            let Value::Path(target) = item.fields.get("target")? else {
                 return None;
             };
-            if !target.ends_with(".png") || !is_safe_url(target) {
+            if target.path() != "a.png" {
                 return None;
             }
-            Some(format!(
-                "<img src=\"{}{}\" alt=\"asset\">",
-                prefix,
-                escape_attribute(target)
-            ))
+            Some(format!("<img src=\"{}{}\" alt=\"asset\">", prefix, "a.png"))
         })
+        .with_resource_resolver(|_, path| (path.path() == "b.pdf").then(|| "b.pdf".into()))
         .with_math_renderer(|item| {
             let Value::Str(text) = item.fields.get("text")? else {
                 return None;

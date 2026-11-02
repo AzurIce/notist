@@ -17,6 +17,7 @@ pub struct Context {
     extensions: ExtensionPlan,
     program: crate::definitions::CodeProgram,
     root: Option<String>,
+    resource_root: String,
 }
 impl Context {
     pub fn new(registry: Registry) -> Self {
@@ -25,6 +26,7 @@ impl Context {
             extensions: Default::default(),
             program: Default::default(),
             root: None,
+            resource_root: "/".into(),
         }
     }
     /// Install a module and select it as the root lexical scope.
@@ -59,6 +61,15 @@ impl Context {
     }
     pub fn root(&self) -> Option<&str> {
         self.root.as_deref()
+    }
+    /// Select the logical root for document paths. The standalone pipeline uses
+    /// `/`, a virtual root, never the process working directory. No IO occurs.
+    pub fn with_resource_root(mut self, root: impl Into<String>) -> Self {
+        self.resource_root = root.into();
+        self
+    }
+    pub fn resource_root(&self) -> &str {
+        &self.resource_root
     }
     /// Resolve a name in one lexical module. Loaded modules are never ambient
     /// globals; imports are exported namespace bindings and can be traversed.

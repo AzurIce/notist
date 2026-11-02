@@ -57,6 +57,8 @@ raw 的 lang 字段取首个逗号或空白分隔片段生成 language-* 类，�
 
 自定义属性的字符串与标量使用文本编码，Unit 为 null；数组与字典沿用 [组件参数编码](designs/content-functions.not#参数编码) 的 typed JSON v1 编码。所有输出值均经过 HTML 转义。onclick、style、href 等自定义注解分别输出为 data-onclick、data-style、data-href，不成为事件、样式或链接。link / embed 的显式 title 字段在 attrs 没有字符串 title 时输出。
 
+[Path](code/path.not) 是编译输入的逻辑资源身份，不是公开 URL。含 Path 的属性或组件数据（包括嵌套集合）不会输出，并产生渲染诊断；IR 调试 JSON 使用显式 Path 标记，不将其隐式转成字符串。
+
 普通 node 无可映射属性时透明展开；有属性时生成一个包装元素保留身份。在 list、table、row 的结构槽中，node 展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处 node 的可映射属性不输出，并产生诊断；child 的属性照常保留。
 
 @(id: "内容状态")
@@ -101,7 +103,7 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 回调接收完整 Item，可以借用应用状态；外层元素及属性由 renderer 保留。数学回调可按 Item.level 选择行内或显示公式排版。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
 
-默认 embed 不推断文件类型，同一个 IR 节点可以由应用转换为图片、音视频或其他资源。默认 math 保留公式文本，实际排版通过回调接入。
+默认 embed 不推断文件类型，同一个 IR 节点可以由应用转换为图片、音视频或其他资源。target 可以是已绑定的 Path 或远程 URL 字符串；query／fragment 是独立字段。自定义回调必须使用宿主资源映射，不能将 Path 转成 URL 字符串；选定基础 URL 后可调用 notist.embed.append_suffix 组合后缀。默认 math 保留公式文本，实际排版通过回调接入。
 
 == 转义与链接
 
@@ -109,7 +111,17 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写文档扩展名；资源位置与发布路径由应用决定。
 
-Renderer.with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写原生 link / embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
+Renderer.with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写 link 或远程 embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
+
+本地 embed 的 Path 只传给 Renderer.with_resource_resolver：回调接收 Item 与 ResourcePath，返回宿主选定的基础公开 URL。renderer 在安全检查后附加独立的 query／fragment 并转义 HTML；同一资源的不同引用可以使用不同后缀。None 产生 UnpublishedResource 诊断并省略 href，不回退到逻辑路径或文件系统路径。Path 不会传给 link 的 URL 回调。
+
+```rust
+let renderer = notist_html::Renderer::new()
+    .with_resource_resolver(|_, path| published_urls.get(path).cloned());
+let result = renderer.render_with_diagnostics(&evaluated.root);
+```
+
+资源授权、存在性与发布由宿主负责，绑定回调本身不触发核心 IO。Vault 的普通预览仅为 Vault 内资源选择相对 URL，不复制文件或要求资源已落盘；越界资源诊断一次。Book 与 SSG 对实际发布的 embed 执行其各自的资源检查和映射；错误边界隐藏的资源与 Expanded 包装原来的输入不参与发布。link 的 String 目标与既有校验规则保持独立。
 
 结构映射参照 [HTML table content model](https://html.spec.whatwg.org/multipage/tables.html#the-table-element) 与 [HTML grouping content](https://html.spec.whatwg.org/multipage/grouping-content.html)。
 
@@ -123,7 +135,7 @@ HtmlRegistry.default 装配原生内置 handler；bind_component(function_def, M
 
 Vault.render_html 沿源码 import 装配签名与实现，完成分析和求值后，只为结果树实际需要的原生目标查找 HTML 入口。未使用的声明、未返回的输入和错误节点隐藏的 children 不参与绑定。它返回原始 analysis、evaluation 表示树及完整 rendered 结果；[函数映射](designs/extensions.not) 在 Evaluate 中选择目标，renderer 消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry.from_bindings 引用同一 Registry 的 FunctionDef。
 
-notist-cli 的 html 命令发布已渲染结果，将页面、注册入口和实际使用的组件资源写入目录。单文档页面壳由 CLI 装配，资源计划由 notist.publication 提供，文件系统发布由 CLI 的公共 publication 宿主负责；单文档导出不依赖 notist-book 的章节结构或主题；组件资源位于 _notist/modules/。多页面路由、链接改写、主题和预览见 [Notist Book](book.not)。内存与浏览器宿主消费 Vault.render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
+notist-cli 的 html 命令对求值结果选择资源映射后渲染，将页面、注册入口、实际使用的组件和本地嵌入资源写入目录。单文档页面壳由 CLI 装配，资源计划由 notist.publication 提供，文件系统发布由 CLI 的公共 publication 宿主负责；单文档导出不依赖 notist-book 的章节结构或主题。组件资源位于 _notist/modules/；本地嵌入文件位于 _notist/resources/ 下，保留 Vault 相对路径，只复制实际引用的文件，远程 URL 不复制。缺失文件、越界或符号链接导致导出失败，不替换旧产物。多页面路由、链接改写、主题和预览见 [Notist Book](book.not)。内存与浏览器宿主消费 Vault.render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
 
 ```sh
 cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo

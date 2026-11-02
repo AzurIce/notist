@@ -1,10 +1,10 @@
 use std::cell::RefCell;
 
-use notist_core::annotation::{Annotation, AnnotationKind};
+use notist_core::annotation::{Annotation, AnnotationKind, LiteralDict};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::Expr;
 use notist_core::frontend::{Frontend, FrontendOptions, FrontendOutput};
-use notist_core::item::{Dict, Value};
+use notist_core::item::Value;
 use notist_syntax::content::{ContentFlavor, ContentParser, ParsedContent};
 use rowan::{TextRange, TextSize};
 use rushdown::ast::{Arena, KindData, Node, NodeRef, TextQualifier, TypeData};
@@ -18,6 +18,7 @@ mod breaks;
 mod markup;
 mod math;
 mod strings;
+mod wikilink;
 
 /// Markdown and Notist Markdown source frontend.
 #[derive(Debug, Default)]
@@ -162,7 +163,7 @@ fn lower_parsed(src: &str, arena: &Arena, root: NodeRef, allow_module: bool) -> 
         root,
         allow_module,
         diagnostics: RefCell::new(Vec::new()),
-        module_attrs: RefCell::new(Dict::default()),
+        module_attrs: RefCell::new(LiteralDict::default()),
         annotations: RefCell::new(Vec::new()),
         imports: RefCell::new(Vec::new()),
     };
@@ -182,6 +183,11 @@ fn parser(breaks: Option<breaks::Breaks>, inline: bool) -> Parser {
     let extension = gfm_strikethrough().and(parser_extension(move |p| {
         p.add_inline_parser(
             || Box::new(markup::MarkupInlineParser) as Box<dyn InlineParser>,
+            NoParserOptions,
+            150,
+        );
+        p.add_inline_parser(
+            || Box::new(wikilink::WikiLinkParser) as Box<dyn InlineParser>,
             NoParserOptions,
             150,
         );
@@ -224,7 +230,7 @@ struct Lowerer<'a> {
     root: NodeRef,
     allow_module: bool,
     diagnostics: RefCell<Vec<Diagnostic>>,
-    module_attrs: RefCell<Dict>,
+    module_attrs: RefCell<LiteralDict>,
     annotations: RefCell<Vec<Annotation>>,
     imports: RefCell<Vec<notist_core::definitions::Import>>,
 }
@@ -271,7 +277,7 @@ fn normalize_table_inline(exprs: &mut [Expr]) {
                     } = arg
                         && name == "text"
                     {
-                        *text = text.replace("\\|", "|");
+                        *text = text.replace("\\|", "|").into();
                     }
                 }
             }
@@ -533,12 +539,12 @@ impl<'a> Lowerer<'a> {
                     .with_category(notist_core::definitions::Type::BlockContent)
                     .with_literal_arg(
                         "text",
-                        Value::Str(b.value().iter(self.src).collect::<String>()),
+                        Value::Str(b.value().iter(self.src).collect::<String>().into()),
                     );
                 if let Some(info) = b.info() {
                     let lang = info.str(self.src).trim().to_string();
                     if !lang.is_empty() {
-                        expr = expr.with_literal_arg("lang", Value::Str(lang));
+                        expr = expr.with_literal_arg("lang", Value::Str(lang.into()));
                     }
                 }
                 expr
@@ -557,7 +563,7 @@ impl<'a> Lowerer<'a> {
                 Expr::call("notist.item", span).with_children(self.children(node))
             }
             KindData::CodeSpan(c) => Expr::call("notist.raw", span)
-                .with_literal_arg("text", Value::Str(c.str(self.src).into_owned())),
+                .with_literal_arg("text", Value::Str(c.str(self.src).into_owned().into())),
             KindData::Emphasis(_) => {
                 Expr::call("notist.emph", span).with_children(self.children(node))
             }
@@ -567,18 +573,19 @@ impl<'a> Lowerer<'a> {
             KindData::Link(l) => Expr::call("notist.link", span)
                 .with_literal_arg(
                     "target",
-                    Value::Str(strings::decode(l.destination().str(self.src))),
+                    Value::Str(strings::decode(l.destination().str(self.src)).into()),
                 )
                 .with_children(self.children(node)),
             KindData::Image(i) => {
                 let mut expr = Expr::call("notist.embed", span)
                     .with_literal_arg(
                         "target",
-                        Value::Str(strings::decode(i.destination().str(self.src))),
+                        Value::Str(strings::decode(i.destination().str(self.src)).into()),
                     )
-                    .with_literal_arg("description", Value::Str(self.description_of(node)));
+                    .with_literal_arg("description", Value::Str(self.description_of(node).into()));
                 if let Some(title) = i.title_str(self.src) {
-                    expr = expr.with_literal_arg("title", Value::Str(strings::decode(&title)));
+                    expr =
+                        expr.with_literal_arg("title", Value::Str(strings::decode(&title).into()));
                 }
                 expr
             }
@@ -605,7 +612,7 @@ impl<'a> Lowerer<'a> {
                     container = self.node(c).next_sibling();
                 }
                 Expr::call("notist.table", span)
-                    .with_literal_arg("align", Value::Array(align))
+                    .with_literal_arg("align", Value::Array(align.into()))
                     .with_children(rows)
             }
             KindData::TableRow(_) => {
@@ -624,6 +631,31 @@ impl<'a> Lowerer<'a> {
             KindData::Strikethrough(_) => {
                 Expr::call("notist.strike", span).with_children(self.children(node))
             }
+            KindData::Extension(data) if data.as_any().is::<wikilink::WikiLink>() => {
+                let link = data.as_any().downcast_ref::<wikilink::WikiLink>().unwrap();
+                let span = TextRange::new(span.start(), (link.end as u32).into());
+                let children = if let Some(label) = &link.label {
+                    let mut output = compile_body(&self.src[label.clone()], true, false, false);
+                    let offset = TextSize::new(label.start as u32);
+                    for expr in &mut output.forest {
+                        expr.map_spans(&mut |span| span + offset);
+                    }
+                    for annotation in &mut output.annotations {
+                        annotation.map_spans(&mut |span| span + offset);
+                    }
+                    for diagnostic in &mut output.diagnostics {
+                        diagnostic.span += offset;
+                    }
+                    self.annotations.borrow_mut().extend(output.annotations);
+                    self.diagnostics.borrow_mut().extend(output.diagnostics);
+                    content_forest(output.forest, true)
+                } else {
+                    Vec::new()
+                };
+                Expr::call("notist.link", span)
+                    .with_literal_arg("target", Value::Str(link.target.clone().into()))
+                    .with_children(children)
+            }
             KindData::Extension(data) if data.as_any().is::<math::Math>() => {
                 let math = data.as_any().downcast_ref::<math::Math>().unwrap();
                 let span = TextRange::new(span.start(), (math.end as u32).into());
@@ -633,7 +665,7 @@ impl<'a> Lowerer<'a> {
                 } else {
                     expr
                 };
-                expr.with_literal_arg("text", Value::Str(math.text.clone()))
+                expr.with_literal_arg("text", Value::Str(math.text.clone().into()))
             }
             _ => {
                 // TableHeader / TableBody / LinkReferenceDefinition / 其他：子节点透传

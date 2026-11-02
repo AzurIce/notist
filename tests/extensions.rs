@@ -456,6 +456,7 @@ fn prepared_worker_and_native_hosts_share_module_scopes_and_extensions() {
         config: None,
         files: r.files().clone(),
         module_urls: BTreeMap::new(),
+        ..Default::default()
     };
     let json: serde_json::Value = serde_json::from_str(&notist::preview::analyze_prepared(
         "doc.md",

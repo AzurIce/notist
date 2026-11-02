@@ -44,6 +44,12 @@ impl CallArg {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Expr {
+    /// Unresolved resource spelling; Resolve uses the owning source identity.
+    PathLiteral {
+        text: String,
+        #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
+        span: TextRange,
+    },
     Literal(
         Value,
         #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))] TextRange,
@@ -179,7 +185,7 @@ impl Expr {
     }
 
     pub fn text(text: String, span: TextRange) -> Self {
-        Self::call("notist.text", span).with_literal_arg("text", Value::Str(text))
+        Self::call("notist.text", span).with_literal_arg("text", Value::Str(text.into()))
     }
 
     pub fn with_named_arg(mut self, name: impl Into<String>, value: Expr) -> Self {
@@ -224,6 +230,7 @@ impl Expr {
     pub fn span(&self) -> TextRange {
         match self {
             Self::Literal(_, span)
+            | Self::PathLiteral { span, .. }
             | Self::Fragment { span, .. }
             | Self::Ref { span, .. }
             | Self::Member { span, .. }
@@ -244,7 +251,9 @@ impl Expr {
     /// Frontends can restore offsets after parsing nested or stripped source.
     pub fn map_spans(&mut self, map: &mut impl FnMut(TextRange) -> TextRange) {
         match self {
-            Self::Literal(_, span) | Self::Ref { span, .. } => *span = map(*span),
+            Self::Literal(_, span) | Self::PathLiteral { span, .. } | Self::Ref { span, .. } => {
+                *span = map(*span)
+            }
             Self::Member { base, span, .. } => {
                 *span = map(*span);
                 base.map_spans(map);

@@ -19,6 +19,7 @@ export function decodeValue(value) {
     case "dict": return new Map(payload.map(([key, value]) => [key, decodeValue(value)]));
     case "some": return decodeValue(payload);
     case "none": return undefined;
+    case "ok": case "err": return { kind: type, value: decodeValue(payload) };
     default: throw new Error(`Unknown Notist value type: ${type}`);
   }
 }
@@ -27,13 +28,15 @@ export function readParameter(element, name, type) {
   const value = element.getAttribute("notist-" + encodeName(name));
   if (value === null) return undefined;
   switch (type) {
-    case "String": return value;
+    // Paths never cross the HTML boundary. A ResourceTarget component input
+    // can therefore only be the URL-string branch, not a serialized identity.
+    case "String": case "ResourceTarget": return value;
     case "Unit": return null;
     case "Bool": if (value !== "true" && value !== "false") throw new Error("Invalid Bool"); return value === "true";
     case "Int": return BigInt(value);
     case "Float": return Number(value);
     case "Array": case "Dict": return decodeValue(JSON.parse(value));
-    case "Option": return decodeValue(JSON.parse(value));
+    case "Option": case "Result": return decodeValue(JSON.parse(value));
     default: throw new Error(`Unknown Notist parameter type: ${type}`);
   }
 }

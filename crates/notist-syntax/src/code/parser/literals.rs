@@ -208,9 +208,9 @@ impl Parser<'_, '_> {
 
     pub(super) fn literal_value(&mut self) {
         match self.cur() {
-            Some(SyntaxKind::Str) | Some(SyntaxKind::Number) | Some(SyntaxKind::Ident) => {
-                self.eat()
-            }
+            Some(
+                SyntaxKind::Str | SyntaxKind::PathLiteral | SyntaxKind::Number | SyntaxKind::Ident,
+            ) => self.eat(),
             Some(SyntaxKind::Minus) if self.peek(1) == Some(SyntaxKind::Number) => {
                 self.state.builder.start_node(SyntaxKind::Neg.into());
                 self.eat();

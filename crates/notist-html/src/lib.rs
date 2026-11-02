@@ -34,6 +34,8 @@ pub const STATUS_CSS: &str = include_str!("status.css");
 
 type Hook<'a> = Box<dyn Fn(&Item) -> Option<String> + 'a>;
 type UrlResolver<'a> = Box<dyn Fn(&Item, &str) -> Option<String> + 'a>;
+type ResourceResolver<'a> =
+    Box<dyn Fn(&Item, &notist_core::resource::ResourcePath) -> Option<String> + 'a>;
 
 /// An HTML fragment and problems encountered while rendering it.
 ///
@@ -90,16 +92,27 @@ pub struct Renderer<'a> {
     source_map: bool,
     registry: HtmlRegistry,
     url_resolver: Option<UrlResolver<'a>>,
+    resource_resolver: Option<ResourceResolver<'a>>,
 }
 
 impl<'a> Renderer<'a> {
-    /// Resolve link/embed targets using explicit host data, without IO. `None`
+    /// Resolve link and URL-string embed targets using host data, without IO. `None`
     /// keeps the source URL. Both source and resolved URLs are checked for safety.
     pub fn with_url_resolver(
         mut self,
         resolve: impl Fn(&Item, &str) -> Option<String> + 'a,
     ) -> Self {
         self.url_resolver = Some(Box::new(resolve));
+        self
+    }
+    /// Select a public URL for an explicit local embed. No path stringification
+    /// or URL fallback occurs when a resource has no host binding. The returned
+    /// base URL is safety-checked; embed query/fragment fields are added afterward.
+    pub fn with_resource_resolver(
+        mut self,
+        resolve: impl Fn(&Item, &notist_core::resource::ResourcePath) -> Option<String> + 'a,
+    ) -> Self {
+        self.resource_resolver = Some(Box::new(resolve));
         self
     }
     pub fn with_registry(mut self, registry: HtmlRegistry) -> Self {
@@ -120,6 +133,7 @@ impl<'a> Renderer<'a> {
             source_map: false,
             registry,
             url_resolver: None,
+            resource_resolver: None,
         }
     }
 
@@ -133,8 +147,10 @@ impl<'a> Renderer<'a> {
 
     /// Supply the inner HTML of an embed's `span.notist-embed`.
     ///
-    /// The callback receives the full item, including target, description,
-    /// title and attributes. Return `None` to use a resource link. Returned
+    /// The callback receives the full item, including the Path or URL target,
+    /// query, fragment, description, title and attributes. Local Paths must use
+    /// a host's explicit resource mapping, never path stringification.
+    /// Return `None` to use a resource link. Returned
     /// HTML is trusted application output and is not escaped or sanitized;
     /// use [`escape_attribute`], [`escape_text`] and [`is_safe_url`] when
     /// incorporating source fields.
@@ -194,6 +210,14 @@ struct State<'r, 'a> {
 impl State<'_, '_> {
     fn node(&mut self, item: &Item) {
         use notist_core::item::EvaluationState;
+        for (key, value) in item.attrs.iter() {
+            if value.contains_data_views() {
+                self.diagnostic(item, format!("Data or DataError in attribute `{key}` cannot be exported as HTML; decode selected ordinary values first"));
+            }
+            if value.contains_path() {
+                self.diagnostic(item, format!("Path in attribute `{key}` cannot be exported as HTML; publish the resource explicitly"));
+            }
+        }
         if let Some(EvaluationState::Error(message)) = &item.evaluation {
             let tag = if is_block(item) { "div" } else { "span" };
             self.open(tag, item, "notist-error");
@@ -264,7 +288,13 @@ impl State<'_, '_> {
                 let encoded = match value {
                     notist_core::definitions::ComptimeValue::Type(t) => format!("{t}"),
                     notist_core::definitions::ComptimeValue::Data(v) => {
-                        components::encode_parameter(v)
+                        match components::encode_parameter(v) {
+                            Ok(value) => value,
+                            Err(message) => {
+                                self.diagnostic(item, message.into());
+                                continue;
+                            }
+                        }
                     }
                 };
                 self.attr(
@@ -293,10 +323,15 @@ impl State<'_, '_> {
         for parameter in &component.definition.parameters {
             if let Some(value) = item.fields.get(&parameter.name) {
                 if parameter.ty.substitute(&bindings).accepts(value) {
-                    self.attr(
-                        &components::parameter_attribute(&parameter.name),
-                        &components::encode_parameter(value),
-                    );
+                    match components::encode_parameter(value) {
+                        Ok(encoded) => {
+                            self.attr(&components::parameter_attribute(&parameter.name), &encoded)
+                        }
+                        Err(message) => self.diagnostic(
+                            item,
+                            format!("component parameter `{}`: {message}", parameter.name),
+                        ),
+                    }
                 } else {
                     self.diagnostic(
                         item,
@@ -357,6 +392,13 @@ impl State<'_, '_> {
             Ctor::Strong => self.container("strong", item, ""),
             Ctor::Emph => self.container("em", item, ""),
             Ctor::Strike => self.container("del", item, ""),
+            Ctor::Underline => {
+                self.open("span", item, "");
+                self.attr("style", "text-decoration: underline");
+                self.output.push('>');
+                self.children(item);
+                self.close("span");
+            }
             Ctor::Divider => {
                 self.open("hr", item, "");
                 self.output.push('>');
@@ -400,12 +442,16 @@ impl State<'_, '_> {
                     self.output.push_str(&html);
                 } else {
                     self.output.push_str("<a");
-                    self.url(item, "target", "href");
+                    self.url(item, "target", "href", true);
                     self.output.push('>');
                     self.text(
                         string_field(item, "description")
                             .filter(|s| !s.is_empty())
                             .or_else(|| string_field(item, "target"))
+                            .or_else(|| match item.fields.get("target") {
+                                Some(Value::Path(path)) => path.path().rsplit('/').next(),
+                                _ => None,
+                            })
                             .unwrap_or(""),
                     );
                     self.close("a");
@@ -566,7 +612,46 @@ impl State<'_, '_> {
         }
     }
 
-    fn url(&mut self, item: &Item, field: &str, attribute: &str) {
+    fn url(&mut self, item: &Item, field: &str, attribute: &str, embed: bool) {
+        if let Some(Value::Path(path)) = item.fields.get(field) {
+            if !embed {
+                self.diagnostic(
+                    item,
+                    format!("`{field}` requires a URL string; `{attribute}` omitted"),
+                );
+                return;
+            }
+            let resolved = self
+                .renderer
+                .resource_resolver
+                .as_ref()
+                .and_then(|resolve| resolve(item, path));
+            match resolved {
+                Some(url) if is_safe_url(&url) => {
+                    match notist_core::embed::append_suffix(&url, &item.fields) {
+                        Ok(url) if is_safe_url(&url) => self.attr(attribute, &url),
+                        Ok(_) => self.diagnostic(
+                            item,
+                            format!("disallowed published URL; `{attribute}` omitted"),
+                        ),
+                        Err(message) => self.diagnostic(item, message),
+                    }
+                }
+                Some(_) => self.diagnostic(
+                    item,
+                    format!("disallowed published URL; `{attribute}` omitted"),
+                ),
+                None => {
+                    self.diagnostic(
+                        item,
+                        "local embed requires a host-provided resource URL".into(),
+                    );
+                    self.diagnostics.last_mut().unwrap().code =
+                        Some(notist_core::diag::DiagnosticCode::UnpublishedResource);
+                }
+            }
+            return;
+        }
         if let Some(url) = string_field(item, field) {
             let resolved = is_safe_url(url)
                 .then(|| {
@@ -578,7 +663,18 @@ impl State<'_, '_> {
                 .flatten();
             let target = resolved.as_deref().unwrap_or(url);
             if is_safe_url(url) && is_safe_url(target) {
-                self.attr(attribute, target);
+                if embed {
+                    match notist_core::embed::append_suffix(target, &item.fields) {
+                        Ok(target) if is_safe_url(&target) => self.attr(attribute, &target),
+                        Ok(_) => self.diagnostic(
+                            item,
+                            format!("disallowed published URL; `{attribute}` omitted"),
+                        ),
+                        Err(message) => self.diagnostic(item, message),
+                    }
+                } else {
+                    self.attr(attribute, target);
+                }
             } else {
                 self.diagnostic(
                     item,
@@ -590,7 +686,7 @@ impl State<'_, '_> {
 
     fn link(&mut self, item: &Item) {
         self.open("a", item, "");
-        self.url(item, "target", "href");
+        self.url(item, "target", "href", false);
         self.field_title(item);
         self.output.push('>');
         if item.children.is_empty() {
@@ -603,7 +699,7 @@ impl State<'_, '_> {
 
     fn table(&mut self, item: &Item) {
         let align = match item.fields.get("align") {
-            Some(Value::Array(values)) => values.as_slice(),
+            Some(Value::Array(values)) => &values[..],
             _ => &[],
         };
         let rows = self.structural(&item.children, &Ctor::TableRow, "table");

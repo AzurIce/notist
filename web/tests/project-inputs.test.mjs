@@ -164,3 +164,133 @@ test('member and wildcard selections discover the same canonical dependency grap
   assert.equal(text(inputs.files['/root/parts/helper.notc']), sources['/root/parts/helper.notc']);
   assert.equal(inputs.module_urls['/root/parts/issue.js'], 'https://host.test/root/parts/issue.js');
 });
+
+test('runtime resources are fetched on demand once and retried as a new prepared view', async () => {
+  const requests = [];
+  let rounds = 0;
+  const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), {
+    source: 'body', source_imports: imports,
+    describe_prepared: (_path, serialized) => {
+      rounds++;
+      const inputs = JSON.parse(serialized);
+      assert.equal(inputs.incomplete, true);
+      if (!inputs.files['/project/正文 #%.txt']) return JSON.stringify({ need_resources: [{ root: '/project', path: '正文 #%.txt' }, { root: '/project', path: '正文 #%.txt' }] });
+      assert.equal(text(inputs.files['/project/正文 #%.txt']), '正文');
+      return JSON.stringify({ functions: [] });
+    },
+  }, async url => { requests.push(url.href); return new Response('正文'); });
+  assert.equal(rounds, 2);
+  assert.deepEqual(requests, ['https://host.test/project/%E6%AD%A3%E6%96%87%20%23%25.txt']);
+  assert.equal(text(inputs.files['/project/doc.not']), 'body');
+  assert.deepEqual(inputs.read_roots, ['/project']);
+});
+
+test('confirmed 404, denial and byte failures are not repeatedly fetched', async () => {
+  for (const [status, failure] of [[404, 'NotFound'], [403, 'AccessDenied'], [200, 'TooLarge']]) {
+    let requests = 0;
+    const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), {
+      source: 'body', source_imports: imports, maxFileBytes: 8,
+      describe_prepared: (_path, serialized) => {
+        const inputs = JSON.parse(serialized);
+        return JSON.stringify(inputs.failures['/project/data.txt'] ? { functions: [] } : { need_resources: [{ root: '/project', path: 'data.txt' }] });
+      },
+    }, async () => { requests++; return new Response(status === 200 ? 'too much data' : null, { status }); });
+    assert.equal(inputs.failures['/project/data.txt'], failure);
+    assert.equal(requests, 1);
+  }
+});
+
+test('data mappings do not inherit source-import or component-publication access', async () => {
+  const requests = [];
+  const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), {
+    source: '#import "../external/lib.notc" as external;', source_imports: imports,
+    describe_prepared: (_path, serialized) => {
+      const inputs = JSON.parse(serialized);
+      return JSON.stringify(inputs.failures['/external/private.txt'] ? { functions: [] } : { need_resources: [{ root: '/external', path: 'private.txt' }] });
+    },
+  }, async url => { requests.push(url.pathname); return new Response('fn f() -> String { "ok" }'); });
+  assert.equal(inputs.failures['/external/private.txt'], 'AccessDenied');
+  assert.deepEqual(requests, ['/external/lib.notc']);
+});
+
+test('explicit external data mappings and source bytes keep one logical input identity', async () => {
+  const requests = [];
+  const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), {
+    source: 'body', source_imports: imports,
+    resourceRoots: [{ root: '/external', url: new URL('https://assets.test/allowed/') }],
+    describe_prepared: (_path, serialized) => {
+      const inputs = JSON.parse(serialized);
+      return JSON.stringify(inputs.files['/external/data.txt'] ? { functions: [] } : { need_resources: [{ root: '/', path: 'external/data.txt' }] });
+    },
+  }, async url => { requests.push(url.href); return new Response('mapped'); });
+  assert.deepEqual(requests, ['https://assets.test/allowed/data.txt']);
+  assert.equal(text(inputs.files['/external/data.txt']), 'mapped');
+});
+
+test('retry, request and cache budgets bound preparation and preserve the current source', async () => {
+  for (const limit of [{ maxRounds: 1 }, { maxRequests: 1 }, { maxTotalBytes: 5 }]) {
+    let next = 0;
+    await assert.rejects(loadInputs(new URL('https://host.test/project/doc.not'), {
+      source: 'body', source_imports: imports, ...limit,
+      describe_prepared: () => JSON.stringify({ need_resources: [{ root: '/project', path: `next${next++}` }] }),
+    }, async () => new Response('data')), error => {
+      assert.match(error.message, /limit exceeded/);
+      assert.equal(text(error.inputs.files['/project/doc.not']), 'body');
+      return true;
+    });
+  }
+});
+
+test('invalid resource identities cannot turn logical paths into ungranted requests', async () => {
+  for (const path of ['../secret', '/absolute', 'a/../../secret', 'a\\b', 'bad\u0000name']) {
+    await assert.rejects(loadInputs(new URL('https://host.test/project/doc.not'), {
+      source: '', source_imports: imports,
+      describe_prepared: () => JSON.stringify({ need_resources: [{ root: '/project', path }] }),
+    }, () => { throw new Error('must not fetch'); }), /Invalid requested resource/);
+  }
+});
+
+test('an aborted document revision discards late resource results and a new batch retries errors', async () => {
+  const controller = new AbortController();
+  const options = {
+    source: 'body', source_imports: imports,
+    describe_prepared: (_path, serialized) => {
+      const inputs = JSON.parse(serialized);
+      return JSON.stringify(inputs.files['/project/data'] || inputs.failures['/project/data'] ? { functions: [] } : { need_resources: [{ root: '/project', path: 'data' }] });
+    },
+  };
+  await assert.rejects(loadInputs(new URL('https://host.test/project/doc.not'), { ...options, signal: controller.signal }, async () => { controller.abort(); return new Response('stale'); }), error => {
+    assert.equal(error.name, 'AbortError');
+    assert(!Object.hasOwn(error.inputs.files, '/project/data'));
+    return true;
+  });
+  let requests = 0;
+  for (const status of [404, 200]) {
+    const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), options, async () => { requests++; return new Response(status === 200 ? 'fresh' : null, { status }); });
+    if (status === 200) assert.equal(text(inputs.files['/project/data']), 'fresh');
+    else assert.equal(inputs.failures['/project/data'], 'NotFound');
+  }
+  assert.equal(requests, 2);
+});
+
+test('streamed resource bodies stop at the byte bound without trusting content-length', async () => {
+  let canceled = false;
+  const inputs = await loadInputs(new URL('https://host.test/project/doc.not'), {
+    source: '', source_imports: imports, maxFileBytes: 4,
+    describe_prepared: (_path, serialized) => JSON.stringify(JSON.parse(serialized).failures['/project/data'] ? { functions: [] } : { need_resources: [{ root: '/project', path: 'data' }] }),
+  }, async () => new Response(new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(3)); },
+    cancel() { canceled = true; },
+  })));
+  assert(canceled);
+  assert.equal(inputs.failures['/project/data'], 'TooLarge');
+});
+
+test('a repeated confirmed request stops without progress instead of fetching forever', async () => {
+  let requests = 0;
+  await assert.rejects(loadInputs(new URL('https://host.test/project/doc.not'), {
+    source: '', source_imports: imports,
+    describe_prepared: () => JSON.stringify({ need_resources: [{ root: '/project', path: 'missing' }] }),
+  }, async () => { requests++; return new Response(null, { status: 404 }); }), /no progress/);
+  assert.equal(requests, 1);
+});

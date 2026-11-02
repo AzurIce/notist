@@ -130,13 +130,11 @@ impl Default for HtmlRegistry {
                 targets: Arc::new(BTreeMap::new()),
             };
             for definition in builtins::registry().functions() {
+                let Some(ctor) = Ctor::from_name(&definition.id.name) else {
+                    continue;
+                };
                 registry
-                    .register(
-                        definition,
-                        Target::Native(
-                            Ctor::from_name(&definition.id.name).expect("native constructor"),
-                        ),
-                    )
+                    .register(definition, Target::Native(ctor))
                     .expect("valid native HTML target");
             }
             registry.targets
@@ -307,9 +305,19 @@ pub fn parameter_attribute(name: &str) -> String {
 }
 
 /// Scalar fields remain readable attributes; collections use typed JSON v1.
-pub fn encode_parameter(value: &Value) -> String {
-    match value {
-        Value::Str(value) => value.clone(),
+pub fn encode_parameter(value: &Value) -> Result<String, &'static str> {
+    if value.contains_data_views() {
+        return Err(
+            "Data and DataError cannot be exported as HTML or component data; decode selected ordinary values first",
+        );
+    }
+    if value.contains_path() {
+        return Err(
+            "Path cannot be exported as HTML or component data; publish the resource explicitly",
+        );
+    }
+    Ok(match value {
+        Value::Str(value) => value.to_string(),
         Value::Bool(value) => value.to_string(),
         Value::Int(value) => value.to_string(),
         Value::Float(value) if value.is_nan() => "NaN".into(),
@@ -317,10 +325,15 @@ pub fn encode_parameter(value: &Value) -> String {
         Value::Float(value) if *value == f64::NEG_INFINITY => "-Infinity".into(),
         Value::Float(value) => value.to_string(),
         Value::Unit => "null".into(),
-        Value::Array(_) | Value::Dict(_) | Value::Some(_) | Value::None => {
-            value_json(value).to_string()
-        }
-    }
+        Value::Path(_) => unreachable!("paths were rejected above"),
+        Value::Data(_) | Value::DataError(_) => unreachable!("data views were rejected above"),
+        Value::Array(_)
+        | Value::Dict(_)
+        | Value::Some(_)
+        | Value::None
+        | Value::Ok(_)
+        | Value::Err(_) => value_json(value).to_string(),
+    })
 }
 /// Typed Value wire representation shared with IR inspection tools.
 pub fn value_json(value: &Value) -> serde_json::Value {
@@ -330,7 +343,12 @@ pub fn value_json(value: &Value) -> serde_json::Value {
         Value::Bool(v) => json!(["bool", v]),
         Value::Int(v) => json!(["int", v.to_string()]),
         Value::Float(v) => json!(["float", format!("{:016x}", v.to_bits())]),
-        Value::Str(v) => json!(["string", v]),
+        Value::Str(v) => json!(["string", v.as_str()]),
+        Value::Path(v) => json!(["path", {"root":v.root(), "path":v.path()}]),
+        Value::Data(v) => {
+            json!(["data-summary", {"kind":v.kind(), "nodes":v.node_count(), "bytes":v.logical_size()}])
+        }
+        Value::DataError(v) => json!(["data-error-summary", {"kind":v.kind().as_str()}]),
         Value::Array(v) => json!(["array", v.iter().map(value_json).collect::<Vec<_>>()]),
         Value::Dict(v) => json!([
             "dict",
@@ -340,5 +358,7 @@ pub fn value_json(value: &Value) -> serde_json::Value {
         ]),
         Value::Some(v) => json!(["some", value_json(v)]),
         Value::None => json!(["none"]),
+        Value::Ok(v) => json!(["ok", value_json(v)]),
+        Value::Err(v) => json!(["err", value_json(v)]),
     }
 }

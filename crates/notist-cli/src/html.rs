@@ -9,12 +9,48 @@ use std::{
 };
 
 pub fn assemble(
-    rendered: notist_html::RenderResult,
+    root: &notist::Item,
+    registry: notist_html::HtmlRegistry,
     environment: &Environment,
     resources: &impl Resources,
     source: &Path,
     output: &Path,
 ) -> Result<BTreeMap<PathBuf, Vec<u8>>, Error> {
+    let output = notist::resources::normalize(
+        &std::env::current_dir()
+            .map_err(|error| Error::Message(error.to_string()))?
+            .join(output),
+    );
+    let mut assets = Assets::new(output);
+    let mut resource_urls = BTreeMap::new();
+    for item in notist::embed::targets(root) {
+        let Some(notist::Value::Path(path)) = item.fields.get("target") else {
+            continue;
+        };
+        if resource_urls.contains_key(path) {
+            continue;
+        }
+        let source = PathBuf::from(path.logical_path());
+        let relative = source
+            .strip_prefix(resources.root())
+            .map_err(|_| Error::Message("embedded resource is outside the Vault root".into()))?;
+        // An embed publishes one file, never an implicit recursive directory.
+        if resources.kind(&source)? != Some(notist::resources::ResourceKind::File) {
+            return Err(Error::Message(format!(
+                "missing embedded resource or not a file: {}",
+                source.display()
+            )));
+        }
+        let destination = Path::new("_notist/resources").join(relative);
+        assets.copy(resources, &source, &destination)?;
+        resource_urls.insert(
+            path.clone(),
+            notist::publication::url::relative_url(Path::new("index.html"), &destination, false),
+        );
+    }
+    let rendered = notist_html::Renderer::from_registry(registry)
+        .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
+        .render_with_diagnostics(root);
     if !rendered.diagnostics.is_empty() {
         return Err(Error::Message(
             rendered
@@ -25,12 +61,6 @@ pub fn assemble(
                 .join("\n"),
         ));
     }
-    let output = notist::resources::normalize(
-        &std::env::current_dir()
-            .map_err(|error| Error::Message(error.to_string()))?
-            .join(output),
-    );
-    let mut assets = Assets::new(output);
     let registrations = assets.components(
         resources,
         environment,

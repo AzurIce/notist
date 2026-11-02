@@ -1,0 +1,66 @@
+= Never 与 panic
+
+`panic(message: String) -> Never` 是标准库的普通 Rust-native 函数：执行到它时中止当前计算，将动态消息交给现有内容错误边界生成诊断。它不调用 Rust 的 panic，不终止宿主进程，也不增加 throw／catch。
+
+== Never：没有正常返回值
+
+Never 是不含任何值的数据类型，既不是 Unit，也不是 Result。没有对应的字面量或运行期 Value 变体。函数可以声明返回 Never，但其实现不能正常返回任意值：
+
+```notc
+fn stop(message: String) -> Never { panic(message) }
+```
+
+不返回的表达式可以占据正常值位置；分支合并时 `Never + T` 得到 T，两个不返回分支则仍为 Never。因此 Result 的“错误变诊断”可以用普通 Code 写出：
+
+```notc
+// 这是用户函数示例，不是本版新增的内建 expect。
+fn expect<T: Type>(value: Result<T, String>) -> T {
+    match value {
+        ok(v) => v,
+        err(message) => panic(message),
+    }
+}
+```
+
+这是一条不返回表达式的控制流规则，不改变已有名义容器的身份。例如 `Result<Never, String>` 与 `Result<Int, String>` 仍不同型；前者只能正常构造 err，不能借助它把一个 Result 转成另一个。
+
+- Never 可用作编译期 Type 表达式和类型默认值。
+- `Option<Never>` 可有 none，`Array<Never>` 可为空，`Result<Never, E>` 可有 err；None、空数组与 err 本身都不是 Never 值。
+- Never subject 的 match 没有可到达的臂，允许空 match：`fn absurd(value: Never) -> String { match value {} }`。
+- 不返回的实参不能为泛型提供正常值的推断证据；其他实参或显式 `<T>` 仍须确定类型参数。
+
+== 求值时机
+
+普通检查只验证 panic 的签名与消息类型，不运行它。运行期只有选中的分支会执行：
+
+```notc
+fn label(valid: Bool) -> String {
+    if valid { "valid" } else { panic("invalid input") }
+}
+```
+
+严格数据计算会传播不返回性：let 绑定、函数实参、算术、数组／字典元素与 Option／Result 载荷执行到 panic 就停止，不构造假值，也不执行后续绑定。逻辑运算仍短路：`false && panic("unused")` 和 `true || panic("unused")` 不触发 panic。
+
+已经构造但尚未挂载的内容仍保持惰性：
+
+```notc
+fn unused() -> InlineContent {
+    let hidden = [#panic("not mounted")];
+    [kept]
+}
+```
+
+内容函数调用内部的实参同样在挂载该调用时求值；添加 Never 不会提前强制未使用的内容。直接调用 `let stopped = panic("stop")` 则是当前 Code 计算，不受这种惰性保护。不可到达的后续源码仍会接受普通语法与类型检查。
+
+== 诊断与边界
+
+- 失败通过求值器的 Failure 传播，在内容错误边界统一生成诊断；普通 panic 不在检查期预先记错，也不边记诊断边返回 Unit。
+- 消息允许是运行期生成的 String；诊断指向实际 panic 调用，运行期错误节点保留 Code 包装函数与文档挂载的展开链。
+- 预览可以保留其他独立内容；严格发布仍因错误失败，不发布错误的部分构建结果。
+- Code 内容字面量中的 `#panic("message")` 是一个不返回的插值计算，不是组件或数据 Ctor。它不赋予 row／cell／item 等结构角色，也不绕过 Shape 检查。
+- 独立 Markup 仍只调用内容函数，不直接接受 panic 或其他返回 Never 的函数；需要诊断时调用一个返回 Content 的 Code 包装函数。这也避免 Never 包装函数成为独立 Markup 的新资源读取入口。
+- 独立 Markup 的实参仍须为数据字面量；不能通过 panic 包装读取操作或规避 read_text 的 Code-only 限制。
+
+已有的 `compile_error` 是检查期操作，要求已知消息，检查器访问到它就报告错误；panic 是求值期操作。显式 comptime 或必须计算的编译期实参执行到 panic 时，报告发生在该阶段，位置仍指向内部 panic 调用。
+
+Result 的 err 是普通可处理值，不会自动触发 panic。反过来，Result 的 match 也不能捕获 panic、预算耗尽或输入批次失效。输入未准备仍使用宿主 NeedResources 协议，不伪装成用户错误值。

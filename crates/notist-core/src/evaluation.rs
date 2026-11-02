@@ -33,9 +33,31 @@ pub enum ExprKind {
     Some(Box<TypedExpr>),
     /// Payload of a matched Value::Some; evaluation fails on none.
     Unwrap(Box<TypedExpr>),
+    Ok(Box<TypedExpr>),
+    Err(Box<TypedExpr>),
+    /// Evaluate the subject once, then bind only the selected variant payload.
+    MatchResult {
+        subject: Box<TypedExpr>,
+        arms: Vec<ResultArm>,
+    },
     ValueCall(Box<Invocation>),
     Content(Vec<Item>),
     Failure(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ResultArm {
+    pub pattern: ResultPattern,
+    pub body: TypedExpr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ResultPattern {
+    Ok(String),
+    Err(String),
+    Wildcard,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +72,32 @@ pub struct Invocation {
     #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
     pub source: String,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "CallSite::is_markup")
+    )]
+    pub site: CallSite,
+    /// Captured only for resource-target inputs, including deferred URL strings.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub resource_root: Option<String>,
     pub invalid: Option<String>,
+}
+
+/// Lexical call context, independent of file names, aliases or module labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CallSite {
+    #[default]
+    Markup,
+    Code,
+}
+impl CallSite {
+    pub fn is_markup(&self) -> bool {
+        *self == Self::Markup
+    }
 }
 
 /// A checked content call or forest interpolation awaiting evaluation.

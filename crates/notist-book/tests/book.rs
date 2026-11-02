@@ -24,6 +24,148 @@ fn html(site: &BuildOutput, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
 }
 
+#[test]
+fn text_inputs_become_body_content_without_becoming_published_assets_or_components() {
+    let mut vault = Vault::new(resources(&[
+        (
+            "README.not",
+            "= Home\n\n#import \"views/lib.notc\" as view;\n#view.show()",
+        ),
+        (
+            "two.md",
+            "# Two\n\n#import \"views/lib.notc\" as view;\n#view.show()",
+        ),
+        (
+            "views/lib.notc",
+            "fn show(source: Path = p\"../private/input.txt\") -> BlockContent { [ #text(text: read_text(source)) ] }",
+        ),
+        ("private/input.txt", "正文 <script> & private"),
+    ]));
+    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    assert!(html(&site, "index.html").contains("正文 &lt;script&gt; &amp; private"));
+    assert!(html(&site, "two/index.html").contains("正文 &lt;script&gt; &amp; private"));
+    assert!(!site.files.contains_key(Path::new("private/input.txt")));
+    assert!(
+        !site
+            .files
+            .keys()
+            .any(|path| path.ends_with("components.js") || path.starts_with("_notist/modules"))
+    );
+    assert_eq!(vault.input_session().dependencies().len(), 1);
+}
+
+#[test]
+fn structured_inputs_are_shared_static_and_report_actual_data_sources() {
+    let page = "#import \"views/lib.notc\" as view;\n#view.show()";
+    let module = "fn show(source:Path=p\"../private/items.json\")->BlockContent{let root=data_expect<Data>(read_json(source));let name=data_expect<String>(data_require<String>(root,\"name\"));[ #text(text:name) ]}";
+    let mut vault = Vault::new(resources(&[
+        ("README.not", page),
+        ("two.not", page),
+        ("views/lib.notc", module),
+        (
+            "private/items.json",
+            r#"{"name":"静态正文 <&>","private":"SECRET"}"#,
+        ),
+    ]));
+    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    for path in ["index.html", "two/index.html"] {
+        let output = html(&site, path);
+        assert!(output.contains("静态正文 &lt;&amp;&gt;"));
+        assert!(!output.contains("SECRET"));
+    }
+    assert!(!site.files.keys().any(|p| p.ends_with("items.json")));
+    assert_eq!(vault.input_session().data_cache_stats().parses, 1);
+    let data = r#"{"name":false}"#;
+    let mut vault = Vault::new(resources(&[
+        ("README.not", page),
+        ("views/lib.notc", module),
+        ("private/items.json", data),
+    ]));
+    let Err(Error::Diagnostics(errors)) = build(&mut vault, &BookConfig::new("target/book")) else {
+        panic!("expected data diagnostic")
+    };
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == Path::new("/vault/private/items.json")
+                && e.source == data
+                && e.diagnostic.message.contains("/name")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn typed_embed_origins_filename_encoding_and_suffixes_use_explicit_publication() {
+    let site = render(&[
+        (
+            "README.not",
+            r#"= Home
+
+#import "views/lib.notc" as view;
+#view.defaulted()
+
+#view.picture(p"./assets/a?b#c%20.svg", fragment: "one") #embed(p"./assets/a?b#c%20.svg", query: "v=2", fragment: "two")
+
+#embed("https://cdn.test/a.svg#remote")
+"#,
+        ),
+        (
+            "views/lib.notc",
+            r#"fn picture(target: Path, fragment?: String) -> InlineContent { [#embed(target, fragment: fragment)] }
+fn defaulted(target: Path = p"./default.svg") -> InlineContent { [#self.picture(target)] }"#,
+        ),
+        ("views/default.svg", "default image"),
+        ("assets/a?b#c%20.svg", "caller image"),
+    ]);
+    assert!(site.warnings.is_empty(), "{:?}", site.warnings);
+    let output = html(&site, "index.html");
+    assert!(output.contains("src=\"views/default.svg\""), "{output}");
+    assert!(
+        output.contains("src=\"assets/a%3Fb%23c%2520.svg#one\""),
+        "{output}"
+    );
+    assert!(
+        output.contains("src=\"assets/a%3Fb%23c%2520.svg?v=2#two\""),
+        "{output}"
+    );
+    assert!(output.contains("src=\"https://cdn.test/a.svg#remote\""));
+    assert_eq!(
+        site.files[Path::new("assets/a?b#c%20.svg")],
+        b"caller image"
+    );
+    assert_eq!(site.files[Path::new("views/default.svg")], b"default image");
+    assert!(!output.contains("/vault"));
+    assert!(!site.files.contains_key(Path::new("views/lib.notc")));
+}
+
+#[test]
+fn typed_embeds_validate_documents_and_anchors_without_changing_link_warnings() {
+    let site = render(&[
+        (
+            "README.not",
+            r#"= Home
+
+#embed(p"./other.not", query: "v=1", fragment: "part%one") [Missing](missing.not)"#,
+        ),
+        ("other.not", "@(id: \"part%one\")\n= Other"),
+    ]);
+    assert!(html(&site, "index.html").contains("href=\"other/?v=1#part%25one\""));
+    assert_eq!(site.warnings.len(), 1);
+    for source in [
+        r#"#embed(p"./missing.svg")"#,
+        r#"#embed(p"./other.not", fragment: "missing")"#,
+    ] {
+        let mut vault = Vault::new(resources(&[
+            ("README.not", source),
+            ("other.not", "= Other"),
+        ]));
+        assert!(
+            build(&mut vault, &BookConfig::new("target/book")).is_err(),
+            "{source}"
+        );
+    }
+}
+
 // Inspect opening tags without depending on attribute order or complete HTML snapshots.
 fn tag_with<'a>(output: &'a str, name: &str, attribute: &str) -> Option<&'a str> {
     output.split('<').find_map(|part| {

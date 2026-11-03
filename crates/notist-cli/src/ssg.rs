@@ -29,7 +29,17 @@ pub(crate) fn assemble(
     if preview {
         options.base_url = "/".into();
     }
-    let mut vault = Vault::new(prepared.files).with_config(prepared.config);
+    // A generated site can have tens of thousands of pages, each loading the
+    // same shared modules. The default source/data request budget is sized for
+    // interactive documents, not one full site build.
+    let mut vault = Vault::new(prepared.files)
+        .with_input_limits(notist::InputLimits {
+            requests: 1_000_000,
+            ..Default::default()
+        })
+        // Per-page data projections accumulate across a large generated site.
+        .with_data_cache_limits(512 * 1024 * 1024, 65_536)
+        .with_config(prepared.config);
     let result = Builder::default().build(&mut vault, &options);
     let observed = vault.resources().observed();
     result

@@ -376,7 +376,12 @@ fn option_values_round_trip_and_key_bit_exact() {
     ] {
         let json = serde_json::to_string(&value).unwrap();
         let restored: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored, value);
+        // Language equality deliberately leaves NaN unequal to itself. Keys
+        // compare the complete value structure and exact floating-point bits.
+        assert_eq!(
+            ComptimeValue::Data(restored).key(),
+            ComptimeValue::Data(value).key()
+        );
     }
     let none = ComptimeValue::Data(Value::None).key();
     let some_none = ComptimeValue::Data(Value::Some(Box::new(Value::None))).key();

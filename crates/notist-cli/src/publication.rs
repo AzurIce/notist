@@ -2,7 +2,7 @@
 use notist::{
     FsResources, InputError, InputRead, Resources,
     publication::Error,
-    resources::{ResourceError, ResourceKind, ResourceReader, ResourceRevision, normalize},
+    resources::{ResourceError, ResourceKind, ResourceReader, normalize},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -119,18 +119,6 @@ impl ResourceReader for ObservedReader {
             };
         }
         self.base.read_bounded(path, limit)
-    }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        let absolute = self.root.join(path);
-        self.observed.lock().unwrap().insert(absolute.clone());
-        if self
-            .configuration
-            .as_ref()
-            .is_some_and(|(config, _)| *config == absolute)
-        {
-            return Ok(None);
-        }
-        self.base.revision(path)
     }
 }
 

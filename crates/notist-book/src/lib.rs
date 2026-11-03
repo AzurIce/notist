@@ -665,7 +665,6 @@ fn build_inner<R: Resources>(
     let mut site = finish(assets, layout.ordered_pages(pages))?;
     site.diagnostics = recovered;
     site.warnings = warnings;
-    vault.validate_inputs()?;
     Ok(site)
 }
 

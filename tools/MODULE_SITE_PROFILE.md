@@ -37,7 +37,7 @@ The other two workloads run only cold and unchanged warm rebuilds. Three modes (
 
 ## Measurement boundary
 
-The fixture is loaded into immutable `MemoryResources` outside the timer. Normal Vault resource reads, authorization, revision checks, and request accounting still run on every build; requests are explicitly and identically 1,000,000 in this host. The benchmark does not bypass the resource pipeline or cache whole documents, evaluation, templates, or site output.
+The fixture is loaded into immutable `MemoryResources` outside the timer. Normal Vault resource reads, authorization, per-batch input caching, and request accounting still run on every build; requests are explicitly and identically 1,000,000 in this host. The benchmark does not bypass the resource pipeline or cache whole documents, evaluation, templates, or site output.
 
 Assembly time includes host cache maintenance, Vault creation, complete SSG analysis/evaluation/HTML/template/output-map assembly, and Vault destruction. Snapshot edits, Rust compilation, validation-copy writes, output destruction, HTML parsing, and SHA-256 are outside it. This is not CLI transactional publication or a disk benchmark. The SSG has no extra per-page timing probes; the existing optional module timers count compile/bind/link/install stages.
 

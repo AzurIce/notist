@@ -1,5 +1,5 @@
-//! Host-owned input versions, data grants and shared bounded byte/error caches.
-use crate::resources::{ResourceError, ResourceKind, ResourceReader, ResourceRevision};
+//! One lazy input batch: rooted reads, fixed byte/error caches and data grants.
+use crate::resources::{ResourceError, ResourceKind, ResourceReader};
 use crate::{EvaluationInputs, InputError, InputRead, ResourcePath, Resources};
 use std::{
     cell::RefCell,
@@ -27,31 +27,27 @@ impl Default for InputLimits {
 struct ReadRoot {
     path: PathBuf,
     reader: Result<Arc<dyn ResourceReader>, InputError>,
-}
-struct Observation {
-    reader: Arc<dyn ResourceReader>,
-    relative: PathBuf,
-    revision: Result<Option<ResourceRevision>, InputError>,
+    inputs: RefCell<BTreeMap<PathBuf, InputRead>>,
 }
 struct CachedInput {
     read: InputRead,
-    observation: Option<Observation>,
+    // Source-only reads do not authorize data access. Reuse bytes only when
+    // they were loaded through this exact root capability.
+    reader: Option<Arc<dyn ResourceReader>>,
 }
 #[derive(Default)]
 struct State {
     files: BTreeMap<PathBuf, CachedInput>,
     kinds: BTreeMap<PathBuf, Result<Option<ResourceKind>, ResourceError>>,
-    overlays: BTreeMap<PathBuf, Vec<Arc<[u8]>>>,
-    sources: BTreeMap<PathBuf, Vec<Arc<str>>>,
-    consumed: BTreeMap<PathBuf, InputRead>,
+    sources: BTreeMap<PathBuf, Arc<str>>,
     dependencies: BTreeSet<ResourcePath>,
     bytes: usize,
     requests: usize,
-    changed: bool,
 }
 
-/// One input batch. Construct a new session for a rebuild. Data access starts
-/// denied; hosts explicitly grant logical roots independently of publication.
+/// A lazily loaded input batch. Reads retain their first bytes or error until
+/// the host creates a new session; the batch is not an atomic directory snapshot.
+/// Data access starts denied and requires explicit roots, even on cache hits.
 pub struct ResourceSession<R> {
     resources: R,
     roots: Vec<ReadRoot>,
@@ -80,7 +76,11 @@ impl<R: Resources> ResourceSession<R> {
         let path = self.resources.resolve(root.as_ref());
         if !self.roots.iter().any(|r| r.path == path) {
             let reader = self.resources.read_root(&path);
-            self.roots.push(ReadRoot { path, reader });
+            self.roots.push(ReadRoot {
+                path,
+                reader,
+                inputs: RefCell::default(),
+            });
             self.roots
                 .sort_by_key(|r| std::cmp::Reverse(r.path.components().count()));
         }
@@ -108,24 +108,16 @@ impl<R: Resources> ResourceSession<R> {
     pub fn data_cache_stats(&self) -> crate::DataCacheStats {
         self.data_cache.stats()
     }
-    pub(crate) fn observe_source(&self, path: &Path, source: Arc<str>) {
-        let mut state = self.state.borrow_mut();
-        if state.consumed.get(path).is_some_and(
-            |read| !matches!(read, InputRead::Ready(bytes) if bytes.as_ref() == source.as_bytes()),
-        ) {
-            state.changed = true;
-        }
-        let versions = state.sources.entry(path.into()).or_default();
-        if !versions.iter().any(|text| text == &source) {
-            versions.push(source);
-        }
+    pub(crate) fn register_source(&self, path: &Path, source: Arc<str>) {
+        self.state
+            .borrow_mut()
+            .sources
+            .entry(path.into())
+            .or_insert(source);
     }
 
     fn request(&self) -> Result<(), InputError> {
         let mut state = self.state.borrow_mut();
-        if state.changed {
-            return Err(InputError::Changed);
-        }
         state.requests = state.requests.saturating_add(1);
         if state.requests > self.limits.requests {
             Err(InputError::RequestLimit)
@@ -141,12 +133,7 @@ impl<R: Resources> ResourceSession<R> {
             .ok_or(InputError::AccessDenied)?;
         Ok((root, path.strip_prefix(&root.path).unwrap().into()))
     }
-    fn store(
-        &self,
-        path: &Path,
-        mut read: InputRead,
-        observation: Option<Observation>,
-    ) -> InputRead {
+    fn cache(&self, mut read: InputRead) -> InputRead {
         let mut state = self.state.borrow_mut();
         if let InputRead::Ready(bytes) = &read {
             if bytes.len() > self.limits.file_bytes {
@@ -157,67 +144,47 @@ impl<R: Resources> ResourceSession<R> {
                 state.bytes += bytes.len();
             }
         }
-        if matches!(read, InputRead::Failed(InputError::Changed)) {
-            state.changed = true;
-        }
-        state.files.insert(
-            path.into(),
-            CachedInput {
-                read: read.clone(),
-                observation,
-            },
-        );
         read
     }
-    fn load(&self, path: &Path, reader: Arc<dyn ResourceReader>, relative: PathBuf) -> InputRead {
-        if let Some(cached) = self.state.borrow().files.get(path) {
+    fn store(
+        &self,
+        path: &Path,
+        read: InputRead,
+        reader: Option<Arc<dyn ResourceReader>>,
+    ) -> InputRead {
+        let read = self.cache(read);
+        self.state
+            .borrow_mut()
+            .files
+            .entry(path.into())
+            .or_insert_with(|| CachedInput {
+                read: read.clone(),
+                reader,
+            });
+        read
+    }
+    fn load(&self, path: &Path, reader: &Arc<dyn ResourceReader>, relative: &Path) -> InputRead {
+        if let Some(cached) = self.state.borrow().files.get(path)
+            && cached
+                .reader
+                .as_ref()
+                .is_some_and(|loaded| Arc::ptr_eq(loaded, reader))
+        {
             return cached.read.clone();
         }
-        let before = reader.revision(&relative);
         let remaining = self
             .limits
             .cached_bytes
             .saturating_sub(self.state.borrow().bytes);
         let limit = self.limits.file_bytes.min(remaining);
-        let mut read = reader.read_bounded(&relative, limit);
+        let mut read = reader.read_bounded(relative, limit);
         if matches!(read, InputRead::Failed(InputError::TooLarge)) && limit < self.limits.file_bytes
         {
             read = InputRead::Failed(InputError::CacheLimit);
         }
-        if !matches!(read, InputRead::Pending) && before != reader.revision(&relative) {
-            read = InputRead::Failed(InputError::Changed);
-        }
-        let observation = (!matches!(read, InputRead::Pending)).then_some(Observation {
-            reader,
-            relative,
-            revision: before,
-        });
-        self.store(path, read, observation)
+        self.store(path, read, Some(reader.clone()))
     }
-    /// Detect changes to every observed physical input, including missing files.
-    /// This is not an atomic snapshot of the whole directory.
-    pub fn validate(&self) -> Result<(), InputError> {
-        let changed = {
-            let state = self.state.borrow();
-            state.changed
-                || state
-                    .files
-                    .values()
-                    .filter_map(|f| f.observation.as_ref())
-                    .any(|o| o.reader.revision(&o.relative) != o.revision)
-                || state
-                    .kinds
-                    .iter()
-                    .any(|(path, kind)| self.resources.kind(path) != *kind)
-        };
-        if changed {
-            self.state.borrow_mut().changed = true;
-            Err(InputError::Changed)
-        } else {
-            Ok(())
-        }
-    }
-    fn data(&self, path: &ResourcePath, source: Option<&str>) -> InputRead {
+    fn data(&self, path: &ResourcePath) -> InputRead {
         if let Err(error) = self.request() {
             return InputRead::Failed(error);
         }
@@ -227,49 +194,19 @@ impl<R: Resources> ResourceSession<R> {
             Ok(grant) => grant,
             Err(error) => return InputRead::Failed(error),
         };
-        let read = self.read_data(&absolute, root, relative, source);
-        let mut state = self.state.borrow_mut();
-        if matches!(read, InputRead::Failed(InputError::Changed))
-            || state
-                .consumed
-                .get(&absolute)
-                .is_some_and(|previous| previous != &read)
-        {
-            state.changed = true;
-            return InputRead::Failed(InputError::Changed);
+        if let Some(read) = root.inputs.borrow().get(&absolute) {
+            return read.clone();
         }
-        state
-            .consumed
-            .entry(absolute)
-            .or_insert_with(|| read.clone());
+        let read = self.read_data(&absolute, root, &relative);
+        root.inputs.borrow_mut().insert(absolute, read.clone());
         read
     }
-    fn read_data(
-        &self,
-        absolute: &Path,
-        root: &ReadRoot,
-        relative: PathBuf,
-        source: Option<&str>,
-    ) -> InputRead {
-        let observed = if source.is_none() {
-            let state = self.state.borrow();
-            match state.sources.get(absolute).map(Vec::as_slice) {
-                Some([text]) => Some(text.clone()),
-                // Several explicit revisions can coexist for editor analyses,
-                // but an unrelated document cannot guess which one it means.
-                Some(versions) if versions.len() > 1 => {
-                    return InputRead::Failed(InputError::Changed);
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let source = source.or(observed.as_deref());
-        // A caller-supplied source is an explicit per-document overlay. It need
-        // not exist on disk, but an overlay cannot grant adjacent data access.
+    fn read_data(&self, absolute: &Path, root: &ReadRoot, relative: &Path) -> InputRead {
+        let source = self.state.borrow().sources.get(absolute).cloned();
+        // Explicit document inputs override disk without requiring a real file.
+        // Their bytes are allocated and charged only if actually read as data.
         if let Some(source) = source {
-            let mut state = self.state.borrow_mut();
+            let state = self.state.borrow();
             if let Some(CachedInput {
                 read: InputRead::Ready(bytes),
                 ..
@@ -278,81 +215,23 @@ impl<R: Resources> ResourceSession<R> {
             {
                 return InputRead::Ready(bytes.clone());
             }
-            if let Some(bytes) = state.overlays.get(absolute).and_then(|versions| {
-                versions
-                    .iter()
-                    .find(|bytes| bytes.as_ref() == source.as_bytes())
-            }) {
-                return InputRead::Ready(bytes.clone());
-            }
             if source.len() > self.limits.file_bytes {
                 return InputRead::Failed(InputError::TooLarge);
             }
             if state.bytes.saturating_add(source.len()) > self.limits.cached_bytes {
                 return InputRead::Failed(InputError::CacheLimit);
             }
-            let bytes = Arc::from(source.as_bytes());
-            state.bytes += source.len();
-            state
-                .overlays
-                .entry(absolute.to_path_buf())
-                .or_default()
-                .push(Arc::clone(&bytes));
-            return InputRead::Ready(bytes);
+            drop(state);
+            return self.cache(InputRead::Ready(Arc::from(source.as_bytes())));
         }
-        let reader = match &root.reader {
-            Ok(reader) => reader.clone(),
-            Err(error) => return InputRead::Failed(error.clone()),
-        };
-        // Authorize through this root before consulting the shared source cache.
-        // Capability-rooted filesystem probing cannot follow a link outside it.
-        let revision = reader.revision(&relative);
-        if let Err(error @ (InputError::AccessDenied | InputError::Unavailable)) = &revision {
-            if !self.state.borrow().files.contains_key(absolute) {
-                return self.store(
-                    absolute,
-                    InputRead::Failed(error.clone()),
-                    Some(Observation {
-                        reader,
-                        relative,
-                        revision,
-                    }),
-                );
-            }
-            return InputRead::Failed(error.clone());
-        }
-        if self
-            .state
-            .borrow()
-            .files
-            .get(absolute)
-            .and_then(|f| f.observation.as_ref())
-            .is_some_and(|o| o.revision != revision)
-        {
-            self.state.borrow_mut().changed = true;
-            return InputRead::Failed(InputError::Changed);
-        }
-        if let Err(error) = self.validate() {
-            return InputRead::Failed(error);
-        }
-        self.load(absolute, reader, relative)
-    }
-    /// Evaluation of explicit logical-path + text documents uses its exact text
-    /// version, including when several analysis snapshots share a Vault.
-    pub fn for_document<'a>(
-        &'a self,
-        path: &'a Path,
-        source: &'a str,
-    ) -> impl EvaluationInputs + 'a {
-        DocumentInputs {
-            session: self,
-            path,
-            source,
+        match &root.reader {
+            Ok(reader) => self.load(absolute, reader, relative),
+            Err(error) => InputRead::Failed(error.clone()),
         }
     }
     fn source_bytes(&self, path: &Path) -> InputRead {
         let path = self.resources.resolve(path);
-        if let Err(error) = self.request().and_then(|_| self.validate()) {
+        if let Err(error) = self.request() {
             return InputRead::Failed(error);
         }
         if let Some(cached) = self.state.borrow().files.get(&path) {
@@ -371,7 +250,7 @@ impl<R: Resources> ResourceSession<R> {
             )
         });
         match reader {
-            Ok(reader) => self.load(&path, reader, relative),
+            Ok(reader) => self.load(&path, &reader, &relative),
             // Compatibility for source-only third-party backends. Data reads
             // never take this fallback, even when the source is already cached.
             Err(InputError::Unavailable) => {
@@ -388,26 +267,10 @@ impl<R: Resources> ResourceSession<R> {
 }
 impl<R: Resources> EvaluationInputs for ResourceSession<R> {
     fn file(&self, path: &ResourcePath) -> InputRead {
-        self.data(path, None)
+        self.data(path)
     }
     fn data_cache(&self) -> Option<&dyn crate::ParsedDataCache> {
         Some(&self.data_cache)
-    }
-}
-struct DocumentInputs<'a, R> {
-    session: &'a ResourceSession<R>,
-    path: &'a Path,
-    source: &'a str,
-}
-impl<R: Resources> EvaluationInputs for DocumentInputs<'_, R> {
-    fn file(&self, path: &ResourcePath) -> InputRead {
-        self.session.data(
-            path,
-            (Path::new(&path.logical_path()) == self.path).then_some(self.source),
-        )
-    }
-    fn data_cache(&self) -> Option<&dyn crate::ParsedDataCache> {
-        Some(&self.session.data_cache)
     }
 }
 impl<R: Resources> Resources for ResourceSession<R> {

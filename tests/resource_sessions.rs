@@ -1,4 +1,4 @@
-use notist::resources::{ResourceError, ResourceKind, ResourceReader, ResourceRevision};
+use notist::resources::{ResourceError, ResourceKind, ResourceReader};
 use notist::{
     EvaluationInputs, FsResources, InputError, InputLimits, InputRead, MemoryResources,
     OverlayResources, ResourcePath, ResourceSession, Resources, Vault,
@@ -6,7 +6,10 @@ use notist::{
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 fn path(root: &str, name: &str) -> ResourcePath {
@@ -29,6 +32,8 @@ struct Observed {
     files: MemoryResources,
     reads: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
     limits: Arc<Mutex<Vec<usize>>>,
+    kinds: Arc<AtomicUsize>,
+    responses: Arc<Mutex<BTreeMap<PathBuf, InputRead>>>,
 }
 impl Observed {
     fn new() -> Self {
@@ -36,6 +41,8 @@ impl Observed {
             files: MemoryResources::new("/project"),
             reads: Arc::default(),
             limits: Arc::default(),
+            kinds: Arc::default(),
+            responses: Arc::default(),
         }
     }
 }
@@ -47,6 +54,7 @@ impl Resources for Observed {
         panic!("bounded hosts must not fall back to unbounded reads")
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+        self.kinds.fetch_add(1, Ordering::Relaxed);
         self.files.kind(path)
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
@@ -58,6 +66,7 @@ impl Resources for Observed {
             base: self.files.read_root(root)?,
             reads: self.reads.clone(),
             limits: self.limits.clone(),
+            responses: self.responses.clone(),
         }))
     }
 }
@@ -66,6 +75,7 @@ struct Reader {
     base: Arc<dyn ResourceReader>,
     reads: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
     limits: Arc<Mutex<Vec<usize>>>,
+    responses: Arc<Mutex<BTreeMap<PathBuf, InputRead>>>,
 }
 impl ResourceReader for Reader {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
@@ -76,10 +86,12 @@ impl ResourceReader for Reader {
             .entry(self.root.join(path))
             .or_default() += 1;
         self.limits.lock().unwrap().push(limit);
-        self.base.read_bounded(path, limit)
-    }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        self.base.revision(path)
+        self.responses
+            .lock()
+            .unwrap()
+            .get(&self.root.join(path))
+            .cloned()
+            .unwrap_or_else(|| self.base.read_bounded(path, limit))
     }
 }
 
@@ -148,6 +160,80 @@ fn successes_failures_source_and_data_share_one_loading_cache_across_pages() {
 }
 
 #[test]
+fn repeated_reads_do_no_backend_work_and_each_new_file_is_loaded_once() {
+    let mut resources = Observed::new();
+    for i in 0..256 {
+        resources
+            .files
+            .insert(format!("{i}.txt"), format!("input-{i}"));
+    }
+    let session = ResourceSession::new(&resources).with_read_root("/project");
+    for _ in 0..3 {
+        for i in 0..256 {
+            let name = format!("{i}.txt");
+            if i % 2 == 0 {
+                assert_eq!(
+                    ready(session.file(&path("/project", &name))).as_ref(),
+                    format!("input-{i}").as_bytes()
+                );
+            }
+            let source = session.source(Path::new(&name)).unwrap();
+            assert_eq!(
+                ready(session.file(&path("/project", &name))).as_ref(),
+                source.as_bytes()
+            );
+        }
+    }
+    assert_eq!(resources.reads.lock().unwrap().len(), 256);
+    assert!(
+        resources
+            .reads
+            .lock()
+            .unwrap()
+            .values()
+            .all(|&calls| calls == 1)
+    );
+    assert_eq!(resources.kinds.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        session.cached_bytes(),
+        (0..256).map(|i| format!("input-{i}").len()).sum::<usize>()
+    );
+}
+
+#[test]
+fn pending_and_io_failures_are_fixed_without_poisoning_unrelated_inputs() {
+    for initial in [
+        InputRead::Pending,
+        InputRead::Failed(InputError::Io("temporarily unavailable".into())),
+    ] {
+        let mut resources = Observed::new();
+        resources.files.insert("other", "independent");
+        let absolute = PathBuf::from("/project/input");
+        resources
+            .responses
+            .lock()
+            .unwrap()
+            .insert(absolute.clone(), initial.clone());
+        let session = ResourceSession::new(&resources).with_read_root("/project");
+        let input = path("/project", "input");
+        assert_eq!(session.file(&input), initial);
+        resources.responses.lock().unwrap().insert(
+            absolute.clone(),
+            InputRead::Ready(Arc::from(&b"prepared"[..])),
+        );
+        assert_eq!(session.file(&input), initial);
+        assert_eq!(
+            ready(session.file(&path("/project", "other"))).as_ref(),
+            b"independent"
+        );
+        assert_eq!(resources.reads.lock().unwrap()[&absolute], 1);
+        let fresh = ResourceSession::new(&resources).with_read_root("/project");
+        assert_eq!(ready(fresh.file(&input)).as_ref(), b"prepared");
+        assert_eq!(resources.reads.lock().unwrap()[&absolute], 2);
+    }
+}
+
+#[test]
 fn data_parse_cache_hits_still_authorize_observe_and_account_for_input_requests() {
     let mut resources = Observed::new();
     resources.files.insert("view.notc",r#"fn show(source:Path=p"data.json")->InlineContent{let name=match read_json(source){ok(d)=>data_expect<String>(data_require<String>(d,"name")),err(e)=>data_error_kind(e)};[#text(text:name)]}"#);
@@ -205,11 +291,18 @@ fn parsed_data_versions_are_not_replaced_and_diagnostics_keep_the_consumed_snaps
     )
     .unwrap();
     assert_eq!(out.evaluation.sources[&name].as_ref(), data);
-    assert!(
-        vault
-            .render_html("two.not", page, Default::default())
-            .is_err()
-    );
+    let cached = vault
+        .render_html("two.not", page, Default::default())
+        .unwrap();
+    assert_eq!(cached.evaluation.sources[&name].as_ref(), data);
+    assert_eq!(cached.evaluation.diagnostics.len(), 1);
+    assert_eq!(vault.input_session().data_cache_stats().parses, 1);
+    let fresh = Vault::new(FsResources::new(directory.path()))
+        .render_html("three.not", page, Default::default())
+        .unwrap();
+    assert!(fresh.evaluation.diagnostics.is_empty());
+    assert!(fresh.rendered.html.contains("new data version"));
+    assert_eq!(out.evaluation.sources[&name].as_ref(), data);
 }
 
 #[test]
@@ -268,11 +361,14 @@ fn filesystem_changes_and_newly_created_missing_files_require_a_new_session() {
         "new source with different size",
     )
     .unwrap();
-    failed(
-        session.file(&path(directory.path().to_str().unwrap(), "source.notc")),
-        InputError::Changed,
+    assert_eq!(
+        ready(session.file(&path(directory.path().to_str().unwrap(), "source.notc"))).as_ref(),
+        b"old source",
     );
-    assert_eq!(session.validate(), Err(InputError::Changed));
+    assert_eq!(
+        session.source(Path::new("source.notc")).unwrap(),
+        "old source"
+    );
     let next =
         ResourceSession::new(FsResources::new(directory.path())).with_read_root(directory.path());
     assert_eq!(
@@ -282,24 +378,56 @@ fn filesystem_changes_and_newly_created_missing_files_require_a_new_session() {
     let missing = path(directory.path().to_str().unwrap(), "missing");
     failed(next.file(&missing), InputError::NotFound);
     std::fs::write(directory.path().join("missing"), "created").unwrap();
-    assert_eq!(next.validate(), Err(InputError::Changed));
+    failed(next.file(&missing), InputError::NotFound);
+    let fresh =
+        ResourceSession::new(FsResources::new(directory.path())).with_read_root(directory.path());
+    assert_eq!(ready(fresh.file(&missing)).as_ref(), b"created");
 }
 
 #[test]
-fn configuration_discovery_cannot_observe_a_new_input_halfway_through_a_build() {
+fn a_batch_is_lazy_not_an_atomic_directory_snapshot() {
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["first", "later"] {
+        std::fs::write(directory.path().join(name), "before").unwrap();
+    }
+    let session =
+        ResourceSession::new(FsResources::new(directory.path())).with_read_root(directory.path());
+    let p = |name| path(directory.path().to_str().unwrap(), name);
+    let first = ready(session.file(&p("first")));
+    std::fs::write(directory.path().join("first"), "after").unwrap();
+    std::fs::write(directory.path().join("later"), "after").unwrap();
+    assert!(Arc::ptr_eq(&first, &ready(session.file(&p("first")))));
+    assert_eq!(ready(session.file(&p("later"))).as_ref(), b"after");
+    std::fs::remove_file(directory.path().join("later")).unwrap();
+    assert_eq!(ready(session.file(&p("later"))).as_ref(), b"after");
+    let fresh =
+        ResourceSession::new(FsResources::new(directory.path())).with_read_root(directory.path());
+    assert_eq!(ready(fresh.file(&p("first"))).as_ref(), b"after");
+    failed(fresh.file(&p("later")), InputError::NotFound);
+}
+
+#[test]
+fn configuration_discovery_keeps_its_first_result_until_the_next_batch() {
     let directory = tempfile::tempdir().unwrap();
     let mut vault = Vault::open(directory.path());
     let analysis = vault.analyze("virtual.not", "visible text").unwrap();
     std::fs::write(directory.path().join("Notist.toml"), "").unwrap();
-    let error = vault
-        .evaluate("virtual.not", &analysis)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("changed during compilation"), "{error}");
+    let evaluated = vault.evaluate("virtual.not", &analysis).unwrap();
+    assert!(evaluated.diagnostics.is_empty());
     assert!(
-        Vault::open(directory.path())
-            .render_html("virtual.not", "visible text", Default::default())
-            .is_ok()
+        vault
+            .environment_for("other.not", "other text")
+            .unwrap()
+            .config_path()
+            .is_none()
+    );
+    let mut fresh = Vault::open(directory.path());
+    assert_eq!(
+        fresh
+            .environment_for("virtual.not", "visible text")
+            .unwrap()
+            .config_path(),
+        Some(directory.path().join("Notist.toml").as_path())
     );
 }
 
@@ -331,6 +459,63 @@ fn physical_roots_enforce_symlink_boundaries_and_regular_bounded_files() {
         // The filesystem policy allows only symlinks contained by its Dir cap.
         failed(session.file(&p("inside")), InputError::TooLarge);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn source_or_data_cache_hits_cannot_bypass_a_narrower_root_capability() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("public")).unwrap();
+    std::fs::write(directory.path().join("private.txt"), "private").unwrap();
+    std::os::unix::fs::symlink("../private.txt", directory.path().join("public/alias.txt"))
+        .unwrap();
+    let target = path(directory.path().to_str().unwrap(), "public/alias.txt");
+    for data_first in [false, true] {
+        let session = ResourceSession::new(FsResources::new(directory.path()))
+            .with_read_root(directory.path());
+        if data_first {
+            assert_eq!(ready(session.file(&target)).as_ref(), b"private");
+        } else {
+            assert_eq!(
+                session.source(Path::new("public/alias.txt")).unwrap(),
+                "private"
+            );
+        }
+        // The same logical path is now rooted more narrowly. Its old bytes
+        // were never authorized by this capability, even though they are cached.
+        let session = session.with_read_root(directory.path().join("public"));
+        failed(session.file(&target), InputError::AccessDenied);
+        failed(session.file(&target), InputError::AccessDenied);
+        let session = session.with_read_roots(vec![]);
+        failed(session.file(&target), InputError::AccessDenied);
+    }
+}
+
+#[test]
+fn legacy_source_bytes_do_not_manufacture_a_bounded_data_capability() {
+    struct SourceOnly(MemoryResources);
+    impl Resources for SourceOnly {
+        fn root(&self) -> &Path {
+            self.0.root()
+        }
+        fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+            self.0.read(path)
+        }
+        fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+            self.0.kind(path)
+        }
+        fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
+            self.0.entries(path)
+        }
+    }
+    let mut files = MemoryResources::new("/project");
+    files.insert("text", "source-only");
+    let session = ResourceSession::new(SourceOnly(files)).with_read_root("/project");
+    assert_eq!(session.source(Path::new("text")).unwrap(), "source-only");
+    failed(
+        session.file(&path("/project", "text")),
+        InputError::Unavailable,
+    );
 }
 
 #[test]
@@ -376,7 +561,7 @@ fn logical_source_overrides_and_virtual_documents_are_visible_to_read_text() {
 }
 
 #[test]
-fn new_source_overrides_cannot_replace_already_consumed_data_or_missing_results() {
+fn later_document_inputs_do_not_replace_cached_data_or_poison_the_batch() {
     for existing in [false, true] {
         let mut files = MemoryResources::new("/project");
         files.insert(
@@ -389,15 +574,68 @@ fn new_source_overrides_cannot_replace_already_consumed_data_or_missing_results(
         let mut vault = Vault::new(files);
         let source = "#import \"view.notc\" as view;\n#view.show(p\"target.not\")";
         let analysis = vault.analyze("reader.not", source).unwrap();
-        let _ = vault.evaluate("reader.not", &analysis).unwrap();
-        // A later explicit source cannot silently change the old input batch.
+        let before = vault
+            .render_output("reader.not", &analysis, Default::default())
+            .unwrap();
         vault.analyze("target.not", "new virtual text").unwrap();
-        let error = vault
-            .evaluate("reader.not", &analysis)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("changed during compilation"), "{error}");
+        let after = vault
+            .render_output("reader.not", &analysis, Default::default())
+            .unwrap();
+        assert_eq!(before.rendered.html, after.rendered.html);
+        if existing {
+            assert!(after.rendered.html.contains("old input"));
+            assert!(after.evaluation.diagnostics.is_empty());
+        } else {
+            assert!(
+                after
+                    .evaluation
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("resource not found"))
+            );
+        }
+        let mut fresh = Vault::new(vault.resources());
+        fresh.analyze("target.not", "new virtual text").unwrap();
+        let next = fresh
+            .render_html("reader.not", source, Default::default())
+            .unwrap();
+        assert!(next.evaluation.diagnostics.is_empty());
+        assert!(next.rendered.html.contains("new virtual text"));
     }
+}
+
+#[test]
+fn document_input_registration_keeps_the_first_text_until_a_new_batch() {
+    let mut files = MemoryResources::new("/project");
+    files.insert(
+        "view.notc",
+        "fn show(source: Path) -> BlockContent { [ #text(text: read_text(source)) ] }",
+    );
+    let first = "#import \"view.notc\" as view;\n#view.show(p\"doc.not\")\n\nfirst";
+    let second = first.replace("first", "second");
+    let mut vault = Vault::new(&files);
+    let a = vault.analyze("doc.not", first).unwrap();
+    let b = vault.analyze("doc.not", &second).unwrap();
+    for analysis in [&b, &a] {
+        let evaluated = vault.evaluate("doc.not", analysis).unwrap();
+        assert!(evaluated.diagnostics.is_empty());
+        assert!(
+            evaluated
+                .root
+                .descendants()
+                .any(|n| n.fields.get("text") == Some(&notist::Value::Str(first.into())))
+        );
+    }
+    let mut fresh = Vault::new(&files);
+    let b = fresh.analyze("doc.not", &second).unwrap();
+    let evaluated = fresh.evaluate("doc.not", &b).unwrap();
+    assert!(evaluated.diagnostics.is_empty());
+    assert!(
+        evaluated
+            .root
+            .descendants()
+            .any(|n| n.fields.get("text") == Some(&notist::Value::Str(second.clone().into())))
+    );
 }
 
 #[test]

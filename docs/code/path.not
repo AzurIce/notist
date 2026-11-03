@@ -89,6 +89,8 @@ Markup 只能把 Path 传给 notc 内容函数，不能直接调用 read_text，
 
 Vault 为一个输入批次持有共享 ResourceSession，默认显式允许项目根内的数据读取；外部模块、Book mounts 和发布 URL 不自动扩大授权。读取不调用 Assets，不复制私有输入，不为 Path 创建公开 URL。原生文件、MemoryResources、OverlayResources 与逻辑路径加源码的虚拟文档使用同一求值入口。
 
+同一批次保留每个输入首次读到的字节或错误，包括缺失文件。后续读取使用缓存，不随磁盘修改而变化；文件更新、修复或创建后以新 Vault 开始下一轮。缓存命中仍计费、登记依赖并检查读取授权。
+
 独立 Pipeline 可使用 evaluate_with_inputs 接收宿主输入；不带 inputs 的 evaluate 仍可执行无读取的文档，实际读取时报告能力不可用。浏览器按 NeedResources 准备字节或明确失败，再以新视图重试，不发布部分结果。接口、预算与一致性规则见 [资源输入与求值](../designs/resource-inputs.not)。
 
-JSON 解码、语言级 Bytes、通用文件写入与完整增量构建不在本版范围。
+JSON／TOML 解码与受检访问见 [Data](data.not)。语言级 Bytes、通用文件写入与完整增量构建不属于读取接口。

@@ -34,7 +34,7 @@ fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
 }
 
 #[test]
-fn generated_documents_share_text_inputs_and_source_versions_without_publication() {
+fn generated_documents_share_fixed_text_inputs_without_publication() {
     #[derive(Debug)]
     struct Pages;
     impl SiteExtension for Pages {

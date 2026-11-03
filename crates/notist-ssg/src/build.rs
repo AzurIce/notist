@@ -650,7 +650,6 @@ pub(crate) fn build<R: Resources>(
             .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;
         assets.generated(page.route.output.clone(), html.into_bytes())?;
     }
-    vault.validate_inputs()?;
     Ok(BuildOutput {
         files: assets.finish()?,
         pages,

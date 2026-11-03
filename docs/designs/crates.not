@@ -100,7 +100,7 @@ CodeModule 共享保存单文件声明、函数体与源码，只包含未解析
 
 Resources 表达宿主的资源输入视图。Environment 在 Parse / Lower 之后沿源码 import 图构建 Context，分别解析各条输出规则的局部 import 表，共享按规范路径加载的模块。它保留配置路径与模块源码，通过 context() 只读提供 Context；Vault 按规范路径与文档源码快照缓存 Arc<Environment>，将 Context 借用给分析和输出阶段。模块文本与分析来源使用共享的 Sources 存储。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境。本地和浏览器宿主共用管线与内容模型。
 
-core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；pipeline 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端、共享字节与错误缓存及输入版本；Vault、Book 和 SSG 共用会话。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
+core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；pipeline 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端和批次内固定的字节／错误缓存；Vault、Book 和 SSG 共用会话，输入更新通过新批次接收。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
 
 notist-book 接收 Vault 与书籍配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 

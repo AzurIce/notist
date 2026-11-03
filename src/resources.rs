@@ -4,16 +4,11 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-/// A backend-specific version of an observed file, not part of Path identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourceRevision(pub String);
-
 /// A host-created, rooted reader. Paths are relative to this capability's root.
-/// Implementations must bound allocation before reading/copying and either be
-/// immutable snapshots or report revisions, including changes to failed reads.
+/// Implementations must enforce that boundary and bound allocation before
+/// reading/copying. ResourceSession fixes the result of the first read.
 pub trait ResourceReader: Send + Sync {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead;
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +34,8 @@ impl std::fmt::Display for ResourceError {
 }
 impl std::error::Error for ResourceError {}
 
-/// Paths are logical resource identities, never browser URLs. Calls within a
-/// task must observe a consistent input snapshot. Missing entries are distinct
+/// Paths are logical resource identities, never browser URLs. ResourceSession
+/// caches reads within one batch. Missing entries are distinct
 /// from access failures. There is no write or browser execution capability.
 pub trait Resources {
     /// An absolute logical root; resolved identities must be stable on re-resolution.
@@ -196,9 +191,6 @@ impl ResourceReader for MemoryReader {
             Err(error) => InputRead::Failed(error),
         }
     }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        self.bytes(path).map(|_| None)
-    }
 }
 
 fn within(root: &Path, relative: &Path) -> Result<PathBuf, InputError> {
@@ -305,38 +297,30 @@ fn input_io(error: std::io::Error) -> InputError {
 #[cfg(not(target_arch = "wasm32"))]
 struct FsReader(cap_std::fs::Dir);
 #[cfg(not(target_arch = "wasm32"))]
-impl FsReader {
-    fn open(&self, path: &Path) -> Result<cap_std::fs::File, InputError> {
-        within(Path::new(""), path)?;
-        if path.as_os_str().is_empty() {
-            return Err(InputError::NotFile);
-        }
-        let mut options = cap_std::fs::OpenOptions::new();
-        options.read(true);
-        // Opening a FIFO must not block before the regular-file check.
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
-        }
-        let file = self.0.open_with(path, &options).map_err(input_io)?;
-        if !file.metadata().map_err(input_io)?.is_file() {
-            return Err(InputError::NotFile);
-        }
-        Ok(file)
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
 impl ResourceReader for FsReader {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
         use std::io::Read;
         let read = (|| {
-            let file = self.open(path)?;
+            within(Path::new(""), path)?;
+            if path.as_os_str().is_empty() {
+                return Err(InputError::NotFile);
+            }
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.read(true);
+            // Opening a FIFO must not block before the regular-file check.
+            #[cfg(unix)]
+            {
+                use cap_std::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+            }
+            let file = self.0.open_with(path, &options).map_err(input_io)?;
             let metadata = file.metadata().map_err(input_io)?;
+            if !metadata.is_file() {
+                return Err(InputError::NotFile);
+            }
             if metadata.len() > limit as u64 {
                 return Err(InputError::TooLarge);
             }
-            let before = fs_revision(&metadata);
             let mut bytes = Vec::new();
             (&file)
                 .take((limit as u64).saturating_add(1))
@@ -345,8 +329,8 @@ impl ResourceReader for FsReader {
             if bytes.len() > limit {
                 return Err(InputError::TooLarge);
             }
-            if before != fs_revision(&file.metadata().map_err(input_io)?) {
-                return Err(InputError::Changed);
+            if !same_metadata(&metadata, &file.metadata().map_err(input_io)?) {
+                return Err(InputError::Io("file changed while being read".into()));
             }
             Ok(Arc::from(bytes))
         })();
@@ -355,37 +339,29 @@ impl ResourceReader for FsReader {
             Err(error) => InputRead::Failed(error),
         }
     }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        self.open(path)?
-            .metadata()
-            .map(|m| Some(fs_revision(&m)))
-            .map_err(input_io)
-    }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn fs_revision(metadata: &cap_std::fs::Metadata) -> ResourceRevision {
+fn same_metadata(a: &cap_std::fs::Metadata, b: &cap_std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use cap_std::fs::MetadataExt;
-        ResourceRevision(format!(
-            "{}:{}:{}:{}:{}:{}:{}",
-            metadata.dev(),
-            metadata.ino(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-            metadata.ctime(),
-            metadata.ctime_nsec()
-        ))
+        (
+            a.len(),
+            a.mtime(),
+            a.mtime_nsec(),
+            a.ctime(),
+            a.ctime_nsec(),
+        ) == (
+            b.len(),
+            b.mtime(),
+            b.mtime_nsec(),
+            b.ctime(),
+            b.ctime_nsec(),
+        )
     }
     #[cfg(not(unix))]
     {
-        ResourceRevision(format!(
-            "{}:{:?}:{:?}",
-            metadata.len(),
-            metadata.modified(),
-            metadata.created()
-        ))
+        a.len() == b.len() && a.modified().ok() == b.modified().ok()
     }
 }
 
@@ -492,14 +468,6 @@ impl ResourceReader for OverlayReader {
                 Ok(base) => base.read_bounded(path, limit),
                 Err(error) => InputRead::Failed(error.clone()),
             },
-        }
-    }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        let absolute = within(&self.root, path)?;
-        if self.sources.contains_key(&absolute) {
-            Ok(None)
-        } else {
-            self.base.as_ref().map_err(Clone::clone)?.revision(path)
         }
     }
 }

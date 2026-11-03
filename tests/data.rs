@@ -473,7 +473,6 @@ fn input_errors_pending_and_capability_failures_use_distinct_channels() {
     }
     for input in [
         InputError::Unavailable,
-        InputError::Changed,
         InputError::TooLarge,
         InputError::CacheLimit,
         InputError::RequestLimit,

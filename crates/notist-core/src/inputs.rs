@@ -1,5 +1,5 @@
 //! A narrow synchronous view of host-owned, immutable compilation inputs.
-//! Implementations own authorization, bounded loading, caching and revisions.
+//! Implementations own authorization, bounded loading and per-batch caching.
 use crate::resource::ResourcePath;
 use std::{fmt, sync::Arc};
 
@@ -12,7 +12,6 @@ pub enum InputError {
     TooLarge,
     CacheLimit,
     RequestLimit,
-    Changed,
     Unavailable,
     Io(String),
 }
@@ -25,7 +24,6 @@ impl fmt::Display for InputError {
             Self::TooLarge => "resource size limit exceeded",
             Self::CacheLimit => "resource session cache limit exceeded",
             Self::RequestLimit => "resource session request limit exceeded",
-            Self::Changed => "resource changed during compilation; retry with a new input session",
             Self::Unavailable => "resource reading capability is unavailable",
             Self::Io(message) => message,
         })

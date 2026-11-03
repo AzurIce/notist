@@ -1,6 +1,6 @@
 //! Owned host input suitable for transport to a Worker. Asset bytes may be
 //! omitted when the host only publishes URLs and performs no resource copying.
-use crate::resources::{ResourceError, ResourceKind, ResourceReader, ResourceRevision};
+use crate::resources::{ResourceError, ResourceKind, ResourceReader};
 use crate::{InputError, InputRead, MemoryResources, Resources, Vault};
 use std::{
     collections::BTreeMap,
@@ -190,13 +190,6 @@ impl ResourceReader for PreparedReader {
             Ok(Some(read)) => read,
             Ok(None) => self.base.read_bounded(path, limit),
             Err(error) => InputRead::Failed(error),
-        }
-    }
-    fn revision(&self, path: &Path) -> Result<Option<ResourceRevision>, InputError> {
-        match self.state(path)? {
-            Some(InputRead::Failed(error)) => Err(error),
-            Some(_) => Ok(None),
-            None => self.base.revision(path),
         }
     }
 }

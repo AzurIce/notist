@@ -613,6 +613,65 @@ fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings()
 }
 
 #[test]
+fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
+    for (target, page, import) in [
+        ("book", "README.not", "view.notc"),
+        ("site", "content/index.not", "../view.notc"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(
+            root,
+            "Notist.toml",
+            &format!("[project]\nname='test'\n[[{target}]]\noutput='public'"),
+        );
+        write(
+            root,
+            page,
+            &format!("#import \"{import}\" as view;\n#view.show()"),
+        );
+        write(
+            root,
+            "view.notc",
+            r#"fn show() -> InlineContent {
+            let name = match read_json(p"./private/input.json") {
+                ok(data) => data_expect<String>(data_require<String>(data, "name")),
+                err(error) => data_error_kind(error)
+            };
+            [#text(text: name)]
+        }"#,
+        );
+        write(root, "private/input.json", r#"{"name":"first batch"}"#);
+        let server = Server::start(root);
+        let mut events = server.events();
+        let mut previous = update(&mut events, |event| event["report"]["status"] == "ready");
+        assert!(server.get("/").contains("first batch"));
+        for (contents, expected) in [
+            (Some(r#"{"name":"next batch"}"#), "next batch"),
+            (None, "not_found"),
+            (Some(r#"{"name":"repaired batch"}"#), "repaired batch"),
+        ] {
+            if let Some(contents) = contents {
+                write(root, "private/input.json", contents);
+            } else {
+                std::fs::remove_file(root.join("private/input.json")).unwrap();
+            }
+            previous = update(&mut events, |event| {
+                event["revision"].as_u64() > previous["revision"].as_u64()
+            });
+            assert!(previous["report"]["errors"].as_array().unwrap().is_empty());
+            assert!(server.get("/").contains(expected), "{target}: {expected}");
+        }
+        assert!(
+            server
+                .get("/private/input.json")
+                .starts_with("HTTP/1.1 404")
+        );
+        assert!(!root.join("public").exists());
+    }
+}
+
+#[test]
 fn serve_no_clear_screen_keeps_failed_and_resolved_build_output() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

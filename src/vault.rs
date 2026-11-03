@@ -82,9 +82,9 @@ pub struct ItemOutput {
     pub rendered: RenderResult,
 }
 
-/// One immutable resource view, potentially containing multiple nearest configs.
-/// Environment assembly is retained within this view; replace the Vault when
-/// inputs change. No mutable source cache or incremental compiler is implied.
+/// One input batch, potentially containing multiple nearest configs. Loaded
+/// bytes, errors and document inputs remain fixed; create a new Vault for the
+/// next build or edit. This is a lazy view, not an atomic filesystem snapshot.
 pub struct Vault<R = FsResources> {
     resources: crate::ResourceSession<R>,
     pipeline: Pipeline,
@@ -135,15 +135,6 @@ impl<R: Resources> Vault<R> {
     /// Load source bytes from the same input view used by `read_text`.
     pub fn source(&self, path: impl AsRef<Path>) -> Result<String, ResourceError> {
         self.resources.source(path.as_ref())
-    }
-    pub fn validate_inputs(&self) -> Result<(), VaultError> {
-        self.resources.validate().map_err(|error| {
-            ResourceError::Access {
-                path: self.resources.root().into(),
-                message: error.to_string(),
-            }
-            .into()
-        })
     }
     /// Whether the configured document pipeline handles this file format.
     pub fn supports(&self, path: impl AsRef<Path>) -> bool {
@@ -207,7 +198,7 @@ impl<R: Resources> Vault<R> {
             .map_err(VaultError::Environment)?,
         );
         let text: Arc<str> = Arc::from(source);
-        self.resources.observe_source(path, text.clone());
+        self.resources.register_source(path, text.clone());
         self.environments
             .entry(path.to_path_buf())
             .or_default()
@@ -365,24 +356,19 @@ impl<R: Resources> Vault<R> {
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
-        self.evaluate_in(&path, source, analysis, environment.context())
+        self.evaluate_in(analysis, environment.context())
     }
     fn evaluate_in(
         &self,
-        path: &Path,
-        source: &str,
         analysis: &Analysis,
         context: &crate::Context,
     ) -> Result<Evaluation, VaultError> {
-        self.validate_inputs()?;
-        let inputs = self.resources.for_document(path, source);
         let result = self.pipeline.evaluate_with_inputs_and_limits(
             analysis,
             context,
-            &inputs,
+            &self.resources,
             self.evaluation_limits,
         );
-        self.validate_inputs()?;
         match result {
             crate::EvaluationOutcome::Complete(evaluation) => Ok(*evaluation),
             crate::EvaluationOutcome::NeedResources(paths) => Err(VaultError::NeedResources(paths)),
@@ -402,7 +388,7 @@ impl<R: Resources> Vault<R> {
             .get(path.to_string_lossy().as_ref())
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
-        let mut evaluation = self.evaluate_in(&path, source, analysis, environment.context())?;
+        let mut evaluation = self.evaluate_in(analysis, environment.context())?;
         let outside =
             crate::vault_index::check_embed_paths(self.resources.root(), &path, &evaluation.root);
         for diagnostic in &outside {

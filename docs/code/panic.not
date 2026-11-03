@@ -63,4 +63,4 @@ fn unused() -> InlineContent {
 
 已有的 `compile_error` 是检查期操作，要求已知消息，检查器访问到它就报告错误；panic 是求值期操作。显式 comptime 或必须计算的编译期实参执行到 panic 时，报告发生在该阶段，位置仍指向内部 panic 调用。
 
-Result 的 err 是普通可处理值，不会自动触发 panic。反过来，Result 的 match 也不能捕获 panic、预算耗尽或输入批次失效。输入未准备仍使用宿主 NeedResources 协议，不伪装成用户错误值。
+Result 的 err 是普通可处理值，不会自动触发 panic。反过来，Result 的 match 也不能捕获 panic 或预算耗尽。输入未准备仍使用宿主 NeedResources 协议，不伪装成用户错误值。

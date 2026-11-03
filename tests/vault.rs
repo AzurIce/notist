@@ -883,3 +883,36 @@ fn normalized_document_paths_and_source_snapshots_share_one_environment() {
         &next.environment_for("doc.not", source).unwrap()
     ));
 }
+
+#[test]
+fn retained_document_handles_reject_other_batches_sources_and_configurations() {
+    let resources = MemoryResources::new("/handles");
+    let mut vault = Vault::new(resources.clone());
+    let (a, handle) = vault
+        .analyze_document_with_resource_root("doc.not", "first", ".")
+        .unwrap();
+    let before = a.clone();
+    let (b, _) = vault
+        .analyze_document_with_resource_root("doc.not", "second", ".")
+        .unwrap();
+    assert!(vault.evaluate_document(&handle, &b).is_err());
+    let evaluation = vault.evaluate_document(&handle, &a).unwrap();
+    assert_eq!(a, before);
+    let (registry, _) = vault
+        .html_registry_for_document(&handle, &evaluation.root)
+        .unwrap();
+    assert!(
+        notist_html::Renderer::from_registry(registry)
+            .render(&evaluation.root)
+            .contains("first")
+    );
+    let other = Vault::new(resources);
+    assert!(other.evaluate_document(&handle, &a).is_err());
+    assert!(
+        other
+            .html_registry_for_document(&handle, &evaluation.root)
+            .is_err()
+    );
+    let changed = vault.with_pipeline(notist::Pipeline::default());
+    assert!(changed.evaluate_document(&handle, &a).is_err());
+}

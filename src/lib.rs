@@ -30,7 +30,9 @@ pub use notist_core::definitions::{
     ParameterDef, ParameterMode, Type, ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
-pub use notist_core::frontend::{Frontend, FrontendCacheKey, FrontendOptions, FrontendOutput, FrontendSyntax};
+pub use notist_core::frontend::{
+    Frontend, FrontendCacheKey, FrontendOptions, FrontendOutput, FrontendSyntax,
+};
 pub use notist_core::inputs::{EvaluationInputs, InputError, InputRead};
 pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
 pub use notist_core::registry::Registry;
@@ -41,14 +43,14 @@ pub use notist_core::{
 pub use notist_pipeline::frontend::{
     PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
 };
+#[cfg(feature = "profiling")]
+pub use notist_pipeline::profiling;
 pub use notist_pipeline::{
     Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,
     Evaluation, EvaluationOutcome, ExportTable, Limits, LinkedModule, Lowered, ModuleExports,
     ModuleScope, Pipeline, UnsupportedFormat, bind_imports, evict_caches,
 };
 pub use notist_syntax as syntax;
-#[cfg(feature = "profiling")]
-pub use notist_pipeline::profiling;
 
 pub mod cst_json;
 pub mod json;
@@ -70,7 +72,9 @@ pub mod vault;
 pub mod vault_index;
 pub use environment::{Environment, ModuleSource, SourceDiagnostic};
 pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
-pub use vault::{CodeAnalysis, HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError};
+pub use vault::{
+    CodeAnalysis, DocumentHandle, HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError,
+};
 pub use vault_index::VaultIndex;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

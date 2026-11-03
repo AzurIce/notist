@@ -41,3 +41,50 @@ fn warm_module_caches_never_skip_host_source_loading_or_request_budgets() {
         .to_string();
     assert_eq!(cold, warm);
 }
+
+#[test]
+fn shared_graph_assembly_still_charges_each_documents_source_requests() {
+    let mut vault = Vault::new(resources()).with_input_limits(InputLimits {
+        requests: 3,
+        ..Default::default()
+    });
+    let source = "#import \"a.notc\" as a;\n#a.show()";
+    assert!(
+        vault
+            .analyze("first.not", source)
+            .unwrap()
+            .diagnostics()
+            .is_empty()
+    );
+    let error = vault.analyze("second.not", source).unwrap_err().to_string();
+    assert!(error.contains("request limit exceeded"), "{error}");
+}
+
+#[test]
+fn checked_plans_do_not_collapse_module_identity_or_document_sources() {
+    let mut files = resources();
+    files.insert("other/b.notc", "fn value() -> String { \"other\" }");
+    files.insert(
+        "other/a.notc",
+        "import \"b.notc\": value; fn show() -> InlineContent { [#text(text: value())] }",
+    );
+    let mut vault = Vault::new(files);
+    for (document, module, expected) in [
+        ("first.not", "a.notc", "hello"),
+        ("second.not", "a.notc", "hello"),
+        ("third.not", "other/a.notc", "other"),
+        ("fourth.not", "a.notc", "hello"),
+    ] {
+        let source = format!("#import \"{module}\" as a;\n#a.show()");
+        let output = vault
+            .render_html(document, &source, Default::default())
+            .unwrap();
+        assert!(output.analysis.diagnostics().is_empty());
+        assert!(output.evaluation.diagnostics.is_empty());
+        assert_eq!(output.rendered.html.matches(expected).count(), 1);
+        assert_eq!(
+            output.analysis.sources()[&format!("/cache-budget/{document}")].as_ref(),
+            source
+        );
+    }
+}

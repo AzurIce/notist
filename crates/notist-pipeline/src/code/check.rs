@@ -1458,20 +1458,37 @@ impl<'a> Checker<'a> {
             self.report(def.span, "function instantiation limit exceeded");
             return;
         }
-        self.program.instances.insert(
+        // Only whole, successful plans starting from an empty program are
+        // reused. This preserves instance/depth limits and avoids merging extra
+        // instances from another document into a partially checked program.
+        let cacheable = self.depth == 0
+            && self.program.instances.is_empty()
+            && self.program.data_retention.is_empty()
+            && def.implementation.is_code();
+        if cacheable && let Some(program) = self.context.checked_program(&key) {
+            self.program = program;
+            return;
+        }
+        let diagnostics_start = self.diagnostics.len();
+        std::sync::Arc::make_mut(&mut self.program.instances).insert(
             key.clone(),
-            InstanceRecord {
+            std::sync::Arc::new(InstanceRecord {
                 definition: def.clone(),
                 body: None,
                 diagnostics: Vec::new(),
                 checking: true,
-            },
+            }),
         );
         if !def.implementation.is_code() {
-            self.program.instances.get_mut(&key).unwrap().checking = false;
+            std::sync::Arc::make_mut(
+                std::sync::Arc::make_mut(&mut self.program.instances)
+                    .get_mut(&key)
+                    .unwrap(),
+            )
+            .checking = false;
             return;
         }
-        let body = self.context.program().body(&def.id).cloned();
+        let body = self.context.program().body(&def.id);
         let Some(body) = body else {
             self.report(def.span, "missing Code implementation");
             return;
@@ -1511,7 +1528,7 @@ impl<'a> Checker<'a> {
         }
         let start = self.diagnostics.len();
         self.failures.push(body.diagnostics.clone());
-        self.diagnostics.extend(body.diagnostics);
+        self.diagnostics.extend(body.diagnostics.iter().cloned());
         self.depth += 1;
         let checked = body
             .expression
@@ -1527,7 +1544,11 @@ impl<'a> Checker<'a> {
             }
         }
         let diagnostics = self.failures.pop().unwrap();
-        let record = self.program.instances.get_mut(&key).unwrap();
+        let record = std::sync::Arc::make_mut(
+            std::sync::Arc::make_mut(&mut self.program.instances)
+                .get_mut(&key)
+                .unwrap(),
+        );
         record.body = checked;
         record.diagnostics = diagnostics;
         record.checking = false;
@@ -1536,6 +1557,17 @@ impl<'a> Checker<'a> {
         self.source = old_source;
         self.site = old_site;
         self.resource_root = old_resource_root;
+        if cacheable
+            && self.diagnostics.len() == diagnostics_start
+            && self.program.data_retention.is_empty()
+            && self
+                .program
+                .instances
+                .values()
+                .all(|record| !record.checking && record.diagnostics.is_empty())
+        {
+            self.context.remember_checked_program(key, &self.program);
+        }
     }
 }
 fn same_type(actual: &Type, expected: &Type) -> bool {

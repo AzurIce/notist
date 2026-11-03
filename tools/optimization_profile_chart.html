@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Notist 优化前后同批对照</title>
+<style>
+:root{font-family:var(--font-sans,system-ui,sans-serif);color:var(--foreground,#262930);--before:var(--chart-2,#9b719b);--after:var(--chart-1,#438c9a);--soft:var(--muted,#f1f3f5);--secondary:var(--muted-foreground,#656b74);--line:var(--border,#dde1e5)}
+body{margin:0}*{box-sizing:border-box}main{width:100%;min-width:0}p{margin:0;line-height:1.5}.subtle{color:var(--secondary);font-size:.86rem}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 16px}.stat{background:var(--soft);border-radius:var(--radius,8px);padding:10px 12px}.stat strong{display:block;font-size:1.14rem;font-variant-numeric:tabular-nums}.stat span{font-size:.78rem;color:var(--secondary)}.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}.tabs{display:flex;gap:3px;background:var(--soft);border-radius:7px;padding:3px}button,select{font:inherit;color:inherit}button{border:0;background:transparent;padding:6px 10px;border-radius:5px;cursor:pointer;font-size:.86rem}button[aria-pressed=true]{background:var(--card,#fff);box-shadow:0 1px 3px #0001}select{max-width:100%;background:var(--card,#fff);border:1px solid var(--line);border-radius:5px;padding:4px 7px}.legend{display:flex;gap:12px;align-items:center;font-size:.8rem;color:var(--secondary)}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}.chart{margin:12px 0 9px}.workload{display:grid;grid-template-columns:110px minmax(0,1fr) 58px;gap:10px;align-items:center;height:61px}.name{font-size:.9rem}.name small{display:block;color:var(--secondary);font-size:.74rem;margin-top:2px}.track{display:grid;grid-template-columns:minmax(0,1fr) 58px;align-items:center;gap:8px;height:22px}.bar{height:9px;border-radius:3px;min-width:2px}.time,.gain{font-variant-numeric:tabular-nums;text-align:right;font-size:.85rem}.gain{font-weight:650}.warning{background:color-mix(in srgb,var(--warning,#b98631) 11%,transparent);border-radius:7px;padding:10px 12px;font-size:.84rem;line-height:1.5}.section{margin-top:17px;padding-top:13px;border-top:1px solid var(--line)}.sectionhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px}.sectionhead strong{font-size:.92rem}table{border-collapse:collapse;width:100%;font-size:.84rem}th{font-size:.77rem;color:var(--secondary);font-weight:500}th,td{padding:5px 0;text-align:right;font-variant-numeric:tabular-nums}th:first-child,td:first-child{text-align:left}.detailnote{font-size:.8rem;color:var(--secondary);margin-top:7px}details{font-size:.82rem;color:var(--secondary);margin-top:12px}summary{cursor:pointer}details p{margin-top:8px}code{font-family:var(--font-mono,monospace);font-size:.88em}@media(max-width:420px){.stats{gap:5px}.stat{padding:8px}.stat strong{font-size:1rem}.stat span{font-size:.72rem}.workload{grid-template-columns:78px minmax(0,1fr) 48px;gap:7px}.track{grid-template-columns:minmax(0,1fr) 52px;gap:5px}.name,.time,.gain{font-size:.8rem}button{padding:6px 8px}.legend{font-size:.76rem}.sectionhead{align-items:flex-start}}
+</style>
+</head>
+<body>
+<main>
+  <p><strong>普通 CLI · 同批单核对照</strong></p>
+  <p class="subtle">214de5f → 未提交优化补丁 · 完整输入与消费者不变</p>
+  <div class="stats">
+    <div class="stat"><strong id="builds"></strong><span>主批完整构建</span></div>
+    <div class="stat"><strong id="hashes"></strong><span>文件指纹全部一致</span></div>
+    <div class="stat"><strong>734 / 370</strong><span>Rust 全特性 / 无默认</span></div>
+  </div>
+  <div class="controls">
+    <div class="tabs" aria-label="发布状态">
+      <button type="button" data-scenario="same" aria-pressed="true">输出不变</button>
+      <button type="button" data-scenario="replace" aria-pressed="false">强制替换</button>
+      <button type="button" data-scenario="first" aria-pressed="false">首次构建</button>
+    </div>
+    <div class="legend"><span><i class="dot" style="background:var(--before)"></i>优化前</span><span><i class="dot" style="background:var(--after)"></i>优化后</span></div>
+  </div>
+  <div class="chart" id="chart" aria-live="polite"></div>
+  <p class="subtle" id="method"></p>
+  <p class="warning" id="caution" style="margin-top:10px"></p>
+  <section class="section">
+    <div class="sectionhead"><strong>独立探针 · 同输出，三轮均值</strong><select id="workload" aria-label="探针负载"></select></div>
+    <table><thead><tr><th>阶段 / ms</th><th>前</th><th>后</th></tr></thead><tbody id="phases"></tbody></table>
+    <p class="detailnote" id="detail-note"></p>
+  </section>
+  <details><summary>四核补充、测量边界与未实施项</summary>
+    <p id="multicore"></p>
+    <p>普通二进制与探针分开；CPU 8 固定，频率未锁定，保留慢样本。所有替换清理同步计时，不把清旧移出计时。强制替换只改旧输出，不模拟任意源编辑；首次构建不含清旧。</p>
+    <p>已做树所有权、共享调用计划、宿主批次复用、路径预规划、完全相同输出跳过及模板并行。参数槽位 / 实例 ID、spool、逐文件增量发布未实施；不是所有 P2 设想均已完成。</p>
+  </details>
+</main>
+<script id="profile-data" type="application/json">__PROFILE_DATA__</script>
+<script>
+const data=JSON.parse(document.getElementById('profile-data').textContent);
+const titles={xiv:'XIV',literal:'无模块正文',shared:'共享模块图',private:'私有模块图',wide:'宽导出'};
+let scenario='same';
+const fmt=(n,d=3)=>n.toLocaleString('zh-CN',{minimumFractionDigits:d,maximumFractionDigits:d});
+document.getElementById('builds').textContent=String(data.integrity.complete_builds);
+document.getElementById('hashes').textContent=data.integrity.file_hashes_verified.toLocaleString('zh-CN');
+const scenarios={same:{rounds:5,note:'XIV 为 1.30×，正文 / 模块站为 1.53–4.60×。这包含完整字节验证后的 no-op 发布，不代表真实变更替换也有同样收益。'},replace:{rounds:3,note:'XIV 仅 1.01×，基本持平。目录创建虽大幅减少，整站逐文件写出、清旧与发布检查仍有成本；不能声称稳定提速。'},first:{rounds:3,note:'首次构建没有旧目录，也不承担清旧。此处不能与重建混算；XIV 为 1.11×，四种正文 / 模块站为 1.53–4.64×。'}};
+function draw(){
+ document.querySelectorAll('[data-scenario]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scenario===scenario)));
+ document.getElementById('chart').innerHTML=data.summary.rows.map(row=>{
+  const v=row.scenarios[scenario],a=v.before.wall_s.median,b=v.after.wall_s.median,scale=Math.max(a,b),range=`前 ${fmt(v.before.wall_s.min)}–${fmt(v.before.wall_s.max)} s；后 ${fmt(v.after.wall_s.min)}–${fmt(v.after.wall_s.max)} s`;
+  return `<div class="workload" title="${range}"><div class="name">${titles[row.workload]}<small>${row.html.toLocaleString('zh-CN')} 页</small></div><div><div class="track"><div class="bar" style="width:${a/scale*100}%;background:var(--before)"></div><span class="time">${fmt(a)}</span></div><div class="track"><div class="bar" style="width:${b/scale*100}%;background:var(--after)"></div><span class="time">${fmt(b)}</span></div></div><span class="gain">${fmt(v.speedup,2)}×</span></div>`;
+ }).join('');
+ document.getElementById('method').textContent=`单位：秒 · ${scenarios[scenario].rounds} 轮中位数 · 条长按各负载旧值归一化 · 加速比＝前 / 后`;
+ document.getElementById('caution').textContent=scenarios[scenario].note;
+}
+document.querySelectorAll('[data-scenario]').forEach(b=>b.addEventListener('click',()=>{scenario=b.dataset.scenario;draw()}));
+const select=document.getElementById('workload');
+Object.entries(titles).forEach(([value,label])=>{const option=document.createElement('option');option.value=value;option.textContent=label;select.append(option)});
+function details(){
+ const row=data.summary.rows.find(r=>r.workload===select.value),before=row.probes['before-probe'],after=row.probes['after-probe'];
+ const groups=[['分析',['pipeline.analyze']],['求值（含宿主）',['pipeline.evaluate']],['解释器 eval.run',['eval.run']],['完整发布',['cli.publish']]];
+ if(row.workload==='xiv')groups.push(['资源规划 + 模板 + finish',['ssg.assets_templates','ssg.page_templates','ssg.finish']]);
+ const sum=(p,keys)=>keys.reduce((n,k)=>n+(p[k]?.seconds||0)*1000,0);
+ document.getElementById('phases').innerHTML=groups.map(([label,keys])=>`<tr><td>${label}</td><td>${fmt(sum(before,keys))}</td><td>${fmt(sum(after,keys))}</td></tr>`).join('');
+ const notes={xiv:'预留路径将工作从逐页阶段前移；合并相关阶段后看收益。底层解释器略慢，外层下降不能全算作解释器加速。',literal:'纯正文也显著改善：bind / present 的多余树复制减少。分析并非每段都更快。',shared:'真实模块编译工作仍为 18 次；装配调用减少，依赖源码访问与计费保留。',private:'私有模块真实编译仍为 5,120 次，不能合并身份；缓存保留也增加回收成本。',wide:'实际编译仍为 6 次；共享图装配与检查计划复用，求值也明显改善。'};
+ document.getElementById('detail-note').textContent=notes[row.workload]+' 探针与普通秒数不可直接相减。';
+}
+select.addEventListener('change',details);
+const four=data.multicore,before=four.before.wall_s.median,after=four.after.wall_s.median;
+document.getElementById('multicore').textContent=`XIV 四核（CPU 8–11），独立三轮中位数：${fmt(before)} → ${fmt(after)} s，${fmt(before/after,2)}×。不是隔离并行开关的严格 A/B，不把全部改善归于并行。`;
+draw();details();
+</script>
+</body>
+</html>

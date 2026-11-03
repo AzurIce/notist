@@ -45,12 +45,20 @@ impl SiteExtension for CommandExtension {
             .unwrap_or("command")
     }
     fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
-        let request = Request {
+        #[derive(Serialize)]
+        struct BorrowedRequest<'a> {
+            version: u32,
+            stage: &'a str,
+            root: &'a std::path::Path,
+            config: &'a SiteConfig,
+            input: &'a SiteInput,
+        }
+        let request = BorrowedRequest {
             version: PROTOCOL_VERSION,
-            stage: "prepare".into(),
-            root: context.resources.root().into(),
-            config: context.config.clone(),
-            input: input.clone(),
+            stage: "prepare",
+            root: context.resources.root(),
+            config: context.config,
+            input,
         };
         let response: Response =
             notist::stdio::exchange(&self.command, context.resources.root(), &request)

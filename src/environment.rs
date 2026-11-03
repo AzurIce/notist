@@ -9,6 +9,13 @@ use std::{
 mod config;
 mod loader;
 pub use config::{Configuration, DocumentStage, ExtensionBinding, parse_config};
+pub(crate) use loader::EnvironmentCache;
+
+pub(crate) struct DocumentSource<'a> {
+    pub path: &'a Path,
+    pub text: &'a str,
+    pub imports: &'a [crate::Import],
+}
 
 #[derive(Debug, Clone)]
 pub struct SourceDiagnostic {
@@ -24,7 +31,7 @@ pub struct ModuleSource {
 #[derive(Debug)]
 pub struct Environment {
     config_path: Option<PathBuf>,
-    modules: BTreeMap<String, ModuleSource>,
+    modules: Arc<BTreeMap<String, ModuleSource>>,
     context: Context,
 }
 impl Environment {
@@ -41,15 +48,12 @@ impl Environment {
     pub(crate) fn for_document(
         resources: &(impl Resources + ?Sized),
         pipeline: &crate::Pipeline,
-        path: &Path,
-        source: &str,
-        imports: &[crate::Import],
+        document: DocumentSource<'_>,
         config: Option<&Path>,
         extensions: &[Arc<dyn crate::extensions::DocumentExtension>],
+        cache: &mut EnvironmentCache,
     ) -> Result<Self, Vec<SourceDiagnostic>> {
-        loader::document(
-            resources, pipeline, path, source, imports, config, extensions,
-        )
+        loader::document(resources, pipeline, document, config, extensions, cache)
     }
     /// Load a Code source and its explicit import graph.
     pub fn load_from(

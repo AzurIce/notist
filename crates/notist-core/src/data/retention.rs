@@ -23,6 +23,9 @@ impl fmt::Debug for DataRetention {
     }
 }
 impl DataRetention {
+    pub fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
     pub fn remaining(&self, limit: usize) -> usize {
         limit.saturating_sub(self.bytes)
     }

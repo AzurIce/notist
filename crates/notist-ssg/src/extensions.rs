@@ -4,7 +4,7 @@ use crate::{Error, Route, SiteConfig};
 use notist::{Resources, Vault};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     path::{Path, PathBuf},
 };
@@ -58,8 +58,9 @@ fn validate<R: Resources>(
     vault: &Vault<R>,
     content: &Path,
     input: &SiteInput,
-) -> Result<(), Error> {
-    let mut outputs = BTreeMap::new();
+) -> Result<Vec<Route>, Error> {
+    let mut outputs = BTreeSet::new();
+    let mut routes = Vec::with_capacity(input.documents.len());
     for path in input.documents.keys() {
         if !valid_path(path)
             || path
@@ -73,19 +74,20 @@ fn validate<R: Resources>(
             )));
         }
         let route = Route::new(content.join(path), content)?;
-        if outputs.insert(route.output.clone(), path).is_some() {
+        if !outputs.insert(route.output.clone()) {
             return Err(Error::Message(format!(
                 "route collision at `{}`",
                 route.output.display()
             )));
         }
+        routes.push(route);
     }
     for key in input.data.keys() {
         if !valid_path(Path::new(key)) {
             return Err(Error::Message(format!("invalid site data key `{key}`")));
         }
     }
-    Ok(())
+    Ok(routes)
 }
 
 fn contextualize(extension: &dyn SiteExtension, error: Error) -> Error {
@@ -106,7 +108,7 @@ pub(crate) fn prepare<R: Resources>(
     config: &SiteConfig,
     native: &[Box<dyn SiteExtension>],
     input: &mut SiteInput,
-) -> Result<(), Error> {
+) -> Result<Vec<Route>, Error> {
     let content = vault.resources().resolve(&config.content);
     let context = SiteContext {
         resources: vault.resources(),
@@ -122,23 +124,26 @@ pub(crate) fn prepare<R: Resources>(
     }
     let run = |extension: &dyn SiteExtension, input: &mut SiteInput| {
         let mut candidate = input.clone();
-        extension
+        let routes = extension
             .prepare(&context, &mut candidate)
             .and_then(|()| validate(vault, &content, &candidate))
             .map_err(|error| contextualize(extension, error))?;
         *input = candidate;
-        Ok::<_, Error>(())
+        Ok::<_, Error>(routes)
     };
+    let mut routes = None;
     for extension in native {
-        run(extension.as_ref(), input)?;
+        routes = Some(run(extension.as_ref(), input)?);
     }
     for extension in &config.extensions {
         let ExtensionConfig::Command { command, .. } = extension;
         #[cfg(not(target_arch = "wasm32"))]
-        run(
-            &super::command::CommandExtension::new(command.clone()),
-            input,
-        )?;
+        {
+            routes = Some(run(
+                &super::command::CommandExtension::new(command.clone()),
+                input,
+            )?);
+        }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = command;
@@ -147,5 +152,8 @@ pub(crate) fn prepare<R: Resources>(
             ));
         }
     }
-    validate(vault, &content, input)
+    match routes {
+        Some(routes) => Ok(routes),
+        None => validate(vault, &content, input),
+    }
 }

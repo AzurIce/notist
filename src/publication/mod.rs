@@ -34,7 +34,7 @@ impl From<ResourceError> for Error {
 /// Exact source identities for published resources, with shared destinations.
 #[derive(Default)]
 pub struct Assets {
-    files: BTreeMap<PathBuf, Vec<u8>>,
+    files: BTreeMap<PathBuf, Option<Vec<u8>>>,
     sources: BTreeMap<PathBuf, PathBuf>,
     output: PathBuf,
 }
@@ -44,7 +44,16 @@ impl Assets {
             "_notist/publication.json".into(),
             br#"{"format":"notist-publication","version":1}"#.to_vec(),
         )?;
-        Ok(self.files)
+        self.files
+            .into_iter()
+            .map(|(path, bytes)| match bytes {
+                Some(bytes) => Ok((path, bytes)),
+                None => Err(Error::Message(format!(
+                    "unwritten reserved output `{}`",
+                    path.display()
+                ))),
+            })
+            .collect()
     }
     pub fn new(output: PathBuf) -> Self {
         Self {
@@ -53,6 +62,26 @@ impl Assets {
         }
     }
     pub fn generated(&mut self, path: PathBuf, bytes: Vec<u8>) -> Result<(), Error> {
+        self.insert(path, Some(bytes))
+    }
+    /// Validate a known generated destination before constructing its bytes.
+    pub fn reserve_generated(&mut self, path: PathBuf) -> Result<(), Error> {
+        self.insert(path, None)
+    }
+    /// Fill exactly one reserved destination, without repeating path planning.
+    pub fn write_reserved(&mut self, path: &Path, bytes: Vec<u8>) -> Result<(), Error> {
+        match self.files.get_mut(path) {
+            Some(slot @ None) => {
+                *slot = Some(bytes);
+                Ok(())
+            }
+            _ => Err(Error::Message(format!(
+                "output is not an unwritten reservation: {}",
+                path.display()
+            ))),
+        }
+    }
+    fn insert(&mut self, path: PathBuf, bytes: Option<Vec<u8>>) -> Result<(), Error> {
         // Check exact/ancestor files, then the first possible descendant in the
         // ordered map. A full scan here makes publishing N pages quadratic.
         let ancestor_exists = path
@@ -210,5 +239,32 @@ mod tests {
             assets.generated(path.into(), vec![]).unwrap();
         }
         assert_eq!(assets.finish().unwrap().len(), 5);
+    }
+    #[test]
+    fn reservations_preserve_collisions_and_must_be_written_once() {
+        let mut assets = Assets::new("dist".into());
+        assets.reserve_generated("items/a.html".into()).unwrap();
+        assert!(assets.generated("items/a.html".into(), vec![]).is_err());
+        assert!(assets.generated("items".into(), vec![]).is_err());
+        assert!(
+            assets
+                .write_reserved(std::path::Path::new("missing"), vec![])
+                .is_err()
+        );
+        assets
+            .write_reserved(std::path::Path::new("items/a.html"), b"body".to_vec())
+            .unwrap();
+        assert!(
+            assets
+                .write_reserved(std::path::Path::new("items/a.html"), vec![])
+                .is_err()
+        );
+        assert_eq!(
+            assets.finish().unwrap()[std::path::Path::new("items/a.html")],
+            b"body"
+        );
+        let mut incomplete = Assets::new("dist".into());
+        incomplete.reserve_generated("missing.html".into()).unwrap();
+        assert!(incomplete.finish().is_err());
     }
 }

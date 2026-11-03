@@ -92,18 +92,30 @@ crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在
 
 Pipeline.analyze / inspect 是完整分析入口，宿主可拆成 lower 与 analyze_lowered，以便在两者之间装配 import 作用域。后端显式接收 Context。前端的 Parse / Lower 只接收源码与语法选项，输出 import 声明列表、Expr 森林与并列的节点注解；Context 从 Resolve 开始提供函数定义，注解由 Materialize 在 Shape 之后挂载。Pipeline.compile_module 接收内容方言、模块身份、来源路径与 .notc 源码，阶段一将 Markup 字面量 Lower 为 IR₁ 并嵌入 CodeModule 的 Expr 树；阶段二实例检查向共享 Markup 内容管线提供 IR₁ 与词法环境，生成 Item 森林。该管线从 Resolve 开始，不包含前端 Parse / Lower。Pipeline.analyze_content_literal 接收内容前缀与 Context，直接返回 Item 森林、flavor 和诊断，并保留解析产物。Context 的 ExtensionPlan 在检查前、检查后与求值后运行文档 hooks，并在 Evaluate 中选择执行目标；replace 保留原始调用身份。renderer 接收 Item 与渲染配置。
 
-CodeModule 共享保存单文件声明、函数体与源码，只包含未解析 import 声明。宿主解析路径并加载依赖后，纯绑定器按 BindingSpec 和 ModuleExports 生成 ModuleScope，其公开表只引用模块／函数身份。LinkedModule 组合两层产物，CodeProgram 按模块共享持有；Registry 共享同一份 DefinitionModule 并维护函数名索引。检查、求值与导航通过当前 Context 定位定义和函数体，不从绑定结果中取得依赖实现。单文件编译按源码与编译上下文进行 comemo 复用，导入绑定按 BindingSpec 和跟踪的导出查询复用；宿主图加载及后续检查／求值不在这两个缓存中。
+CodeModule 共享保存单文件声明、函数体与源码，只包含未解析 import 声明。宿主解析路径并加载依赖后，纯绑定器按 BindingSpec 和 ModuleExports 生成 ModuleScope，其公开表只引用模块／函数身份。LinkedModule 组合两层产物，CodeProgram 按模块共享持有；Registry 共享同一份 DefinitionModule 并维护函数名索引。检查、求值与导航通过当前 Context 定位定义和函数体，不从绑定结果中取得依赖实现。单文件编译按源码与编译上下文进行 comemo 复用，导入绑定按 BindingSpec 和跟踪的导出查询复用；这两种计算缓存不替代宿主输入加载。
+
+实例检查直接借用 Context 中的只读 CodeBody，不复制未检查的表达式树；诊断按输出归属复制。CheckedProgram 以共享的不可变实例记录保存具体签名、已检查函数体和诊断，新增特化通过写时复制分离。Context 可复用从空程序开始、无诊断且不持有 Data 的完整成功检查计划，同一基础 Context 内最多保留 32 个计划、8192 个记录；安装模块或改写 Code 模块作用域时分离缓存。计划复用不缓存求值结果，也不合并额外实例绕过单次检查限制。
+
+Evaluate 保持 Analysis 不变，参数绑定生成独立输出树；内部呈现消费已经拥有的节点，重建边界时只复制节点自身字段，不先复制马上替换的 children 或 pending。共享 Content 在唯一持有时直接取得所有权，重复挂载时才复制。调用共享已检查函数体，按实际执行目标为 Code 构造词法输入；原生调用仍执行参数、能力与结果检查。
+
+单节点呈现直接返回 Item，森林处理逐项收集。绑定递归返回正常节点数，呈现递归同时返回正常节点数与失败标记，父层合并结果而不重新扫描已构造的子树；这些信息只属于当前返回值，不写入 Item 或缓存。错误占位不消耗正常节点额度，兄弟节点与重复展开继续累计计费；共享内容的显式插值在挂载处计数。绑定与呈现保持分阶段，保留延迟内容、读取顺序和错误恢复边界。
 
 这些入口在传入数据上完成解析、校验、转换和呈现。文件读取、import 图加载、配置解析与组件资源取得由 Resources / Environment / Vault 组织，规则见 [本地模块](../modules.not)、[内容函数与输出绑定](content-functions.not) 与 [文档扩展](extensions.not)。
 
 === 宿主与发布
 
-Resources 表达宿主的资源输入视图。Environment 在 Parse / Lower 之后沿源码 import 图构建 Context，分别解析各条输出规则的局部 import 表，共享按规范路径加载的模块。它保留配置路径与模块源码，通过 context() 只读提供 Context；Vault 按规范路径与文档源码快照缓存 Arc<Environment>，将 Context 借用给分析和输出阶段。模块文本与分析来源使用共享的 Sources 存储。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境。本地和浏览器宿主共用管线与内容模型。
+Resources 表达宿主的资源输入视图。Environment 在 Parse / Lower 之后沿源码 import 图构建 Context，分别解析各条输出规则的局部 import 表，共享按规范路径加载的模块。它保留配置路径与模块源码，通过 context() 只读提供 Context；Vault 按规范路径与文档源码快照缓存 Arc<Environment>。DocumentHandle 绑定 Vault 配置身份、规范路径、共享源码和 Environment，供 SSG 后续求值与 HTML 绑定直接使用；句柄拒绝跨 Vault 或配置使用，求值时另核对 Analysis 的源码快照身份，纯 Analysis 不携带宿主环境。
+
+同一输入批次内，Vault 最多保留 128 个成功模块装配和 128 个配置解析结果。模块装配复用要求前端提供明确的缓存身份；命中仍按依赖遍历顺序读取源码并消耗请求预算，不跳过授权或输入失败。文档词法作用域与扩展校验仍逐文档建立。模块文本与分析来源使用共享的 Sources 存储。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境，本地和浏览器宿主共用管线与内容模型。
 
 core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；pipeline 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端和批次内固定的字节／错误缓存；Vault、Book 和 SSG 共用会话，输入更新通过新批次接收。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
 
 notist-book 接收 Vault 与书籍配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 
-notist.publication 提供资源复制、组件注册与发布 URL 计划，供书籍构建和单文档 HTML 导出共同使用。CLI 的 publication 宿主负责输出目录归属校验、暂存与替换；单文档导出不依赖书籍模型或主题。
+notist.publication 提供资源复制、组件注册与发布 URL 计划，供书籍构建和单文档 HTML 导出共同使用。已知生成路径可先预留、再一次填入字节；预留与普通资源共用文件／目录冲突检查，未填槽位不能形成最终产物。
+
+SSG 复用扩展校验生成的 Route，并建立源路径、输出路径及目录别名的文档索引。输入、文档 hooks 和求值有序执行；至少 1024 页时，可按可用核心数将已准备的不可变模板工作分配给至多 8 个 worker，按页面顺序合并产物和首个错误。
+
+CLI 的 publication 宿主负责输出目录归属校验、暂存、替换和同步清理，暂存期间去重创建父目录。若旧输出的目录项与全部有界读取的文件字节完全一致，则不替换；额外项、symlink 或比较失败均回退完整发布，不按时间戳或摘要信任旧文件。单文档导出不依赖书籍模型或主题。
 
 HTML 接口见 [HTML Rendering](../html.not)，书籍配置与构建见 [Notist Book](../book.not)，Vault 内容边界与索引规则见 [文档管线](pipeline.not)。

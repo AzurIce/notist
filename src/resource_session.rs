@@ -40,6 +40,7 @@ struct State {
     files: BTreeMap<PathBuf, CachedInput>,
     kinds: BTreeMap<PathBuf, Result<Option<ResourceKind>, ResourceError>>,
     sources: BTreeMap<PathBuf, Arc<str>>,
+    texts: BTreeMap<PathBuf, Result<Arc<str>, ResourceError>>,
     dependencies: BTreeSet<ResourcePath>,
     bytes: usize,
     requests: usize,
@@ -296,6 +297,37 @@ impl<R: Resources> Resources for ResourceSession<R> {
                 message: "source input is not prepared".into(),
             }),
         }
+    }
+    fn source_shared(&self, path: &Path) -> Result<Arc<str>, ResourceError> {
+        // Charge every logical request, including text-cache hits. This cache
+        // never supplies data grants or substitutes registered document inputs.
+        let read = self.source_bytes(path);
+        let path = self.resolve(path);
+        let bytes = match read {
+            InputRead::Ready(bytes) => bytes,
+            InputRead::Failed(InputError::NotFound) => return Err(ResourceError::NotFound(path)),
+            InputRead::Failed(error) => {
+                return Err(ResourceError::Access {
+                    path,
+                    message: error.to_string(),
+                });
+            }
+            InputRead::Pending => {
+                return Err(ResourceError::Access {
+                    path,
+                    message: "source input is not prepared".into(),
+                });
+            }
+        };
+        if let Some(text) = self.state.borrow().texts.get(&path) {
+            return text.clone();
+        }
+        let text = std::str::from_utf8(&bytes)
+            .map(Arc::from)
+            .map_err(|_| ResourceError::InvalidUtf8(path.clone()));
+        // At most one decoded text per retained, bounded byte input.
+        self.state.borrow_mut().texts.insert(path, text.clone());
+        text
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
         let path = self.resolve(path);

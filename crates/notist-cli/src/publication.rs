@@ -125,6 +125,54 @@ impl ResourceReader for ObservedReader {
 fn io(error: impl std::fmt::Display) -> Error {
     Error::Message(error.to_string())
 }
+
+/// An identical rebuild needs no directory replacement. Compare actual bounded
+/// regular files, not timestamps or an untrusted manifest digest. Any unexpected
+/// entry, symlink or read failure falls back to ordinary staged publication.
+fn unchanged(files: &BTreeMap<PathBuf, Vec<u8>>, output: &Path) -> bool {
+    let resources = FsResources::new(output);
+    let Ok(reader) = resources.read_root(output) else {
+        return false;
+    };
+    let directories: BTreeSet<_> = files
+        .keys()
+        .flat_map(|file| file.parent().unwrap().ancestors().map(Path::to_path_buf))
+        .collect();
+    let mut pending = vec![output.to_path_buf()];
+    let mut seen = 0;
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { return false };
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(output) else {
+                return false;
+            };
+            let Ok(kind) = entry.file_type() else {
+                return false;
+            };
+            if kind.is_dir() {
+                if !directories.contains(relative) {
+                    return false;
+                }
+                pending.push(path);
+            } else if kind.is_file() {
+                let Some(expected) = files.get(relative) else {
+                    return false;
+                };
+                match reader.read_bounded(relative, expected.len()) {
+                    InputRead::Ready(actual) if actual.as_ref() == expected.as_slice() => seen += 1,
+                    _ => return false,
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+    seen == files.len()
+}
 /// Stage every file before replacing an owned output directory. A failed build
 /// or publication leaves the previous site intact.
 pub fn publish(
@@ -166,6 +214,18 @@ pub fn publish(
             )));
         }
     }
+    for relative in files.keys() {
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(Error::Message("invalid publication file path".into()));
+        }
+    }
+    if output.exists() && unchanged(files, &output) {
+        return Ok(());
+    }
     let parent = output
         .parent()
         .ok_or_else(|| Error::Message("invalid site output".into()))?;
@@ -174,16 +234,12 @@ pub fn publish(
         .prefix(".notist-stage-")
         .tempdir_in(parent)
         .map_err(io)?;
+    let mut directories = BTreeSet::new();
     for (relative, bytes) in files {
-        if relative.as_os_str().is_empty()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(Error::Message("invalid publication file path".into()));
-        }
         let file = staging.path().join(relative);
-        std::fs::create_dir_all(file.parent().unwrap()).map_err(io)?;
+        if directories.insert(relative.parent().unwrap()) {
+            std::fs::create_dir_all(file.parent().unwrap()).map_err(io)?;
+        }
         std::fs::write(file, bytes).map_err(io)?;
     }
     let backup = tempfile::Builder::new()
@@ -207,4 +263,82 @@ pub fn publish(
         return Err(io(error));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn artifact() -> BTreeMap<PathBuf, Vec<u8>> {
+        BTreeMap::from([
+            (
+                "_notist/publication.json".into(),
+                br#"{"format":"notist-publication","version":1}"#.to_vec(),
+            ),
+            ("items/a.html".into(), b"first".to_vec()),
+        ])
+    }
+    #[test]
+    fn identical_publications_verify_bytes_and_prune_unexpected_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("public");
+        let root = temp.path().join("source");
+        let files = artifact();
+        publish(&files, &output, &root).unwrap();
+        assert!(unchanged(&files, &output));
+        let modified = std::fs::metadata(output.join("items/a.html"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        publish(&files, &output, &root).unwrap();
+        assert_eq!(
+            std::fs::metadata(output.join("items/a.html"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            modified
+        );
+        for stale in ["stale.html", "empty/directory"] {
+            if stale.ends_with("html") {
+                std::fs::write(output.join(stale), b"stale").unwrap();
+            } else {
+                std::fs::create_dir_all(output.join(stale)).unwrap();
+            }
+            assert!(!unchanged(&files, &output));
+            publish(&files, &output, &root).unwrap();
+            assert!(!output.join(stale).exists());
+        }
+        std::fs::write(output.join("items/a.html"), b"other").unwrap();
+        assert!(!unchanged(&files, &output));
+        publish(&files, &output, &root).unwrap();
+        assert_eq!(
+            std::fs::read(output.join("items/a.html")).unwrap(),
+            b"first"
+        );
+        let mut invalid = files.clone();
+        invalid.insert("../escape".into(), vec![]);
+        assert!(publish(&invalid, &output, &root).is_err());
+        assert!(unchanged(&files, &output));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn no_op_detection_never_reuses_symlink_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("public");
+        let root = temp.path().join("source");
+        let files = artifact();
+        publish(&files, &output, &root).unwrap();
+        let external = temp.path().join("private");
+        std::fs::write(&external, b"first").unwrap();
+        std::fs::remove_file(output.join("items/a.html")).unwrap();
+        std::os::unix::fs::symlink(&external, output.join("items/a.html")).unwrap();
+        assert!(!unchanged(&files, &output));
+        publish(&files, &output, &root).unwrap();
+        assert!(
+            !std::fs::symlink_metadata(output.join("items/a.html"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(external).unwrap(), b"first");
+    }
 }

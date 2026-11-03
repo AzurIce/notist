@@ -63,6 +63,10 @@ pub trait Resources {
         String::from_utf8(self.read(path)?)
             .map_err(|_| ResourceError::InvalidUtf8(self.resolve(path)))
     }
+    /// Shared UTF-8 source text. Hosts may retain this within their input batch.
+    fn source_shared(&self, path: &Path) -> Result<Arc<str>, ResourceError> {
+        self.source(path).map(Arc::from)
+    }
 }
 
 impl<R: Resources + ?Sized> Resources for &R {
@@ -86,6 +90,9 @@ impl<R: Resources + ?Sized> Resources for &R {
     }
     fn source_root(&self, path: &Path) -> PathBuf {
         (**self).source_root(path)
+    }
+    fn source_shared(&self, path: &Path) -> Result<Arc<str>, ResourceError> {
+        (**self).source_shared(path)
     }
 }
 

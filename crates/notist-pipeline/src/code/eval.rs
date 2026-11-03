@@ -112,6 +112,25 @@ enum Runtime {
     Content(Type, Arc<Vec<Item>>),
 }
 type Scope = BTreeMap<String, Runtime>;
+
+/// Facts about the result just constructed, not cached metadata on the IR.
+#[derive(Clone, Copy, Default)]
+struct ContentSummary {
+    nodes: usize,
+    failed: bool,
+}
+impl ContentSummary {
+    const ERROR: Self = Self {
+        nodes: 0,
+        failed: true,
+    };
+
+    fn append(&mut self, other: Self) {
+        self.nodes += other.nodes;
+        self.failed |= other.failed;
+    }
+}
+
 struct Evaluator<'a> {
     context: &'a Context,
     program: CheckedProgram,
@@ -169,12 +188,12 @@ pub(crate) fn run(
         sources: Default::default(),
         data_retention: program.data_retention.clone(),
     };
-    let forest = e.bind_content(
+    let (forest, _) = e.bind_content(
         std::slice::from_ref(root),
         &Scope::new(),
         limits.content_nodes,
     );
-    let mut roots = e.present(&forest, limits.content_nodes);
+    let (mut roots, _) = e.present(forest, limits.content_nodes);
     if !e.needed.is_empty() {
         return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
     }
@@ -264,7 +283,10 @@ impl Evaluator<'_> {
                 }
                 Ok(Runtime::Content(
                     t.ty.clone().unwrap(),
-                    Arc::new(self.bind_content(forest, scope, self.limits.content_nodes)),
+                    Arc::new(
+                        self.bind_content(forest, scope, self.limits.content_nodes)
+                            .0,
+                    ),
                 ))
             }
             ExprKind::For { .. } => {
@@ -373,7 +395,7 @@ impl Evaluator<'_> {
             ExprKind::ValueCall(call) => {
                 let children = match &call.children {
                     Some(child) => match self.expr(child, scope)? {
-                        Runtime::Content(_, nodes) => nodes.as_ref().clone(),
+                        Runtime::Content(_, nodes) => Arc::unwrap_or_clone(nodes),
                         _ => return Err("invalid children".into()),
                     },
                     None => Vec::new(),
@@ -388,36 +410,44 @@ impl Evaluator<'_> {
     }
     /// Bind a content value without executing opaque content calls. The result
     /// remains an Item forest; only mounted Items are expanded by `present`.
-    fn bind_content(&mut self, forest: &[Item], scope: &Scope, limit: usize) -> Vec<Item> {
-        let mut result = Vec::new();
+    fn bind_content(&mut self, forest: &[Item], scope: &Scope, limit: usize) -> (Vec<Item>, usize) {
+        let mut result = Vec::with_capacity(forest.len());
         let mut count = 0usize;
         for node in forest {
-            let nodes = match node.pending.as_deref() {
+            let (item, added) = match node.pending.as_deref() {
                 Some(PendingEvaluation::Failure { message, .. }) => {
-                    vec![error_content(node.clone(), message.clone())]
+                    (error_content(item_shell(node), message.clone()), 0)
                 }
                 Some(PendingEvaluation::Splice(expr)) => match self.expr(expr, scope) {
                     Ok(Runtime::Content(ty, nodes))
                         if expr.ty.as_ref() == Some(&ty) && ty.level() == Some(node.level) =>
                     {
-                        let mut group = node.clone();
-                        group.pending = None;
+                        let mut group = item_shell(node);
                         group.evaluation = Some(EvaluationState::Expanded);
-                        group.children = nodes.as_ref().clone();
-                        vec![group]
+                        group.children = Arc::unwrap_or_clone(nodes);
+                        // A spliced value is shared independently of this binding
+                        // walk, so count it once at the explicit mount boundary.
+                        let added = 1 + content_count(&group.children);
+                        (group, added)
                     }
-                    Ok(Runtime::Content(..)) => vec![error_content(
-                        node.clone(),
-                        "content interpolation violated its checked category".into(),
-                    )],
-                    Ok(_) => vec![error_content(
-                        node.clone(),
-                        "content interpolation produced a data value".into(),
-                    )],
-                    Err(failure) => vec![failure_content(node.clone(), failure)],
+                    Ok(Runtime::Content(..)) => (
+                        error_content(
+                            item_shell(node),
+                            "content interpolation violated its checked category".into(),
+                        ),
+                        0,
+                    ),
+                    Ok(_) => (
+                        error_content(
+                            item_shell(node),
+                            "content interpolation produced a data value".into(),
+                        ),
+                        0,
+                    ),
+                    Err(failure) => (failure_content(item_shell(node), failure), 0),
                 },
                 pending => {
-                    let mut item = node.clone();
+                    let mut item = item_shell(node);
                     if let Some(PendingEvaluation::Call(call)) = pending {
                         item.pending =
                             Some(Box::new(PendingEvaluation::Call(capture_call(call, scope))));
@@ -427,89 +457,97 @@ impl Evaluator<'_> {
                             expr, scope,
                         ))));
                     }
-                    item.children =
+                    let (children, count) =
                         self.bind_content(&node.children, scope, limit.saturating_sub(1));
-                    vec![item]
+                    item.children = children;
+                    let own =
+                        usize::from(!matches!(item.evaluation, Some(EvaluationState::Error(_))));
+                    (item, count + own)
                 }
             };
-            let added = content_count(&nodes);
             if count.saturating_add(added) > limit {
                 result.push(error_content(
-                    node.clone(),
+                    item_shell(node),
                     "content size limit exceeded".into(),
                 ));
                 continue;
             }
             count += added;
-            result.extend(nodes);
+            result.push(item);
         }
-        result
+        (result, count)
     }
-    fn present(&mut self, forest: &[Item], limit: usize) -> Vec<Item> {
-        let mut result = Vec::new();
-        let mut count = 0usize;
+    fn present(&mut self, forest: Vec<Item>, limit: usize) -> (Vec<Item>, ContentSummary) {
+        let mut result = Vec::with_capacity(forest.len());
+        let mut summary = ContentSummary::default();
         for node in forest {
-            let nodes = self.present_node(node, limit);
-            let added = nodes
-                .iter()
-                .flat_map(Item::descendants)
-                .filter(|i| !matches!(i.evaluation, Some(EvaluationState::Error(_))))
-                .count();
-            if count.saturating_add(added) > limit {
-                result.push(self.error(node.clone(), "content size limit exceeded".into()));
+            // Recovery retains the original boundary, not its rewritten children.
+            let boundary = item_shell(&node);
+            let (item, added) = self.present_node(node, limit);
+            if summary.nodes.saturating_add(added.nodes) > limit {
+                result.push(self.error(boundary, "content size limit exceeded".into()));
+                summary.failed = true;
                 continue;
             }
-            count += added;
-            result.extend(nodes);
+            summary.append(added);
+            result.push(item);
         }
-        result
+        (result, summary)
     }
-    fn present_node(&mut self, item: &Item, limit: usize) -> Vec<Item> {
+    fn present_node(&mut self, mut item: Item, limit: usize) -> (Item, ContentSummary) {
         if limit == 0 && !matches!(item.evaluation, Some(EvaluationState::Error(_))) {
-            return vec![self.error(item.clone(), "content size limit exceeded".into())];
+            return (
+                self.error(item, "content size limit exceeded".into()),
+                ContentSummary::ERROR,
+            );
         }
         if let Some(EvaluationState::Error(message)) = &item.evaluation {
-            return vec![self.error(item.clone(), message.clone())];
+            let message = message.clone();
+            return (self.error(item, message), ContentSummary::ERROR);
         }
-        if let Some(PendingEvaluation::Call(call)) = item.pending.as_deref() {
-            return self.present_call(item, call, limit);
-        }
-        if let Some(PendingEvaluation::Repeat(expr)) = item.pending.as_deref() {
-            return match self.repeat(expr, limit.saturating_sub(1), item) {
-                Ok(children) => {
-                    let mut group = item.clone();
-                    group.pending = None;
-                    group.evaluation = Some(EvaluationState::Expanded);
-                    group.children = children;
-                    vec![group]
-                }
-                Err(failure) => vec![self.error_at(item.clone(), failure)],
-            };
+        match item.pending.take().as_deref() {
+            Some(PendingEvaluation::Call(call)) => return self.present_call(item, call, limit),
+            Some(PendingEvaluation::Repeat(expr)) => {
+                return match self.repeat(expr, limit.saturating_sub(1), &item) {
+                    Ok((children, mut summary)) => {
+                        item.evaluation = Some(EvaluationState::Expanded);
+                        item.children = children;
+                        summary.nodes += 1;
+                        (item, summary)
+                    }
+                    Err(failure) => (self.error_at(item, failure), ContentSummary::ERROR),
+                };
+            }
+            _ => {}
         }
         if item.evaluation.is_none()
             && let Some(id) = item.function_id()
             && self.target(&id) != id
-            && let Some(call) = self.synthetic_call(item)
+            && let Some(call) = self.synthetic_call(&item)
         {
             return self.present_call(item, &call, limit);
         }
-        let mut item = item.clone();
-        item.pending = None;
-        item.children = self.present(&item.children, limit.saturating_sub(1));
+        let (children, mut summary) =
+            self.present(std::mem::take(&mut item.children), limit.saturating_sub(1));
+        item.children = children;
         if !valid_structure(&item) {
-            return vec![self.error(
-                item,
-                "evaluated content violated its checked structural role".into(),
-            )];
+            return (
+                self.error(
+                    item,
+                    "evaluated content violated its checked structural role".into(),
+                ),
+                ContentSummary::ERROR,
+            );
         }
-        vec![item]
+        summary.nodes += 1;
+        (item, summary)
     }
     fn repeat(
         &mut self,
         expr: &TypedExpr,
         limit: usize,
         group: &Item,
-    ) -> Result<Vec<Item>, Failure> {
+    ) -> Result<(Vec<Item>, ContentSummary), Failure> {
         let ExprKind::For {
             binding,
             subject,
@@ -530,7 +568,7 @@ impl Evaluator<'_> {
                 return Err("cumulative iteration limit exceeded".into());
             }
             let mut result = Vec::new();
-            let mut count = 0usize;
+            let mut summary = ContentSummary::default();
             let mut local = Scope::new();
             for (index, value) in values.iter().enumerate() {
                 self.iterations = self.iterations.saturating_add(1);
@@ -552,35 +590,35 @@ impl Evaluator<'_> {
                 if Some(&ty) != expr.ty.as_ref() {
                     return Err("for body violated its checked category".into());
                 }
-                let mut nodes = nodes.as_ref().clone();
+                let mut nodes = Arc::unwrap_or_clone(nodes);
                 if let Some(origin) = &group.origin {
                     for node in &mut nodes {
                         expand(node, &origin.expansion);
                     }
                 }
-                let remaining = limit.saturating_sub(count);
-                let nodes = self.present(&nodes, remaining);
-                let added = content_count(&nodes);
-                if count.saturating_add(added) > limit {
+                let remaining = limit.saturating_sub(summary.nodes);
+                let (nodes, added) = self.present(nodes, remaining);
+                if summary.nodes.saturating_add(added.nodes) > limit {
                     return Err("content size limit exceeded".into());
                 }
                 // A failed iteration never exposes a successfully assembled prefix.
-                if nodes
-                    .iter()
-                    .flat_map(Item::descendants)
-                    .any(|n| matches!(n.evaluation, Some(EvaluationState::Error(_))))
-                {
+                if added.failed {
                     return Err(format!("for iteration {index} failed").into());
                 }
-                count += added;
+                summary.append(added);
                 result.extend(nodes);
             }
-            Ok(result)
+            Ok((result, summary))
         })();
         self.active_loops -= 1;
         result
     }
-    fn present_call(&mut self, item: &Item, call: &Invocation, limit: usize) -> Vec<Item> {
+    fn present_call(
+        &mut self,
+        mut item: Item,
+        call: &Invocation,
+        limit: usize,
+    ) -> (Item, ContentSummary) {
         let target = self.target(&call.instance.function);
         let expands = self
             .context
@@ -588,23 +626,35 @@ impl Evaluator<'_> {
             .get(&target)
             .is_some_and(|d| d.implementation.is_code());
         if expands && self.depth >= self.limits.call_depth.min(32) {
-            return vec![self.error(item.clone(), "evaluation call-depth limit exceeded".into())];
+            return (
+                self.error(item, "evaluation call-depth limit exceeded".into()),
+                ContentSummary::ERROR,
+            );
         }
         if expands {
             self.depth += 1;
         }
         // Each mounted content boundary owns its computation budget.
         let previous_steps = std::mem::replace(&mut self.steps, 0);
-        let result = self.execute(
-            call,
-            &Scope::new(),
-            item.children.clone(),
-            Some(item.clone()),
-        );
+        let children = std::mem::take(&mut item.children);
+        let boundary = item_shell(&item);
+        let result = self.execute(call, &Scope::new(), children, Some(item));
         let result = match result {
-            Ok(Runtime::Content(_, nodes)) => self.present(&nodes, limit),
-            Ok(_) => vec![self.error(item.clone(), "content call produced a data value".into())],
-            Err(failure) => vec![self.error_at(item.clone(), failure)],
+            Ok(Runtime::Content(_, nodes)) => {
+                let (mut nodes, summary) = self.present(Arc::unwrap_or_clone(nodes), limit);
+                // execute retains exactly one materialized call boundary,
+                // regardless of how many children the implementation produced.
+                debug_assert_eq!(nodes.len(), 1);
+                (
+                    nodes.pop().expect("content call retains its boundary"),
+                    summary,
+                )
+            }
+            Ok(_) => (
+                self.error(boundary, "content call produced a data value".into()),
+                ContentSummary::ERROR,
+            ),
+            Err(failure) => (self.error_at(boundary, failure), ContentSummary::ERROR),
         };
         if expands {
             self.depth -= 1;
@@ -705,7 +755,8 @@ impl Evaluator<'_> {
         let Some(EvaluationState::Error(message)) = &item.evaluation else {
             unreachable!()
         };
-        self.error(item.clone(), message.clone())
+        let message = message.clone();
+        self.error(item, message)
     }
     fn read_text(&mut self, call: &Invocation, fields: &Dict) -> Result<Runtime, Failure> {
         if self.mode == EvaluationMode::Comptime {
@@ -767,6 +818,15 @@ impl Evaluator<'_> {
         if let Some(m) = &call.invalid {
             return Err(m.clone().into());
         }
+        let target = FunctionInstance {
+            function: self.target(&call.instance.function),
+            arguments: call.instance.arguments.clone(),
+        };
+        let code = self
+            .context
+            .registry()
+            .get(&target.function)
+            .is_some_and(|definition| definition.implementation.is_code());
         let mut inputs = Scope::new();
         let mut fields = Dict::default();
         for (name, expr) in &call.arguments {
@@ -805,39 +865,43 @@ impl Evaluator<'_> {
                 fields.insert(name, v.clone());
             }
             // Code bodies observe a `?: T` parameter as Option<T>.
-            let input = if param.is_some_and(|p| p.mode == ParameterMode::Optional) {
-                match value {
-                    Runtime::Value(ComptimeValue::Data(v)) => {
-                        Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(v))))
+            if code {
+                let input = if param.is_some_and(|p| p.mode == ParameterMode::Optional) {
+                    match value {
+                        Runtime::Value(ComptimeValue::Data(v)) => {
+                            Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(v))))
+                        }
+                        other => other,
                     }
-                    other => other,
-                }
-            } else {
-                value
-            };
-            inputs.insert(name.clone(), input);
+                } else {
+                    value
+                };
+                inputs.insert(name.clone(), input);
+            }
         }
-        for p in &call.definition.parameters {
-            if p.mode == ParameterMode::Optional && !inputs.contains_key(&p.name) {
+        let mut children = Some(children);
+        if code {
+            for p in &call.definition.parameters {
+                if p.mode == ParameterMode::Optional && !inputs.contains_key(&p.name) {
+                    inputs.insert(
+                        p.name.clone(),
+                        Runtime::Value(ComptimeValue::Data(Value::None)),
+                    );
+                }
+            }
+            if let Some(ty) = &call.definition.children_type {
                 inputs.insert(
-                    p.name.clone(),
-                    Runtime::Value(ComptimeValue::Data(Value::None)),
+                    "children".into(),
+                    Runtime::Content(ty.clone(), Arc::new(children.take().unwrap())),
                 );
             }
         }
-        if let Some(ty) = &call.definition.children_type {
-            inputs.insert(
-                "children".into(),
-                Runtime::Content(ty.clone(), Arc::new(children.clone())),
-            );
-        }
-        let target = FunctionInstance {
-            function: self.target(&call.instance.function),
-            arguments: call.instance.arguments.clone(),
-        };
-        let (definition, body) = self.implementation(&target)?;
-        for (param, value) in definition.comptime.iter().zip(&target.arguments) {
-            inputs.insert(param.name.clone(), Runtime::Value(value.clone()));
+        let implementation = self.implementation(&target)?;
+        let definition = &implementation.definition;
+        if code {
+            for (param, value) in definition.comptime.iter().zip(&target.arguments) {
+                inputs.insert(param.name.clone(), Runtime::Value(value.clone()));
+            }
         }
         if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading")
             && let Some(ComptimeValue::Data(v)) = call.instance.arguments.first()
@@ -889,8 +953,8 @@ impl Evaluator<'_> {
                 };
                 Err(Failure::at(message.clone(), call))
             }
-            FunctionImpl::Code => match body {
-                Some(body) => self.expr(&body, &inputs),
+            FunctionImpl::Code => match &implementation.body {
+                Some(body) => self.expr(body, &inputs),
                 None => Err("missing checked body".into()),
             },
             FunctionImpl::Native(NativeFunction::Construct) => {
@@ -915,7 +979,7 @@ impl Evaluator<'_> {
                     }
                     Ok(Runtime::Content(
                         definition.returns.clone(),
-                        Arc::new(children),
+                        Arc::new(children.take().unwrap()),
                     ))
                 }
             }
@@ -990,7 +1054,7 @@ impl Evaluator<'_> {
     fn implementation(
         &mut self,
         instance: &FunctionInstance,
-    ) -> Result<(FunctionDef, Option<TypedExpr>), Failure> {
+    ) -> Result<Arc<InstanceRecord>, Failure> {
         if instance
             .arguments
             .iter()
@@ -1020,25 +1084,38 @@ impl Evaluator<'_> {
         if let Some(d) = record.diagnostics.first() {
             return Err(format!("{}: {}", instance.function, d.message).into());
         }
-        Ok((record.definition.clone(), record.body.clone()))
+        Ok(record.clone())
     }
 }
 // Capture only free inputs in pending expressions. Content calls remain opaque;
 // substitution performs no interpretation, including in unused branches.
 fn capture_call(call: &Invocation, scope: &Scope) -> Invocation {
-    let mut call = call.clone();
-    for (_, expr) in &mut call.arguments {
-        *expr = capture_expr(expr, scope);
+    if scope.is_empty() {
+        return call.clone();
     }
-    call.children = call
-        .children
-        .as_ref()
-        .map(|e| Box::new(capture_expr(e, scope)));
-    call
+    Invocation {
+        instance: call.instance.clone(),
+        definition: call.definition.clone(),
+        arguments: call
+            .arguments
+            .iter()
+            .map(|(name, expr)| (name.clone(), capture_expr(expr, scope)))
+            .collect(),
+        children: call
+            .children
+            .as_ref()
+            .map(|e| Box::new(capture_expr(e, scope))),
+        attrs: call.attrs.clone(),
+        span: call.span,
+        source: call.source.clone(),
+        site: call.site,
+        resource_root: call.resource_root.clone(),
+        invalid: call.invalid.clone(),
+    }
 }
 fn capture_item(item: &Item, scope: &Scope) -> Item {
-    let mut item = item.clone();
-    item.pending = item.pending.as_deref().map(|pending| {
+    let mut captured = item_shell(item);
+    captured.pending = item.pending.as_deref().map(|pending| {
         Box::new(match pending {
             PendingEvaluation::Call(call) => PendingEvaluation::Call(capture_call(call, scope)),
             PendingEvaluation::Splice(expr) => PendingEvaluation::Splice(capture_expr(expr, scope)),
@@ -1046,22 +1123,22 @@ fn capture_item(item: &Item, scope: &Scope) -> Item {
             failure => failure.clone(),
         })
     });
-    item.children = item
+    captured.children = item
         .children
         .iter()
         .map(|i| capture_item(i, scope))
         .collect();
-    item
+    captured
 }
 fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
-    let mut expr = expr.clone();
-    if expr.known.is_some() {
-        return expr;
+    if scope.is_empty() || expr.known.is_some() {
+        return expr.clone();
     }
-    expr.kind = match &expr.kind {
+    let mut known = expr.known.clone();
+    let kind = match &expr.kind {
         ExprKind::Input(name) => match scope.get(name) {
             Some(Runtime::Value(v)) => {
-                expr.known = Some(v.clone());
+                known = Some(v.clone());
                 ExprKind::Constant(v.clone())
             }
             Some(Runtime::Content(_, forest)) => ExprKind::Content(forest.as_ref().clone()),
@@ -1141,7 +1218,31 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
         }
         other => other.clone(),
     };
-    expr
+    TypedExpr {
+        ty: expr.ty.clone(),
+        known,
+        kind,
+        span: expr.span,
+        source: expr.source.clone(),
+        shape: expr.shape,
+    }
+}
+
+/// Copy one boundary, never children or the pending computation being rebuilt.
+fn item_shell(item: &Item) -> Item {
+    Item {
+        ctor: item.ctor.clone(),
+        pending: None,
+        instance: item.instance.clone(),
+        target: item.target.clone(),
+        evaluation: item.evaluation.clone(),
+        origin: item.origin.clone(),
+        level: item.level,
+        fields: item.fields.clone(),
+        children: Vec::new(),
+        attrs: item.attrs.clone(),
+        span: item.span,
+    }
 }
 
 fn failure_content(mut item: Item, failure: Failure) -> Item {
@@ -1358,6 +1459,100 @@ fn check_value_size(value: &ComptimeValue, limit: usize) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::Pipeline;
+
+    #[test]
+    fn returned_summaries_match_trees_across_mounts_failures_and_limits() {
+        let pipeline = Pipeline::default();
+        for dialect in ["doc.not", "doc.md"] {
+            for source in [
+                "fn view() -> InlineContent { let empty = []; let value = [#strong[A]#emph[B]]; [#value#empty#value] }",
+                "fn pass()[children: InlineContent] -> InlineContent { [#children#children] } fn view() -> InlineContent { [#pass[ok]] }",
+                "fn view() -> InlineContent { for n in (1,2,3) [#text(text: str(n))] }",
+                "fn leaf(n: Int) -> InlineContent { [#text(text: if n == 2 { panic(\"bad\") } else { str(n) })] } fn view() -> InlineContent { for n in (1,2,3) [#leaf(n)] }",
+                "fn view() -> BlockContent { [\n#table()[#row[#cell[A]#cell[B]]#row[#cell[C]]]\n] }",
+            ] {
+                let context = Context::default()
+                    .with_module(
+                        pipeline
+                            .compile_module(dialect, "demo", "demo/lib.notc", source)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                let analysis = pipeline.analyze(dialect, "#self.view()", &context).unwrap();
+                assert!(
+                    analysis.diagnostics().is_empty(),
+                    "{:?}",
+                    analysis.diagnostics()
+                );
+                let before = analysis.clone();
+                for limit in 0..64 {
+                    let mut evaluator = Evaluator {
+                        context: &context,
+                        program: analysis.program.clone(),
+                        diagnostics: Vec::new(),
+                        limits: Limits {
+                            content_nodes: limit,
+                            iterations: limit % 5,
+                            call_depth: limit % 4,
+                            ..Limits::default()
+                        },
+                        steps: 0,
+                        iterations: 0,
+                        loop_work: 0,
+                        active_loops: 0,
+                        depth: 0,
+                        mode: EvaluationMode::Runtime,
+                        inputs: None,
+                        requests: 0,
+                        dependencies: Default::default(),
+                        needed: Default::default(),
+                        sources: Default::default(),
+                        data_retention: analysis.program.data_retention.clone(),
+                    };
+                    let mut root = analysis.root().clone();
+                    if limit % 7 == 0 {
+                        // Even a supplied recovery node with retained children
+                        // must count those children during binding, before
+                        // presentation replaces it with an empty placeholder.
+                        let mut recovery = Item::text("discarded".into(), Default::default());
+                        recovery.evaluation = Some(EvaluationState::Error("recovery".into()));
+                        recovery
+                            .children
+                            .push(Item::text("child".into(), Default::default()));
+                        root.children.push(recovery);
+                    }
+                    let (bound, count) = evaluator.bind_content(&[root], &Scope::new(), limit);
+                    assert_eq!(
+                        count,
+                        content_count(&bound),
+                        "binding: {dialect}, {limit}, {source}"
+                    );
+                    let (presented, summary) = evaluator.present(bound, limit);
+                    assert_eq!(presented.len(), 1);
+                    assert_eq!(
+                        summary.nodes,
+                        content_count(&presented),
+                        "presentation: {dialect}, {limit}, {source}"
+                    );
+                    assert!(summary.nodes <= limit);
+                    assert_eq!(
+                        summary.failed,
+                        presented
+                            .iter()
+                            .flat_map(Item::descendants)
+                            .any(|item| matches!(item.evaluation, Some(EvaluationState::Error(_))))
+                    );
+                    assert!(
+                        presented
+                            .iter()
+                            .flat_map(Item::descendants)
+                            .all(|item| item.pending.is_none())
+                    );
+                }
+                assert_eq!(analysis, before);
+            }
+        }
+    }
 
     #[test]
     fn both_result_payloads_count_towards_the_value_size_limit() {

@@ -6,11 +6,30 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct GraphKey {
+    directory: PathBuf,
+    imports: Vec<String>,
+    config: Option<PathBuf>,
+}
+#[derive(Clone)]
+struct LoadedGraph {
+    modules: Arc<BTreeMap<String, ModuleSource>>,
+    context: Context,
+}
+/// Batch-local successful graph/config reuse, never document lexical scopes.
+#[derive(Default)]
+pub(crate) struct EnvironmentCache {
+    graphs: BTreeMap<GraphKey, LoadedGraph>,
+    configs: BTreeMap<PathBuf, Result<Arc<Configuration>, Vec<Diagnostic>>>,
+}
+
 struct Graph<'a, R: Resources + ?Sized> {
     resources: &'a R,
     pipeline: &'a Pipeline,
     visiting: BTreeSet<PathBuf>,
-    modules: BTreeMap<String, ModuleSource>,
+    verified: BTreeSet<String>,
+    modules: Arc<BTreeMap<String, ModuleSource>>,
     context: Context,
     errors: Vec<SourceDiagnostic>,
 }
@@ -20,6 +39,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             resources,
             pipeline,
             visiting: Default::default(),
+            verified: Default::default(),
             modules: Default::default(),
             context: Context::default().with_resource_root(resources.root().to_string_lossy()),
             errors: Vec::new(),
@@ -107,7 +127,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
     }
     fn visit(&mut self, path: &Path) {
         let id = path.to_string_lossy().into_owned();
-        if self.modules.contains_key(&id) {
+        if self.verified.contains(&id) {
             return;
         }
         if !path.extension().is_some_and(|ext| ext == "notc") {
@@ -129,7 +149,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             return;
         }
         self.visiting.insert(path.into());
-        let source = match self.resources.source(path) {
+        let source = match self.resources.source_shared(path) {
             Ok(source) => source,
             Err(e) => {
                 self.errors
@@ -138,6 +158,17 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 return;
             }
         };
+        // Reuse assembly, not authorization or request accounting. Visit the
+        // same source dependency graph even when its immutable Context is shared.
+        if let Some(linked) = self.context.program().module(&id).cloned() {
+            let before = self.errors.len();
+            self.resolve_imports(path, &source, &linked.code().imports);
+            if self.errors.len() == before {
+                self.verified.insert(id);
+            }
+            self.visiting.remove(path);
+            return;
+        }
         let module = match self.pipeline.compile_module_with_root(
             "content.not",
             &id,
@@ -150,7 +181,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 self.errors
                     .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
                         path: path.into(),
-                        source: source.clone(),
+                        source: source.to_string(),
                         diagnostic,
                     }));
                 self.visiting.remove(path);
@@ -171,7 +202,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 self.errors
                     .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
                         path: path.into(),
-                        source: source.clone(),
+                        source: source.to_string(),
                         diagnostic,
                     }));
                 self.visiting.remove(path);
@@ -181,7 +212,8 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         match std::mem::take(&mut self.context).with_linked_module(linked) {
             Ok(context) => {
                 self.context = context;
-                self.modules.insert(
+                self.verified.insert(id.clone());
+                Arc::make_mut(&mut self.modules).insert(
                     id,
                     ModuleSource {
                         path: path.into(),
@@ -193,7 +225,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 self.errors
                     .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
                         path: path.into(),
-                        source: source.clone(),
+                        source: source.to_string(),
                         diagnostic,
                     }))
             }
@@ -230,32 +262,57 @@ pub(super) fn load(
 pub(super) fn document(
     resources: &(impl Resources + ?Sized),
     pipeline: &Pipeline,
-    path: &Path,
-    source: &str,
-    imports: &[Import],
+    document: DocumentSource<'_>,
     config: Option<&Path>,
     extensions: &[Arc<dyn DocumentExtension>],
+    cache: &mut EnvironmentCache,
 ) -> Result<Environment, Vec<SourceDiagnostic>> {
+    let DocumentSource {
+        path,
+        text: source,
+        imports,
+    } = document;
     let path = resources.resolve(path);
     let mut graph = Graph::new(resources, pipeline);
+    let key = pipeline
+        .module_cache_key(Path::new("content.not"))
+        .map(|_| GraphKey {
+            directory: path.parent().unwrap().into(),
+            imports: imports.iter().map(|import| import.path.clone()).collect(),
+            config: config.map(Path::to_path_buf),
+        });
+    if let Some(loaded) = key.as_ref().and_then(|key| cache.graphs.get(key)) {
+        graph.modules = loaded.modules.clone();
+        graph.context = loaded.context.clone();
+    }
     let bindings = graph.imports(&path, source, imports);
     let mut configured: Vec<(Arc<dyn DocumentExtension>, TextRange)> = Vec::new();
     let mut config_source = None;
     if let Some(config) = config {
         let source = resources
-            .source(config)
+            .source_shared(config)
             .map_err(|e| vec![issue(config, "", TextRange::empty(0.into()), e.to_string())])?;
-        let parsed = parse_config(&source).map_err(|errors| {
+        let parsed = match cache.configs.get(config) {
+            Some(parsed) => parsed.clone(),
+            None => {
+                let parsed = parse_config(&source).map(Arc::new);
+                if cache.configs.len() < 128 {
+                    cache.configs.insert(config.into(), parsed.clone());
+                }
+                parsed
+            }
+        }
+        .map_err(|errors| {
             errors
                 .into_iter()
                 .map(|diagnostic| SourceDiagnostic {
                     path: config.into(),
-                    source: source.clone(),
+                    source: source.to_string(),
                     diagnostic,
                 })
                 .collect::<Vec<_>>()
         })?;
-        for binding in parsed.extensions {
+        for binding in parsed.extensions.iter().cloned() {
             match binding {
                 ExtensionBinding::Replace {
                     imports,
@@ -324,6 +381,18 @@ pub(super) fn document(
     if !graph.errors.is_empty() {
         return Err(graph.errors);
     }
+    if let Some(key) = key
+        && !cache.graphs.contains_key(&key)
+        && cache.graphs.len() < 128
+    {
+        cache.graphs.insert(
+            key,
+            LoadedGraph {
+                modules: graph.modules.clone(),
+                context: graph.context.clone(),
+            },
+        );
+    }
     for extension in extensions {
         match std::mem::take(&mut graph.context).with_shared_extension(extension.clone()) {
             Ok(context) => graph.context = context,
@@ -352,7 +421,7 @@ pub(super) fn document(
                             }
                             SourceDiagnostic {
                                 path: config.into(),
-                                source: source.clone(),
+                                source: source.to_string(),
                                 diagnostic,
                             }
                         })

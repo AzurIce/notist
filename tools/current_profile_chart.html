@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>最新提交耗时 profile</title><style>
+html,body{margin:0;padding:0}body{font-family:var(--font-sans,system-ui);color:var(--foreground,#1f2937);font-size:1rem}main{padding:0;max-width:100%}p{margin:0 0 .7rem;line-height:1.55}.muted{color:var(--muted-foreground,#64748b);font-size:.87rem}.oc-table{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.9rem}th,td{padding:.42rem .55rem;text-align:left}thead{background:var(--muted,#f1f5f9)}.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}.toolbar{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin:1rem 0 .65rem}.toolbar select{font:inherit;color:var(--foreground,#1f2937);background:var(--muted,#f1f5f9);border:1px solid var(--border,#cbd5e1);border-radius:var(--radius,.4rem);padding:.25rem .45rem;max-width:100%}.phases{display:grid;gap:.43rem}.phase{display:grid;grid-template-columns:minmax(9rem,1.2fr) minmax(3rem,1.7fr) 4.1rem 3.5rem;align-items:center;gap:.5rem;font-size:.86rem}.track{background:var(--muted,#f1f5f9);height:13px;border-radius:3px;overflow:hidden}.fill{height:13px;min-width:1px;background:var(--color,var(--chart-1,#3b82f6))}.note{margin:.75rem 0 0}.stat{font-weight:600}details{margin-top:.8rem}summary{cursor:pointer;font-size:.9rem}details .oc-table{margin-top:.55rem}.code{font-family:var(--font-mono,monospace);font-size:.8rem}@media(max-width:440px){.phase{grid-template-columns:minmax(7.8rem,1.5fr) minmax(2rem,1fr) 3.8rem 3rem;gap:.35rem;font-size:.79rem}th,td{padding:.4rem}.muted{font-size:.81rem}}
+</style></head><body><main>
+<p class="muted" id="meta"></p>
+<div class="oc-table"><table><thead><tr><th>完整负载</th><th class="num">HTML 页</th><th class="num">普通 CLI 中位数</th><th class="num">范围 / 秒</th></tr></thead><tbody id="normal"></tbody></table></div>
+<div class="toolbar"><select id="workload" aria-label="选择耗时负载"></select><span class="muted" id="probe-total"></span></div>
+<div class="phases" id="phases"></div>
+<p class="muted note">上方分项来自阶段探针的均值，互不重叠并加总为探针内 CLI 总计时；不是把普通 CLI 中位数按比例拆分。</p>
+<p class="muted note" id="work"></p>
+<details><summary>细分探针 Self 热点与调用次数</summary><p class="muted note" id="overhead"></p><div class="oc-table"><table><thead><tr><th>计时范围</th><th class="num">Self / ms</th><th class="num">调用数</th><th class="num">平均 Self / μs</th></tr></thead><tbody id="self"></tbody></table></div><p class="muted note">Self 只排除已插桩的子范围，包含未插桩工作与测量开销，并非采样 CPU Self。父子 Inclusive 不可相加。</p></details>
+<p class="muted note" id="integrity"></p>
+</main><script>
+const DATA=__DATA__;
+const labels={prepare:'发现／读源／准备',analyze:'文档分析',evaluate:'求值',pipeline_other:'路由与文档装配',assets_templates:'资源与模板加载',html_links:'HTML／链接／组件',template_shared:'共享模板上下文',template_pages:'逐页模板与产物登记',site_teardown:'站点局部数据析构',publish:'事务发布',host_other:'宿主与其余收尾'};
+const palette=['var(--chart-1,#3b82f6)','var(--chart-2,#14b8a6)','var(--chart-3,#f59e0b)','var(--chart-4,#8b5cf6)','var(--chart-5,#ec4899)','var(--chart-6,#64748b)'];
+const node=(tag,text,cls='')=>{let e=document.createElement(tag);e.textContent=text;e.className=cls;return e};
+const fixed=(v,n=3)=>Number(v).toFixed(n), count=v=>Number(v).toLocaleString('zh-CN',{maximumFractionDigits:0});
+document.getElementById('meta').textContent=`已推送 ${DATA.revision.slice(0,7)} · 普通 CLI ${DATA.runs} 轮 · 两类探针各 ${DATA.probes} 轮 · 固定 CPU ${DATA.cpu}`;
+DATA.rows.forEach((r,i)=>{let tr=document.createElement('tr');[r.title,count(r.html),fixed(r.normal.median)+' s',fixed(r.normal.min)+'–'+fixed(r.normal.max)].forEach((v,j)=>tr.append(node('td',v,j?'num':'')));document.getElementById('normal').append(tr);let option=node('option',r.title);option.value=i;document.getElementById('workload').append(option)});
+function draw(){let r=DATA.rows[Number(document.getElementById('workload').value)];document.getElementById('probe-total').textContent=`阶段探针内均值 ${fixed(r.total)} s`;
+let root=document.getElementById('phases');root.replaceChildren();Object.entries(r.parts).sort((a,b)=>b[1]-a[1]).forEach(([key,value],i)=>{let row=node('div','','phase');row.append(node('span',labels[key]));let track=node('div','','track'),bar=node('div','','fill');bar.style.width=(100*value/r.total)+'%';bar.style.setProperty('--color',palette[i%palette.length]);track.append(bar);row.append(track,node('span',fixed(value)+' s','num'),node('span',fixed(100*value/r.total,1)+'%','num'));root.append(row)});
+document.getElementById('work').textContent=`实际模块编译 ${count(r.compile)} 次，实际导入绑定 ${count(r.bind)} 次；两类探针各轮工作次数一致。`;
+document.getElementById('overhead').textContent=`独立细分探针 wall 中位数 ${fixed(r.detail)} s；阶段探针 wall 中位数 ${fixed(r.coarse)} s。只用于归因，不冒充普通二进制性能。`;
+let self=document.getElementById('self');self.replaceChildren();r.hot.forEach(h=>{let tr=document.createElement('tr');tr.append(node('td',h.name,'code'),node('td',fixed(h.seconds*1000,2),'num'),node('td',count(h.calls),'num'),node('td',fixed(h.seconds*1e6/h.calls,2),'num'));self.append(tr)})}
+document.getElementById('workload').addEventListener('change',draw);draw();document.getElementById('integrity').textContent=`${DATA.builds} 次完整构建逐文件校验通过；未缩减页面／正文，未改消费者、依赖锁或 site.data。Python cProfile 与 strace 单列。`;
+</script></body></html>

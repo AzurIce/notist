@@ -82,6 +82,16 @@ pub struct ItemOutput {
     pub rendered: RenderResult,
 }
 
+/// Exact document identity retained across host stages, bound to one Vault
+/// configuration. The pure Analysis remains independent of host resources.
+#[derive(Clone)]
+pub struct DocumentHandle {
+    path: PathBuf,
+    source: Arc<str>,
+    environment: Arc<Environment>,
+    owner: Arc<()>,
+}
+
 /// One input batch, potentially containing multiple nearest configs. Loaded
 /// bytes, errors and document inputs remain fixed; create a new Vault for the
 /// next build or edit. This is a lazy view, not an atomic filesystem snapshot.
@@ -90,6 +100,8 @@ pub struct Vault<R = FsResources> {
     pipeline: Pipeline,
     extensions: Vec<Arc<dyn DocumentExtension>>,
     environments: BTreeMap<PathBuf, BTreeMap<Arc<str>, Arc<Environment>>>,
+    environment_cache: crate::environment::EnvironmentCache,
+    identity: Arc<()>,
     config: Option<PathBuf>,
     module_urls: BTreeMap<PathBuf, String>,
     evaluation_limits: crate::Limits,
@@ -104,6 +116,8 @@ impl<R: Resources> Vault<R> {
             pipeline: Pipeline::default(),
             extensions: Vec::new(),
             environments: BTreeMap::new(),
+            environment_cache: Default::default(),
+            identity: Arc::new(()),
             config: None,
             module_urls: BTreeMap::new(),
             evaluation_limits: Default::default(),
@@ -143,6 +157,8 @@ impl<R: Resources> Vault<R> {
     pub fn with_pipeline(mut self, pipeline: Pipeline) -> Self {
         self.pipeline = pipeline;
         self.environments.clear();
+        self.environment_cache = Default::default();
+        self.identity = Arc::new(());
         self
     }
     /// Register a document extension, validated after the document's imports load.
@@ -150,11 +166,15 @@ impl<R: Resources> Vault<R> {
     pub fn with_extension(mut self, extension: impl DocumentExtension + 'static) -> Self {
         self.extensions.push(Arc::new(extension));
         self.environments.clear();
+        self.environment_cache = Default::default();
+        self.identity = Arc::new(());
         self
     }
     pub fn with_config(mut self, path: impl AsRef<Path>) -> Self {
         self.config = Some(self.resources.resolve(path.as_ref()));
         self.environments.clear();
+        self.environment_cache = Default::default();
+        self.identity = Arc::new(());
         self
     }
     /// Host publication mapping. Resource paths remain distinct from browser URLs.
@@ -189,11 +209,14 @@ impl<R: Resources> Vault<R> {
             Environment::for_document(
                 &self.resources,
                 &self.pipeline,
-                path,
-                source,
-                imports,
+                crate::environment::DocumentSource {
+                    path,
+                    text: source,
+                    imports,
+                },
                 config.as_deref(),
                 &self.extensions,
+                &mut self.environment_cache,
             )
             .map_err(VaultError::Environment)?,
         );
@@ -259,6 +282,18 @@ impl<R: Resources> Vault<R> {
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
         self.compile(path.as_ref(), source, true, None)
     }
+    /// Analyze and keep the host identity for subsequent evaluation and binding.
+    pub fn analyze_document_with_resource_root(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+        resource_root: impl AsRef<Path>,
+    ) -> Result<(Analysis, DocumentHandle), VaultError> {
+        let root = self.resources.resolve(resource_root.as_ref());
+        let (analysis, _, handle) =
+            self.compile_bound(path.as_ref(), source, false, Some(&root))?;
+        Ok((analysis, handle))
+    }
     fn compile(
         &mut self,
         path: &Path,
@@ -266,6 +301,16 @@ impl<R: Resources> Vault<R> {
         capture: bool,
         resource_root: Option<&Path>,
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
+        self.compile_bound(path, source, capture, resource_root)
+            .map(|(analysis, inspection, _)| (analysis, inspection))
+    }
+    fn compile_bound(
+        &mut self,
+        path: &Path,
+        source: &str,
+        capture: bool,
+        resource_root: Option<&Path>,
+    ) -> Result<(Analysis, notist_pipeline::Inspection, DocumentHandle), VaultError> {
         let path = self.resources.resolve(path);
         let output = self.pipeline.lower(
             &path,
@@ -283,7 +328,7 @@ impl<R: Resources> Vault<R> {
         });
         let (mut analysis, inspection) = self.pipeline.analyze_lowered(
             &path,
-            text,
+            text.clone(),
             output,
             context.as_ref().unwrap_or(environment.context()),
             capture,
@@ -293,7 +338,13 @@ impl<R: Resources> Vault<R> {
             &path,
             analysis.root(),
         ));
-        Ok((analysis, inspection))
+        let handle = DocumentHandle {
+            path,
+            source: text,
+            environment,
+            owner: self.identity.clone(),
+        };
+        Ok((analysis, inspection, handle))
     }
     pub fn analyze_resource(&mut self, path: impl AsRef<Path>) -> Result<Analysis, VaultError> {
         let source = self.source(path.as_ref())?;
@@ -357,6 +408,51 @@ impl<R: Resources> Vault<R> {
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
         self.evaluate_in(analysis, environment.context())
+    }
+    fn check_handle(&self, handle: &DocumentHandle) -> Result<(), VaultError> {
+        if Arc::ptr_eq(&self.identity, &handle.owner) {
+            Ok(())
+        } else {
+            Err(ResourceError::Access {
+                path: handle.path.clone(),
+                message: "document handle belongs to another Vault or configuration".into(),
+            }
+            .into())
+        }
+    }
+    pub fn evaluate_document(
+        &self,
+        handle: &DocumentHandle,
+        analysis: &Analysis,
+    ) -> Result<Evaluation, VaultError> {
+        self.check_handle(handle)?;
+        if !analysis
+            .sources()
+            .get(handle.path.to_string_lossy().as_ref())
+            .is_some_and(|source| Arc::ptr_eq(source, &handle.source))
+        {
+            return Err(ResourceError::Access {
+                path: handle.path.clone(),
+                message: "analysis does not belong to this document handle".into(),
+            }
+            .into());
+        }
+        self.evaluate_in(analysis, handle.environment.context())
+    }
+    pub fn html_registry_for_document(
+        &self,
+        handle: &DocumentHandle,
+        root: &crate::Item,
+    ) -> Result<(HtmlRegistry, Arc<Environment>), VaultError> {
+        self.check_handle(handle)?;
+        let registry = bind_html(
+            &handle.environment,
+            &self.resources,
+            &self.module_urls,
+            root,
+        )
+        .map_err(VaultError::Environment)?;
+        Ok((registry, handle.environment.clone()))
     }
     fn evaluate_in(
         &self,

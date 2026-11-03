@@ -85,6 +85,11 @@ impl Pipeline {
     pub fn supports(&self, path: &Path) -> bool {
         self.frontends.supports(path)
     }
+    /// Explicit purity identity used by hosts reusing a loaded module graph.
+    /// A frontend without this contract must execute normally on every load.
+    pub fn module_cache_key(&self, path: &Path) -> Option<notist_core::frontend::FrontendCacheKey> {
+        self.frontends.get(path)?.cache_key()
+    }
 
     /// Compile a content-literal prefix to an Item forest without a Doc root.
     /// Parse / Lower produces IR₁ first; the shared Markup backend then runs

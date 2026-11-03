@@ -118,6 +118,51 @@ fn roots_are_explicit_and_cached_source_bytes_do_not_grant_data_access() {
 }
 
 #[test]
+fn shared_text_hits_retain_identity_utf8_errors_and_request_limits() {
+    let mut resources = Observed::new();
+    resources.files.insert("source.notc", "shared source");
+    resources.files.insert("bad.notc", vec![0xff]);
+    let session = ResourceSession::new(&resources).with_read_root("/project");
+    let first = session.source_shared(Path::new("source.notc")).unwrap();
+    let second = session.source_shared(Path::new("./source.notc")).unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    for _ in 0..2 {
+        assert!(matches!(
+            session.source_shared(Path::new("bad.notc")),
+            Err(ResourceError::InvalidUtf8(_))
+        ));
+    }
+    assert!(
+        resources
+            .reads
+            .lock()
+            .unwrap()
+            .values()
+            .all(|&calls| calls == 1)
+    );
+    let limited = ResourceSession::new(&resources)
+        .with_read_root("/project")
+        .with_limits(InputLimits {
+            requests: 1,
+            ..Default::default()
+        });
+    assert!(limited.source_shared(Path::new("source.notc")).is_ok());
+    assert!(
+        limited
+            .source_shared(Path::new("source.notc"))
+            .unwrap_err()
+            .to_string()
+            .contains("request limit exceeded")
+    );
+    let denied = ResourceSession::new(&resources);
+    assert!(denied.source_shared(Path::new("source.notc")).is_ok());
+    failed(
+        denied.file(&path("/project", "source.notc")),
+        InputError::AccessDenied,
+    );
+}
+
+#[test]
 fn successes_failures_source_and_data_share_one_loading_cache_across_pages() {
     let mut resources = Observed::new();
     resources.files.insert(

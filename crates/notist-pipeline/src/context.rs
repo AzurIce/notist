@@ -10,7 +10,10 @@ use notist_core::{
     diag::{Diagnostic, Phase},
     registry::Registry,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone)]
 /// Immutable definitions, lexical module scopes and checked execution mappings.
@@ -21,6 +24,7 @@ pub struct Context {
     program: crate::definitions::CodeProgram,
     root: Option<String>,
     resource_root: String,
+    checked: Arc<Mutex<BTreeMap<String, crate::code::CheckedProgram>>>,
 }
 impl Context {
     pub fn new(registry: Registry) -> Self {
@@ -30,6 +34,7 @@ impl Context {
             program: Default::default(),
             root: None,
             resource_root: "/".into(),
+            checked: Default::default(),
         }
     }
     /// Install a file without imports and select its lexical scope.
@@ -86,6 +91,7 @@ impl Context {
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Install);
         self.registry.register(module.code().definitions.clone())?;
+        self.checked = Default::default();
         self.root = Some(module.code().id().to_owned());
         self.program.install(module);
         Ok(self)
@@ -101,6 +107,10 @@ impl Context {
         imports: impl IntoIterator<Item = (String, ImportBinding)>,
     ) -> Self {
         let module = module.into();
+        if self.program.module(&module).is_some() {
+            // Overriding a Code module's lexical imports changes body meaning.
+            self.checked = Default::default();
+        }
         self.program.with_scope(
             module.clone(),
             Arc::new(ModuleScope::from_bindings(imports.into_iter().collect())),
@@ -119,6 +129,20 @@ impl Context {
     }
     pub fn resource_root(&self) -> &str {
         &self.resource_root
+    }
+    pub(crate) fn checked_program(&self, key: &str) -> Option<crate::code::CheckedProgram> {
+        self.checked.lock().unwrap().get(key).cloned()
+    }
+    pub(crate) fn remember_checked_program(
+        &self,
+        key: String,
+        program: &crate::code::CheckedProgram,
+    ) {
+        let mut checked = self.checked.lock().unwrap();
+        let records: usize = checked.values().map(|p| p.instances.len()).sum();
+        if checked.len() < 32 && records.saturating_add(program.instances.len()) <= 8192 {
+            checked.entry(key).or_insert_with(|| program.clone());
+        }
     }
     /// Resolve a name in one lexical module. Loaded modules are never ambient
     /// globals; imports are exported namespace bindings and can be traversed.

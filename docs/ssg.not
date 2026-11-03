@@ -102,6 +102,8 @@ site.data 加载 data 下的 TOML 与 JSON，以去掉扩展名的相对路径�
 
 SSG 为一次构建复用整站模板上下文，不先构造完整的 JSON 中间树。每页的模板值仅转换一次，site.pages、site.directories、当前 page 和 directory 共享对应的不可变值；每页仅更新当前页、资源路径及必要的目录引用。模板中的整站查询接口保持不变；如果模板自己为每页遍历所有页面，仍会产生相应的计算量。
 
+至少 1024 页时，已准备的模板任务可按可用核心数并行执行，最多使用 8 个 worker。每个 worker 持有独立的当前页上下文，共享不可变站点值；产物和首个错误按页面顺序合并。资源读取、文档扩展、分析、求值与发布仍按既定顺序执行，不并发共享 Vault 的可变输入状态。
+
 使用 `{% include 'header' %}` 引用局部模板；局部模板继承当前作用域，直接通过 page.title、site.title 访问页面和整站信息。循环使用显式变量，例如 `{% for other in site.pages %}{{other.title}}{% endfor %}`；目录映射使用 `{% for path, dir in site.directories %}{{dir.name}}{% endfor %}`。动态数据查询使用 `site.data.items[page.attrs.id]`，无需 lookup 或 @root。
 
 这不是取消整站上下文或将正文改成浏览器加载。数据驱动实体页仍应按正常的 prepare、路由校验、模板渲染与静态发布流程构建。XIV DB 五万级物品页实践、性能边界与复现方式见 docs/_logs/2026-10-31-xiv-db-ssg.md。
@@ -119,6 +121,8 @@ SSG 为一次构建复用整站模板上下文，不先构造完整的 JSON 中�
 主题目录可以包含 templates、static 和 sass。站点 static 覆盖主题的同名 static 资源，但不允许覆盖内容文档或内容资源。站点同名 Sass 入口覆盖主题入口；非 partial 的 .scss / .sass 文件按相对路径编译为 .css。以 _ 开头的 partial 只参与导入。Sass 使用宿主的 Resources 读取输入。
 
 Builder 接收 Vault 与 SiteConfig，返回完整的 BuildOutput，不修改文档或数据源文件。CLI 在所有步骤成功后暂存并替换属于 Notist 的输出目录，自动清理过期文件；失败不会替换现有站点。
+
+若旧输出的全部普通文件与新产物逐字节一致、目录项也完全匹配，CLI 保留现有目录，省去暂存与替换。验证采用有界读取，不只比较时间戳或摘要；额外文件／目录、symlink 或读取失败均回到完整发布流程。任意输出变化仍执行整站暂存、替换与旧目录同步清理，不是逐文件增量发布。
 
 == 站点扩展（Experimental）
 

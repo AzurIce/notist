@@ -1,5 +1,5 @@
 use crate::{
-    Error, Page, Route, SiteConfig, assets,
+    Error, Page, SiteConfig, assets,
     document::{Document, diagnostic},
     templates,
 };
@@ -202,12 +202,45 @@ fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic 
     )
 }
 
+struct DocumentIndex<'a> {
+    sources: BTreeMap<PathBuf, &'a Document>,
+    outputs: BTreeMap<PathBuf, &'a Document>,
+}
+impl<'a> DocumentIndex<'a> {
+    fn new(documents: &'a [Document]) -> Self {
+        let sources: BTreeMap<_, _> = documents
+            .iter()
+            .map(|document| (document.page.route.source.clone(), document))
+            .collect();
+        let mut outputs = BTreeMap::new();
+        // Keep source-path precedence, including ambiguous aliases, exactly as
+        // the former ordered sources.values().find lookup did.
+        for &document in sources.values() {
+            let path = &document.page.route.output;
+            outputs.entry(path.clone()).or_insert(document);
+            if path.file_name().is_some_and(|name| name == "index.html") {
+                outputs
+                    .entry(path.parent().unwrap().into())
+                    .or_insert(document);
+            }
+        }
+        Self { sources, outputs }
+    }
+    fn find(&self, source: &Path, content: &Path) -> Option<&'a Document> {
+        self.sources.get(source).copied().or_else(|| {
+            self.outputs
+                .get(source.strip_prefix(content).ok()?)
+                .copied()
+        })
+    }
+}
+
 fn resolve_link(
     document: &Document,
     target: &str,
     node: &Item,
     content: &Path,
-    documents: &BTreeMap<PathBuf, &Document>,
+    documents: &DocumentIndex<'_>,
     outputs: &BTreeSet<PathBuf>,
 ) -> Result<Option<String>, String> {
     if target.starts_with("//")
@@ -245,14 +278,7 @@ fn resolve_link(
         normalize(&origin.parent().unwrap().join(path.as_ref()))
     };
     let published = source.strip_prefix(content).ok().map(Path::to_path_buf);
-    let destination_doc = documents.get(&source).copied().or_else(|| {
-        published.as_ref().and_then(|p| {
-            documents
-                .values()
-                .find(|d| d.page.route.output == *p || d.page.route.output == p.join("index.html"))
-                .copied()
-        })
-    });
+    let destination_doc = documents.find(&source, content);
     let destination = if let Some(destination) = destination_doc {
         if let Some(anchor) = anchor.filter(|a| !a.is_empty()) {
             let decoded = percent_encoding::percent_decode_str(anchor)
@@ -304,19 +330,12 @@ fn resolve_embed(
     path: &notist::ResourcePath,
     node: &Item,
     content: &Path,
-    documents: &BTreeMap<PathBuf, &Document>,
+    documents: &DocumentIndex<'_>,
     outputs: &BTreeSet<PathBuf>,
 ) -> Result<String, String> {
     let source = PathBuf::from(path.logical_path());
     let published = source.strip_prefix(content).ok().map(Path::to_path_buf);
-    let destination = documents.get(&source).copied().or_else(|| {
-        published.as_ref().and_then(|p| {
-            documents
-                .values()
-                .find(|d| d.page.route.output == *p || d.page.route.output == p.join("index.html"))
-                .copied()
-        })
-    });
+    let destination = documents.find(&source, content);
     let output = if let Some(destination) = destination {
         if let Some(anchor) =
             notist::embed::string(&node.fields, "fragment").filter(|anchor| !anchor.is_empty())
@@ -374,6 +393,69 @@ fn image(node: &Item, url: &str) -> Option<String> {
         notist_html::escape_attribute(url),
         notist_html::escape_attribute(alt)
     ))
+}
+
+/// Rendering uses only immutable prepared values. Resource reads, document
+/// hooks, evaluation and publication remain ordered host operations.
+fn render_templates(
+    engine: &tera::Tera,
+    config: &SiteConfig,
+    pages: &[Page],
+    values: &TemplateContext,
+    components: &BTreeMap<PathBuf, String>,
+    highlight_css: &Path,
+    workers: usize,
+) -> Result<Vec<Vec<u8>>, Error> {
+    let render = |start: usize, end: usize| {
+        let mut context = values.context.clone();
+        let mut current_directory: Option<&str> = None;
+        let mut output = Vec::with_capacity(end - start);
+        for (i, page) in pages.iter().enumerate().take(end).skip(start) {
+            let template = page
+                .attrs
+                .get("template")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&config.template);
+            if current_directory != Some(page.directory.as_str()) {
+                context.insert_value("directory", values.directories[&page.directory].clone());
+                current_directory = Some(&page.directory);
+            }
+            context.insert_value("page", values.pages[i].clone());
+            context.insert(
+                "assets",
+                &PageAssets {
+                    components: components.get(&page.route.path),
+                    highlight: relative_url(&page.route.output, highlight_css, false),
+                },
+            );
+            let html = engine
+                .render(template, &context)
+                .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;
+            output.push(html.into_bytes());
+        }
+        Ok::<_, Error>(output)
+    };
+    let workers = workers.clamp(1, 8).min(pages.len().max(1));
+    if workers == 1 {
+        return render(0, pages.len());
+    }
+    std::thread::scope(|scope| {
+        let chunk = pages.len().div_ceil(workers);
+        let render = &render;
+        let handles: Vec<_> = (0..pages.len())
+            .step_by(chunk)
+            .map(|start| scope.spawn(move || render(start, (start + chunk).min(pages.len()))))
+            .collect();
+        let mut output = Vec::with_capacity(pages.len());
+        // Ordered joins preserve the first page error and deterministic output.
+        for handle in handles {
+            let rendered = handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+            output.extend(rendered);
+        }
+        Ok(output)
+    })
 }
 
 pub(crate) fn build<R: Resources>(
@@ -449,7 +531,7 @@ pub(crate) fn build<R: Resources>(
             .collect::<Result<_, Error>>()?,
         data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
     };
-    crate::extensions::prepare(vault, config, extensions, &mut input)?;
+    let routes = crate::extensions::prepare(vault, config, extensions, &mut input)?;
     let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
     for path in input.documents.keys() {
         for parent in content.join(path).parent().unwrap().ancestors() {
@@ -462,17 +544,11 @@ pub(crate) fn build<R: Resources>(
     let source_dirs: Vec<_> = source_dirs.into_iter().collect();
     let mut documents = vec![];
     let mut errors = vec![];
-    let mut outputs = BTreeSet::new();
+    let mut outputs: BTreeSet<_> = routes.iter().map(|route| route.output.clone()).collect();
     let mut analyzed = Vec::new();
-    for (path, text) in input.documents {
-        let route = Route::new(content.join(path), &content)?;
-        if !outputs.insert(route.output.clone()) {
-            return Err(Error::Message(format!(
-                "route collision at `{}`",
-                route.output.display()
-            )));
-        }
-        let analysis = vault.analyze_with_resource_root(&route.source, &text, &content)?;
+    for ((_, text), route) in input.documents.into_iter().zip(routes) {
+        let (analysis, handle) =
+            vault.analyze_document_with_resource_root(&route.source, &text, &content)?;
         errors.extend(
             analysis
                 .diagnostics()
@@ -481,12 +557,13 @@ pub(crate) fn build<R: Resources>(
                 .cloned()
                 .map(|d| diagnostic(&route.source, &text, analysis.sources(), d)),
         );
-        analyzed.push((route, text, analysis));
+        analyzed.push((route, text, analysis, handle));
     }
     // Fix every generated/edited document source in the shared input view before
     // any page can consume another document as text, regardless of route order.
-    for (route, text, analysis) in analyzed {
-        let evaluation = vault.evaluate(&route.source, &analysis)?;
+    let mut handles = Vec::with_capacity(analyzed.len());
+    for (route, text, analysis, handle) in analyzed {
+        let evaluation = vault.evaluate_document(&handle, &analysis)?;
         errors.extend(
             evaluation
                 .diagnostics
@@ -499,11 +576,15 @@ pub(crate) fn build<R: Resources>(
             text,
             evaluation.sources,
         )?);
+        handles.push(handle);
     }
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
     }
     let mut assets = Assets::new(output);
+    for document in &documents {
+        assets.reserve_generated(document.page.route.output.clone())?;
+    }
     outputs.extend(assets::prepare(
         vault.resources(),
         config,
@@ -517,14 +598,11 @@ pub(crate) fn build<R: Resources>(
     )?;
     let engine = templates::load(vault.resources(), config)?;
     let data = input.data;
-    let by_source: BTreeMap<_, _> = documents
-        .iter()
-        .map(|d| (d.page.route.source.clone(), d))
-        .collect();
+    let by_source = DocumentIndex::new(&documents);
     let mut warnings = vec![];
     let mut pages = vec![];
     let mut components = BTreeMap::new();
-    for document in &documents {
+    for (document, handle) in documents.iter().zip(&handles) {
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
         let links = document.root.descendants().filter(|n| n.ctor == Ctor::Link);
@@ -569,11 +647,7 @@ pub(crate) fn build<R: Resources>(
                 .get(&(node.origin.as_ref().map(|o| o.source.clone()), url.into()))
                 .cloned()
         };
-        let (registry, environment) = vault.html_registry_and_environment(
-            &document.page.route.source,
-            &document.source,
-            &document.root,
-        )?;
+        let (registry, environment) = vault.html_registry_for_document(handle, &document.root)?;
         let rendered = notist_html::Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(lookup)
@@ -620,35 +694,24 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     let dirs = directories(&pages, &source_dirs, &content);
-    let mut values = TemplateContext::new(config, &pages, &dirs, &data)?;
+    let values = TemplateContext::new(config, &pages, &dirs, &data)?;
     drop(data);
-    let mut current_directory: Option<&str> = None;
-    for (i, page) in pages.iter().enumerate() {
-        let template = page
-            .attrs
-            .get("template")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&config.template);
-        // Directory listings can themselves be large. Keep the current listing
-        // while rendering sibling pages instead of cloning it for each sibling.
-        if current_directory != Some(page.directory.as_str()) {
-            values
-                .context
-                .insert_value("directory", values.directories[&page.directory].clone());
-            current_directory = Some(&page.directory);
-        }
-        values.context.insert_value("page", values.pages[i].clone());
-        values.context.insert(
-            "assets",
-            &PageAssets {
-                components: components.get(&page.route.path),
-                highlight: relative_url(&page.route.output, &highlight_css, false),
-            },
-        );
-        let html = engine
-            .render(template, &values.context)
-            .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;
-        assets.generated(page.route.output.clone(), html.into_bytes())?;
+    let workers = if pages.len() >= 1024 {
+        std::thread::available_parallelism().map_or(1, usize::from)
+    } else {
+        1
+    };
+    let rendered = render_templates(
+        &engine,
+        config,
+        &pages,
+        &values,
+        &components,
+        &highlight_css,
+        workers,
+    )?;
+    for (page, bytes) in pages.iter().zip(rendered) {
+        assets.write_reserved(&page.route.output, bytes)?;
     }
     Ok(BuildOutput {
         files: assets.finish()?,
@@ -660,6 +723,7 @@ pub(crate) fn build<R: Resources>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Route;
 
     fn field<'a>(value: &'a tera::Value, key: &str) -> &'a tera::Value {
         value
@@ -752,5 +816,67 @@ mod tests {
         assert!(field(site, "pages").as_array().unwrap().is_empty());
         assert!(field(site, "directories").as_map().unwrap().is_empty());
         assert!(field(site, "data").as_map().unwrap().is_empty());
+    }
+    #[test]
+    fn parallel_templates_preserve_values_order_and_first_error() {
+        let content = Path::new("/site/content");
+        let pages: Vec<_> = (0..24)
+            .map(|i| Page {
+                route: Route::new(content.join(format!("p{i}.not")), content).unwrap(),
+                title: format!("page-{i}"),
+                attrs: BTreeMap::new(),
+                headings: vec![],
+                html: format!("<strong>{i}</strong>"),
+                directory: String::new(),
+                ancestors: vec![],
+            })
+            .collect();
+        let config = SiteConfig::default();
+        let dirs = directories(&pages, &[content.into()], content);
+        let values = TemplateContext::new(&config, &pages, &dirs, &BTreeMap::new()).unwrap();
+        let mut engine = tera::Tera::default();
+        engine.add_raw_template("page", "{{page.title}}|{{page.html | safe}}|{{directory.pages | length}}|{{site.pages | length}}").unwrap();
+        let components = BTreeMap::new();
+        let highlight = Path::new("_notist/highlight.css");
+        let serial =
+            render_templates(&engine, &config, &pages, &values, &components, highlight, 1).unwrap();
+        let parallel =
+            render_templates(&engine, &config, &pages, &values, &components, highlight, 4).unwrap();
+        assert_eq!(serial, parallel);
+        assert!(
+            String::from_utf8(parallel[7].clone())
+                .unwrap()
+                .starts_with("page-7|<strong>7</strong>|24|24")
+        );
+        let mut invalid = pages;
+        for index in [3, 18] {
+            invalid[index]
+                .attrs
+                .insert("template".into(), serde_json::json!("missing"));
+        }
+        let serial = render_templates(
+            &engine,
+            &config,
+            &invalid,
+            &values,
+            &components,
+            highlight,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        let parallel = render_templates(
+            &engine,
+            &config,
+            &invalid,
+            &values,
+            &components,
+            highlight,
+            4,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(serial, parallel);
+        assert!(serial.contains("p3.not"));
     }
 }

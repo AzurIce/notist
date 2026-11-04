@@ -1,7 +1,7 @@
 use super::report::{Report, Status};
 use codespan_reporting::{
     diagnostic::Severity,
-    term::termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor},
+    term::termcolor::{Color, ColorSpec, StandardStream, WriteColor},
 };
 use std::{
     io::{IsTerminal, Write},
@@ -28,7 +28,7 @@ impl Terminal {
     }
 
     pub fn render(&self, report: &Report, has_preview: bool) {
-        let stream = StandardStream::stderr(ColorChoice::Auto);
+        let stream = StandardStream::stderr(crate::stderr_color_choice());
         let mut writer = stream.lock();
         if self.clear {
             // Clear the viewport, preserving terminal scrollback.

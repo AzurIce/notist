@@ -5,6 +5,8 @@ mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
 #[cfg(not(target_arch = "wasm32"))]
+mod progress;
+#[cfg(not(target_arch = "wasm32"))]
 mod publication;
 mod query;
 #[cfg(not(target_arch = "wasm32"))]
@@ -30,6 +32,9 @@ use codespan_reporting::term::{self, Config};
 #[derive(Parser)]
 #[command(name = "notist", version, about = "the Notist document toolchain", long_about = None)]
 struct Cli {
+    /// Show detailed, tree-shaped build progress on stderr
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
     /// Use this Notist.toml instead of automatic configuration discovery
@@ -102,6 +107,11 @@ struct ListenOptions {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    progress::observe(cli.verbose, || run(cli))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run(cli: Cli) -> ExitCode {
     let config = cli.config.as_deref();
     let evaluate = cli.eval;
     match cli.command {
@@ -118,7 +128,7 @@ fn main() -> ExitCode {
             no_clear_screen,
         } => match workspace::select(config, false, &project, target.as_deref()) {
             Ok(mut targets) if targets.len() == 1 => {
-                serve::serve_target(targets.remove(0), &listen, no_clear_screen)
+                serve::serve_target(targets.remove(0), &listen, no_clear_screen, cli.verbose)
             }
             Ok(_) => {
                 eprintln!("serve requires exactly one target; select with -p and/or --target");
@@ -391,7 +401,7 @@ fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
     let diagnostics = library.check();
     let mut files = SimpleFiles::new();
     let mut ids = std::collections::HashMap::new();
-    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let writer = StandardStream::stderr(stderr_color_choice());
     let config = Config::default();
     for (path, d) in &diagnostics {
         let diagnostic_path = d
@@ -471,8 +481,18 @@ fn emit_source_diagnostics(diagnostics: &[notist::SourceDiagnostic], severity: S
 
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_source(path: &Path, source: &str, diagnostics: &[notist::Diagnostic], severity: Severity) {
-    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let writer = StandardStream::stderr(stderr_color_choice());
     write_source(&mut writer.lock(), path, source, diagnostics, severity);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stderr_color_choice() -> ColorChoice {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        ColorChoice::Auto
+    } else {
+        ColorChoice::Never
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -311,21 +311,38 @@ impl<R: Resources> Vault<R> {
         capture: bool,
         resource_root: Option<&Path>,
     ) -> Result<(Analysis, notist_pipeline::Inspection, DocumentHandle), VaultError> {
+        let compilation = crate::progress::Span::enter(|| {
+            format!(
+                "Analyze {}",
+                path.strip_prefix(self.resources.root())
+                    .unwrap_or(path)
+                    .display()
+            )
+        });
         let path = self.resources.resolve(path);
-        let output = self.pipeline.lower(
-            &path,
-            source,
-            crate::FrontendOptions {
-                capture_syntax: capture,
+        let output = crate::progress::run(
+            || "Parse and lower".into(),
+            || {
+                self.pipeline.lower(
+                    &path,
+                    source,
+                    crate::FrontendOptions {
+                        capture_syntax: capture,
+                    },
+                )
             },
         )?;
-        let (text, environment) = self.ensure_environment(&path, source, &output.imports)?;
+        let (text, environment) = crate::progress::run(
+            || "Load modules and environment".into(),
+            || self.ensure_environment(&path, source, &output.imports),
+        )?;
         let context = resource_root.map(|root| {
             environment
                 .context()
                 .clone()
                 .with_resource_root(root.to_string_lossy())
         });
+        let checking = crate::progress::Span::enter(|| "Check and materialize".into());
         let (mut analysis, inspection) = self.pipeline.analyze_lowered(
             &path,
             text.clone(),
@@ -344,6 +361,8 @@ impl<R: Resources> Vault<R> {
             environment,
             owner: self.identity.clone(),
         };
+        checking.finish();
+        compilation.finish();
         Ok((analysis, inspection, handle))
     }
     pub fn analyze_resource(&mut self, path: impl AsRef<Path>) -> Result<Analysis, VaultError> {
@@ -459,6 +478,7 @@ impl<R: Resources> Vault<R> {
         analysis: &Analysis,
         context: &crate::Context,
     ) -> Result<Evaluation, VaultError> {
+        let evaluation = crate::progress::Span::enter(|| "Evaluate Code and extensions".into());
         let result = self.pipeline.evaluate_with_inputs_and_limits(
             analysis,
             context,
@@ -466,7 +486,10 @@ impl<R: Resources> Vault<R> {
             self.evaluation_limits,
         );
         match result {
-            crate::EvaluationOutcome::Complete(evaluation) => Ok(*evaluation),
+            crate::EvaluationOutcome::Complete(output) => {
+                evaluation.finish();
+                Ok(*output)
+            }
             crate::EvaluationOutcome::NeedResources(paths) => Err(VaultError::NeedResources(paths)),
         }
     }

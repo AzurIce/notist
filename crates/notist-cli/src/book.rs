@@ -18,8 +18,7 @@ pub(crate) fn assemble(
     recovery: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     notist::evict_caches(10);
-    let prepared = target
-        .prepare()
+    let prepared = notist::progress::run(|| "Load configuration".into(), || target.prepare())
         .map_err(|e| (Error::Message(e), target.inputs()))?;
     let Options::Book(options) = prepared.options else {
         return Err((
@@ -50,19 +49,27 @@ pub(crate) fn report(error: Error) {
     }
 }
 pub(crate) fn build_target(target: &Target) -> std::process::ExitCode {
-    let result = (|| {
-        let result = assemble(target, false).map_err(|(error, _)| error)?;
-        publish(&result.artifact.files, &result.output, &target.root)?;
-        crate::emit_source_diagnostics(&result.artifact.warnings, Severity::Warning);
-        println!(
-            "{} pages → {}",
-            result.artifact.pages.len(),
-            result.output.display()
-        );
-        Ok::<_, Error>(())
-    })();
+    let result = notist::progress::run(
+        || format!("Build {}/{}", target.project, target.name),
+        || {
+            let result = assemble(target, false).map_err(|(error, _)| error)?;
+            notist::progress::run(
+                || "Publish files".into(),
+                || publish(&result.artifact.files, &result.output, &target.root),
+            )?;
+            Ok::<_, Error>(result)
+        },
+    );
     match result {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(result) => {
+            crate::emit_source_diagnostics(&result.artifact.warnings, Severity::Warning);
+            println!(
+                "{} pages → {}",
+                result.artifact.pages.len(),
+                result.output.display()
+            );
+            std::process::ExitCode::SUCCESS
+        }
         Err(error) => {
             report(error);
             std::process::ExitCode::FAILURE

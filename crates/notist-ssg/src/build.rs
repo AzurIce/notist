@@ -506,6 +506,7 @@ pub(crate) fn build<R: Resources>(
         )));
     }
     let mut sources = vec![];
+    let discovery = notist::progress::Span::enter(|| "Discover documents and data".into());
     let mut content_assets = vec![];
     let mut source_dirs = vec![];
     if generated_only {
@@ -531,7 +532,11 @@ pub(crate) fn build<R: Resources>(
             .collect::<Result<_, Error>>()?,
         data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
     };
-    let routes = crate::extensions::prepare(vault, config, extensions, &mut input)?;
+    discovery.finish();
+    let routes = notist::progress::run(
+        || "Run site extensions and plan routes".into(),
+        || crate::extensions::prepare(vault, config, extensions, &mut input),
+    )?;
     let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
     for path in input.documents.keys() {
         for parent in content.join(path).parent().unwrap().ancestors() {
@@ -546,6 +551,7 @@ pub(crate) fn build<R: Resources>(
     let mut errors = vec![];
     let mut outputs: BTreeSet<_> = routes.iter().map(|route| route.output.clone()).collect();
     let mut analyzed = Vec::new();
+    let analysis_stage = notist::progress::Span::enter(|| "Analyze documents".into());
     for ((_, text), route) in input.documents.into_iter().zip(routes) {
         let (analysis, handle) =
             vault.analyze_document_with_resource_root(&route.source, &text, &content)?;
@@ -559,10 +565,14 @@ pub(crate) fn build<R: Resources>(
         );
         analyzed.push((route, text, analysis, handle));
     }
+    analysis_stage.finish();
     // Fix every generated/edited document source in the shared input view before
     // any page can consume another document as text, regardless of route order.
     let mut handles = Vec::with_capacity(analyzed.len());
+    let evaluation_stage = notist::progress::Span::enter(|| "Evaluate documents".into());
     for (route, text, analysis, handle) in analyzed {
+        let document =
+            notist::progress::Span::enter(|| format!("Document {}", route.path.display()));
         let evaluation = vault.evaluate_document(&handle, &analysis)?;
         errors.extend(
             evaluation
@@ -577,10 +587,13 @@ pub(crate) fn build<R: Resources>(
             evaluation.sources,
         )?);
         handles.push(handle);
+        document.finish();
     }
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
     }
+    evaluation_stage.finish();
+    let asset_stage = notist::progress::Span::enter(|| "Prepare assets, Sass and templates".into());
     let mut assets = Assets::new(output);
     for document in &documents {
         assets.reserve_generated(document.page.route.output.clone())?;
@@ -597,12 +610,17 @@ pub(crate) fn build<R: Resources>(
         notist_html::highlight::CSS.as_bytes().to_vec(),
     )?;
     let engine = templates::load(vault.resources(), config)?;
+    asset_stage.finish();
     let data = input.data;
     let by_source = DocumentIndex::new(&documents);
     let mut warnings = vec![];
     let mut pages = vec![];
     let mut components = BTreeMap::new();
+    let rendering = notist::progress::Span::enter(|| "Resolve links and render HTML".into());
     for (document, handle) in documents.iter().zip(&handles) {
+        let page_progress = notist::progress::Span::enter(|| {
+            format!("Render {}", document.page.route.path.display())
+        });
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
         let links = document.root.descendants().filter(|n| n.ctor == Ctor::Link);
@@ -689,10 +707,14 @@ pub(crate) fn build<R: Resources>(
         let mut page = document.page.clone();
         page.html = rendered.html;
         pages.push(page);
+        page_progress.finish();
     }
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
     }
+    rendering.finish();
+    let templates_stage =
+        notist::progress::Span::enter(|| format!("Render templates ({} pages)", pages.len()));
     let dirs = directories(&pages, &source_dirs, &content);
     let values = TemplateContext::new(config, &pages, &dirs, &data)?;
     drop(data);
@@ -713,6 +735,7 @@ pub(crate) fn build<R: Resources>(
     for (page, bytes) in pages.iter().zip(rendered) {
         assets.write_reserved(&page.route.output, bytes)?;
     }
+    templates_stage.finish();
     Ok(BuildOutput {
         files: assets.finish()?,
         pages,

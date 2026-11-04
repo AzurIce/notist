@@ -7,6 +7,7 @@ mod modules;
 mod navigation;
 #[cfg(feature = "profiling")]
 pub mod profiling;
+pub mod progress;
 
 pub mod extensions;
 pub mod frontend;
@@ -189,6 +190,7 @@ impl Pipeline {
         source: &str,
         resource_root: &str,
     ) -> Result<CodeModule, Vec<Diagnostic>> {
+        let progress = progress::Span::enter(|| format!("Compile module {module}"));
         #[cfg(feature = "profiling")]
         let _timer = profiling::enter(profiling::Stage::Compile);
         let Some(frontend) = self.frontends.get(dialect_path.as_ref()) else {
@@ -198,7 +200,12 @@ impl Pipeline {
                 "unsupported content dialect",
             )]);
         };
-        definitions::compile_module(module, source_path, source, resource_root, frontend)
+        let result =
+            definitions::compile_module(module, source_path, source, resource_root, frontend);
+        if result.is_ok() {
+            progress.finish();
+        }
+        result
     }
     /// Check all Code definitions whose compile-time parameters have defaults.
     /// Other generic instances are checked when called with concrete arguments.

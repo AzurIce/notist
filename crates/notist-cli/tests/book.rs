@@ -20,6 +20,78 @@ fn write(root: &Path, path: &str, source: &str) {
 }
 
 #[test]
+fn verbose_build_reports_nested_stages_without_changing_stdout() {
+    for (kind, page) in [("book", "README.md"), ("site", "content/index.md")] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(
+            root,
+            "Notist.toml",
+            &format!("[project]\nname='test'\n[[{kind}]]\noutput='public'"),
+        );
+        write(root, page, "# Home");
+        let normal = command(root).arg("build").output().unwrap();
+        assert!(
+            normal.status.success(),
+            "{}",
+            String::from_utf8_lossy(&normal.stderr)
+        );
+        assert!(normal.stderr.is_empty());
+        for args in [["-v", "build"], ["build", "--verbose"]] {
+            let result = command(root).args(args).output().unwrap();
+            let log = String::from_utf8_lossy(&result.stderr);
+            assert!(result.status.success(), "{log}");
+            assert_eq!(result.stdout, normal.stdout);
+            for stage in [
+                "Build test/",
+                "├─",
+                "Load configuration",
+                "Parse and lower",
+                "Load modules and environment",
+                "Check and materialize",
+                "Evaluate Code and extensions",
+                "Publish files",
+            ] {
+                assert!(log.contains(stage), "missing {stage}: {log}");
+            }
+            assert!(!log.contains('\x1b'), "{log}");
+            assert!(!log.contains('✗'), "{log}");
+        }
+        write(root, page, "# Broken\n\n![Missing](missing.png)");
+        let result = command(root).args(["build", "-v"]).output().unwrap();
+        let log = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success());
+        assert!(log.contains("✗ Build test/"), "{log}");
+        assert!(!log.contains('\x1b'), "{log}");
+    }
+}
+
+#[test]
+fn verbose_serve_reports_initial_build_and_watcher_rebuild() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        "[project]\nname='test'\n[[book]]\noutput='public'",
+    );
+    write(root, "README.md", "# Home");
+    let server = Server::with_options(root, &["-v"]);
+    let mut events = server.events();
+    let ready = update(&mut events, |event| event["report"]["status"] == "ready");
+    let initial = server.wait_for_log("✓ Rebuild test/test-book");
+    assert!(initial.contains("Parse and lower"));
+    write(root, "README.md", "# Updated");
+    update(&mut events, |event| {
+        event["revision"].as_u64() > ready["revision"].as_u64()
+    });
+    let log = server.wait_for_log("Updated");
+    assert_eq!(log.matches("✓ Rebuild test/test-book").count(), 2, "{log}");
+    assert_eq!(log.matches("… Parse and lower").count(), 2, "{log}");
+    assert!(!log.contains('\x1b'), "{log}");
+}
+
+#[test]
 fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

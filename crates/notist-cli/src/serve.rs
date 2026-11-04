@@ -117,8 +117,9 @@ pub(crate) fn serve_target(
     target: crate::workspace::Target,
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
+    verbose: bool,
 ) -> std::process::ExitCode {
-    match run(target, listen, no_clear_screen) {
+    match run(target, listen, no_clear_screen, verbose) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -170,13 +171,17 @@ fn run(
     target: crate::workspace::Target,
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
+    verbose: bool,
 ) -> Result<(), Error> {
     let root = target.root.clone();
     // Keep the bound listener: probing and then rebinding would race other processes.
     let listener = bind(listen).map_err(|error| Error::Message(error.to_string()))?;
     let server =
         Server::from_listener(listener, None).map_err(|error| Error::Message(error.to_string()))?;
-    let terminal = Terminal::new(format!("http://{}/", server.server_addr()), no_clear_screen);
+    let terminal = Terminal::new(
+        format!("http://{}/", server.server_addr()),
+        no_clear_screen || verbose,
+    );
     let state = Arc::new(RwLock::new(Published {
         site: None,
         revision: 0,
@@ -237,7 +242,9 @@ fn run(
                     break;
                 }
             }
-            rebuild(&shared, &mut observed, &mut output, &terminal, &target);
+            crate::progress::observe(verbose, || {
+                rebuild(&shared, &mut observed, &mut output, &terminal, &target);
+            });
             if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
             {
                 eprintln!("{error}");
@@ -269,7 +276,10 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = target.kind.assemble(target);
+    let result = notist::progress::run(
+        || format!("Rebuild {}/{}", target.project, target.name),
+        || target.kind.assemble(target),
+    );
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {

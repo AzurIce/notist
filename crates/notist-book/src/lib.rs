@@ -294,6 +294,7 @@ fn build_inner<R: Resources>(
     if config.output.as_os_str().is_empty() {
         return Err(Error::Message("book output must not be empty".into()));
     }
+    let discovery = notist::progress::Span::enter(|| "Discover documents and routes".into());
     let mounts = Mounts::new(vault.resources(), config)?;
     let mut sources = discover(vault, config, &mounts)?;
     let root = vault.resources().root().to_path_buf();
@@ -368,9 +369,13 @@ fn build_inner<R: Resources>(
         .map_err(Error::Message)?;
     let routes = Routes::new(routes).map_err(Error::Message)?;
     let summary = summary.map(|plan| plan.expand(&routes));
+    discovery.finish();
+    let preparation = notist::progress::Span::enter(|| "Prepare documents".into());
     let mut recovered = vec![];
     let mut prepared = vec![];
     for route in routes.iter() {
+        let document =
+            notist::progress::Span::enter(|| format!("Document {}", route.path.display()));
         let source = vault.source(&route.source)?;
         // A mounted document has an explicitly declared logical resource root.
         // This binds its Path literals without granting access outside that root.
@@ -423,6 +428,7 @@ fn build_inner<R: Resources>(
             outline,
             sources: evaluation.sources,
         });
+        document.finish();
     }
     for page in &prepared {
         for (key, value) in page.root.attrs.iter() {
@@ -440,6 +446,9 @@ fn build_inner<R: Resources>(
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
     }
+    preparation.finish();
+    let rendering =
+        notist::progress::Span::enter(|| "Resolve links, render HTML and collect assets".into());
     let pages: Vec<_> = prepared
         .iter()
         .map(|page| Page {
@@ -460,12 +469,17 @@ fn build_inner<R: Resources>(
         .collect();
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
     let mut warnings = vec![];
-    let theme = Theme::load(vault.resources(), config, &mounts, &mut assets)?;
+    let theme = notist::progress::run(
+        || "Load theme".into(),
+        || Theme::load(vault.resources(), config, &mounts, &mut assets),
+    )?;
     let layout = match &summary {
         Some(entries) => Layout::declared(entries, &pages),
         None => Layout::new(&config.title, &pages),
     };
     for (page, metadata) in prepared.iter().zip(&pages) {
+        let document =
+            notist::progress::Span::enter(|| format!("Render {}", page.route.path.display()));
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
         let links = page.root.descendants().filter(|node| {
@@ -658,6 +672,7 @@ fn build_inner<R: Resources>(
             page.route.output.clone(),
             theme.render(context)?.into_bytes(),
         )?;
+        document.finish();
     }
     if !errors.is_empty() {
         return Err(Error::Diagnostics(errors));
@@ -665,6 +680,7 @@ fn build_inner<R: Resources>(
     let mut site = finish(assets, layout.ordered_pages(pages))?;
     site.diagnostics = recovered;
     site.warnings = warnings;
+    rendering.finish();
     Ok(site)
 }
 

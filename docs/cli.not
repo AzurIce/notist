@@ -26,6 +26,7 @@ target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模
 | --- | --- |
 | `--config <path>` | 显式指定 Notist.toml，跳过自动发现；相对当前工作目录。`build` / `serve` 接受项目或 workspace 清单；单文件命令用它提供文档扩展。 |
 | `--eval` | 让 `core` / `json` / `query` 查看求值后的表示；`core` / `json` 只对文档生效，`.notc` 模块分析不经过文档求值。不影响 `build` / `serve` / `check` / `cst` / `html`。 |
+| `-v, --verbose` | 在 stderr 展示树状实时构建进度与各阶段耗时，包括配置、文档分析、模块加载、求值、HTML、资源和发布；可放在子命令前后。重定向、CI 或 dumb 终端使用无动画的纯文本。 |
 | `-h, --help` | 打印帮助。 |
 | `-V, --version` | 打印版本。 |
 
@@ -98,6 +99,8 @@ notist serve [-p <project> ...] [--target <name>] [--host <host>] [--port <port>
 未指定端口时优先监听 `8000`，被占用则由系统分配空闲端口。显式指定 `--port` 或使用旧的 `--address` 时，端口不可用就报错，不自动换端口；其他监听错误也直接报错。终端输出实际监听地址。
 
 serve 在内存中生成与静态构建相同的产物，监听源文件、模板、样式、数据、配置和实际读取的模块资源。失败时保留上一次成功预览，并明确提示当前展示旧内容；修复后自动重建。预览始终使用根路径 `/`，静态构建使用 Site 的 `base_url`。
+
+使用 `notist serve -v` 或 `notist build --verbose` 查看详细进度。`serve -v` 对初次构建和每轮文件变更重建都生效，并自动保留终端历史，不清屏。进度只写 stderr，不改变 stdout 的路径、摘要或 JSON 数据。单文件分析命令也会展示经过的分析和求值阶段；纯语法树打印和 LSP 不产生构建进度。
 
 ```sh
 cd book && notist serve

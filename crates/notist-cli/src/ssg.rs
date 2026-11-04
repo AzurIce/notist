@@ -17,8 +17,7 @@ pub(crate) fn assemble(
     preview: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     notist::evict_caches(10);
-    let prepared = target
-        .prepare()
+    let prepared = notist::progress::run(|| "Load configuration".into(), || target.prepare())
         .map_err(|e| (Error::Message(e), target.inputs()))?;
     let Options::Site(mut options) = prepared.options else {
         return Err((
@@ -51,22 +50,30 @@ pub(crate) fn assemble(
         .map_err(|e| (e, observed))
 }
 pub(crate) fn build_target(target: &Target) -> ExitCode {
-    let result = (|| {
-        let result = assemble(target, false).map_err(|(e, _)| e)?;
-        publish(&result.artifact.files, &result.output, &target.root)?;
-        crate::emit_source_diagnostics(
-            &result.artifact.warnings,
-            codespan_reporting::diagnostic::Severity::Warning,
-        );
-        println!(
-            "{} pages → {}",
-            result.artifact.pages.len(),
-            result.output.display()
-        );
-        Ok::<_, Error>(())
-    })();
+    let result = notist::progress::run(
+        || format!("Build {}/{}", target.project, target.name),
+        || {
+            let result = assemble(target, false).map_err(|(e, _)| e)?;
+            notist::progress::run(
+                || "Publish files".into(),
+                || publish(&result.artifact.files, &result.output, &target.root),
+            )?;
+            Ok::<_, Error>(result)
+        },
+    );
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(result) => {
+            crate::emit_source_diagnostics(
+                &result.artifact.warnings,
+                codespan_reporting::diagnostic::Severity::Warning,
+            );
+            println!(
+                "{} pages → {}",
+                result.artifact.pages.len(),
+                result.output.display()
+            );
+            ExitCode::SUCCESS
+        }
         Err(Error::Diagnostics(errors)) => {
             crate::emit_source_diagnostics(
                 &errors,

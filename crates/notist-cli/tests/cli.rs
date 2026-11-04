@@ -3,6 +3,29 @@ use serde_json::Value;
 use std::process::Command;
 
 #[test]
+fn verbose_analysis_preserves_machine_readable_stdout() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("doc.md"), "# Title").unwrap();
+    let run = |verbose| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_notist"));
+        command.current_dir(root.path()).args(["json", "doc.md"]);
+        if verbose {
+            command.arg("-v");
+        }
+        command.output().unwrap()
+    };
+    let normal = run(false);
+    let verbose = run(true);
+    assert!(normal.status.success());
+    assert!(verbose.status.success());
+    assert_eq!(normal.stdout, verbose.stdout);
+    serde_json::from_slice::<Value>(&verbose.stdout).unwrap();
+    let log = String::from_utf8_lossy(&verbose.stderr);
+    assert!(log.contains("Check and materialize"));
+    assert!(!log.contains('\x1b'));
+}
+
+#[test]
 fn json_toml_html_export_is_static_and_data_diagnostics_use_data_text() {
     let root = tempfile::tempdir().unwrap();
     for (name, source) in [

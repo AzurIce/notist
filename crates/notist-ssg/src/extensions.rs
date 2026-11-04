@@ -123,12 +123,14 @@ pub(crate) fn prepare<R: Resources>(
         }
     }
     let run = |extension: &dyn SiteExtension, input: &mut SiteInput| {
+        let progress = notist::progress::Span::enter(|| format!("Extension {}", extension.name()));
         let mut candidate = input.clone();
         let routes = extension
             .prepare(&context, &mut candidate)
             .and_then(|()| validate(vault, &content, &candidate))
             .map_err(|error| contextualize(extension, error))?;
         *input = candidate;
+        progress.finish();
         Ok::<_, Error>(routes)
     };
     let mut routes = None;

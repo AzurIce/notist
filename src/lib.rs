@@ -45,6 +45,7 @@ pub use notist_pipeline::frontend::{
 };
 #[cfg(feature = "profiling")]
 pub use notist_pipeline::profiling;
+pub use notist_pipeline::progress;
 pub use notist_pipeline::{
     Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,
     Evaluation, EvaluationOutcome, ExportTable, Limits, LinkedModule, Lowered, ModuleExports,

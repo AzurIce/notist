@@ -9,3 +9,4 @@ AGENTS.local.md
 test.typ
 test.pdf
 /dist/
+__pycache__

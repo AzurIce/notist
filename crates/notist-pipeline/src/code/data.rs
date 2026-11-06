@@ -176,7 +176,7 @@ impl Evaluator<'_> {
             }
         };
         let location = SourceLocation {
-            source: call.source.clone(),
+            source: call.source.as_str().into(),
             start: call.span.start().into(),
             end: call.span.end().into(),
         };

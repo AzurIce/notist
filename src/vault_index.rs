@@ -112,7 +112,7 @@ pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Di
             diagnostic.source = node
                 .origin
                 .as_ref()
-                .map(|origin| origin.source.clone())
+                .map(|origin| origin.source.to_string())
                 .or_else(|| Some(source.clone()));
             Some(diagnostic)
         })

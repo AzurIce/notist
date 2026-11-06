@@ -179,7 +179,7 @@ fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Eva
 }
 fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult) {
     data["html"] = json!(result.html);
-    data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":mapping.origin.as_ref().map(|o|&o.source),"expansion":mapping.origin.as_ref().map(|o|o.expansion.iter().map(|e|json!({"source":e.source,"start":e.start,"end":e.end})).collect::<Vec<_>>())})).collect::<Vec<_>>());
+    data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":mapping.origin.as_ref().map(|o|o.source.as_str()),"expansion":mapping.origin.as_ref().map(|o|o.expansion.iter().map(|e|json!({"source":e.source.as_str(),"start":e.start,"end":e.end})).collect::<Vec<_>>())})).collect::<Vec<_>>());
     data["used_components"] = json!(result.used_components.iter().map(|component| json!({"identity":component.id.to_string(),"name":component.id.name,"tag":component.tag,"module":component.module.url(),"resource":component.module.resource()})).collect::<Vec<_>>());
     data["diagnostics"].as_array_mut().unwrap().extend(
         result

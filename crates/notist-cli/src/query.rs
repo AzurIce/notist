@@ -13,7 +13,10 @@ pub fn render_json(sources: &notist::Sources, matches: &[&Item]) -> String {
                 name.to_lowercase()
             });
             let range = usize::from(item.span.start())..usize::from(item.span.end());
-            let source = item.origin.as_ref().and_then(|o| sources.get(&o.source));
+            let source = item
+                .origin
+                .as_ref()
+                .and_then(|o| sources.get(o.source.as_str()));
             data["text"] = serde_json::json!(source.and_then(|s| s.get(range)).unwrap_or(""));
             data
         })

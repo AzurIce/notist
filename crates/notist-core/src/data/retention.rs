@@ -93,7 +93,7 @@ impl DataRetention {
                 for (_, value) in dict.iter() {
                     self.observe(value, limit)?;
                 }
-                self.charge(std::mem::size_of::<DictStorage>() + 128, limit)?;
+                self.charge(DictStorage::budget_bytes() + 128, limit)?;
                 self.dicts.insert(id, weak);
             }
             Value::Some(value) | Value::Ok(value) | Value::Err(value) => {

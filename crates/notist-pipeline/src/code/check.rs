@@ -86,7 +86,7 @@ impl<'a> Checker<'a> {
             |location| {
                 (
                     TextRange::new(location.start.into(), location.end.into()),
-                    location.source,
+                    location.source.to_string(),
                 )
             },
         );
@@ -236,10 +236,10 @@ impl<'a> Checker<'a> {
     }
     fn origin(&self, span: TextRange) -> Origin {
         Origin {
-            source: self.source.clone(),
+            source: self.source.as_str().into(),
             start: span.start().into(),
             end: span.end().into(),
-            expansion: Vec::new(),
+            expansion: Default::default(),
         }
     }
     pub(super) fn resolve_attributes(&mut self, attrs: &LiteralDict) -> Dict {
@@ -1389,7 +1389,7 @@ impl<'a> Checker<'a> {
         self.ensure_instance(&instance, &concrete, &bindings);
         Ok(Invocation {
             instance,
-            definition: Box::new(concrete),
+            definition: concrete.into(),
             arguments: arguments.into_iter().collect(),
             children,
             attrs,

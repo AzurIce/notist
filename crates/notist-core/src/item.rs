@@ -2,6 +2,7 @@ use rowan::TextRange;
 
 use crate::builtins;
 use crate::definitions::FunctionId;
+use crate::shared::Text;
 
 /// A registered call's public contract snapshot, independent of its module files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,15 +360,16 @@ impl std::fmt::Display for Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Origin {
-    pub source: String,
+    /// Immutable path text; cloning an origin does not copy the filename.
+    pub source: Text,
     pub start: u32,
     pub end: u32,
-    pub expansion: Vec<SourceLocation>,
+    pub expansion: crate::source_chain::SourceChain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceLocation {
-    pub source: String,
+    pub source: Text,
     pub start: u32,
     pub end: u32,
 }
@@ -387,9 +389,10 @@ pub struct Item {
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub pending: Option<Box<crate::evaluation::PendingEvaluation>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub instance: Option<crate::definitions::FunctionInstance>,
+    /// Immutable checked identity; clones share storage, mutable access detaches.
+    pub instance: Option<crate::shared::Shared<crate::definitions::FunctionInstance>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub target: Option<crate::definitions::FunctionInstance>,
+    pub target: Option<crate::shared::Shared<crate::definitions::FunctionInstance>>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub evaluation: Option<EvaluationState>,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
@@ -495,5 +498,155 @@ impl Item {
     /// The first descendant (self included) matching `pred`.
     pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
         self.descendants().find(|item| pred(item))
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn item_instance_sharing_preserves_independent_identity_and_mounts() {
+        use crate::definitions::{ComptimeValue, FunctionInstance, Type};
+        let mut original = Item::new(Ctor::Node, TextRange::empty(0.into()));
+        original.instance = Some(
+            FunctionInstance {
+                function: FunctionId::new("module", "view"),
+                arguments: vec![ComptimeValue::Type(Type::InlineContent)],
+            }
+            .into(),
+        );
+        original.target = original.instance.clone();
+        original
+            .children
+            .push(Item::text("kept".into(), original.span));
+        let mut changed = original.clone();
+        assert!(
+            original
+                .instance
+                .as_ref()
+                .unwrap()
+                .shares_storage(changed.instance.as_ref().unwrap())
+        );
+        assert!(
+            original
+                .target
+                .as_ref()
+                .unwrap()
+                .shares_storage(changed.target.as_ref().unwrap())
+        );
+        changed.instance.as_mut().unwrap().function.name = "different".into();
+        changed.target.as_mut().unwrap().arguments.clear();
+        changed.children.clear();
+        assert_eq!(original.instance.as_ref().unwrap().function.name, "view");
+        assert_eq!(original.target.as_ref().unwrap().arguments.len(), 1);
+        assert_eq!(original.children.len(), 1);
+        assert_ne!(original, changed);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn item_instance_wire_remains_the_complete_value() {
+        use crate::definitions::{ComptimeValue, FunctionInstance, Type};
+        let mut item = Item::new(Ctor::Node, TextRange::empty(0.into()));
+        let identity = FunctionInstance {
+            function: FunctionId::new("module", "view"),
+            arguments: vec![ComptimeValue::Type(Type::InlineContent)],
+        };
+        item.instance = Some(identity.clone().into());
+        item.target = Some(identity.clone().into());
+        let wire = serde_json::to_value(&item).unwrap();
+        assert_eq!(wire["instance"], serde_json::to_value(&identity).unwrap());
+        assert_eq!(wire["target"], wire["instance"]);
+        let restored: Item = serde_json::from_value(wire).unwrap();
+        assert_eq!(restored, item);
+        assert_eq!(
+            format!("{:?}", item.instance.as_ref().unwrap()),
+            format!("{identity:?}")
+        );
+    }
+
+    #[test]
+    fn origin_clones_share_path_text_but_not_expansion_mutations() {
+        let source: Text = "modules/view.notc".into();
+        let original = Origin {
+            source: source.clone(),
+            start: 1,
+            end: 7,
+            expansion: vec![SourceLocation {
+                source: source.clone(),
+                start: 10,
+                end: 20,
+            }]
+            .into(),
+        };
+        let mut changed = original.clone();
+        assert!(original.source.shares_storage(&changed.source));
+        assert!(
+            original.expansion[0]
+                .source
+                .shares_storage(&changed.expansion[0].source)
+        );
+        changed.source = "another.notc".into();
+        changed.expansion[0].source = "caller.not".into();
+        changed.expansion.push(SourceLocation {
+            source,
+            start: 30,
+            end: 40,
+        });
+        assert_eq!(original.source, "modules/view.notc");
+        assert_eq!(original.expansion[0].source, "modules/view.notc");
+        assert_eq!(original.expansion.len(), 1);
+        assert_eq!(changed.expansion.len(), 2);
+    }
+
+    #[test]
+    fn source_location_identity_remains_path_value_and_complete_span() {
+        let first = SourceLocation {
+            source: "view.notc".into(),
+            start: 2,
+            end: 8,
+        };
+        let mut equal = SourceLocation {
+            source: "view.notc".into(),
+            start: 2,
+            end: 8,
+        };
+        assert!(!first.source.shares_storage(&equal.source));
+        assert_eq!(first, equal);
+        equal.end += 1;
+        assert_ne!(first, equal);
+        equal.end -= 1;
+        equal.source = "different.notc".into();
+        assert_ne!(first, equal);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn source_wire_and_debug_remain_plain_path_values() {
+        let source = "dir/\"文档\".notc";
+        let mut origin = Origin {
+            source: source.into(),
+            start: 1,
+            end: 7,
+            expansion: vec![SourceLocation {
+                source: "caller.not".into(),
+                start: 10,
+                end: 20,
+            }]
+            .into(),
+        };
+        let expected = serde_json::json!({
+            "source": source, "start": 1, "end": 7,
+            "expansion": [{"source": "caller.not", "start": 10, "end": 20}],
+        });
+        assert_eq!(serde_json::to_value(&origin).unwrap(), expected);
+        let restored: Origin = serde_json::from_value(expected).unwrap();
+        assert_eq!(restored, origin);
+        origin.expansion.clear();
+        assert_eq!(
+            format!("{origin:?}"),
+            format!("Origin {{ source: {source:?}, start: 1, end: 7, expansion: [] }}")
+        );
     }
 }

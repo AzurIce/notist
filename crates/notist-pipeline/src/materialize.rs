@@ -5,6 +5,7 @@ use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
 use notist_core::item::{Ctor, Item, Origin};
+use notist_core::shared::Text;
 use rowan::{TextRange, TextSize};
 
 use crate::shape::is_block_element;
@@ -19,12 +20,16 @@ pub fn materialize(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Item> {
     attach_annotations(forest, annotations, diagnostics);
-    forest.iter().map(|expr| build_item(expr, source)).collect()
+    let source: Text = source.into();
+    forest
+        .iter()
+        .map(|expr| build_item(expr, &source))
+        .collect()
 }
 
-fn build_item(expr: &RExpr, source: &str) -> Item {
+fn build_item(expr: &RExpr, source: &Text) -> Item {
     let mut item = Item::new(expr.ctor.clone(), expr.span);
-    item.instance = expr.instance.clone();
+    item.instance = expr.instance.clone().map(Into::into);
     item.pending = expr.pending.clone();
     item.fields = expr.fields.clone();
     item.children = expr
@@ -39,10 +44,10 @@ fn build_item(expr: &RExpr, source: &str) -> Item {
         notist_core::builtins::Level::Inline
     };
     item.origin = Some(Origin {
-        source: source.into(),
+        source: source.clone(),
         start: expr.span.start().into(),
         end: expr.span.end().into(),
-        expansion: Vec::new(),
+        expansion: Default::default(),
     });
     item
 }
@@ -199,4 +204,28 @@ fn children_are_block(expr: &RExpr) -> bool {
             | Ctor::TableCell
             | Ctor::ListItem
     ) || matches!(expr.body, BodyFlavor::Block)
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn one_materialization_shares_its_path_across_all_boundaries() {
+        let span = TextRange::new(0.into(), 3.into());
+        let mut forest = [RExpr::new(Ctor::Paragraph, span).with_children(vec![
+            RExpr::new(Ctor::Text, span),
+            RExpr::new(Ctor::Emph, span),
+        ])];
+        let mut diagnostics = Vec::new();
+        let items = materialize(&mut forest, &[], "docs/source.not", &mut diagnostics);
+        assert!(diagnostics.is_empty());
+        let root = items[0].origin.as_ref().unwrap();
+        for child in &items[0].children {
+            let origin = child.origin.as_ref().unwrap();
+            assert_eq!(origin.source, "docs/source.not");
+            assert!(root.source.shares_storage(&origin.source));
+            assert_eq!((origin.start, origin.end), (0, 3));
+        }
+    }
 }

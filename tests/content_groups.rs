@@ -441,10 +441,13 @@ fn evaluated_group_detection_does_not_accept_pending_or_named_calls() {
     assert!(!group.is_evaluated_interpolation());
     group.evaluation = Some(EvaluationState::Expanded);
     assert!(group.is_evaluated_interpolation());
-    group.instance = Some(notist_core::definitions::FunctionInstance {
-        function: notist_core::definitions::FunctionId::new("notist", "node"),
-        arguments: Vec::new(),
-    });
+    group.instance = Some(
+        notist_core::definitions::FunctionInstance {
+            function: notist_core::definitions::FunctionId::new("notist", "node"),
+            arguments: Vec::new(),
+        }
+        .into(),
+    );
     assert!(!group.is_evaluated_interpolation());
 }
 

@@ -808,7 +808,7 @@ impl State<'_, '_> {
 
     fn diagnostic(&mut self, item: &Item, message: String) {
         let mut d = Diagnostic::new(Phase::Semantic, item.span, message);
-        d.source = item.origin.as_ref().map(|o| o.source.clone());
+        d.source = item.origin.as_ref().map(|o| o.source.to_string());
         self.diagnostics.push(d);
     }
 }

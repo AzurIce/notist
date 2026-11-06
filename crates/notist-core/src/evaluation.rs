@@ -131,7 +131,9 @@ pub enum ResultPattern {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Invocation {
     pub instance: FunctionInstance,
-    pub definition: Box<FunctionDef>,
+    /// The call's contract snapshot. Captures share it; editing one invocation
+    /// detaches its copy instead of changing another call's contract.
+    pub definition: crate::shared::Shared<FunctionDef>,
     pub arguments: Vec<(String, TypedExpr)>,
     /// Value-call children. Content-call children live on the enclosing Item.
     pub children: Option<Box<TypedExpr>>,

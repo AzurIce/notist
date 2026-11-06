@@ -217,11 +217,15 @@ fn run(
                                 return false;
                             }
                             if let Ok(relative) = path.strip_prefix(&watcher_root) {
-                                !relative.iter().any(|part| {
+                                let ignored = relative.iter().any(|part| {
                                     part.to_string_lossy().starts_with('.')
                                         || part == "target"
                                         || part == "node_modules"
-                                })
+                                });
+                                // Hidden paths are normally noise, but a concrete
+                                // input read (or removal of its ancestor) must
+                                // invalidate the preview just like a cold build.
+                                !ignored || observed.iter().any(|input| input.starts_with(path))
                             } else {
                                 observed.iter().any(|input| {
                                     input.starts_with(path)

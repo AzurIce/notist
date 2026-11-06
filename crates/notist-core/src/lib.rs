@@ -16,3 +16,4 @@ pub mod item;
 pub mod registry;
 pub mod resource;
 pub mod shared;
+pub mod source_chain;

@@ -193,7 +193,7 @@ fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic 
         notist::TextRange::new(o.start.into(), o.end.into())
     });
     let mut d = Diagnostic::new(Phase::Semantic, span, message);
-    d.source = node.origin.as_ref().map(|o| o.source.clone());
+    d.source = node.origin.as_ref().map(|o| o.source.to_string());
     diagnostic(
         &document.page.route.source,
         &document.source,
@@ -202,36 +202,57 @@ fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic 
     )
 }
 
-struct DocumentIndex<'a> {
-    sources: BTreeMap<PathBuf, &'a Document>,
-    outputs: BTreeMap<PathBuf, &'a Document>,
+struct DocumentTarget {
+    route: crate::Route,
+    ids: BTreeSet<String>,
 }
-impl<'a> DocumentIndex<'a> {
-    fn new(documents: &'a [Document]) -> Self {
+struct DocumentIndex {
+    targets: Vec<DocumentTarget>,
+    sources: BTreeMap<PathBuf, usize>,
+    outputs: BTreeMap<PathBuf, usize>,
+}
+impl DocumentIndex {
+    fn new(documents: &[Document]) -> Self {
+        // Link destinations need routes and anchors, never another page's tree.
+        // Own that small projection so rendered trees can be released in order.
+        let targets: Vec<_> = documents
+            .iter()
+            .map(|document| DocumentTarget {
+                route: document.page.route.clone(),
+                ids: document.ids.clone(),
+            })
+            .collect();
         let sources: BTreeMap<_, _> = documents
             .iter()
-            .map(|document| (document.page.route.source.clone(), document))
+            .enumerate()
+            .map(|(i, document)| (document.page.route.source.clone(), i))
             .collect();
         let mut outputs = BTreeMap::new();
         // Keep source-path precedence, including ambiguous aliases, exactly as
         // the former ordered sources.values().find lookup did.
-        for &document in sources.values() {
-            let path = &document.page.route.output;
-            outputs.entry(path.clone()).or_insert(document);
+        for &i in sources.values() {
+            let path = &targets[i].route.output;
+            outputs.entry(path.clone()).or_insert(i);
             if path.file_name().is_some_and(|name| name == "index.html") {
-                outputs
-                    .entry(path.parent().unwrap().into())
-                    .or_insert(document);
+                outputs.entry(path.parent().unwrap().into()).or_insert(i);
             }
         }
-        Self { sources, outputs }
+        Self {
+            targets,
+            sources,
+            outputs,
+        }
     }
-    fn find(&self, source: &Path, content: &Path) -> Option<&'a Document> {
-        self.sources.get(source).copied().or_else(|| {
-            self.outputs
-                .get(source.strip_prefix(content).ok()?)
-                .copied()
-        })
+    fn find(&self, source: &Path, content: &Path) -> Option<&DocumentTarget> {
+        self.sources
+            .get(source)
+            .copied()
+            .or_else(|| {
+                self.outputs
+                    .get(source.strip_prefix(content).ok()?)
+                    .copied()
+            })
+            .map(|i| &self.targets[i])
     }
 }
 
@@ -240,7 +261,7 @@ fn resolve_link(
     target: &str,
     node: &Item,
     content: &Path,
-    documents: &DocumentIndex<'_>,
+    documents: &DocumentIndex,
     outputs: &BTreeSet<PathBuf>,
 ) -> Result<Option<String>, String> {
     if target.starts_with("//")
@@ -268,7 +289,7 @@ fn resolve_link(
     let origin = node
         .origin
         .as_ref()
-        .map(|o| Path::new(&o.source))
+        .map(|o| Path::new(o.source.as_str()))
         .unwrap_or(&document.page.route.source);
     let source = if path.is_empty() {
         origin.into()
@@ -287,11 +308,11 @@ fn resolve_link(
             if !destination.ids.contains(decoded.as_ref()) {
                 return Err(format!(
                     "missing anchor `{anchor}` in `{}`",
-                    destination.page.route.path.display()
+                    destination.route.path.display()
                 ));
             }
         }
-        destination.page.route.output.clone()
+        destination.route.output.clone()
     } else {
         let published = published
             .ok_or_else(|| format!("reference `{target}` is outside the content directory"))?;
@@ -330,7 +351,7 @@ fn resolve_embed(
     path: &notist::ResourcePath,
     node: &Item,
     content: &Path,
-    documents: &DocumentIndex<'_>,
+    documents: &DocumentIndex,
     outputs: &BTreeSet<PathBuf>,
 ) -> Result<String, String> {
     let source = PathBuf::from(path.logical_path());
@@ -343,10 +364,10 @@ fn resolve_embed(
         {
             return Err(format!(
                 "missing anchor `#{anchor}` in `{}`",
-                destination.page.route.path.display()
+                destination.route.path.display()
             ));
         }
-        destination.page.route.output.clone()
+        destination.route.output.clone()
     } else {
         let published = published.ok_or_else(|| {
             format!(
@@ -617,7 +638,7 @@ pub(crate) fn build<R: Resources>(
     let mut pages = vec![];
     let mut components = BTreeMap::new();
     let rendering = notist::progress::Span::enter(|| "Resolve links and render HTML".into());
-    for (document, handle) in documents.iter().zip(&handles) {
+    for (document, handle) in documents.into_iter().zip(handles) {
         let page_progress = notist::progress::Span::enter(|| {
             format!("Render {}", document.page.route.path.display())
         });
@@ -627,11 +648,11 @@ pub(crate) fn build<R: Resources>(
         for node in links.chain(notist::embed::targets(&document.root)) {
             if notist::embed::is_embed(node) {
                 if let Some(Value::Path(path)) = node.fields.get("target") {
-                    match resolve_embed(document, path, node, &content, &by_source, &outputs) {
+                    match resolve_embed(&document, path, node, &content, &by_source, &outputs) {
                         Ok(url) => {
                             resource_urls.insert(path.clone(), url);
                         }
-                        Err(message) => errors.push(issue(document, node, message)),
+                        Err(message) => errors.push(issue(&document, node, message)),
                     }
                 }
                 continue;
@@ -639,7 +660,7 @@ pub(crate) fn build<R: Resources>(
             let Some(Value::Str(target)) = node.fields.get("target") else {
                 continue;
             };
-            match resolve_link(document, target, node, &content, &by_source, &outputs) {
+            match resolve_link(&document, target, node, &content, &by_source, &outputs) {
                 Ok(Some(url)) => {
                     resolved.insert(
                         (
@@ -651,7 +672,7 @@ pub(crate) fn build<R: Resources>(
                 }
                 Ok(None) => {}
                 Err(message) => {
-                    let d = issue(document, node, message);
+                    let d = issue(&document, node, message);
                     if node.ctor == Ctor::Embed {
                         errors.push(d);
                     } else {
@@ -665,7 +686,7 @@ pub(crate) fn build<R: Resources>(
                 .get(&(node.origin.as_ref().map(|o| o.source.clone()), url.into()))
                 .cloned()
         };
-        let (registry, environment) = vault.html_registry_for_document(handle, &document.root)?;
+        let (registry, environment) = vault.html_registry_for_document(&handle, &document.root)?;
         let rendered = notist_html::Renderer::from_registry(registry)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(lookup)
@@ -704,7 +725,7 @@ pub(crate) fn build<R: Resources>(
             );
             assets.generated(component_path, registrations.into_bytes())?;
         }
-        let mut page = document.page.clone();
+        let mut page = document.page;
         page.html = rendered.html;
         pages.push(page);
         page_progress.finish();
@@ -747,6 +768,39 @@ pub(crate) fn build<R: Resources>(
 mod tests {
     use super::*;
     use crate::Route;
+
+    #[test]
+    fn destination_index_owns_only_metadata_and_preserves_alias_precedence() {
+        let content = Path::new("/site/content");
+        let documents: Vec<_> = [
+            ("a.not", "not"),
+            ("a.md", "markdown"),
+            ("nested/index.not", "index"),
+        ]
+        .into_iter()
+        .map(|(source, id)| {
+            let mut root = Item::new(Ctor::Doc, Default::default());
+            root.attrs.insert("id", Value::Str(id.into()));
+            Document::new(
+                Route::new(content.join(source), content).unwrap(),
+                root,
+                String::new(),
+                Default::default(),
+            )
+            .unwrap()
+        })
+        .collect();
+        let index = DocumentIndex::new(&documents);
+        drop(documents);
+        let alias = index.find(&content.join("a.html"), content).unwrap();
+        assert_eq!(alias.route.source, content.join("a.md"));
+        assert!(alias.ids.contains("markdown"));
+        let direct = index.find(&content.join("a.not"), content).unwrap();
+        assert!(direct.ids.contains("not"));
+        let directory = index.find(&content.join("nested"), content).unwrap();
+        assert_eq!(directory.route.output, Path::new("nested/index.html"));
+        assert!(directory.ids.contains("index"));
+    }
 
     fn field<'a>(value: &'a tera::Value, key: &str) -> &'a tera::Value {
         value

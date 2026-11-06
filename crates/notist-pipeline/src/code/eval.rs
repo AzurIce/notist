@@ -2,7 +2,10 @@ use super::*;
 use std::sync::Arc;
 #[path = "data.rs"]
 mod data;
+#[path = "instance_cache.rs"]
+mod instance_cache;
 use crate::Context;
+use instance_cache::InstanceCache;
 use notist_core::{
     builtins::Level,
     definitions::{FunctionImpl, NativeFunction, ParameterMode},
@@ -95,7 +98,7 @@ impl Failure {
         Self {
             message: message.into(),
             location: Some(SourceLocation {
-                source: call.source.clone(),
+                source: call.source.as_str().into(),
                 start: call.span.start().into(),
                 end: call.span.end().into(),
             }),
@@ -131,9 +134,54 @@ impl ContentSummary {
     }
 }
 
+/// Successful presentation preserves a node's identity, source and annotations.
+/// Only calls replace its fields/target; evaluation and children are overwritten
+/// by error recovery anyway. Keep just that mutable portion when a preceding
+/// sibling makes aggregate overflow possible.
+struct PresentCheckpoint {
+    enabled: bool,
+    call_fields: Option<CallFields>,
+}
+struct CallFields {
+    fields: Dict,
+    target: Option<notist_core::shared::Shared<FunctionInstance>>,
+}
+impl PresentCheckpoint {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            call_fields: None,
+        }
+    }
+    fn before_call(&mut self, item: &Item) {
+        if self.enabled {
+            self.call_fields = Some(CallFields {
+                fields: item.fields.clone(),
+                target: item.target.clone(),
+            });
+        }
+    }
+    fn restore(self, mut item: Item) -> Item {
+        if let Some(original) = self.call_fields {
+            #[cfg(test)]
+            CHECKPOINT_RESTORES.set(CHECKPOINT_RESTORES.get() + 1);
+            item.fields = original.fields;
+            item.target = original.target;
+        }
+        item
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static REFERENCE_PRESENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CHECKPOINT_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Evaluator<'a> {
     context: &'a Context,
     program: CheckedProgram,
+    implementations: InstanceCache,
     diagnostics: Vec<Diagnostic>,
     limits: Limits,
     steps: usize,
@@ -173,6 +221,7 @@ pub(crate) fn run(
     let mut e = Evaluator {
         context,
         program: program.clone(),
+        implementations: InstanceCache::default(),
         diagnostics: Vec::new(),
         limits,
         steps: 0,
@@ -215,6 +264,7 @@ pub(super) fn constant(
     let mut e = Evaluator {
         context,
         program: program.clone(),
+        implementations: InstanceCache::default(),
         diagnostics: Vec::new(),
         limits: Limits::default(),
         steps: 0,
@@ -297,10 +347,10 @@ impl Evaluator<'_> {
                 let mut item = Item::new(Ctor::Interpolation, t.span);
                 item.level = ty.level().ok_or("for requires a content result")?;
                 item.origin = Some(notist_core::item::Origin {
-                    source: t.source.clone(),
+                    source: t.source.as_str().into(),
                     start: t.span.start().into(),
                     end: t.span.end().into(),
-                    expansion: Vec::new(),
+                    expansion: Default::default(),
                 });
                 item.pending = Some(Box::new(PendingEvaluation::Repeat(capture_expr(t, scope))));
                 Ok(Runtime::Content(ty, Arc::new(vec![item])))
@@ -400,7 +450,7 @@ impl Evaluator<'_> {
                     },
                     None => Vec::new(),
                 };
-                self.execute(call, scope, children, None)
+                self.execute(call, scope, children, &mut None)
             }
         }?;
         if let Runtime::Value(v) = &result {
@@ -478,12 +528,43 @@ impl Evaluator<'_> {
         (result, count)
     }
     fn present(&mut self, forest: Vec<Item>, limit: usize) -> (Vec<Item>, ContentSummary) {
+        #[cfg(test)]
+        if REFERENCE_PRESENT.get() {
+            return self.present_reference(forest, limit);
+        }
         let mut result = Vec::with_capacity(forest.len());
         let mut summary = ContentSummary::default();
         for node in forest {
-            // Recovery retains the original boundary, not its rewritten children.
+            // Each node is itself bounded by limit. Aggregate overflow needs a
+            // preceding normal sibling; errors contribute zero nodes.
+            let mut checkpoint = PresentCheckpoint::new(summary.nodes != 0);
+            let (item, added) = self.present_node(node, limit, &mut checkpoint);
+            if summary.nodes.saturating_add(added.nodes) > limit {
+                result.push(self.error(
+                    checkpoint.restore(item),
+                    "content size limit exceeded".into(),
+                ));
+                summary.failed = true;
+                continue;
+            }
+            summary.append(added);
+            result.push(item);
+        }
+        (result, summary)
+    }
+    #[cfg(test)]
+    fn present_reference(
+        &mut self,
+        forest: Vec<Item>,
+        limit: usize,
+    ) -> (Vec<Item>, ContentSummary) {
+        let mut result = Vec::with_capacity(forest.len());
+        let mut summary = ContentSummary::default();
+        for node in forest {
+            // The pre-checkpoint implementation, also used by recursive calls
+            // while REFERENCE_PRESENT is enabled. Never linked into the CLI.
             let boundary = item_shell(&node);
-            let (item, added) = self.present_node(node, limit);
+            let (item, added) = self.present_node(node, limit, &mut PresentCheckpoint::new(false));
             if summary.nodes.saturating_add(added.nodes) > limit {
                 result.push(self.error(boundary, "content size limit exceeded".into()));
                 summary.failed = true;
@@ -494,7 +575,12 @@ impl Evaluator<'_> {
         }
         (result, summary)
     }
-    fn present_node(&mut self, mut item: Item, limit: usize) -> (Item, ContentSummary) {
+    fn present_node(
+        &mut self,
+        mut item: Item,
+        limit: usize,
+        checkpoint: &mut PresentCheckpoint,
+    ) -> (Item, ContentSummary) {
         if limit == 0 && !matches!(item.evaluation, Some(EvaluationState::Error(_))) {
             return (
                 self.error(item, "content size limit exceeded".into()),
@@ -506,7 +592,10 @@ impl Evaluator<'_> {
             return (self.error(item, message), ContentSummary::ERROR);
         }
         match item.pending.take().as_deref() {
-            Some(PendingEvaluation::Call(call)) => return self.present_call(item, call, limit),
+            Some(PendingEvaluation::Call(call)) => {
+                checkpoint.before_call(&item);
+                return self.present_call(item, call, limit);
+            }
             Some(PendingEvaluation::Repeat(expr)) => {
                 return match self.repeat(expr, limit.saturating_sub(1), &item) {
                     Ok((children, mut summary)) => {
@@ -525,6 +614,7 @@ impl Evaluator<'_> {
             && self.target(&id) != id
             && let Some(call) = self.synthetic_call(&item)
         {
+            checkpoint.before_call(&item);
             return self.present_call(item, &call, limit);
         }
         let (children, mut summary) =
@@ -637,8 +727,10 @@ impl Evaluator<'_> {
         // Each mounted content boundary owns its computation budget.
         let previous_steps = std::mem::replace(&mut self.steps, 0);
         let children = std::mem::take(&mut item.children);
-        let boundary = item_shell(&item);
-        let result = self.execute(call, &Scope::new(), children, Some(item));
+        // Keep ownership for recovery. execute only takes the boundary once all
+        // fallible work has succeeded; no eager metadata backup is necessary.
+        let mut boundary = Some(item);
+        let result = self.execute(call, &Scope::new(), children, &mut boundary);
         let result = match result {
             Ok(Runtime::Content(_, nodes)) => {
                 let (mut nodes, summary) = self.present(Arc::unwrap_or_clone(nodes), limit);
@@ -651,10 +743,19 @@ impl Evaluator<'_> {
                 )
             }
             Ok(_) => (
-                self.error(boundary, "content call produced a data value".into()),
+                self.error(
+                    boundary.expect("data results retain the content boundary"),
+                    "content call produced a data value".into(),
+                ),
                 ContentSummary::ERROR,
             ),
-            Err(failure) => (self.error_at(boundary, failure), ContentSummary::ERROR),
+            Err(failure) => (
+                self.error_at(
+                    boundary.expect("failed calls retain the content boundary"),
+                    failure,
+                ),
+                ContentSummary::ERROR,
+            ),
         };
         if expands {
             self.depth -= 1;
@@ -665,24 +766,28 @@ impl Evaluator<'_> {
     fn synthetic_call(&self, item: &Item) -> Option<Invocation> {
         let id = item.function_id()?;
         let mut def = self.context.registry().get(&id)?.clone();
-        let instance = item.instance.clone().unwrap_or_else(|| FunctionInstance {
-            function: id,
-            arguments: def
-                .comptime
-                .iter()
-                .filter_map(|p| {
-                    if p.ty == Type::Type {
-                        Some(ComptimeValue::Type(if item.level == Level::Inline {
-                            Type::InlineContent
+        let instance = item
+            .instance
+            .as_ref()
+            .map(|instance| (**instance).clone())
+            .unwrap_or_else(|| FunctionInstance {
+                function: id,
+                arguments: def
+                    .comptime
+                    .iter()
+                    .filter_map(|p| {
+                        if p.ty == Type::Type {
+                            Some(ComptimeValue::Type(if item.level == Level::Inline {
+                                Type::InlineContent
+                            } else {
+                                Type::BlockContent
+                            }))
                         } else {
-                            Type::BlockContent
-                        }))
-                    } else {
-                        p.default.clone()
-                    }
-                })
-                .collect(),
-        });
+                            p.default.clone()
+                        }
+                    })
+                    .collect(),
+            });
         let bindings = def
             .comptime
             .iter()
@@ -697,7 +802,7 @@ impl Evaluator<'_> {
         let source = item
             .origin
             .as_ref()
-            .map(|o| o.source.clone())
+            .map(|o| o.source.to_string())
             .unwrap_or_default();
         let arguments = item
             .fields
@@ -724,7 +829,7 @@ impl Evaluator<'_> {
             .collect();
         Some(Invocation {
             instance,
-            definition: Box::new(def),
+            definition: def.into(),
             arguments,
             children: None,
             attrs: item.attrs.clone(),
@@ -737,13 +842,16 @@ impl Evaluator<'_> {
     }
     fn error(&mut self, mut item: Item, message: String) -> Item {
         let mut d = Diagnostic::new(Phase::Type, item.span, &message);
-        d.source = item.origin.as_ref().map(|o| o.source.clone());
+        d.source = item.origin.as_ref().map(|o| o.source.to_string());
         self.diagnostics.push(d);
         if let Some(instance) = &item.instance {
-            item.target = Some(FunctionInstance {
-                function: self.target(&instance.function),
-                arguments: instance.arguments.clone(),
-            });
+            item.target = Some(
+                FunctionInstance {
+                    function: self.target(&instance.function),
+                    arguments: instance.arguments.clone(),
+                }
+                .into(),
+            );
         }
         item.evaluation = Some(EvaluationState::Error(message));
         item.pending = None;
@@ -812,7 +920,7 @@ impl Evaluator<'_> {
         call: &Invocation,
         scope: &Scope,
         children: Vec<Item>,
-        prototype: Option<Item>,
+        prototype: &mut Option<Item>,
     ) -> Result<Runtime, Failure> {
         self.tick()?;
         if let Some(m) = &call.invalid {
@@ -990,7 +1098,7 @@ impl Evaluator<'_> {
         let result = result.map_err(|mut failure| {
             if failure.location.is_some() {
                 let location = SourceLocation {
-                    source: call.source.clone(),
+                    source: call.source.as_str().into(),
                     start: call.span.start().into(),
                     end: call.span.end().into(),
                 };
@@ -1009,10 +1117,14 @@ impl Evaluator<'_> {
             if ty != call.definition.returns {
                 return Err("implementation violated its content result type".into());
             }
-            let mut item = prototype.ok_or("missing materialized content call boundary")?;
+            // Commit ownership only after every Result-producing operation.
+            // On failure the caller still owns its unmodified recovery shell.
+            let mut item = prototype
+                .take()
+                .ok_or("missing materialized content call boundary")?;
             item.fields = fields;
             item.pending = None;
-            item.target = Some(target);
+            item.target = Some(target.into());
             let native =
                 definition.implementation == FunctionImpl::Native(NativeFunction::Construct);
             item.evaluation = Some(if native {
@@ -1022,7 +1134,7 @@ impl Evaluator<'_> {
             });
             if !native {
                 let mut expansion = vec![SourceLocation {
-                    source: call.source.clone(),
+                    source: call.source.as_str().into(),
                     start: call.span.start().into(),
                     end: call.span.end().into(),
                 }];
@@ -1062,6 +1174,9 @@ impl Evaluator<'_> {
         {
             return Err("Data and DataError views cannot be comptime value arguments".into());
         }
+        if let Some(record) = self.implementations.get(instance) {
+            return Ok(record.clone());
+        }
         let key = instance.key();
         if !self.program.instances.contains_key(&key) {
             // Runtime specializations share the same retained backing-store
@@ -1084,6 +1199,7 @@ impl Evaluator<'_> {
         if let Some(d) = record.diagnostics.first() {
             return Err(format!("{}: {}", instance.function, d.message).into());
         }
+        self.implementations.insert(instance, record);
         Ok(record.clone())
     }
 }
@@ -1264,7 +1380,7 @@ fn failure_content(mut item: Item, failure: Failure) -> Item {
             source: location.source,
             start: location.start,
             end: location.end,
-            expansion,
+            expansion: expansion.into(),
         });
     }
     error_content(item, failure.message)
@@ -1301,12 +1417,32 @@ fn valid_structure(item: &Item) -> bool {
     }
 }
 fn expand(item: &mut Item, locations: &[SourceLocation]) {
-    if let Some(origin) = &mut item.origin {
-        origin.expansion.extend_from_slice(locations);
+    if locations.is_empty() {
+        return;
     }
-    for child in &mut item.children {
-        expand(child, locations);
+    use notist_core::source_chain::SourceChain;
+    fn visit(
+        item: &mut Item,
+        locations: &[SourceLocation],
+        chains: &mut std::collections::HashMap<usize, (SourceChain, SourceChain)>,
+    ) {
+        if let Some(origin) = &mut item.origin {
+            // Storage identity only deduplicates an immutable append operation.
+            // Retain the old chain too: allocator address reuse cannot alias keys.
+            let key = origin.expansion.as_ptr() as usize;
+            let (_, extended) = chains.entry(key).or_insert_with(|| {
+                let original = origin.expansion.clone();
+                let mut extended = original.clone();
+                extended.extend_from_slice(locations);
+                (original, extended)
+            });
+            origin.expansion = extended.clone();
+        }
+        for child in &mut item.children {
+            visit(child, locations, chains);
+        }
     }
+    visit(item, locations, &mut std::collections::HashMap::new());
 }
 fn value_of(v: Runtime) -> Result<ComptimeValue, String> {
     match v {
@@ -1461,6 +1597,297 @@ mod tests {
     use crate::Pipeline;
 
     #[test]
+    fn expansion_append_shares_storage_without_merging_origins_or_reordering() {
+        use notist_core::item::Origin;
+        let location = |source: &str, start| SourceLocation {
+            source: source.into(),
+            start,
+            end: start + 1,
+        };
+        let mut first = Item::new(Ctor::Text, Default::default());
+        first.origin = Some(Origin {
+            source: "definition.notc".into(),
+            start: 1,
+            end: 2,
+            expansion: vec![location("inner.notc", 3)].into(),
+        });
+        let mut different = first.clone();
+        different.origin.as_mut().unwrap().expansion[0].start = 8;
+        let mut root = Item::new(Ctor::Node, Default::default()).with_children(vec![
+            first.clone(),
+            first.clone(),
+            different,
+        ]);
+        expand(&mut root, &[location("outer.not", 5)]);
+        let chains: Vec<_> = root
+            .children
+            .iter()
+            .map(|item| &item.origin.as_ref().unwrap().expansion)
+            .collect();
+        assert!(chains[0].shares_storage(chains[1]));
+        assert!(!chains[0].shares_storage(chains[2]));
+        assert_eq!(
+            chains[0]
+                .iter()
+                .map(|location| (location.source.as_str(), location.start))
+                .collect::<Vec<_>>(),
+            [("inner.notc", 3), ("outer.not", 5)]
+        );
+        assert_eq!(chains[2][0].start, 8);
+        assert_eq!(first.origin.as_ref().unwrap().expansion.len(), 1);
+        root.children[0].origin.as_mut().unwrap().expansion.clear();
+        assert_eq!(root.children[1].origin.as_ref().unwrap().expansion.len(), 2);
+    }
+
+    fn reference_present<T>(operation: impl FnOnce() -> T) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                REFERENCE_PRESENT.set(false);
+            }
+        }
+        assert!(!REFERENCE_PRESENT.replace(true));
+        let _reset = Reset;
+        operation()
+    }
+
+    #[test]
+    fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
+        use notist_core::{
+            definitions::FunctionId,
+            extensions::{Replace, Replacement},
+        };
+        fn decorate(item: &mut Item) {
+            item.fields
+                .insert("checkpoint_sentinel", Value::Str("original".into()));
+            item.attrs
+                .insert("checkpoint_attr", Value::Str("kept".into()));
+            if let Some(origin) = &mut item.origin {
+                origin.expansion.push(SourceLocation {
+                    source: "outer.notc".into(),
+                    start: 2,
+                    end: 8,
+                });
+            }
+            if matches!(item.pending.as_deref(), Some(PendingEvaluation::Call(_)))
+                || item.ctor == Ctor::Strong
+            {
+                // The authoritative host tree need not contain an instance.
+                // Recovery must then retain an old target instead of using the
+                // newly executed one, since error() cannot reconstruct it.
+                item.instance = None;
+                item.target = Some(
+                    FunctionInstance {
+                        function: FunctionId::new("host", "original"),
+                        arguments: vec![],
+                    }
+                    .into(),
+                );
+            }
+            for child in &mut item.children {
+                decorate(child);
+            }
+        }
+        let fixtures = [
+            (
+                "fn leaf() -> InlineContent { [#strong[A]#emph[B]#text(text: \"C\")] }",
+                "#self.leaf()#self.leaf()#self.leaf()",
+                false,
+            ),
+            (
+                "fn pass()[children: InlineContent] -> InlineContent { [#children#children] }",
+                "#self.pass[one]#self.pass[two]",
+                false,
+            ),
+            (
+                "fn looped() -> InlineContent { for n in (1,2,3) [#text(text: str(n))#emph[X]] }",
+                "#self.looped()#self.looped()",
+                false,
+            ),
+            (
+                "fn leaf() -> InlineContent { [#text(text: panic(\"inner failure\")) kept] }",
+                "#text(text: \"prefix\")#self.leaf()#self.leaf()",
+                false,
+            ),
+            (
+                "fn view() -> InlineContent { let v = [#strong[A]#emph[B]]; [#v#v] }",
+                "#self.view()#self.view()",
+                false,
+            ),
+            (
+                "fn rows() -> BlockContent { [\n#table()[#row[#cell[A]#cell[B]]#row[#cell[C]]]\n] }",
+                "#self.rows()\n\n#self.rows()",
+                false,
+            ),
+            (
+                "fn strong()[children: InlineContent] -> InlineContent { [#emph[#children]#emph[X]] }",
+                "**a** **b** **c**",
+                true,
+            ),
+        ];
+        let pipeline = Pipeline::default();
+        CHECKPOINT_RESTORES.set(0);
+        for dialect in ["doc.not", "doc.md"] {
+            for (source, document, replacement) in fixtures {
+                let mut context = Context::default()
+                    .with_module(
+                        pipeline
+                            .compile_module(dialect, "demo", "demo/lib.notc", source)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                if replacement {
+                    context = context
+                        .with_extension(Replace::new([Replacement {
+                            from: FunctionId::new("notist", "strong"),
+                            to: FunctionId::new("demo", "strong"),
+                            span: Default::default(),
+                        }]))
+                        .unwrap();
+                }
+                let analysis = pipeline.analyze(dialect, document, &context).unwrap();
+                assert!(
+                    analysis.diagnostics().is_empty(),
+                    "{:?}: {source}",
+                    analysis.diagnostics()
+                );
+                let mut root = analysis.root().clone();
+                decorate(&mut root);
+                if replacement {
+                    fn make_synthetic(item: &mut Item) {
+                        if item.ctor == Ctor::Strong {
+                            item.pending = None;
+                        }
+                        for child in &mut item.children {
+                            make_synthetic(child);
+                        }
+                    }
+                    make_synthetic(&mut root);
+                }
+                for content_nodes in 0..64 {
+                    for constrained in [false, true] {
+                        let limits = Limits {
+                            content_nodes,
+                            iterations: if constrained {
+                                content_nodes % 5
+                            } else {
+                                100_000
+                            },
+                            call_depth: if constrained { content_nodes % 4 } else { 32 },
+                            steps: if constrained {
+                                content_nodes % 8
+                            } else {
+                                100_000
+                            },
+                            ..Limits::default()
+                        };
+                        let actual = evaluate(&root, &analysis.program, &context, limits);
+                        let expected = reference_present(|| {
+                            evaluate(&root, &analysis.program, &context, limits)
+                        });
+                        assert_eq!(
+                            actual, expected,
+                            "{dialect}, {content_nodes}, constrained={constrained}, {source}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            CHECKPOINT_RESTORES.get() > 0,
+            "must exercise rollback after a successful call"
+        );
+    }
+
+    #[test]
+    fn first_node_and_unchanged_boundaries_need_no_call_backup() {
+        let original = Item::text("before".into(), Default::default());
+        let mut checkpoint = PresentCheckpoint::new(false);
+        checkpoint.before_call(&original);
+        assert!(checkpoint.call_fields.is_none());
+        let mut checkpoint = PresentCheckpoint::new(true);
+        checkpoint.before_call(&original);
+        let changed = Item::text("after".into(), Default::default());
+        let restored = checkpoint.restore(changed);
+        assert_eq!(restored.fields, original.fields);
+        assert_eq!(restored.target, original.target);
+    }
+
+    #[test]
+    fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
+        let pipeline = Pipeline::default();
+        let context = Context::default()
+            .with_module(
+                pipeline
+                    .compile_module(
+                        "doc.not",
+                        "demo",
+                        "demo/lib.notc",
+                        "fn wrap(name: String)[children: InlineContent] -> InlineContent { [#text(text: name)#children] }",
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        for dialect in ["doc.not", "doc.md"] {
+            let analysis = pipeline
+                .analyze(dialect, "#self.wrap(\"input\")[#emph[child]]", &context)
+                .unwrap();
+            assert!(
+                analysis.diagnostics().is_empty(),
+                "{:?}",
+                analysis.diagnostics()
+            );
+            for failure in 0..4 {
+                let mut root = analysis.root().clone();
+                let boundary = &mut root.children[0].children[0];
+                boundary
+                    .fields
+                    .insert("sentinel", Value::Str("original".into()));
+                boundary.attrs.insert("id", Value::Str("recovery".into()));
+                boundary
+                    .origin
+                    .as_mut()
+                    .unwrap()
+                    .expansion
+                    .push(SourceLocation {
+                        source: "outer.notc".into(),
+                        start: 3,
+                        end: 7,
+                    });
+                let before = item_shell(boundary);
+                let Some(PendingEvaluation::Call(call)) = boundary.pending.as_deref_mut() else {
+                    panic!("expected a content call")
+                };
+                match failure {
+                    0 => call.invalid = Some("deliberate failure".into()),
+                    1 => {
+                        call.arguments[0].1.known = None;
+                        call.arguments[0].1.kind = ExprKind::Failure("argument failed".into());
+                    }
+                    2 => call.definition.returns = Type::BlockContent,
+                    _ => call.definition.returns = Type::String,
+                }
+                let evaluated = evaluate(&root, &analysis.program, &context, Limits::default());
+                assert!(!evaluated.diagnostics.is_empty());
+                let recovered = &evaluated.root.children[0].children[0];
+                assert!(matches!(
+                    recovered.evaluation,
+                    Some(EvaluationState::Error(_))
+                ));
+                assert_eq!(recovered.ctor, before.ctor);
+                assert_eq!(recovered.instance, before.instance);
+                assert_eq!(recovered.fields, before.fields);
+                assert_eq!(recovered.attrs, before.attrs);
+                assert_eq!(recovered.origin, before.origin);
+                assert_eq!(recovered.span, before.span);
+                assert_eq!(recovered.level, before.level);
+                assert!(recovered.children.is_empty());
+                assert!(recovered.pending.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn returned_summaries_match_trees_across_mounts_failures_and_limits() {
         let pipeline = Pipeline::default();
         for dialect in ["doc.not", "doc.md"] {
@@ -1489,6 +1916,7 @@ mod tests {
                     let mut evaluator = Evaluator {
                         context: &context,
                         program: analysis.program.clone(),
+                        implementations: InstanceCache::default(),
                         diagnostics: Vec::new(),
                         limits: Limits {
                             content_nodes: limit,
@@ -1611,6 +2039,62 @@ mod tests {
         assert_eq!(
             analysis.root().children[0].children[0].fields.get("name"),
             Some(&Value::Str("before".into()))
+        );
+    }
+
+    #[test]
+    fn editing_a_captured_signature_detaches_and_remains_authoritative() {
+        let pipeline = Pipeline::default();
+        let context = Context::default()
+            .with_module(
+                pipeline
+                    .compile_module(
+                        "content.not",
+                        "demo",
+                        "demo/lib.notc",
+                        "fn show(value: Int) -> InlineContent { [#text(text: str(value))] }",
+                    )
+                    .unwrap(),
+            )
+            .unwrap();
+        let analysis = pipeline
+            .analyze("doc.not", "#self.show(-1)", &context)
+            .unwrap();
+        assert!(analysis.diagnostics().is_empty());
+        let original = analysis.root().children[0].children[0]
+            .pending
+            .as_deref()
+            .unwrap();
+        let PendingEvaluation::Call(original) = original else {
+            panic!("expected a call")
+        };
+        let mut root = analysis.root().clone();
+        let changed = root.children[0].children[0].pending.as_deref_mut().unwrap();
+        let PendingEvaluation::Call(changed) = changed else {
+            panic!("expected a call")
+        };
+        assert!(changed.definition.shares_storage(&original.definition));
+        changed.definition.parameters[0].constraint =
+            notist_core::definitions::ValueConstraint::PositiveInt;
+        assert!(!changed.definition.shares_storage(&original.definition));
+        assert_eq!(
+            original.definition.parameters[0].constraint,
+            notist_core::definitions::ValueConstraint::Any
+        );
+        let changed = evaluate(&root, &analysis.program, &context, Limits::default());
+        assert!(
+            changed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("invalid value"))
+        );
+        let original = pipeline.evaluate(&analysis, &context);
+        assert!(original.diagnostics.is_empty());
+        assert!(
+            original
+                .root
+                .descendants()
+                .any(|item| { item.fields.get("text") == Some(&Value::Str("-1".into())) })
         );
     }
 

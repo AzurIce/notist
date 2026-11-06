@@ -187,6 +187,65 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
 }
 
 #[test]
+fn preview_watches_concrete_hidden_data_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        "[project]\nname='hidden'\n[[site]]\noutput='public'",
+    );
+    write(
+        root,
+        "content/index.not",
+        "#import \"../lib.notc\" as data;\n#data.view()\n",
+    );
+    write(
+        root,
+        "lib.notc",
+        "fn view() -> InlineContent { [#text(text: read_text(p\"content/.data/value.txt\"))] }",
+    );
+    write(root, "content/.data/value.txt", "original hidden value");
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+    let mut child = command(root)
+        .args(["serve", "--address", &address, "--no-clear-screen"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = std::panic::catch_unwind(|| {
+        let wait = |needle: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if TcpStream::connect(&address).is_ok() && request(&address, "/").contains(needle) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "hidden dependency did not update to {needle}"
+                );
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        };
+        wait("original hidden value");
+        write(root, "content/.data/value.txt", "updated hidden value");
+        wait("updated hidden value");
+        std::fs::remove_file(root.join("content/.data/value.txt")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        write(root, "content/.data/value.txt", "restored hidden value");
+        wait("restored hidden value");
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    result.unwrap();
+}
+
+#[test]
 fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

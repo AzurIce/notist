@@ -5,9 +5,78 @@ use std::{
     borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     fmt,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex, OnceLock},
 };
+
+/// An owned value whose clones share immutable storage. Mutable access detaches
+/// only when another owner still observes the previous value.
+///
+/// This is ownership sharing, not language-level identity or result memoization.
+/// Equality, debugging and serialization expose the contained value, not its Arc.
+pub struct Shared<T>(Arc<T>);
+impl<T> Shared<T> {
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+    pub fn shares_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl<T: Clone> Shared<T> {
+    /// Consume unique storage without cloning, or copy a still-shared value.
+    pub fn into_inner(self) -> T {
+        Arc::unwrap_or_clone(self.0)
+    }
+}
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<T: Default> Default for Shared<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+impl<T> From<Box<T>> for Shared<T> {
+    fn from(value: Box<T>) -> Self {
+        Self(Arc::from(value))
+    }
+}
+impl<T> Deref for Shared<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T: Clone> DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+impl<T> AsRef<T> for Shared<T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+impl<T: fmt::Debug> fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_ref().fmt(f)
+    }
+}
+impl<T: PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        // Do not infer value equality from storage identity (notably for NaN).
+        self.as_ref().eq(other.as_ref())
+    }
+}
+impl<T: Eq> Eq for Shared<T> {}
 
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Text(Arc<str>);
@@ -260,18 +329,98 @@ impl PartialEq for Array {
 
 #[derive(Clone, Default)]
 pub struct Dict(Arc<DictStorage>);
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub(crate) struct DictStorage {
+    entries: Vec<(Text, Value)>,
+    index: Option<Box<BTreeMap<Text, usize>>>,
+    budget_capacity: usize,
+    metrics: OnceLock<Metrics>,
+}
+
+// Keep the previous conservative accounting layout even when the physical
+// representation changes. The wide tree is boxed only to make room for the
+// capacity shadow without increasing the small-dictionary storage size.
+#[allow(dead_code)]
+struct DictBudgetLayout {
     entries: Vec<(Text, Value)>,
     index: BTreeMap<Text, usize>,
     metrics: OnceLock<Metrics>,
 }
+
+impl Clone for DictStorage {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            index: self.index.clone(),
+            // Vec::clone in the old representation allocated exactly len slots.
+            // Cached metrics are cloned too, as before, and insertion clears them.
+            budget_capacity: self.entries.len(),
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
+// Tiny dictionaries dominate content fields/annotations. Their ordered entries
+// are already a cheaper lookup table than an independently allocated tree leaf.
+const DICT_LINEAR_LIMIT: usize = 8;
+
+impl DictStorage {
+    pub(crate) fn budget_bytes() -> usize {
+        std::mem::size_of::<DictBudgetLayout>()
+    }
+
+    fn position(&self, key: &str) -> Option<usize> {
+        if self.entries.len() <= DICT_LINEAR_LIMIT {
+            self.entries
+                .iter()
+                .position(|(name, _)| name.as_str() == key)
+        } else {
+            self.index
+                .as_ref()
+                .and_then(|index| index.get(key))
+                .copied()
+        }
+    }
+
+    fn make_index(entries: &[(Text, Value)]) -> Option<Box<BTreeMap<Text, usize>>> {
+        let mut index = BTreeMap::new();
+        if entries.len() > DICT_LINEAR_LIMIT {
+            for (i, (key, _)) in entries.iter().enumerate() {
+                // Deserialized dictionaries can retain duplicate entries; lookup
+                // and mutation must continue selecting the first occurrence.
+                index.entry(key.clone()).or_insert(i);
+            }
+            Some(Box::new(index))
+        } else {
+            None
+        }
+    }
+
+    fn index_entries_for_budget(&self) -> usize {
+        if self.entries.len() > DICT_LINEAR_LIMIT {
+            self.index.as_ref().map_or(0, |index| index.len())
+        } else {
+            // Keep the previous conservative budget proxy even though the
+            // physical index is now absent. Do not make working limits looser.
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(i, (key, _))| {
+                    !self.entries[..*i]
+                        .iter()
+                        .any(|(previous, _)| previous == key)
+                })
+                .count()
+        }
+    }
+}
+
 impl Dict {
     pub(crate) fn weak_identity(&self) -> (usize, std::sync::Weak<DictStorage>) {
         (Arc::as_ptr(&self.0) as usize, Arc::downgrade(&self.0))
     }
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.index.get(key).map(|i| &self.0.entries[*i].1)
+        self.0.position(key).map(|i| &self.0.entries[i].1)
     }
     pub fn is_empty(&self) -> bool {
         self.0.entries.is_empty()
@@ -280,12 +429,30 @@ impl Dict {
         let key = key.into();
         let data = Arc::make_mut(&mut self.0);
         data.metrics = OnceLock::new();
-        match data.index.get(key.as_str()).copied() {
+        match data.position(key.as_str()) {
             Some(i) => data.entries[i].1 = value,
             None => {
                 let key: Text = key.into();
-                data.index.insert(key.clone(), data.entries.len());
+                let was_linear = data.entries.len() == DICT_LINEAR_LIMIT;
+                if data.entries.len() == data.budget_capacity {
+                    // The former Vec<(Text, Value)> grows to at least four
+                    // entries, then doubles. Preserve that budget independently
+                    // of the physically compact first allocation.
+                    data.budget_capacity = data.budget_capacity.saturating_mul(2).max(4);
+                }
+                if data.entries.capacity() == 0 {
+                    data.entries.reserve_exact(1);
+                }
                 data.entries.push((key, value));
+                if was_linear {
+                    data.index = DictStorage::make_index(&data.entries);
+                } else if data.entries.len() > DICT_LINEAR_LIMIT {
+                    let i = data.entries.len() - 1;
+                    data.index
+                        .as_mut()
+                        .expect("wide dictionary index")
+                        .insert(data.entries[i].0.clone(), i);
+                }
             }
         }
     }
@@ -308,11 +475,10 @@ impl Dict {
             let mut result = Metrics {
                 resident: self
                     .0
-                    .entries
-                    .capacity()
+                    .budget_capacity
                     .saturating_mul(std::mem::size_of::<(Text, Value)>())
-                    .saturating_add(self.0.index.len().saturating_mul(128))
-                    .saturating_add(std::mem::size_of::<DictStorage>() + 16),
+                    .saturating_add(self.0.index_entries_for_budget().saturating_mul(128))
+                    .saturating_add(DictStorage::budget_bytes() + 16),
                 ..Default::default()
             };
             for (key, value) in self.iter() {
@@ -348,6 +514,16 @@ impl PartialEq for Dict {
 mod wire {
     use super::*;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    impl<T: Serialize> Serialize for Shared<T> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.as_ref().serialize(s)
+        }
+    }
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            T::deserialize(d).map(Self::new)
+        }
+    }
     impl Serialize for Text {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
             self.as_str().serialize(s)
@@ -376,11 +552,9 @@ mod wire {
     impl<'de> Deserialize<'de> for Dict {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             let entries: Vec<(Text, Value)> = Vec::deserialize(d)?;
-            let mut index = BTreeMap::new();
-            for (i, (key, _)) in entries.iter().enumerate() {
-                index.entry(key.clone()).or_insert(i);
-            }
+            let index = DictStorage::make_index(&entries);
             Ok(Self(Arc::new(DictStorage {
+                budget_capacity: entries.capacity(),
                 entries,
                 index,
                 ..Default::default()
@@ -392,6 +566,240 @@ mod wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_dict_resident(entries: &Vec<(Text, Value)>) -> usize {
+        let keys: BTreeSet<_> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        entries.capacity() * std::mem::size_of::<(Text, Value)>()
+            + keys.len() * 128
+            + DictStorage::budget_bytes()
+            + 16
+            + entries
+                .iter()
+                .map(|(key, value)| key.len() + 16 + value.metrics().resident)
+                .sum::<usize>()
+    }
+
+    #[test]
+    fn compact_dict_capacity_keeps_previous_growth_and_cow_budget() {
+        assert!(std::mem::size_of::<DictStorage>() <= DictStorage::budget_bytes());
+        let mut dict = Dict::default();
+        dict.insert("key-0", Value::Int(0));
+        assert_eq!(dict.0.entries.capacity(), 1);
+        assert_eq!(dict.0.budget_capacity, 4);
+        for len in 0..66 {
+            let mut dict = Dict::default();
+            let mut reference = Vec::new();
+            for i in 0..len {
+                let key = format!("key-{i}");
+                dict.insert(key.clone(), Value::Int(i));
+                reference.push((Text::from(key), Value::Int(i)));
+            }
+            assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
+            let untouched = dict.clone();
+            // Both old and new storage clones keep cached metrics until mutation.
+            let mut reference = reference.clone();
+            if len > 0 {
+                dict.insert("key-0", Value::Int(-1));
+                reference[0].1 = Value::Int(-1);
+                assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
+                assert_eq!(untouched.get("key-0"), Some(&Value::Int(0)));
+            }
+            for i in len..len + 10 {
+                let key = format!("key-{i}");
+                dict.insert(key.clone(), Value::Int(i));
+                reference.push((Text::from(key), Value::Int(i)));
+                assert_eq!(dict.0.budget_capacity, reference.capacity());
+                assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
+            }
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn compact_dict_deserialization_retains_vec_budget_and_duplicate_order() {
+        use serde::Deserialize;
+        for len in [0, 1, 2, 8, 9, 16, 33] {
+            let wire = serde_json::Value::Array(
+                (0..len)
+                    .map(|i| serde_json::json!([format!("key-{}", i % 2), {"Int": i}]))
+                    .collect(),
+            );
+            let reference = Vec::<(Text, Value)>::deserialize(wire.clone()).unwrap();
+            let dict = Dict::deserialize(wire.clone()).unwrap();
+            assert_eq!(dict.0.budget_capacity, reference.capacity());
+            assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
+            assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
+            let mut changed = dict.clone();
+            let mut reference = reference.clone();
+            changed.insert("new", Value::Bool(true));
+            reference.push(("new".into(), Value::Bool(true)));
+            assert_eq!(
+                changed.metrics().resident,
+                reference_dict_resident(&reference)
+            );
+        }
+    }
+
+    #[test]
+    fn small_dict_lookup_order_and_cow_survive_the_index_threshold() {
+        let mut dict = Dict::default();
+        let mut expected = Vec::new();
+        for i in 0..40 {
+            let key = format!("clé-{i:02}");
+            dict.insert(key.clone(), Value::Int(i));
+            expected.push((key, Value::Int(i)));
+            assert_eq!(
+                dict.iter()
+                    .map(|(k, v)| (k.to_owned(), v.clone()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for (key, value) in &expected {
+                assert_eq!(dict.get(key), Some(value));
+            }
+            assert_eq!(dict.get("missing"), None);
+            assert_eq!(dict.0.index.is_none(), expected.len() <= DICT_LINEAR_LIMIT);
+            let mut changed = dict.clone();
+            assert!(dict.shares_storage(&changed));
+            changed.insert("clé-00", Value::Int(-1));
+            assert_eq!(dict.get("clé-00"), Some(&Value::Int(0)));
+            assert_eq!(changed.get("clé-00"), Some(&Value::Int(-1)));
+        }
+    }
+
+    #[test]
+    fn absent_small_index_keeps_the_previous_resident_budget_proxy() {
+        for len in 0..32 {
+            let dict: Dict = (0..len)
+                .map(|i| (format!("key-{i}"), Value::Int(i)))
+                .collect();
+            let mut reference = Vec::<(Text, Value)>::new();
+            for i in 0..len {
+                reference.push((format!("key-{i}").into(), Value::Int(i)));
+            }
+            assert_eq!(dict.0.budget_capacity, reference.capacity());
+            let old_resident = reference.capacity() * std::mem::size_of::<(Text, Value)>()
+                + len as usize * 128
+                + DictStorage::budget_bytes()
+                + 16
+                + dict
+                    .iter()
+                    .map(|(key, value)| key.len() + 16 + value.metrics().resident)
+                    .sum::<usize>();
+            assert_eq!(dict.metrics().resident, old_resident);
+            assert_eq!(dict.0.index_entries_for_budget(), len as usize);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn small_and_indexed_duplicate_wire_entries_keep_first_lookup_and_full_order() {
+        for len in [2, 8, 9, 16] {
+            let mut wire = serde_json::Value::Array(
+                (0..len)
+                    .map(|i| serde_json::json!([format!("key-{}", i % 2), {"Int": i}]))
+                    .collect(),
+            );
+            let mut dict: Dict = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(dict.get("key-0"), Some(&Value::Int(0)));
+            assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
+            assert_eq!(dict.0.index_entries_for_budget(), 2);
+            dict.insert("key-0", Value::Int(42));
+            wire[0][1] = serde_json::json!({"Int": 42});
+            assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
+            dict.insert("new", Value::Bool(true));
+            wire.as_array_mut()
+                .unwrap()
+                .push(serde_json::json!(["new", {"Bool": true}]));
+            assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
+            assert_eq!(dict.get("new"), Some(&Value::Bool(true)));
+            assert_eq!(dict.0.index_entries_for_budget(), 3);
+        }
+    }
+
+    #[test]
+    fn shared_values_clone_only_on_shared_mutation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug)]
+        struct Observed {
+            value: usize,
+            clones: Arc<AtomicUsize>,
+        }
+        impl Clone for Observed {
+            fn clone(&self) -> Self {
+                self.clones.fetch_add(1, Ordering::Relaxed);
+                Self {
+                    value: self.value,
+                    clones: self.clones.clone(),
+                }
+            }
+        }
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut original = Shared::new(Observed {
+            value: 1,
+            clones: clones.clone(),
+        });
+        original.value = 2;
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        let mut changed = original.clone();
+        assert!(changed.shares_storage(&original));
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        changed.value = 3;
+        assert!(!changed.shares_storage(&original));
+        changed.value = 4;
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        assert_eq!(original.value, 2);
+        assert_eq!(changed.into_inner().value, 4);
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        let retained = original.clone();
+        assert_eq!(original.into_inner().value, 2);
+        assert_eq!(retained.value, 2);
+        assert_eq!(clones.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn shared_values_keep_value_equality_debugging_and_box_conversion() {
+        let original: Shared<Vec<i32>> = Shared::from(Box::new(vec![1, 2]));
+        let equal = Shared::new(vec![1, 2]);
+        assert_eq!(original, equal);
+        assert!(!original.shares_storage(&equal));
+        assert_eq!(format!("{original:?}"), "[1, 2]");
+        let nan = Shared::new(Value::Float(f64::NAN));
+        assert_ne!(nan, nan.clone());
+        // Sharing does not require the contained value to implement Clone.
+        let non_clone = Shared::new(Mutex::new(1));
+        assert!(non_clone.shares_storage(&non_clone.clone()));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn shared_value_wire_format_does_not_expose_ownership() {
+        let value = Shared::new(vec![1, 2, 3]);
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, "[1,2,3]");
+        let decoded: Shared<Vec<i32>> = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, value);
+        assert!(!decoded.shares_storage(&value));
+
+        use crate::{
+            builtins::Accepts,
+            definitions::{FunctionDef, FunctionId},
+        };
+        let boxed = Box::new(FunctionDef::new(
+            FunctionId::new("demo", "view"),
+            Accepts::Inline,
+            Type::InlineContent,
+        ));
+        let shared: Shared<FunctionDef> = boxed.clone().into();
+        let json = serde_json::to_string(&shared).unwrap();
+        assert_eq!(json, serde_json::to_string(&boxed).unwrap());
+        assert_eq!(
+            serde_json::from_str::<Shared<FunctionDef>>(&json).unwrap(),
+            shared
+        );
+    }
+
     #[test]
     fn clones_share_storage_and_dict_mutation_detaches_without_reordering() {
         let text: Text = "x".repeat(1024 * 1024).into();

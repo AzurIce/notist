@@ -134,7 +134,7 @@ fn content_diagnostic(
         TextRange::new(origin.start.into(), origin.end.into())
     });
     let mut diagnostic = Diagnostic::new(Phase::Semantic, span, message);
-    diagnostic.source = node.origin.as_ref().map(|origin| origin.source.clone());
+    diagnostic.source = node.origin.as_ref().map(|origin| origin.source.to_string());
     locate(&page.route.source, &page.source, diagnostic, &page.sources)
 }
 

@@ -134,7 +134,7 @@ fn content_diagnostic(
         TextRange::new(origin.start.into(), origin.end.into())
     });
     let mut diagnostic = Diagnostic::new(Phase::Semantic, span, message);
-    diagnostic.source = node.origin.as_ref().map(|origin| origin.source.to_string());
+    diagnostic.source = node.origin.as_ref().map(|origin| origin.source);
     locate(&page.route.source, &page.source, diagnostic, &page.sources)
 }
 
@@ -150,7 +150,7 @@ fn locate(
         .and_then(|s| sources.get_key_value(s));
     SourceDiagnostic {
         path: origin
-            .map(|(p, _)| PathBuf::from(p))
+            .map(|(p, _)| PathBuf::from(p.as_str()))
             .unwrap_or_else(|| path.into()),
         source: origin
             .map(|(_, s)| s.to_string())
@@ -423,7 +423,7 @@ fn build_inner<R: Resources>(
         let outline = outline::prepare(&mut content, fallback);
         prepared.push(Prepared {
             route: route.clone(),
-            source: analysis.sources()[&route.source.to_string_lossy().into_owned()].clone(),
+            source: analysis.sources()[route.source.to_string_lossy().as_ref()].clone(),
             root: content,
             outline,
             sources: evaluation.sources,

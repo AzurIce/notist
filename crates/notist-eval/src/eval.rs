@@ -890,11 +890,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         for parameter in &mut definition.parameters {
             parameter.ty = parameter.ty.substitute(&bindings);
         }
-        let source = item
-            .origin
-            .as_ref()
-            .map(|o| o.source.to_string())
-            .unwrap_or_default();
+        let source = item.origin.as_ref().map(|o| o.source).unwrap_or_default();
         let arguments = item
             .fields()
             .iter()
@@ -913,7 +909,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         known: Some(ComptimeValue::Data(value.clone())),
                         kind: ExprKind::Constant(ComptimeValue::Data(value.clone())),
                         span: item.span,
-                        source: source.clone(),
+                        source,
                         shape: Default::default(),
                     },
                 )
@@ -936,7 +932,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let mut node = error_content(source, message.clone());
         append_expansion(&mut node, expansion);
         let mut diagnostic = Diagnostic::new(Phase::Type, node.span, message);
-        diagnostic.source = node.origin.as_ref().map(|o| o.source.to_string());
+        diagnostic.source = node.origin.as_ref().map(|o| o.source);
         self.diagnostics.push(diagnostic);
         node
     }
@@ -1259,7 +1255,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
 }
 fn location(call: &Invocation) -> SourceLocation {
     SourceLocation {
-        source: call.source.as_str().into(),
+        source: call.source,
         start: call.span.start().into(),
         end: call.span.end().into(),
     }
@@ -1325,7 +1321,7 @@ fn failure_content(source: &Node, failure: Failure) -> Node {
         let mut expansion = failure.expansion;
         if let Some(origin) = &source.origin {
             let here = SourceLocation {
-                source: origin.source.clone(),
+                source: origin.source,
                 start: origin.start,
                 end: origin.end,
             };

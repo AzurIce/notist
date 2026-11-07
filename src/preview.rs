@@ -166,7 +166,7 @@ fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Eva
             output
                 .sources
                 .get(name)
-                .map(|text| (name.clone(), json!(text.as_ref())))
+                .map(|text| (name.to_string(), json!(text.as_ref())))
         })
         .collect();
     data["diagnostic_sources"] = Value::Object(sources);
@@ -200,5 +200,5 @@ pub(crate) fn error_json(error: VaultError) -> Value {
     }
 }
 fn diagnostic_json(path: &str, origin: &str, error: &crate::Diagnostic) -> Value {
-    json!({"source":error.source,"path":error.source.as_deref().unwrap_or(path),"origin":origin,"start":u32::from(error.span.start()),"end":u32::from(error.span.end()),"phase":error.phase.to_string(),"message":error.message})
+    json!({"source":error.source.as_deref(),"path":error.source.as_deref().unwrap_or(path),"origin":origin,"start":u32::from(error.span.start()),"end":u32::from(error.span.end()),"phase":error.phase.to_string(),"message":error.message})
 }

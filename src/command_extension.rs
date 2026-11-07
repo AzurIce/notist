@@ -64,7 +64,7 @@ impl CommandExtension {
             sources: context
                 .sources
                 .iter()
-                .map(|(path, source)| (path.clone(), source.to_string()))
+                .map(|(path, source)| (path.to_string(), source.to_string()))
                 .collect(),
             functions: context.registry.functions().cloned().collect(),
             document,

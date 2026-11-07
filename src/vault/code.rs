@@ -40,12 +40,12 @@ impl<R: Resources> Vault<R> {
                 })
             }
             Err(errors) => {
-                let mut sources = BTreeMap::from([(id, source.into())]);
+                let mut sources = Sources::from([(id.into(), source.into())]);
                 let diagnostics = errors
                     .into_iter()
                     .map(|error| {
-                        let name = error.path.to_string_lossy().into_owned();
-                        sources.insert(name.clone(), error.source.into());
+                        let name: crate::SourceId = error.path.to_string_lossy().as_ref().into();
+                        sources.insert(name, error.source.into());
                         let mut diagnostic = error.diagnostic;
                         diagnostic.source.get_or_insert(name);
                         diagnostic

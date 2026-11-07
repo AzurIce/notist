@@ -39,6 +39,7 @@ pub use notist_core::item::{
 };
 pub use notist_core::registry::Registry;
 pub use notist_core::resource::ResourcePath;
+pub use notist_core::source::SourceId;
 pub use notist_core::{
     annotation, builtins, diag, dump, embed, evaluation, expr, index, item, registry,
 };

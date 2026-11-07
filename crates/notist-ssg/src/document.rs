@@ -42,7 +42,9 @@ pub(crate) fn diagnostic(
 ) -> SourceDiagnostic {
     let origin = d.source.as_ref().and_then(|s| sources.get_key_value(s));
     SourceDiagnostic {
-        path: origin.map(|(p, _)| p.into()).unwrap_or_else(|| path.into()),
+        path: origin
+            .map(|(p, _)| p.as_str().into())
+            .unwrap_or_else(|| path.into()),
         source: origin
             .map(|(_, s)| s.to_string())
             .unwrap_or_else(|| source.into()),

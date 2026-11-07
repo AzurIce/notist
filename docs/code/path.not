@@ -81,7 +81,7 @@ fn from_file(source: Path = p"./intro.txt") -> BlockContent {
 #view.from_file(p"./private/intro.txt")
 ```
 
-在 Markup 中，通过上例的内容函数读取文件。读取发生在实际执行时；check、LSP 和 comptime 只检查代码，或要求无需读取即可计算的值。
+在 Markup 中，通过上例的内容函数读取文件。读取发生在实际执行时；check 与 LSP 不执行读取，comptime 中禁止读取。
 
 结果是普通 String，不会再次当作 Markup 解析；text 显式将其变成正文，HTML 正常转义。缺失、拒绝、目录、超限和非法 UTF-8 都在实际读取调用的位置诊断，并沿既有内容边界恢复。
 

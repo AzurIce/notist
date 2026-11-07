@@ -1,6 +1,6 @@
 = HTML Rendering
 
-`notist-html` 将最终 Item 树转换为 HTML 片段，消费 notist-core 的内容树。它不读取源码或资源；`.not` 与 .md / .markdown / .notmd / .nmd 经[各自前端](designs/frontends.not)产生共享 Item，使用同一个 renderer。输入树与源码诊断由 [Markup 管线](designs/pipeline/markup.not) 产生，节点契约见 [Builtin](markup/builtin.not)。
+`notist-html` 将求值后的 Item 树渲染为 HTML 片段。.not 与 Markdown 共用同一个 renderer。输入树由 [Markup 管线](designs/pipeline/markup.not) 分析后求值得到，节点契约见 [Builtin](markup/builtin.not)。
 
 == 使用
 
@@ -16,7 +16,7 @@ let html = notist_html::render(&evaluated.root);
 
 `render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer.new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
 
-renderer 不再次解析或重组 IR，输出顺序与 children 一致；保留段落、行内空白、raw payload 及节点身份。输入以完成 Resolve / Shape 的合法树为准；恢复节点采用可显示的回退形式。
+renderer 按内容树的顺序输出，保留正文空白，并为错误节点提供可显示的占位。
 
 == 节点映射
 
@@ -60,12 +60,12 @@ raw 的 lang 字段取首个逗号或空白分隔片段生成 language-* 类，�
 
 [Path](code/path.not) 是编译输入的逻辑资源身份，不是公开 URL。含 Path 的属性或组件数据（包括嵌套集合）不会输出，并产生渲染诊断；IR 调试 JSON 使用显式 Path 标记，不将其隐式转成字符串。
 
-普通 node 和已求值的 Interpolation 无可映射属性时只输出 children；有属性时生成一个包装元素保留标注范围。这是 HTML 呈现选择，不会简化或修改 Item 树。在 list、table、row 的结构槽中，透明分组展开为 item、row、cell 序列。HTML 没有可以任意包裹这些结构序列的共同元素，因此此处分组的可映射属性不输出，并产生诊断；child 的属性照常保留。尚未求值的 Interpolation 仍产生诊断，不能冒充已完成的内容分组。
+普通 node 和求值后的分组，无属性时只输出 children，有属性时生成包装元素。list、table、row 中的分组展开为 item、row、cell；分组本身的属性无法放在合法的 HTML 包装上，因此省略并报告诊断，子节点属性照常保留。
 
 @(id: "内容状态")
 === 内容状态
 
-status 是字符串注解，约定 draft（方案讨论中）、staged（方案确定、等待实现）与 outdate（已被取代）三种值。它挂载已有节点，不新增函数身份，不改变内容类别与 Shape；标注任意范围时使用带注解的 `#node[ ... ]`。
+status 注解标记内容状态：draft（讨论中）、staged（等待实现）、outdate（已过时）。标注一段内容时使用带注解的 `#node[ ... ]`。
 
 共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html.STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
 
@@ -80,11 +80,11 @@ let html = renderer.render(&root);
 let css = notist_html::highlight::CSS;
 ```
 
-回调只替换块级 pre/code 内部的文本，不改变外层属性和源码映射，也不处理行内代码。常用语言使用 syntect 与 two-face 的扩展语法集，覆盖 Rust、JavaScript、TypeScript / TSX、JSON、TOML、Shell、YAML、Dockerfile 等；not / notist 和 notc 直接使用 Notist 的无损语法树，不执行代码、不读取导入文件，未完成的示例也可展示。语言名按首个逗号或空白分隔片段识别，大小写不敏感，支持语法集的文件扩展名与 shell / docker 别名。rust,ignore、rust,no_run 等附加标记不影响高亮。
+回调为块级 pre/code 生成高亮内容，保留外层属性与源码映射。支持 Rust、JavaScript、TypeScript / TSX、JSON、TOML、Shell、YAML、Dockerfile 和 Notist 等语言。语言标签取首个逗号或空白之前的名称，因此 rust,ignore、rust,no_run 均使用 Rust 高亮。
 
 没有语言、未知语言，以及 text / txt / plaintext / plain / none / nohighlight 均回退到普通转义文本，不自动猜测语言。高亮保留原始源码、空白与末尾换行，输出带 z- 前缀的作用域 class；样式通过 --notist-code-* CSS 变量配置颜色，默认跟随系统明暗，根元素的 data-theme=light / dark 可覆盖。静态 HTML 无需高亮脚本。
 
-Book 自动接入高亮并发布默认配色；SSG 的正文和 markdown 模板辅助函数使用同一个实现，模板可以加载 assets.highlight，或使用自有的作用域样式。
+Book 与 SSG 自动为正文接入高亮。SSG 的自定义模板通过 assets.highlight 加载默认配色，也可提供自己的样式。
 
 == 资源与数学扩展
 
@@ -136,11 +136,11 @@ HtmlRegistry.default 装配原生内置 handler；bind_component(function_def, M
 
 Vault.render_html 沿源码 import 装配签名与实现，完成分析和求值后，只为结果树实际需要的原生目标查找 HTML 入口。未使用的声明、未返回的输入和错误节点隐藏的 children 不参与绑定。它返回原始 analysis、evaluation 表示树及完整 rendered 结果；[函数映射](designs/extensions.not) 在 Evaluate 中选择目标，renderer 消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry.from_bindings 引用同一 Registry 的 FunctionDef。
 
-notist-cli 的 html 命令对求值结果选择资源映射后渲染，将页面、注册入口、实际使用的组件和本地嵌入资源写入目录。单文档页面壳由 CLI 装配，资源计划由 notist.publication 提供，文件系统发布由 CLI 的公共 publication 宿主负责；单文档导出不依赖 notist-book 的章节结构或主题。组件资源位于 _notist/modules/；本地嵌入文件位于 _notist/resources/ 下，保留 Vault 相对路径，只复制实际引用的文件，远程 URL 不复制。缺失文件、越界或符号链接导致导出失败，不替换旧产物。多页面路由、链接改写、主题和预览见 [Notist Book](book.not)。内存与浏览器宿主消费 Vault.render_html 的结果，自行发布资源，使用 crates/notist-html/runtime 的 registerComponents 注册 used_components。可运行：
+CLI 的 html 命令将完整页面及实际使用的资源写入目录：组件位于 _notist/modules/，本地嵌入文件位于 _notist/resources/。资源缺失、越界或为符号链接时导出失败，保留原有输出。完整书籍与站点的构建见 [Notist Book](book.not) 和 [Notist SSG](ssg/README.not)。例如：
 
 ```sh
 cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo
 python3 -m http.server
 ```
 
-访问 /target/components-demo/ 查看 [Vault 组件示例](components/README.not)；/web/ 提供带项目配置的 HTML 预览。目录组件的辅助模块和样式随目录复制，简单组件仅复制一个 JS 文件。纯 fragment renderer 与显式 URL 的 preview API 不执行文件或网络操作。
+访问 /target/components-demo/ 查看 [Vault 组件示例](components/README.not)；/web/ 提供带项目配置的 HTML 预览。

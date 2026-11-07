@@ -179,7 +179,7 @@ scanner Name(args; ctx) -> { end, fields... } | Miss {
 
 `probe Name` 检查扫描结果；`scan Name` 将结果转为匹配范围。扫描到的 end 是消费终点；若返回另一个位置如 close，必须分别命名。
 
-`first`、`depth`、`balanced`、`indent` 等不是无定义的文法魔法。需要它们时写出循环顺序、边界、屏蔽条件和成功条件。普通括号平衡可以直接递归；只有涉及 lexer token、动态长度或上下文时才使用 scanner。
+使用 first、depth、balanced、indent 等辅助操作时，须定义循环顺序、边界、屏蔽条件和成功条件。普通括号平衡可直接递归；涉及 token、动态长度或上下文时使用 scanner。
 
 == 结果构造与整理
 

@@ -1,7 +1,7 @@
 #import "../components/lib.notc" as components;
 = Extension（Experimental）
 
-`site.extensions` 是 Notist SSG 的站点层扩展机制。它在一次 Site 构建中运行一次，接收整站的文档源码与数据，返回修改后的输入。当前只有一个扩展点 `prepare`；扩展可以用 Rust 的 `SiteExtension` 实现，也可以通过 `[[site.extensions]]` 配置成外部命令。两种形式使用同一份 `SiteInput` 与同一套校验，command 形式通过 stdin / stdout 交换 JSON。
+站点扩展在构建前接收整站的文档源码与数据，可以增删改页面及模板数据。Rust 通过 `SiteExtension.prepare` 实现；外部命令通过 `[[site.extensions]]` 配置，以 stdin / stdout 交换 JSON。
 
 下图是 `prepare` 在构建与预览流程中的位置：
 
@@ -45,16 +45,9 @@ flowchart TB
 | --- | --- | --- | --- |
 | `prepare` | 每次 Site 构建一次，发现 content / data 后 | `SiteInput` | 完整 `SiteInput`，或错误 |
 
-```text
-发现 content / 加载 data
-  → 运行 prepare 扩展（Rust 扩展，再 command 扩展）
-  → 校验候选输入并提交
-  → 进入正常构建
-```
-
 - 一次构建运行一次，不按页面重复。`serve` 每次重建会重新运行。
 - 先按 `Builder.with_extension` 的注册顺序运行 Rust 扩展，再按 `[[site.extensions]]` 的配置顺序运行 command 扩展。
-- 每个扩展在独立的候选输入上运行；候选通过校验后提交，后一个扩展看到前一个扩展提交后的结果。
+- 每个扩展修改一份输入副本，校验通过后交给下一个扩展；失败则停止构建。
 - 扩展只能修改 `SiteInput` 的 `documents` 与 `data`，不直接写源目录，也不能修改构建配置。
 
 == 配置
@@ -68,13 +61,12 @@ watch = ["scripts", "../Cargo.toml", "../examples"]
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `kind` | `"command"` | 当前唯一配置形式。 |
+| `kind` | `"command"` | 外部命令扩展。 |
 | `command` | string[] | 程序与参数；第一项必须非空；不经过 shell。 |
 | `watch` | path[] | 相对 Site target root 的额外输入；目录递归监听。 |
 
 - `command` 与 `watch` 相对 Site target root；进程 CWD 也是该 root。
-- `watch` 在启动扩展前登记，因此扩展失败时修复被监听文件仍能触发预览重建。
-- 脚本自行读取、但没有列入 `watch` 的路径不会被宿主自动观察，尤其是 Site root 之外的输入，应显式列出。Rust 扩展通过 `SiteContext.resources` 读取时由宿主记录依赖。
+- 将脚本读取的额外文件和目录列入 watch，修改后可触发预览重建，扩展失败时也有效。Rust 扩展通过 `SiteContext.resources` 读取的依赖由宿主记录。
 - 未知字段会使配置解析失败；`command` 为空或首项为空也会在校验阶段报错。
 - 顶层 `[[extensions]]` 与 `[[site.extensions]]` 是不同配置表：前者是文档扩展，后者只属于选中的 Site target。
 
@@ -99,13 +91,7 @@ pub struct SiteInput {
 - 配置了扩展时内容目录可以不存在，页面可以全部由 `documents` 提供；物理内容目录仍会作为初始输入被发现。
 - 修改不写回磁盘；下一次构建重新发现物理输入，因此删除的生成页面不会残留。
 
-=== 完整快照语义
-
-`SiteInput` 的返回是完整快照，不是补丁：
-
-- 返回的 `input` 省略或为 `null` 时保持当前输入。
-- 返回完整 `input` 时，其中没有出现的页面或数据键会被删除；替换某个键即替换其值。
-- command 输出完整快照时必须同时提供 `documents` 与 `data` 两个字段；空映射写 `{}`。
+返回 input 时需包含全部文档和数据，省略的键会被删除。字段与省略规则见下文“响应”。
 
 == JSON I/O 协议
 
@@ -132,14 +118,6 @@ pub struct Response {
     #[serde(default)]
     pub errors: Vec<String>,
 }
-```
-
-```text
-宿主                                      command
-  │  spawn(command, cwd=site root)          │
-  │ ─── stdin: Request JSON + EOF ────────→ │
-  │ ←── stdout: Response JSON ───────────── │
-  │     stderr: 日志（不解析）              │
 ```
 
 Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}` 类型；`SiteInput` 与 `SiteConfig` 的 serde 表示就是协议格式。
@@ -185,7 +163,7 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
 
 | 字段 | 类型 | 内容 |
 | --- | --- | --- |
-| `version` | number | 协议版本，当前为 1；不代表兼容性承诺。 |
+| `version` | number | 协议版本，固定为 1。 |
 | `stage` | string | 固定为 `prepare`。 |
 | `root` | string | Site target root 的绝对路径；也是命令 CWD。 |
 | `config` | object | 完整 `SiteConfig`，字段见下。 |
@@ -207,7 +185,7 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
 | `template` | string | 默认模板名。 |
 | `extensions` | array | 当前 Site target 的 `[[site.extensions]]` 配置。 |
 
-`input.documents` 是“内容相对路径 → 源码字符串”的对象；`input.data` 是“数据键 → 任意 JSON 值”的对象。扩展收到的是本次构建已经发现的初始输入，不是物理文件的引用。
+input 包含加载后的源码与数据，以及前序扩展的修改。
 
 === 响应
 
@@ -238,7 +216,7 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
 
 - 省略 `input`、写 `"input": null` 或返回 `{"version":1}` 都保持当前输入不变。
 - 返回 `input` 时必须同时包含 `documents` 与 `data`；空映射写 `{}`。省略的页面或数据键会被删除。
-- `input` 和响应对象都拒绝未知字段；字段名拼错不会静默忽略。
+- `input` 和响应对象都拒绝未知字段。
 - `errors` 非空时构建失败，即使同时返回了 `input` 也不会应用。
 - 错误响应示例：
 
@@ -266,26 +244,22 @@ input["data"]["demo"] = {"name": "demo"}
 json.dump({"version": 1, "input": input}, sys.stdout)
 ```
 
-脚本从 stdin 读取一个 JSON 值，向 stdout 写一个 JSON 值，其他日志写 stderr。不要输出多个 JSON 值，也不要在 stdout 打印调试信息。
+== 输入校验
 
-== 校验与提交
-
-每个扩展的候选输入在提交前经过站点层校验；失败会停止构建，后续扩展不执行。
+扩展返回后校验文档路径、数据键及输出冲突，通过后才使用修改结果：
 
 - 文档路径必须是规范相对路径：不能为空、不能是绝对路径、不能含 `\`、单独的 `.` 或 `..` 段、空段或隐藏段；不能占用 `_notist`；必须由已注册前端支持。
 - 数据键同样必须是规范相对路径。
 - 两个生成或保留的文档不能映射到同一输出路径；生成文档也不能与已有输出冲突。
 - 生成文档的绝对源身份是 `content/<相对路径>`，imports、相对链接、嵌入与诊断以此为基准。
 - 生成文档的根注解照常生效，规则与手写文档相同。
-- 新目录自动进入 `site.directories`；不会自动生成目录首页，需要时显式添加 `index.not` / `index.md`。
+- 新目录自动进入 `site.directories`。
 
-路径与输出的通用规则见 [Notist SSG](../ssg.not#内容与路径)。
+路径与输出规则见 [Notist SSG](README.not#源文件与输出)。
 
 == 失败与副作用
 
-- 每个 `prepare` 在独立的候选 `SiteInput` 上运行；候选通过校验后才替换当前输入。
-- 任一扩展失败会停止构建，后续扩展不运行；已提交的前序修改只存在于本次构建内存中，不会发布。
-- CLI 不发布失败构建的产物，预览保留上一次成功结果。
+- 任一扩展失败会停止构建，保留原有输出或上一次成功预览。
 - 失败保护只覆盖构建输入与产物；脚本自行写文件、上传或调用外部服务等副作用不会被回滚。
 - 非零退出状态、启动或通信失败、无效 JSON、版本不符、未知字段和非法路径都会转成扩展错误。
 - 错误信息包含扩展名与阶段，例如 `site extension "catalog" (prepare): ...`。
@@ -350,4 +324,4 @@ let output = Builder::default()
 - 在 workspace 中，Site 扩展使用选中 target 的 root 作为 CWD 与路径基准。
 - 完整可运行示例：`examples/ssg-extensions`，读取 Cargo.toml 与 Rust 源文件，在内存中生成页面和 `site.data`。
 - 分步教程：[从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。
-- 当前只有 `prepare` 一个站点层扩展点；配置只支持 command，Rust 扩展通过 `Builder` 注册。接口处于实验阶段，阶段、字段和序列化表示可能调整。
+- 接口处于实验阶段，类型与协议可能调整。

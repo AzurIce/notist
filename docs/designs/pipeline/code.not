@@ -51,8 +51,8 @@ Lower 把一份模块拆成三个去向：
 
 - *名称解析*：局部绑定遮蔽优先，随后是当前文件的函数与静态绑定，未绑定的裸名回落内置 prelude；限定路径只遍历公开绑定；`notist` 与 `self` 是保留命名空间。非调用位置的模块成员访问报 `module members must be called`。
 - *常量折叠与折枝*：沿途记录编译期已知值；编译期已知的 If / Match 直接折枝，未选中分支不做名称与类型检查。
-- *实例建立*：先占座再检查函数体，递归引用直接返回已有记录；换入定义处的模块与作用域，普通参数与 children 作为输入绑定；嵌套深度上限 32，实例总数上限 4096。
-- *内容穿越*：`Expr::Content` 的 IR₁ 连同当前词法绑定进入共享后端的 prepare → shape → materialize，收回的 Item 森林嵌入 `ExprKind::Content`。
+- *实例建立*：先登记实例签名，再在定义模块的作用域中检查函数体；递归调用引用已登记实例。普通参数与 children 作为输入绑定；嵌套深度上限 32，实例总数上限 4096。
+- *内容检查*：将 `Expr::Content` 的 IR₁ 与词法绑定交给共享内容后端，返回的 Item 森林嵌入 `ExprKind::Content`。
 
 产物按实例进 CheckedProgram：一个函数可对应多个实例、多棵 TypedExpr 树，CodeModule 的 Expr 保持可复用。文档分析把 CheckedProgram 保存在 Analysis 中；独立 Code 检查（check_module、check）以编译期参数均有默认值的函数为种子，其余实例在调用处触发，CodeAnalysis 只导出声明、诊断与来源源码。
 
@@ -68,4 +68,4 @@ Lower 把一份模块拆成三个去向：
 
 == 求值
 
-Evaluate 在求值前 Item 树上原地展开：先解析插值并捕获调用的自由变量，再在内容边界执行调用——replace 扩展在此选择同签名目标，目标实例沿用原编译期实参，缺失的实例就地补检查。原生实现产生 prototype Item，Code 实现的结果森林嵌入调用边界；失败标记为 Error 并在边界恢复，原语义树保持可用。完整契约见 [Code 函数系统](../../code/functions.not#对-item-与-shape-的契约)。
+Evaluate 执行内容表达式，生成独立输出树。replace 扩展选择同签名执行目标；原生实现生成内容元素，Code 实现返回内容森林。失败在内容边界恢复为 Error，原语义树保留。完整契约见 [Code 函数系统](../../code/functions.not#对-item-与-shape-的契约)。

@@ -369,7 +369,7 @@ Markdown 扩展支持 `@(dict)`、`@!(dict)`、`#name(args)[body]`、包限定�
 
 === Wiki 链接
 
-Markdown 支持与原生 Markup 相同的 `[[target]]` 与 `[[target|显示文本]]`，均 lower 为普通 link；不增加按笔记名搜索或省略扩展名补全的语义。target 保留原始文字并去掉首尾空白，不解码标点转义或字符引用；显示文本按 Markdown 行内规则解析，无显示文本时不生成 children，由渲染器显示 target。
+Markdown 与原生 Markup 均支持 `[[target]]` 和 `[[target|显示文本]]`，target 按普通链接路径解析。target 去掉首尾空白，其余文字原样保留；显示文本按 Markdown 行内规则解析，省略时显示 target。
 
 Wiki 链接不能跨行，未闭合的括号保留为普通文字；代码与数学 payload 内不识别链接，转义的开括号不触发 Wiki 链接。GFM 表格仍以未转义的管道符分列，带显示文本的链接在单元格中写作 `[[page.not\|显示文本]]`。
 

@@ -152,9 +152,9 @@
 
 == 两条入口，一个后端
 
-Markup 一侧是一条直链：Parse 出前端语法树，Lower 成 IR₁——尚未解析名字的 Expr 森林，注解躺在旁边的 side list 里。过了 IR₁ 就进入共享后端：Resolve 绑定名称、校验内容契约（IR₂），Shape 定稿 section 与内容槽（IR₂′），Materialize 挂载注解、生成带来源的 Item。文档入口最后为森林包上 Doc 根。字段级的阶段契约在 [Markup 管线](pipeline/markup.not)，Code 模块的声明语法、字面量定界与实例检查细节在 [Code 管线](pipeline/code.not)，本文均不重复。
+Markup 经 Parse 生成前端语法树，Lower 成未解析的 Expr 森林（IR₁）与注解列表。共享后端依次完成 Resolve（名称与契约检查）、Shape（节与内容槽整理）、Materialize（挂载注解并生成 Item）。文档入口添加 Doc 根。阶段契约见 [Markup 管线](pipeline/markup.not)。
 
-Code 一侧多一道手续：内容字面量 `[ ... ]` 不是 Code 语法，得请前端帮忙，这就是绿色两轮。Parse 时，前端的 ContentParser 决定字面量到哪里结束并解析出内容语法树，Code 词法器随后从字面量之后继续；Lower 时，ContentLowering 把这份语法树转成 IR₁，嵌进函数体：
+Code 将 `[ ... ]` 的正文交给所选 Markup 前端：ContentParser 解析字面量边界与语法，ContentLowering 将其转为 IR₁，嵌入函数体：
 
 ```text
 函数体 Expr（Code IR，还不认识任何名字）
@@ -164,14 +164,14 @@ Code 一侧多一道手续：内容字面量 `[ ... ]` 不是 Code 语法，得�
    └─ body / span
 ```
 
-所以"环境无关"这一段对两种语言是同一条界：Lower 结束时就绪的只有结构，没有名字。函数身份、类型、段落归属，全部留给下一阶段。
+两种语言的 Parse / Lower 都处理语法结构，名称绑定与类型检查在装配环境后进行。
 
 == Checker 会话：名字在这里变成实例
 
 分析从一份装配好的 Context 开始（签名注册表、未检查函数体、模块作用域、transform 计划，只读）， Checker 会话在其上按需工作。两个方向都会用到它：
 
-- 文档 Resolve 撞上 Code 调用（如 `#diagrams.diagram(...)`），向会话请求一个具体实例，拿到签名即继续校验，不展开实现。
-- 会话为实例建立编译期实参、参数类型与局部绑定，把函数体 Expr 检查成 TypedExpr。撞上 `Expr::Content` 时，把 IR₁ 连同词法绑定交给共享后端跑一遍，收回的 Item 森林直接嵌入：
+- 文档 Resolve 遇到 Code 调用（如 `#diagrams.diagram(...)`）时，向会话请求具体实例，并按其签名检查调用。
+- 会话根据编译期实参、参数类型与局部绑定，将函数体 Expr 检查为 TypedExpr。遇到 `Expr::Content` 时，将 IR₁ 与词法绑定交给共享后端，返回的 Item 森林嵌入已检查表达式：
 
 ```text
 已检查的函数体：TypedExpr
@@ -179,7 +179,7 @@ Code 一侧多一道手续：内容字面量 `[ ... ]` 不是 Code 语法，得�
 └─ kind: ExprKind::Content(Vec<Item>)
 ```
 
-Item 由此一身二任：既是共享后端的终点，也是 Code 已检查树的节点——这张图因此不可能画成纯线性。实例结果缓存在 CheckedProgram：一个函数可对应多个实例、多棵 TypedExpr，CodeModule 里的 Expr 始终可复用；泛型分支按编译期已知条件折枝，只检查选中的那一支。
+Item 既是共享内容后端的输出，也可嵌入已检查的 Code 表达式。实例结果保存在 CheckedProgram；泛型分支按编译期条件选择，只检查选中分支。
 
 == 求值
 
@@ -198,7 +198,7 @@ Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：�
 | TypedExpr | 实例的已检查表达式树，内容分支是 Item 森林 | 存于 InstanceRecord.body |
 | CheckedProgram | FunctionInstance → 签名、TypedExpr、诊断、状态 | 随 Analysis 保留；独立检查只导出报告 |
 
-两类作用域不要混淆：Context 保存模块作用域；局部词法绑定保存在 Checker.scope，编译期实参进入实例时加入。图中的"IR₁ + 词法绑定"是会话内携带绑定调用后端，并非把局部变量写进 Context。
+Context 保存模块作用域；Checker.scope 保存局部绑定与当前实例的编译期实参。
 
 宿主入口只有几个：`analyze` / `inspect` 跑完整文档（inspect 额外保留解析树与中间 IR），`compile_module` 只出 CodeModule，`analyze_content_literal` 一次编译单个字面量，`evaluate` 求值；`Vault.analyze_code` 是宿主侧的 Code 文件检查入口。
 

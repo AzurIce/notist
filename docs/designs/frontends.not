@@ -14,7 +14,7 @@ pub trait Frontend: Send + Sync {
 
 extensions 声明可处理的文件扩展名，不包含点号。compile 接收一份源码，组合本前端的 parse → lower；前端可以持有配置和状态，并满足 Send + Sync，供语言服务等宿主使用。
 
-cache_key 是可选的确定性契约，用于 notc 单文件编译缓存，不表示整个文档前端已经缓存。FrontendCacheKey.new::<Self>(version, configuration) 区分实现类型、语义版本和完整配置；相同身份及显式输入必须产生相同结果，包括 ContentParser 和 ContentLowering 的行为。内置前端提供身份；自定义前端默认返回 None，保持普通执行。隐藏 I/O 或可变状态不得影响已声明可缓存的结果。
+cache_key 为 notc 模块编译提供可选的缓存身份。FrontendCacheKey.new::<Self>(version, configuration) 包含实现类型、语义版本和完整配置；相同身份及输入须产生相同结果，包括 ContentParser 与 ContentLowering 的行为。内置前端提供身份，自定义前端默认返回 None。
 
 FrontendOutput 将模块声明与内容表达式分别输出。字段为：
 
@@ -182,7 +182,7 @@ assert_eq!(syntax.source, "# Title\n");
 
 Pipeline.analyze 使用默认选项。Pipeline.inspect 请求捕获解析产物，并在同一次处理过程中保存 Inspection.syntax、lowered 与 shaped：分别为前端解析树、IR₁ 和完成 resolve / shape 的 IR₂′。捕获选项影响解析产物的保留，不改变文档语义或诊断。
 
-pipeline 按接口传递解析产物，工具按具体类型消费。当前 cst_json 的 tree / ast 字段对应原生 SyntaxNode；所有前端都可输出共同的 ir1、ir2 与 core 字段。MarkdownSyntax 可由工具直接读取，其捕获并不意味着已有原生 CST JSON 展示协议适用于 Markdown AST。
+工具按具体前端类型读取解析产物：cst_json 的 tree / ast 字段对应原生 SyntaxNode，MarkdownSyntax 由工具单独处理；ir1、ir2 与 core 为所有前端共用的表示。
 
 == 文档扩展
 

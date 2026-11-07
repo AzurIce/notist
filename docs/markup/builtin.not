@@ -192,7 +192,7 @@ ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
 underline()[children: InlineContent] -> InlineContent
 ```
 
-为行内内容添加下划线，显式调用 `#underline[需要下划线的文字]`；没有独立语法糖，`_..._` 仍表示 emph。HTML 输出为带 `text-decoration: underline` 样式的 span，不赋予链接或强调语义。
+为行内内容添加下划线，写作 `#underline[需要下划线的文字]`，HTML 输出带下划线样式的 span。`_..._` 表示 emph。
 
 === raw
 

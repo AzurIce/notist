@@ -10,7 +10,7 @@ FunctionDef 保存规范身份、签名和 Code／Native 实现来源；CodeProg
 
 CallSite 明确区分 Markup 与 Code；独立 Markup 只传字面量参数，读取在 notc 函数体中发生。求值器另以 Runtime／Comptime 表达能力阶段；comptime 不允许直接或间接读取。函数别名、重导出、文件后缀或模块标签不会改变能力。
 
-FunctionDef 内部只有一份实现信息。serde 保留 Code／Content 构造声明的旧 code 字段，read_text 另携带实现信息；输入同时包含新旧字段且冲突时拒绝。
+FunctionDef 保存函数实现来源；序列化输入中的实现信息须一致，冲突时拒绝。
 
 == 同步输入接口
 
@@ -36,7 +36,7 @@ Evaluation.dependencies 记录实际请求的 ResourcePath，包括缓存命中�
 
 == 输入批次
 
-一轮构建使用一个 Vault／ResourceSession，所有页面共享按需加载的输入。在同一授权读取能力下，每个逻辑路径的首次读取结果固定为本批次的字节、错误或 Pending；重复请求直接使用缓存。磁盘上的修改、删除或缺失文件后来出现，由下一轮的新会话接收。首次读取不同文件可以发生在不同时间，这不是整个目录的原子快照。
+一轮构建使用一个 Vault／ResourceSession，所有页面共享按需加载的输入。在同一授权读取能力下，每个逻辑路径的首次读取结果固定为本批次的字节、错误或 Pending，后续请求复用该结果。文件变化由下一轮构建接收；不同文件在各自首次使用时读取。
 
 宿主在读取前配置授权与预算。直接构造 ResourceSession 时默认没有数据授权；Vault.new 明确授予项目根。Vault.with_read_roots 替换授权列表，空列表拒绝所有数据读取。读取根、Resources.source_root 的词法绑定根和 publication／Book mounts 的发布根互不授予能力。
 
@@ -77,4 +77,4 @@ web/project-inputs.js 将该逻辑身份与宿主声明的目录 URL 映射核�
 
 准备过程限制请求数、重试轮次和读取字节，不重复获取确认失败，不进行无进展重试。AbortSignal 与文档 generation 防止过期结果覆盖新修订；输入批次之间不共享旧的成功或失败缓存。未完成时保留上一份完整预览。
 
-资源输入接口只提供受授权的输入字节与读取事实。JSON／TOML 解码由 Data 处理；文件写入、任意网络 I/O 和增量调度不属于该接口。
+资源输入接口提供受授权的输入字节与读取结果，JSON／TOML 解码由 Data 处理。

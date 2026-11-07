@@ -424,6 +424,12 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    /// Checked instances corresponding to this analysis, for direct evaluator
+    /// embedding. This is a borrowed view, not a second mutable program.
+    pub fn checked_program(&self) -> &notist_core::evaluation::CheckedProgram {
+        &self.program
+    }
+
     /// Number of checked function specializations, independent of runtime records.
     pub fn checked_instance_count(&self) -> usize {
         self.program.instances.len()

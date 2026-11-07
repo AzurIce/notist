@@ -1051,6 +1051,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-eval-bench"
+version = "0.1.0"
+dependencies = [
+ "notist-core",
+ "notist-eval",
+ "notist-pipeline",
+ "serde_json",
+]
+
+[[package]]
 name = "notist-grammar"
 version = "0.1.0"
 dependencies = [

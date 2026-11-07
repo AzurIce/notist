@@ -34,3 +34,10 @@ internals without a pipeline dependency. Compiler/evaluator integration tests
 remain in pipeline. Its dev-dependency enables the internal `test-support`
 feature for the existing checkpoint oracle and summary assertions. Normal
 builds do not enable that feature.
+
+## Scenario benchmarks
+
+The compiler-backed driver lives in `tools/eval-bench`, outside this crate's
+dependency graph. See its README for checked fixtures, clean timing vs separate
+allocation diagnostics, scaling axes and reproducible evidence collection.
+Run `cargo bench -p notist-eval-bench --bench scenarios` for evaluator timing.

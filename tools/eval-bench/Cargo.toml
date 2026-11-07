@@ -1,0 +1,18 @@
+[package]
+name = "notist-eval-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+alloc-metrics = []
+
+[dependencies]
+notist-core = { path = "../../crates/notist-core", features = ["serde"] }
+notist-eval = { path = "../../crates/notist-eval" }
+notist-pipeline = { path = "../../crates/notist-pipeline" }
+serde_json = "1"
+
+[[bench]]
+name = "scenarios"
+harness = false

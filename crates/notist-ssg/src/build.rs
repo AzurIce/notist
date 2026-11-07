@@ -193,7 +193,7 @@ fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic 
         notist::TextRange::new(o.start.into(), o.end.into())
     });
     let mut d = Diagnostic::new(Phase::Semantic, span, message);
-    d.source = node.origin.as_ref().map(|o| o.source);
+    d.source = node.origin.as_ref().map(|o| o.source.to_string());
     diagnostic(
         &document.page.route.source,
         &document.source,
@@ -666,7 +666,10 @@ pub(crate) fn build<R: Resources>(
             match resolve_link(&document, target, node, &content, &by_source, &outputs) {
                 Ok(Some(url)) => {
                     resolved.insert(
-                        (node.origin.as_ref().map(|o| o.source), target.clone()),
+                        (
+                            node.origin.as_ref().map(|o| o.source.clone()),
+                            target.clone(),
+                        ),
                         url,
                     );
                 }
@@ -683,7 +686,7 @@ pub(crate) fn build<R: Resources>(
         }
         let lookup = |node: &Item, url: &str| {
             resolved
-                .get(&(node.origin.as_ref().map(|o| o.source), url.into()))
+                .get(&(node.origin.as_ref().map(|o| o.source.clone()), url.into()))
                 .cloned()
         };
         let (registry, environment) = vault.html_registry_for_document(&handle, &document.root)?;

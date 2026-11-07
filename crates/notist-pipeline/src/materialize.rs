@@ -5,7 +5,7 @@ use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
 use notist_core::item::{Ctor, Item, NodeContent, Origin};
-use notist_core::source::SourceId;
+use notist_core::shared::Text;
 use rowan::{TextRange, TextSize};
 
 use crate::shape::is_block_element;
@@ -20,14 +20,14 @@ pub fn materialize(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Item> {
     attach_annotations(forest, annotations, diagnostics);
-    let source: SourceId = source.into();
+    let source: Text = source.into();
     forest
         .iter()
         .map(|expr| build_item(expr, &source))
         .collect()
 }
 
-fn build_item(expr: &RExpr, source: &SourceId) -> Item {
+fn build_item(expr: &RExpr, source: &Text) -> Item {
     let mut item = Item::new(expr.ctor.clone(), expr.span);
     let children = expr
         .children
@@ -58,7 +58,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
                         shape: notist_core::evaluation::ContentShape::of_items(&children),
                         kind: ExprKind::Content(children.into()),
                         span: expr.span,
-                        source: *source,
+                        source: source.to_string(),
                     }));
                 }
                 let ty = Some(call.definition.returns.clone());
@@ -69,7 +69,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
                     known: None,
                     kind,
                     span: expr.span,
-                    source: *source,
+                    source: source.to_string(),
                     shape,
                 }
             }
@@ -89,7 +89,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
         notist_core::builtins::Level::Inline
     };
     item.origin = Some(Origin {
-        source: *source,
+        source: source.clone(),
         start: expr.span.start().into(),
         end: expr.span.end().into(),
         expansion: Default::default(),
@@ -269,7 +269,7 @@ mod source_tests {
         for child in items[0].children() {
             let origin = child.origin.as_ref().unwrap();
             assert_eq!(origin.source, "docs/source.not");
-            assert_eq!(root.source, origin.source);
+            assert!(root.source.shares_storage(&origin.source));
             assert_eq!((origin.start, origin.end), (0, 3));
         }
     }

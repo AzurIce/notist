@@ -39,7 +39,7 @@ pub struct TypedExpr {
     pub kind: ExprKind,
     #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
-    pub source: crate::source::SourceId,
+    pub source: String,
     /// Local checked forest evidence, not a public function return contract.
     #[cfg_attr(feature = "serde", serde(default))]
     pub shape: ContentShape,
@@ -179,7 +179,7 @@ pub struct Invocation {
     pub attrs: Dict,
     #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
-    pub source: crate::source::SourceId,
+    pub source: String,
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "CallSite::is_markup")

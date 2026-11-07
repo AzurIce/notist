@@ -2,6 +2,7 @@ use rowan::TextRange;
 
 use crate::builtins;
 use crate::definitions::FunctionId;
+use crate::shared::Text;
 
 /// A registered call's public contract snapshot, independent of its module files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,8 +371,8 @@ impl std::fmt::Display for Value {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Origin {
-    /// Interned source name, independent of the owning result's source revision.
-    pub source: crate::source::SourceId,
+    /// Immutable path text; cloning an origin does not copy the filename.
+    pub source: Text,
     pub start: u32,
     pub end: u32,
     pub expansion: crate::source_chain::SourceChain,
@@ -379,7 +380,7 @@ pub struct Origin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceLocation {
-    pub source: crate::source::SourceId,
+    pub source: Text,
     pub start: u32,
     pub end: u32,
 }
@@ -760,22 +761,26 @@ mod source_tests {
     }
 
     #[test]
-    fn origin_clones_copy_source_identity_but_not_expansion_mutations() {
-        let source: crate::source::SourceId = "modules/view.notc".into();
+    fn origin_clones_share_path_text_but_not_expansion_mutations() {
+        let source: Text = "modules/view.notc".into();
         let original = Origin {
-            source,
+            source: source.clone(),
             start: 1,
             end: 7,
             expansion: vec![SourceLocation {
-                source,
+                source: source.clone(),
                 start: 10,
                 end: 20,
             }]
             .into(),
         };
         let mut changed = original.clone();
-        assert_eq!(original.source, changed.source);
-        assert_eq!(original.expansion[0].source, changed.expansion[0].source);
+        assert!(original.source.shares_storage(&changed.source));
+        assert!(
+            original.expansion[0]
+                .source
+                .shares_storage(&changed.expansion[0].source)
+        );
         changed.source = "another.notc".into();
         changed.expansion[0].source = "caller.not".into();
         changed.expansion.push(SourceLocation {
@@ -801,7 +806,7 @@ mod source_tests {
             start: 2,
             end: 8,
         };
-        assert_eq!(first.source, equal.source);
+        assert!(!first.source.shares_storage(&equal.source));
         assert_eq!(first, equal);
         equal.end += 1;
         assert_ne!(first, equal);

@@ -30,7 +30,7 @@ pub(crate) struct Checker<'a> {
     pub diagnostics: Vec<Diagnostic>,
     pub(super) scope: Scope,
     pub(super) module: String,
-    pub(super) source: notist_core::source::SourceId,
+    pub(super) source: String,
     resource_root: String,
     pub(super) site: CallSite,
     pub(super) depth: usize,
@@ -65,7 +65,7 @@ impl<'a> Checker<'a> {
     }
     pub(super) fn report(&mut self, span: TextRange, message: impl Into<String>) {
         let mut d = Diagnostic::new(Phase::Type, span, message);
-        d.source = Some(self.source);
+        d.source = Some(self.source.clone());
         self.report_diagnostic(d);
     }
     fn report_diagnostic(&mut self, d: Diagnostic) {
@@ -82,16 +82,16 @@ impl<'a> Checker<'a> {
     ) -> TypedExpr {
         let message = format!("{label}: {}", failure.message);
         let (span, source) = failure.location.map_or_else(
-            || (span, self.source),
+            || (span, self.source.clone()),
             |location| {
                 (
                     TextRange::new(location.start.into(), location.end.into()),
-                    location.source,
+                    location.source.to_string(),
                 )
             },
         );
         let mut diagnostic = Diagnostic::new(Phase::Type, span, &message);
-        diagnostic.source = Some(source);
+        diagnostic.source = Some(source.clone());
         self.report_diagnostic(diagnostic);
         let mut expr = self.typed(None, ExprKind::Failure(message), None, span);
         expr.source = source;
@@ -110,7 +110,7 @@ impl<'a> Checker<'a> {
             kind,
             known,
             span,
-            source: self.source,
+            source: self.source.clone(),
         }
     }
     fn constant(&self, v: ComptimeValue, span: TextRange) -> TypedExpr {
@@ -236,7 +236,7 @@ impl<'a> Checker<'a> {
     }
     fn origin(&self, span: TextRange) -> Origin {
         Origin {
-            source: self.source,
+            source: self.source.as_str().into(),
             start: span.start().into(),
             end: span.end().into(),
             expansion: Default::default(),
@@ -273,9 +273,9 @@ impl<'a> Checker<'a> {
         let source = self
             .context
             .program()
-            .module(&instance.function.module)
-            .map(|module| module.code().source_id())
-            .unwrap_or(self.source);
+            .source_path(&instance.function.module)
+            .unwrap_or(&self.source)
+            .to_owned();
         let previous = std::mem::replace(&mut self.source, source);
         self.install_instance(instance);
         self.source = previous;
@@ -341,7 +341,7 @@ impl<'a> Checker<'a> {
         if let Some(v) = self.scope.get(name) {
             let mut value = v.clone();
             value.span = span;
-            value.source = self.source;
+            value.source = self.source.clone();
             return value;
         }
         if let Some(t) = Self::type_name(name) {
@@ -1394,7 +1394,7 @@ impl<'a> Checker<'a> {
             children,
             attrs,
             span,
-            source: self.source,
+            source: self.source.clone(),
             site: self.site,
             resource_root,
             invalid: None,
@@ -1495,7 +1495,7 @@ impl<'a> Checker<'a> {
         };
         let old_scope = std::mem::take(&mut self.scope);
         let old_module = std::mem::replace(&mut self.module, def.id.module.clone());
-        let old_source = std::mem::replace(&mut self.source, body.source);
+        let old_source = std::mem::replace(&mut self.source, body.source.clone());
         let old_site = std::mem::replace(&mut self.site, CallSite::Code);
         let old_resource_root =
             std::mem::replace(&mut self.resource_root, body.resource_root.clone());
@@ -1540,7 +1540,7 @@ impl<'a> Checker<'a> {
         }
         for d in &mut self.diagnostics[start..] {
             if d.source.is_none() {
-                d.source = Some(self.source);
+                d.source = Some(self.source.clone());
             }
         }
         let diagnostics = self.failures.pop().unwrap();

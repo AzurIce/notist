@@ -353,7 +353,7 @@ impl Pipeline {
         let mut diagnostics = output.diagnostics;
         let path = path.to_string_lossy().into_owned();
         let mut sources = context.program().sources();
-        sources.insert(path.as_str().into(), src.clone());
+        sources.insert(path.clone(), src.clone());
         let extension_context = DocumentContext {
             path: &path,
             sources: &sources,
@@ -388,9 +388,7 @@ impl Pipeline {
                     .after_check(&extension_context, &root, &mut diagnostics);
         }
         for diagnostic in &mut diagnostics {
-            diagnostic
-                .source
-                .get_or_insert_with(|| path.as_str().into());
+            diagnostic.source.get_or_insert_with(|| path.clone());
         }
         let inspection = Inspection {
             syntax: output.syntax,

@@ -177,7 +177,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             }
         };
         let location = SourceLocation {
-            source: call.source,
+            source: call.source.as_str().into(),
             start: call.span.start().into(),
             end: call.span.end().into(),
         };

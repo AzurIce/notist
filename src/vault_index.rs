@@ -112,8 +112,8 @@ pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Di
             diagnostic.source = node
                 .origin
                 .as_ref()
-                .map(|origin| origin.source)
-                .or_else(|| Some(source.as_str().into()));
+                .map(|origin| origin.source.to_string())
+                .or_else(|| Some(source.clone()));
             Some(diagnostic)
         })
         .collect()
@@ -143,7 +143,7 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
                         ),
                     );
                     diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
-                    diagnostic.source = Some(source.as_str().into());
+                    diagnostic.source = Some(source.clone());
                     Some(diagnostic)
                 }
                 _ => None,

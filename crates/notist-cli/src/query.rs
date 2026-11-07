@@ -37,7 +37,7 @@ mod tests {
         assert!(diagnostics.is_empty());
         let matches = notist::query::select(&item, "id:x");
         let data: serde_json::Value = serde_json::from_str(&super::render_json(
-            &notist::Sources::from([("test.not".into(), source.into())]),
+            &std::collections::BTreeMap::from([("test.not".into(), source.into())]),
             &matches,
         ))
         .unwrap();
@@ -52,7 +52,7 @@ mod tests {
             item =
                 notist::Item::new(notist::Ctor::Node, Default::default()).with_children(vec![item]);
         }
-        let output = super::render_json(&notist::Sources::default(), &[&item]);
+        let output = super::render_json(&std::collections::BTreeMap::new(), &[&item]);
         assert_eq!(output.matches("\"children\":").count(), 161);
         assert!(output.contains("\"ctor\":\"node\""));
     }

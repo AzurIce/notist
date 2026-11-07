@@ -82,7 +82,7 @@ impl CodeProgram {
             .values()
             .map(|module| {
                 let code = module.code();
-                (code.source_id(), code.source().clone())
+                (code.source_path().to_owned(), code.source().clone())
             })
             .collect()
     }
@@ -111,7 +111,7 @@ impl CodeProgram {
 pub(crate) struct CodeBody {
     pub expression: Option<Expr>,
     pub diagnostics: Vec<Diagnostic>,
-    pub source: notist_core::source::SourceId,
+    pub source: String,
     pub resource_root: String,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -119,7 +119,7 @@ pub struct CodeModule {
     pub definitions: Arc<DefinitionModule>,
     pub imports: Arc<[Import]>,
     bodies: Arc<BTreeMap<String, CodeBody>>,
-    source_path: notist_core::source::SourceId,
+    source_path: Arc<str>,
     source: Arc<str>,
 }
 
@@ -129,9 +129,6 @@ impl CodeModule {
     }
     pub fn source_path(&self) -> &str {
         &self.source_path
-    }
-    pub fn source_id(&self) -> notist_core::source::SourceId {
-        self.source_path
     }
     pub fn source(&self) -> &Arc<str> {
         &self.source

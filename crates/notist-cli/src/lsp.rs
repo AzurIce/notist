@@ -370,7 +370,7 @@ impl Backend {
             .iter()
             .filter_map(|(uri, source)| {
                 Some((
-                    uri.to_file_path().ok()?.to_string_lossy().as_ref().into(),
+                    uri.to_file_path().ok()?.to_string_lossy().into_owned(),
                     source.as_str().into(),
                 ))
             })
@@ -390,9 +390,9 @@ impl Backend {
                             .into_iter()
                             .map(|error| {
                                 let path = error.path.to_string_lossy().into_owned();
-                                sources.insert(path.as_str().into(), error.source.into());
+                                sources.insert(path.clone(), error.source.into());
                                 let mut d = error.diagnostic;
-                                d.source.get_or_insert_with(|| path.into());
+                                d.source.get_or_insert(path);
                                 d
                             })
                             .collect()
@@ -411,9 +411,9 @@ impl Backend {
                     Err(error) => {
                         for error in source_errors(uri, error) {
                             let path = error.path.to_string_lossy().into_owned();
-                            sources.insert(path.as_str().into(), error.source.into());
+                            sources.insert(path.clone(), error.source.into());
                             let mut diagnostic = error.diagnostic;
-                            diagnostic.source.get_or_insert_with(|| path.into());
+                            diagnostic.source.get_or_insert(path);
                             pending.push((uri.clone(), diagnostic));
                         }
                         vec![notist::Diagnostic::new(

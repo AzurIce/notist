@@ -87,6 +87,9 @@ struct AuditedContext<'a> {
 }
 
 impl EvaluationContext for AuditedContext<'_> {
+    fn has_mappings(&self) -> bool {
+        self.inner.extensions().has_replacements()
+    }
     fn registry(&self) -> &Registry {
         self.inner.registry()
     }
@@ -521,7 +524,7 @@ fn ir_counts(root: Option<&Item>, program: &CheckedProgram) -> Json {
             }
             ExprKind::Call(call) => invocation(call, counts),
             ExprKind::Content(forest) => {
-                for node in forest {
+                for node in forest.iter() {
                     item(node, counts);
                 }
             }

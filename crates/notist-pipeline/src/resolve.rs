@@ -37,17 +37,17 @@ fn check_structural_children(
             RExpr { ctor, .. } if ctor == expected => {}
             RExpr {
                 ctor: Ctor::Interpolation,
-                pending: Some(pending),
+                expression: Some(expr),
                 ..
-            } if matches!(pending.as_ref(), notist_core::evaluation::PendingEvaluation::Splice(expr)
-            if expr.ty == Some(notist_core::definitions::Type::BlockContent)
-            && (expr.shape == notist_core::evaluation::ContentShape::Empty
-            || expr.shape == match expected {
-                Ctor::TableRow => notist_core::evaluation::ContentShape::Rows,
-                Ctor::TableCell => notist_core::evaluation::ContentShape::Cells,
-                Ctor::ListItem => notist_core::evaluation::ContentShape::Items,
-                _ => notist_core::evaluation::ContentShape::Other,
-            })) => {}
+            } if expr.ty == Some(notist_core::definitions::Type::BlockContent)
+                && (expr.shape == notist_core::evaluation::ContentShape::Empty
+                    || expr.shape
+                        == match expected {
+                            Ctor::TableRow => notist_core::evaluation::ContentShape::Rows,
+                            Ctor::TableCell => notist_core::evaluation::ContentShape::Cells,
+                            Ctor::ListItem => notist_core::evaluation::ContentShape::Items,
+                            _ => notist_core::evaluation::ContentShape::Other,
+                        }) => {}
             _ => diags.push(Diagnostic::new(
                 Phase::Type,
                 child.span(),

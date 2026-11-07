@@ -8,7 +8,7 @@ pub(crate) use notist_core::evaluation::{CheckedProgram, InstanceRecord};
 use notist_core::{
     definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
     diag::Diagnostic,
-    evaluation::{ExprKind, Invocation, PendingEvaluation, TypedExpr},
+    evaluation::{ExprKind, Invocation, TypedExpr},
     expr::RExpr,
     item::{Dict, Item},
 };

@@ -1,41 +1,38 @@
 use crate::{EvaluationContext, instance_cache::InstanceCache};
-#[path = "frame.rs"]
-mod frame;
-use frame::{EvaluationState, Frame as Item};
-#[path = "data.rs"]
-mod data;
-#[cfg(feature = "test-support")]
-#[path = "test_support.rs"]
-#[doc(hidden)]
-pub mod test_support;
 use notist_core::{
     builtins::Level,
     definitions::{
         ComptimeValue, FunctionImpl, FunctionInstance, NativeFunction, ParameterMode, Type,
     },
     diag::{Diagnostic, Phase},
-    evaluation::{
-        CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, PendingEvaluation,
-        ResultArm, ResultPattern, TypedExpr,
-    },
+    evaluation::{CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, TypedExpr},
     inputs::{EvaluationInputs, InputError, InputRead},
-    item::{Ctor, Dict, Node, SourceLocation, Value},
+    item::{ContentItem, Ctor, Dict, Node, NodeContent, Origin, SourceLocation, Value},
     resource::ResourcePath,
+    shared::Shared,
+    source_chain::SourceChain,
 };
 use std::{collections::BTreeMap, sync::Arc};
+
+#[path = "data.rs"]
+mod data;
+#[path = "operators.rs"]
+mod operators;
+pub use operators::{binary, unary};
+#[cfg(feature = "test-support")]
+#[path = "test_support.rs"]
+#[doc(hidden)]
+pub mod test_support;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub steps: usize,
-    /// Cumulative across nested calls and repeated mounts, including empty output.
     pub iterations: usize,
     pub loop_work: usize,
-    /// Maximum normal nodes in a content forest, including enclosing nodes.
-    /// Recovery placeholders do not consume this budget.
+    /// Logical content work, including mounts which dissolve in the output.
+    /// Recovery placeholders consume no normal-node budget.
     pub content_nodes: usize,
-    /// The recursive interpreter additionally caps physical call depth at 32.
     pub call_depth: usize,
-    /// Requests count even when the host serves them from its shared cache.
     pub read_requests: usize,
     pub value_bytes: usize,
     pub data: notist_core::data::DataLimits,
@@ -59,23 +56,19 @@ pub struct Evaluation {
     pub root: Node,
     pub diagnostics: Vec<Diagnostic>,
     pub dependencies: std::collections::BTreeSet<ResourcePath>,
-    /// Exact-version data texts attached only when errors are upgraded.
     pub sources: notist_core::diag::Sources,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvaluationOutcome {
     Complete(Box<Evaluation>),
-    /// No partial tree or output hooks are exposed when an input is unprepared.
+    /// No partial tree or output hooks escape an unprepared evaluation.
     NeedResources(Vec<ResourcePath>),
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvaluationMode {
     Runtime,
     Comptime,
 }
-
 #[derive(Debug)]
 pub struct Failure {
     pub message: String,
@@ -105,27 +98,77 @@ impl Failure {
     fn at(message: impl Into<String>, call: &Invocation) -> Self {
         Self {
             message: message.into(),
-            location: Some(SourceLocation {
-                source: call.source.as_str().into(),
-                start: call.span.start().into(),
-                end: call.span.end().into(),
-            }),
+            location: Some(location(call)),
             expansion: Vec::new(),
         }
     }
 }
 
-/// Content values retain opaque calls. Constructing or binding a forest does
-/// not execute its content implementations; presentation walks only the result.
+/// Immutable lexical snapshots. Saving content shares the environment, never
+/// substitutes values into checked code. A subsequent binding detaches the map.
+#[derive(Debug, Clone, Default)]
+struct Scope(Shared<BTreeMap<String, Runtime>>);
+impl Scope {
+    fn new() -> Self {
+        Self::default()
+    }
+    fn get(&self, name: &str) -> Option<&Runtime> {
+        self.0.get(name)
+    }
+    fn insert(&mut self, name: String, value: Runtime) {
+        self.0.insert(name, value);
+    }
+    fn contains_key(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+}
 #[derive(Debug, Clone)]
 enum Runtime {
     Value(ComptimeValue),
-    Content(Type, Arc<Vec<Item>>),
+    Content(Type, Content),
 }
-type Scope = BTreeMap<String, Runtime>;
 
-/// Facts about the result just constructed, not cached metadata on the IR.
-#[derive(Clone, Copy, Default)]
+/// A content value is a reusable construction plan, not an execution-state
+/// tree. Calls and loops pair shared code with a lexical environment. Splices
+/// retain the value computed at binding time. Only mount emits public Nodes.
+#[derive(Debug, Clone, Default)]
+struct Content {
+    pieces: Shared<Vec<Piece>>,
+    nodes: usize,
+}
+#[derive(Debug, Clone)]
+struct Piece {
+    source: Node,
+    kind: Construction,
+}
+#[derive(Debug, Clone)]
+enum Construction {
+    /// An already concrete, valid subtree shares its child storage verbatim.
+    Ready {
+        nodes: usize,
+    },
+    Element(Content),
+    Call {
+        call: Shared<Invocation>,
+        environment: Scope,
+        children: Content,
+    },
+    Repeat {
+        expression: Shared<TypedExpr>,
+        environment: Scope,
+    },
+    Splice(Content),
+    Error,
+}
+impl Content {
+    fn one(piece: Piece, nodes: usize) -> Self {
+        Self {
+            pieces: vec![piece].into(),
+            nodes,
+        }
+    }
+}
+#[derive(Clone, Copy, Default, Debug)]
 struct ContentSummary {
     nodes: usize,
     failed: bool,
@@ -135,55 +178,10 @@ impl ContentSummary {
         nodes: 0,
         failed: true,
     };
-
     fn append(&mut self, other: Self) {
         self.nodes += other.nodes;
         self.failed |= other.failed;
     }
-}
-
-/// Successful presentation preserves a node's identity, source and annotations.
-/// Only calls replace its fields/target; evaluation and children are overwritten
-/// by error recovery anyway. Keep just that mutable portion when a preceding
-/// sibling makes aggregate overflow possible.
-struct PresentCheckpoint {
-    enabled: bool,
-    call_fields: Option<CallFields>,
-}
-struct CallFields {
-    fields: Dict,
-    target: Option<notist_core::shared::Shared<FunctionInstance>>,
-}
-impl PresentCheckpoint {
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            call_fields: None,
-        }
-    }
-    fn before_call(&mut self, item: &Item) {
-        if self.enabled {
-            self.call_fields = Some(CallFields {
-                fields: item.fields.clone(),
-                target: item.target.clone(),
-            });
-        }
-    }
-    fn restore(self, mut item: Item) -> Item {
-        if let Some(original) = self.call_fields {
-            #[cfg(any(test, feature = "test-support"))]
-            CHECKPOINT_RESTORES.set(CHECKPOINT_RESTORES.get() + 1);
-            item.fields = original.fields;
-            item.target = original.target;
-        }
-        item
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-std::thread_local! {
-    static REFERENCE_PRESENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static CHECKPOINT_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 struct Evaluator<'a, C: EvaluationContext + ?Sized> {
@@ -205,7 +203,35 @@ struct Evaluator<'a, C: EvaluationContext + ?Sized> {
     sources: notist_core::diag::Sources,
     data_retention: notist_core::data::DataRetention,
 }
-
+impl<'a, C: EvaluationContext + ?Sized> Evaluator<'a, C> {
+    fn new(
+        context: &'a C,
+        program: &CheckedProgram,
+        limits: Limits,
+        inputs: Option<&'a dyn EvaluationInputs>,
+        mode: EvaluationMode,
+    ) -> Self {
+        Self {
+            context,
+            program: program.clone(),
+            implementations: InstanceCache::default(),
+            diagnostics: Vec::new(),
+            limits,
+            steps: 0,
+            iterations: 0,
+            loop_work: 0,
+            active_loops: 0,
+            depth: 0,
+            mode,
+            inputs,
+            requests: 0,
+            dependencies: Default::default(),
+            needed: Default::default(),
+            sources: Default::default(),
+            data_retention: program.data_retention.clone(),
+        }
+    }
+}
 pub fn evaluate<C: EvaluationContext + ?Sized>(
     root: &Node,
     program: &CheckedProgram,
@@ -213,9 +239,9 @@ pub fn evaluate<C: EvaluationContext + ?Sized>(
     limits: Limits,
 ) -> Evaluation {
     match run(root, program, context, limits, None) {
-        EvaluationOutcome::Complete(evaluation) => *evaluation,
+        EvaluationOutcome::Complete(value) => *value,
         EvaluationOutcome::NeedResources(_) => {
-            unreachable!("a missing input capability never requests preparation")
+            unreachable!("missing capability never requests preparation")
         }
     }
 }
@@ -226,47 +252,26 @@ pub fn run<C: EvaluationContext + ?Sized>(
     limits: Limits,
     inputs: Option<&dyn EvaluationInputs>,
 ) -> EvaluationOutcome {
-    let mut e = Evaluator {
-        context,
-        program: program.clone(),
-        implementations: InstanceCache::default(),
-        diagnostics: Vec::new(),
-        limits,
-        steps: 0,
-        iterations: 0,
-        loop_work: 0,
-        active_loops: 0,
-        depth: 0,
-        mode: EvaluationMode::Runtime,
-        inputs,
-        requests: 0,
-        dependencies: Default::default(),
-        needed: Default::default(),
-        sources: Default::default(),
-        data_retention: program.data_retention.clone(),
-    };
-    let root = Item::from_node(root);
-    let (forest, _) = e.bind_content(
-        std::slice::from_ref(&root),
+    let mut e = Evaluator::new(context, program, limits, inputs, EvaluationMode::Runtime);
+    let content = e.bind_content(
+        std::slice::from_ref(root),
         &Scope::new(),
         limits.content_nodes,
     );
-    let (mut roots, _) = e.present(forest, limits.content_nodes);
+    let (mut nodes, _) = e.present(&content, limits.content_nodes, &SourceChain::default());
     if !e.needed.is_empty() {
         return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
     }
     for diagnostic in &mut e.diagnostics {
         diagnostic.recovered = true;
     }
+    let root = if nodes.len() == 1 {
+        nodes.remove(0)
+    } else {
+        Node::new(Ctor::Group, root.span).with_children(nodes)
+    };
     EvaluationOutcome::Complete(Box::new(Evaluation {
-        root: {
-            let mut nodes = roots.remove(0).finish();
-            if nodes.len() == 1 {
-                nodes.remove(0)
-            } else {
-                Node::new(Ctor::Group, root.span).with_children(nodes)
-            }
-        },
+        root,
         diagnostics: e.diagnostics,
         dependencies: e.dependencies,
         sources: e.sources,
@@ -277,27 +282,15 @@ pub fn constant<C: EvaluationContext + ?Sized>(
     program: &CheckedProgram,
     context: &C,
 ) -> Result<ComptimeValue, Failure> {
-    let mut e = Evaluator {
+    let mut e = Evaluator::new(
         context,
-        program: program.clone(),
-        implementations: InstanceCache::default(),
-        diagnostics: Vec::new(),
-        limits: Limits::default(),
-        steps: 0,
-        iterations: 0,
-        loop_work: 0,
-        active_loops: 0,
-        depth: 0,
-        mode: EvaluationMode::Comptime,
-        inputs: None,
-        requests: 0,
-        dependencies: Default::default(),
-        needed: Default::default(),
-        sources: Default::default(),
-        data_retention: program.data_retention.clone(),
-    };
+        program,
+        Limits::default(),
+        None,
+        EvaluationMode::Comptime,
+    );
     match e.expr(t, &Scope::new())? {
-        Runtime::Value(v) => Ok(v),
+        Runtime::Value(value) => Ok(value),
         Runtime::Content(..) => Err("content cannot be a comptime argument".into()),
     }
 }
@@ -328,68 +321,75 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     }
     fn expr(&mut self, t: &TypedExpr, scope: &Scope) -> Result<Runtime, Failure> {
         self.tick()?;
-        if let Some(v) = &t.known {
-            check_value_size(v, self.limits.value_bytes)?;
-            if let ComptimeValue::Data(value) = v {
+        if let Some(value) = &t.known {
+            check_value_size(value, self.limits.value_bytes)?;
+            if let ComptimeValue::Data(value) = value {
                 self.data_retention
                     .observe(value, self.limits.data.working_bytes)
-                    .map_err(|e| Failure::from(e.to_string()))?;
+                    .map_err(|error| Failure::from(error.to_string()))?;
             }
-            return Ok(Runtime::Value(v.clone()));
+            return Ok(Runtime::Value(value.clone()));
         }
         let result = match &t.kind {
-            ExprKind::Constant(v) => Ok(Runtime::Value(v.clone())),
+            ExprKind::Constant(value) => Runtime::Value(value.clone()),
             ExprKind::Input(name) => scope.get(name).cloned().ok_or_else(|| {
-                format!("runtime input `{name}` is unavailable at compile time").into()
-            }),
-            ExprKind::Failure(m) => Err(m.clone().into()),
-            ExprKind::Content(forest) => {
-                if self.mode == EvaluationMode::Comptime {
-                    return Err("content cannot be constructed at compile time".into());
-                }
-                Ok(Runtime::Content(
-                    t.ty.clone().unwrap(),
-                    Arc::new(
-                        self.bind_content(
-                            &forest.iter().map(Item::from_node).collect::<Vec<_>>(),
-                            scope,
-                            self.limits.content_nodes,
-                        )
-                        .0,
-                    ),
+                Failure::from(format!(
+                    "runtime input `{name}` is unavailable at compile time"
                 ))
+            })?,
+            ExprKind::Failure(message) => return Err(message.clone().into()),
+            ExprKind::Content(nodes) => {
+                self.require_runtime()?;
+                Runtime::Content(
+                    t.ty.clone().ok_or("missing content type")?,
+                    self.bind_content(nodes, scope, self.limits.content_nodes),
+                )
             }
             ExprKind::For { .. } => {
-                if self.mode == EvaluationMode::Comptime {
-                    return Err("content traversal cannot run during comptime evaluation".into());
-                }
-                let ty = t.ty.clone().ok_or("missing checked for result category")?;
-                let mut item = Item::new(Ctor::Interpolation, t.span);
-                item.level = ty.level().ok_or("for requires a content result")?;
-                item.origin = Some(notist_core::item::Origin {
-                    source: t.source.as_str().into(),
-                    start: t.span.start().into(),
-                    end: t.span.end().into(),
-                    expansion: Default::default(),
-                });
-                item.pending = Some(Box::new(PendingEvaluation::Repeat(capture_expr(t, scope))));
-                Ok(Runtime::Content(ty, Arc::new(vec![item])))
+                self.require_runtime()?;
+                let node = Node::expression(t.clone());
+                Runtime::Content(
+                    t.ty.clone().ok_or("missing checked for result category")?,
+                    Content::one(
+                        Piece {
+                            source: node,
+                            kind: Construction::Repeat {
+                                expression: t.clone().into(),
+                                environment: scope.clone(),
+                            },
+                        },
+                        1,
+                    ),
+                )
             }
-            ExprKind::Block(bindings, value) => {
+            ExprKind::Call(call) if call.definition.returns.level().is_some() => {
+                self.require_runtime()?;
+                let node = Node::expression(t.clone());
+                let content = self.bind_content(
+                    std::slice::from_ref(&node),
+                    scope,
+                    self.limits.content_nodes,
+                );
+                Runtime::Content(call.definition.returns.clone(), content)
+            }
+            ExprKind::Call(call) => {
+                let children = self.call_children(call, scope, self.limits.content_nodes);
+                self.execute(call, scope, children, None)?
+            }
+            ExprKind::Block(bindings, tail) => {
                 let mut local = scope.clone();
                 for (name, value) in bindings {
                     let value = self.expr(value, &local)?;
                     local.insert(name.clone(), value);
                 }
-                self.expr(value, &local)
+                self.expr(tail, &local)?
             }
             ExprKind::If(condition, yes, no) => match data(self.expr(condition, scope)?)? {
-                Value::Bool(c) => self.expr(if c { yes } else { no }, scope),
-                _ => Err("condition must be Bool".into()),
+                Value::Bool(value) => self.expr(if value { yes } else { no }, scope)?,
+                _ => return Err("condition must be Bool".into()),
             },
             ExprKind::Unary(op, value) => {
-                let v = value_of(self.expr(value, scope)?)?;
-                unary(op, &v).map(Runtime::Value).map_err(Into::into)
+                Runtime::Value(unary(op, &value_of(self.expr(value, scope)?)?)?)
             }
             ExprKind::Binary(op, left, right) => {
                 let left = value_of(self.expr(left, scope)?)?;
@@ -398,46 +398,39 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 {
                     return Ok(Runtime::Value(left));
                 }
-                let right = value_of(self.expr(right, scope)?)?;
-                binary(op, &left, &right)
-                    .map(Runtime::Value)
-                    .map_err(Into::into)
+                Runtime::Value(binary(op, &left, &value_of(self.expr(right, scope)?)?)?)
             }
             ExprKind::Array(values) => {
                 let values = values
                     .iter()
                     .map(|v| {
                         self.expr(v, scope)
-                            .and_then(|value| data(value).map_err(Into::into))
+                            .and_then(|v| data(v).map_err(Into::into))
                     })
                     .collect::<Result<_, _>>()?;
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Array(values))))
+                Runtime::Value(ComptimeValue::Data(Value::Array(values)))
             }
             ExprKind::Dict(values) => {
                 let values = values
                     .iter()
                     .map(|(k, v)| Ok((k.clone(), data(self.expr(v, scope)?)?)))
                     .collect::<Result<_, Failure>>()?;
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Dict(values))))
+                Runtime::Value(ComptimeValue::Data(Value::Dict(values)))
             }
-            ExprKind::Some(value) => {
-                let value = data(self.expr(value, scope)?)?;
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(
-                    value,
-                )))))
-            }
+            ExprKind::Some(value) => Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(
+                data(self.expr(value, scope)?)?,
+            )))),
             ExprKind::Unwrap(value) => match data(self.expr(value, scope)?)? {
-                Value::Some(value) => Ok(Runtime::Value(ComptimeValue::Data(*value))),
-                _ => Err("match arm requires `some`".into()),
+                Value::Some(value) => Runtime::Value(ComptimeValue::Data(*value)),
+                _ => return Err("match arm requires `some`".into()),
             },
             ExprKind::Ok(value) | ExprKind::Err(value) => {
                 let value = Box::new(data(self.expr(value, scope)?)?);
-                let value = if matches!(&t.kind, ExprKind::Ok(_)) {
+                Runtime::Value(ComptimeValue::Data(if matches!(t.kind, ExprKind::Ok(_)) {
                     Value::Ok(value)
                 } else {
                     Value::Err(value)
-                };
-                Ok(Runtime::Value(ComptimeValue::Data(value)))
+                }))
             }
             ExprKind::MatchResult { subject, arms } => {
                 let (ok, value) = match data(self.expr(subject, scope)?)? {
@@ -445,241 +438,299 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     Value::Err(value) => (false, value),
                     _ => return Err("Result match requires a Result value".into()),
                 };
-                let mut selected = None;
-                for arm in arms {
-                    let binding = match &arm.pattern {
-                        ResultPattern::Ok(name) if ok => Some(name),
-                        ResultPattern::Err(name) if !ok => Some(name),
-                        ResultPattern::Wildcard => None,
-                        _ => continue,
-                    };
-                    let mut local = scope.clone();
-                    if let Some(name) = binding.filter(|name| name.as_str() != "_") {
+                let arm = arms.iter().find(|a| matches!(&a.pattern,
+                    notist_core::evaluation::ResultPattern::Ok(_) if ok)
+                    || matches!(&a.pattern, notist_core::evaluation::ResultPattern::Err(_) if !ok)
+                    || matches!(&a.pattern, notist_core::evaluation::ResultPattern::Wildcard))
+                    .ok_or("non-exhaustive Result match")?;
+                let mut local = scope.clone();
+                if let notist_core::evaluation::ResultPattern::Ok(name)
+                | notist_core::evaluation::ResultPattern::Err(name) = &arm.pattern
+                {
+                    if name != "_" {
                         local.insert(name.clone(), Runtime::Value(ComptimeValue::Data(*value)));
                     }
-                    selected = Some(self.expr(&arm.body, &local));
-                    break;
                 }
-                selected.unwrap_or_else(|| Err("non-exhaustive Result match".into()))
+                self.expr(&arm.body, &local)?
             }
-            ExprKind::Call(call) => {
-                if call.definition.returns.level().is_some() {
-                    if self.mode == EvaluationMode::Comptime {
-                        return Err("content cannot be constructed at compile time".into());
-                    }
-                    let mut expr = t.clone();
-                    expr.kind = ExprKind::Call(Box::new(capture_call(call, scope)));
-                    let frame = Item::from_node(&Node::expression(expr));
-                    let (nodes, _) = self.bind_content(
-                        std::slice::from_ref(&frame),
-                        &Scope::new(),
-                        self.limits.content_nodes,
-                    );
-                    return Ok(Runtime::Content(
-                        call.definition.returns.clone(),
-                        Arc::new(nodes),
-                    ));
-                }
-                let children = match &call.children {
-                    Some(child) => match self.expr(child, scope)? {
-                        Runtime::Content(_, nodes) => Arc::unwrap_or_clone(nodes),
-                        _ => return Err("invalid children".into()),
-                    },
-                    None => Vec::new(),
-                };
-                self.execute(call, scope, children, &mut None)
-            }
-        }?;
-        if let Runtime::Value(v) = &result {
-            check_value_size(v, self.limits.value_bytes)?;
+        };
+        if let Runtime::Value(value) = &result {
+            check_value_size(value, self.limits.value_bytes)?;
         }
         Ok(result)
     }
-    /// Bind a content value without executing opaque content calls. The result
-    /// remains an Item forest; only mounted Items are expanded by `present`.
-    fn bind_content(&mut self, forest: &[Item], scope: &Scope, limit: usize) -> (Vec<Item>, usize) {
-        let mut result = Vec::with_capacity(forest.len());
+    fn require_runtime(&self) -> Result<(), Failure> {
+        if self.mode == EvaluationMode::Comptime {
+            Err("content cannot be constructed at compile time".into())
+        } else {
+            Ok(())
+        }
+    }
+    fn call_children(&mut self, call: &Invocation, scope: &Scope, limit: usize) -> Content {
+        match call.children.as_deref() {
+            Some(TypedExpr {
+                kind: ExprKind::Content(nodes),
+                ..
+            }) => self.bind_content(nodes, scope, limit),
+            Some(expression) => {
+                self.bind_content(&[Node::expression(expression.clone())], scope, limit)
+            }
+            None => Content::default(),
+        }
+    }
+    fn bind_content(&mut self, nodes: &[Node], scope: &Scope, limit: usize) -> Content {
+        let mut pieces = Vec::with_capacity(nodes.len());
         let mut count = 0usize;
-        for node in forest {
-            let (item, added) = match node.pending.as_deref() {
-                Some(PendingEvaluation::Failure { message, .. }) => {
-                    (error_content(item_shell(node), message.clone()), 0)
+        for node in nodes {
+            if !self.context.has_mappings()
+                && let Some(added) = ready_count(node)
+                && count.saturating_add(added) <= limit
+            {
+                pieces.push(Piece {
+                    source: node.clone(),
+                    kind: Construction::Ready { nodes: added },
+                });
+                count += added;
+                continue;
+            }
+            let (kind, added) = match &node.content {
+                NodeContent::Item(item) if matches!(item.ctor, Ctor::Error(_)) => {
+                    (Construction::Error, 0)
                 }
-                Some(PendingEvaluation::Splice(expr)) => match self.expr(expr, scope) {
-                    Ok(Runtime::Content(ty, nodes))
-                        if expr.ty.as_ref() == Some(&ty) && ty.level() == Some(node.level) =>
-                    {
-                        let mut group = item_shell(node);
-                        group.evaluation = Some(EvaluationState::Expanded);
-                        group.children = Arc::unwrap_or_clone(nodes);
-                        // A spliced value is shared independently of this binding
-                        // walk, so count it once at the explicit mount boundary.
-                        let added = 1 + content_count(&group.children);
-                        (group, added)
+                NodeContent::Item(item) => {
+                    let children =
+                        self.bind_content(&item.children, scope, limit.saturating_sub(1));
+                    let added = 1 + children.nodes;
+                    let call = node
+                        .function_id()
+                        .filter(|id| self.target(id) != *id)
+                        .and_then(|_| self.synthetic_call(node));
+                    (
+                        match call {
+                            Some(call) => Construction::Call {
+                                call: call.into(),
+                                environment: scope.clone(),
+                                children,
+                            },
+                            None => Construction::Element(children),
+                        },
+                        added,
+                    )
+                }
+                NodeContent::Expr(expression) => match &expression.kind {
+                    ExprKind::Call(call) => {
+                        let children = self.call_children(call, scope, limit.saturating_sub(1));
+                        let added = 1 + children.nodes;
+                        (
+                            Construction::Call {
+                                call: call.clone(),
+                                environment: scope.clone(),
+                                children,
+                            },
+                            added,
+                        )
                     }
-                    Ok(Runtime::Content(..)) => (
-                        error_content(
-                            item_shell(node),
-                            "content interpolation violated its checked category".into(),
-                        ),
-                        0,
+                    ExprKind::For { .. } => (
+                        Construction::Repeat {
+                            expression: expression.clone(),
+                            environment: scope.clone(),
+                        },
+                        1,
                     ),
-                    Ok(_) => (
-                        error_content(
-                            item_shell(node),
-                            "content interpolation produced a data value".into(),
-                        ),
-                        0,
-                    ),
-                    Err(failure) => (failure_content(item_shell(node), failure), 0),
+                    _ => match self.expr(expression, scope) {
+                        Ok(Runtime::Content(ty, value))
+                            if expression.ty.as_ref() == Some(&ty)
+                                && ty.level() == Some(node.level) =>
+                        {
+                            let added = 1 + value.nodes;
+                            (Construction::Splice(value), added)
+                        }
+                        Ok(Runtime::Content(..)) => {
+                            pieces.push(error_piece(
+                                node,
+                                "content interpolation violated its checked category".into(),
+                            ));
+                            continue;
+                        }
+                        Ok(_) => {
+                            pieces.push(error_piece(
+                                node,
+                                "content interpolation produced a data value".into(),
+                            ));
+                            continue;
+                        }
+                        Err(failure) => {
+                            pieces.push(Piece {
+                                source: failure_content(node, failure),
+                                kind: Construction::Error,
+                            });
+                            continue;
+                        }
+                    },
                 },
-                pending => {
-                    let mut item = item_shell(node);
-                    if let Some(PendingEvaluation::Call(call)) = pending {
-                        item.pending =
-                            Some(Box::new(PendingEvaluation::Call(capture_call(call, scope))));
-                    }
-                    if let Some(PendingEvaluation::Repeat(expr)) = pending {
-                        item.pending = Some(Box::new(PendingEvaluation::Repeat(capture_expr(
-                            expr, scope,
-                        ))));
-                    }
-                    let (children, count) =
-                        self.bind_content(&node.children, scope, limit.saturating_sub(1));
-                    item.children = children;
-                    let own =
-                        usize::from(!matches!(item.evaluation, Some(EvaluationState::Error(_))));
-                    (item, count + own)
-                }
             };
             if count.saturating_add(added) > limit {
-                result.push(error_content(
-                    item_shell(node),
-                    "content size limit exceeded".into(),
-                ));
-                continue;
+                pieces.push(error_piece(node, "content size limit exceeded".into()));
+            } else {
+                count += added;
+                pieces.push(Piece {
+                    source: node.clone(),
+                    kind,
+                });
             }
-            count += added;
-            result.push(item);
         }
-        (result, count)
+        Content {
+            pieces: pieces.into(),
+            nodes: count,
+        }
     }
-    fn present(&mut self, forest: Vec<Item>, limit: usize) -> (Vec<Item>, ContentSummary) {
-        #[cfg(any(test, feature = "test-support"))]
-        if REFERENCE_PRESENT.get() {
-            return self.present_reference(forest, limit);
-        }
-        let mut result = Vec::with_capacity(forest.len());
+    /// Emit final content directly. Aggregate rollback truncates only the output
+    /// suffix; source templates and lexical closures are immutable throughout.
+    fn present(
+        &mut self,
+        content: &Content,
+        limit: usize,
+        expansion: &SourceChain,
+    ) -> (Vec<Node>, ContentSummary) {
+        let mut result = Vec::with_capacity(content.pieces.len());
         let mut summary = ContentSummary::default();
-        for node in forest {
-            // Each node is itself bounded by limit. Aggregate overflow needs a
-            // preceding normal sibling; errors contribute zero nodes.
-            let mut checkpoint = PresentCheckpoint::new(summary.nodes != 0);
-            let (item, added) = self.present_node(node, limit, &mut checkpoint);
+        for piece in content.pieces.iter() {
+            let start = result.len();
+            let added = self.present_piece(piece, limit, expansion, &mut result);
             if summary.nodes.saturating_add(added.nodes) > limit {
+                result.truncate(start);
                 result.push(self.error(
-                    checkpoint.restore(item),
+                    &piece.source,
                     "content size limit exceeded".into(),
+                    expansion,
                 ));
                 summary.failed = true;
-                continue;
+            } else {
+                summary.append(added);
             }
-            summary.append(added);
-            result.push(item);
         }
         (result, summary)
     }
-    #[cfg(any(test, feature = "test-support"))]
-    fn present_reference(
+    fn present_piece(
         &mut self,
-        forest: Vec<Item>,
+        piece: &Piece,
         limit: usize,
-    ) -> (Vec<Item>, ContentSummary) {
-        let mut result = Vec::with_capacity(forest.len());
-        let mut summary = ContentSummary::default();
-        for node in forest {
-            // The pre-checkpoint implementation, also used by recursive calls
-            // while REFERENCE_PRESENT is enabled. Never linked into the CLI.
-            let boundary = item_shell(&node);
-            let (item, added) = self.present_node(node, limit, &mut PresentCheckpoint::new(false));
-            if summary.nodes.saturating_add(added.nodes) > limit {
-                result.push(self.error(boundary, "content size limit exceeded".into()));
-                summary.failed = true;
-                continue;
+        expansion: &SourceChain,
+        out: &mut Vec<Node>,
+    ) -> ContentSummary {
+        if matches!(piece.kind, Construction::Error) {
+            let Ctor::Error(message) = piece.source.ctor() else {
+                unreachable!()
+            };
+            out.push(self.error(&piece.source, message, expansion));
+            return ContentSummary::ERROR;
+        }
+        if limit == 0 {
+            out.push(self.error(
+                &piece.source,
+                "content size limit exceeded".into(),
+                expansion,
+            ));
+            return ContentSummary::ERROR;
+        }
+        match &piece.kind {
+            Construction::Ready { nodes } => {
+                if *nodes > limit {
+                    out.push(self.error(
+                        &piece.source,
+                        "content size limit exceeded".into(),
+                        expansion,
+                    ));
+                    return ContentSummary::ERROR;
+                }
+                let mut node = piece.source.clone();
+                expand_ready(&mut node, expansion);
+                out.push(node);
+                ContentSummary {
+                    nodes: *nodes,
+                    failed: false,
+                }
             }
-            summary.append(added);
-            result.push(item);
-        }
-        (result, summary)
-    }
-    fn present_node(
-        &mut self,
-        mut item: Item,
-        limit: usize,
-        checkpoint: &mut PresentCheckpoint,
-    ) -> (Item, ContentSummary) {
-        if limit == 0 && !matches!(item.evaluation, Some(EvaluationState::Error(_))) {
-            return (
-                self.error(item, "content size limit exceeded".into()),
-                ContentSummary::ERROR,
-            );
-        }
-        if let Some(EvaluationState::Error(message)) = &item.evaluation {
-            let message = message.clone();
-            return (self.error(item, message), ContentSummary::ERROR);
-        }
-        match item.pending.take().as_deref() {
-            Some(PendingEvaluation::Call(call)) => {
-                checkpoint.before_call(&item);
-                return self.present_call(item, call, limit);
+            Construction::Element(children) => {
+                let (children, mut summary) =
+                    self.present(children, limit.saturating_sub(1), expansion);
+                let mut node = item_shell(&piece.source);
+                node.as_item_mut().expect("element content").children = children.into();
+                append_expansion(&mut node, expansion);
+                if !valid_structure(&node) {
+                    out.push(self.error(
+                        &piece.source,
+                        "evaluated content violated its checked structural role".into(),
+                        expansion,
+                    ));
+                    return ContentSummary::ERROR;
+                }
+                out.push(node);
+                summary.nodes += 1;
+                summary
             }
-            Some(PendingEvaluation::Repeat(expr)) => {
-                return match self.repeat(expr, limit.saturating_sub(1), &item) {
-                    Ok((children, mut summary)) => {
-                        item.evaluation = Some(EvaluationState::Expanded);
-                        item.children = children;
+            Construction::Splice(content) => {
+                let (nodes, mut summary) =
+                    self.present(content, limit.saturating_sub(1), expansion);
+                emit_mount(&piece.source, nodes, expansion, out);
+                summary.nodes += 1;
+                summary
+            }
+            Construction::Repeat {
+                expression,
+                environment,
+            } => {
+                let mut chain = piece
+                    .source
+                    .origin
+                    .as_ref()
+                    .map(|o| o.expansion.clone())
+                    .unwrap_or_default();
+                if chain.is_empty() {
+                    chain = expansion.clone();
+                } else {
+                    chain.extend_from_slice(expansion);
+                }
+                match self.repeat(expression, environment, limit.saturating_sub(1), &chain) {
+                    Ok((nodes, mut summary)) => {
+                        emit_mount(&piece.source, nodes, expansion, out);
                         summary.nodes += 1;
-                        (item, summary)
+                        summary
                     }
-                    Err(failure) => (self.error_at(item, failure), ContentSummary::ERROR),
-                };
+                    Err(failure) => {
+                        out.push(self.error_at(&piece.source, failure, expansion));
+                        ContentSummary::ERROR
+                    }
+                }
             }
-            _ => {}
+            Construction::Call {
+                call,
+                environment,
+                children,
+            } => self.present_call(
+                &piece.source,
+                call,
+                environment,
+                children,
+                limit,
+                expansion,
+                out,
+            ),
+            Construction::Error => unreachable!(),
         }
-        if item.evaluation.is_none()
-            && let Some(id) = item.function_id()
-            && self.target(&id) != id
-            && let Some(call) = self.synthetic_call(&item)
-        {
-            checkpoint.before_call(&item);
-            return self.present_call(item, &call, limit);
-        }
-        let (children, mut summary) =
-            self.present(std::mem::take(&mut item.children), limit.saturating_sub(1));
-        item.children = children;
-        if !valid_structure(&item) {
-            return (
-                self.error(
-                    item,
-                    "evaluated content violated its checked structural role".into(),
-                ),
-                ContentSummary::ERROR,
-            );
-        }
-        summary.nodes += 1;
-        (item, summary)
     }
     fn repeat(
         &mut self,
-        expr: &TypedExpr,
+        expression: &TypedExpr,
+        environment: &Scope,
         limit: usize,
-        group: &Item,
-    ) -> Result<(Vec<Item>, ContentSummary), Failure> {
+        expansion: &SourceChain,
+    ) -> Result<(Vec<Node>, ContentSummary), Failure> {
         let ExprKind::For {
             binding,
             subject,
             body,
-        } = &expr.kind
+        } = &expression.kind
         else {
             return Err("invalid deferred for computation".into());
         };
@@ -688,21 +739,21 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         }
         self.active_loops += 1;
         let result = (|| {
-            let Value::Array(values) = data(self.expr(subject, &Scope::new())?)? else {
+            let Value::Array(values) = data(self.expr(subject, environment)?)? else {
                 return Err("for subject did not produce an Array".into());
             };
             if values.len() > self.limits.iterations.saturating_sub(self.iterations) {
                 return Err("cumulative iteration limit exceeded".into());
             }
-            let mut result = Vec::new();
+            let mut nodes = Vec::new();
             let mut summary = ContentSummary::default();
-            let mut local = Scope::new();
             for (index, value) in values.iter().enumerate() {
                 self.iterations = self.iterations.saturating_add(1);
                 if self.iterations > self.limits.iterations {
                     return Err("cumulative iteration limit exceeded".into());
                 }
                 self.tick()?;
+                let mut local = environment.clone();
                 local.insert(
                     binding.clone(),
                     Runtime::Value(ComptimeValue::Data(value.clone())),
@@ -711,105 +762,105 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     failure.message = format!("for iteration {index}: {}", failure.message);
                     failure
                 })?;
-                let Runtime::Content(ty, nodes) = value else {
+                let Runtime::Content(ty, content) = value else {
                     return Err("for body produced data".into());
                 };
-                if Some(&ty) != expr.ty.as_ref() {
+                if Some(&ty) != expression.ty.as_ref() {
                     return Err("for body violated its checked category".into());
                 }
-                let mut nodes = Arc::unwrap_or_clone(nodes);
-                if let Some(origin) = &group.origin {
-                    for node in &mut nodes {
-                        expand(node, &origin.expansion);
-                    }
-                }
-                let remaining = limit.saturating_sub(summary.nodes);
-                let (nodes, added) = self.present(nodes, remaining);
+                let (iteration, added) =
+                    self.present(&content, limit.saturating_sub(summary.nodes), expansion);
                 if summary.nodes.saturating_add(added.nodes) > limit {
                     return Err("content size limit exceeded".into());
                 }
-                // A failed iteration never exposes a successfully assembled prefix.
                 if added.failed {
                     return Err(format!("for iteration {index} failed").into());
                 }
                 summary.append(added);
-                result.extend(nodes);
+                nodes.extend(iteration);
             }
-            Ok((result, summary))
+            Ok((nodes, summary))
         })();
         self.active_loops -= 1;
         result
     }
     fn present_call(
         &mut self,
-        mut item: Item,
+        source: &Node,
         call: &Invocation,
+        environment: &Scope,
+        children: &Content,
         limit: usize,
-    ) -> (Item, ContentSummary) {
+        expansion: &SourceChain,
+        out: &mut Vec<Node>,
+    ) -> ContentSummary {
         let target = self.target(&call.instance.function);
-        let expands = self
+        let code = self
             .context
             .registry()
             .get(&target)
             .is_some_and(|d| d.implementation.is_code());
-        if expands && self.depth >= self.limits.call_depth.min(32) {
-            return (
-                self.error(item, "evaluation call-depth limit exceeded".into()),
-                ContentSummary::ERROR,
-            );
+        if code && self.depth >= self.limits.call_depth.min(32) {
+            out.push(self.error(
+                source,
+                "evaluation call-depth limit exceeded".into(),
+                expansion,
+            ));
+            return ContentSummary::ERROR;
         }
-        if expands {
+        if code {
             self.depth += 1;
         }
-        // Each mounted content boundary owns its computation budget.
         let previous_steps = std::mem::replace(&mut self.steps, 0);
-        let children = std::mem::take(&mut item.children);
-        // Keep ownership for recovery. execute only takes the boundary once all
-        // fallible work has succeeded; no eager metadata backup is necessary.
-        let mut boundary = Some(item);
-        let result = self.execute(call, &Scope::new(), children, &mut boundary);
-        let result = match result {
-            Ok(Runtime::Content(_, nodes)) => {
-                let (mut nodes, summary) = self.present(Arc::unwrap_or_clone(nodes), limit);
-                // execute retains exactly one materialized call boundary,
-                // regardless of how many children the implementation produced.
-                debug_assert_eq!(nodes.len(), 1);
-                (
-                    nodes.pop().expect("content call retains its boundary"),
-                    summary,
-                )
+        let result = self.execute(call, environment, children.clone(), Some(source));
+        let summary = match result {
+            Ok(Runtime::Content(_, content)) => {
+                if code {
+                    let mut chain = vec![location(call)];
+                    if let Some(origin) = &source.origin {
+                        chain.extend_from_slice(&origin.expansion);
+                    }
+                    chain.extend_from_slice(expansion);
+                    let chain = SourceChain::from(chain);
+                    let (nodes, mut summary) =
+                        self.present(&content, limit.saturating_sub(1), &chain);
+                    emit_mount(source, nodes, expansion, out);
+                    summary.nodes += 1;
+                    summary
+                } else {
+                    let (nodes, summary) = self.present(&content, limit, expansion);
+                    out.extend(nodes);
+                    summary
+                }
             }
-            Ok(_) => (
-                self.error(
-                    boundary.expect("data results retain the content boundary"),
+            Ok(_) => {
+                out.push(self.error(
+                    source,
                     "content call produced a data value".into(),
-                ),
-                ContentSummary::ERROR,
-            ),
-            Err(failure) => (
-                self.error_at(
-                    boundary.expect("failed calls retain the content boundary"),
-                    failure,
-                ),
-                ContentSummary::ERROR,
-            ),
+                    expansion,
+                ));
+                ContentSummary::ERROR
+            }
+            Err(failure) => {
+                out.push(self.error_at(source, failure, expansion));
+                ContentSummary::ERROR
+            }
         };
-        if expands {
+        if code {
             self.depth -= 1;
         }
         self.steps = previous_steps;
-        result
+        summary
     }
-    fn synthetic_call(&self, item: &Item) -> Option<Invocation> {
+    fn synthetic_call(&self, item: &Node) -> Option<Invocation> {
         let id = item.function_id()?;
-        let mut def = self.context.registry().get(&id)?.clone();
+        let mut definition = self.context.registry().get(&id)?.clone();
         let instance = item
-            .instance
-            .as_ref()
-            .map(|instance| (**instance).clone())
+            .instance()
+            .cloned()
             .unwrap_or_else(|| FunctionInstance {
                 function: id,
-                arguments: def
+                arguments: definition
                     .comptime
                     .iter()
                     .filter_map(|p| {
@@ -825,15 +876,18 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     })
                     .collect(),
             });
-        let bindings = def
+        let bindings = definition
             .comptime
             .iter()
             .zip(&instance.arguments)
             .map(|(p, v)| (p.name.clone(), v.clone()))
             .collect();
-        def.returns = def.returns.substitute(&bindings);
-        def.children_type = def.children_type.as_ref().map(|t| t.substitute(&bindings));
-        for parameter in &mut def.parameters {
+        definition.returns = definition.returns.substitute(&bindings);
+        definition.children_type = definition
+            .children_type
+            .as_ref()
+            .map(|t| t.substitute(&bindings));
+        for parameter in &mut definition.parameters {
             parameter.ty = parameter.ty.substitute(&bindings);
         }
         let source = item
@@ -842,66 +896,56 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .map(|o| o.source.to_string())
             .unwrap_or_default();
         let arguments = item
-            .fields
+            .fields()
             .iter()
-            .map(|(name, v)| {
+            .map(|(name, value)| {
                 (
                     name.into(),
                     TypedExpr {
-                        shape: Default::default(),
                         ty: Some(
-                            def.parameters
+                            definition
+                                .parameters
                                 .iter()
                                 .find(|p| p.name == name)
                                 .map(|p| p.ty.clone())
-                                .unwrap_or_else(|| Type::of(v)),
+                                .unwrap_or_else(|| Type::of(value)),
                         ),
-                        known: Some(ComptimeValue::Data(v.clone())),
-                        kind: ExprKind::Constant(ComptimeValue::Data(v.clone())),
+                        known: Some(ComptimeValue::Data(value.clone())),
+                        kind: ExprKind::Constant(ComptimeValue::Data(value.clone())),
                         span: item.span,
                         source: source.clone(),
+                        shape: Default::default(),
                     },
                 )
             })
             .collect();
         Some(Invocation {
             instance,
-            definition: def.into(),
+            definition: definition.into(),
             arguments,
             children: None,
             attrs: item.attrs.clone(),
             span: item.span,
             source,
-            site: notist_core::evaluation::CallSite::Markup,
+            site: CallSite::Markup,
             resource_root: Some(self.context.resource_root().into()),
             invalid: None,
         })
     }
-    fn error(&mut self, mut item: Item, message: String) -> Item {
-        let mut d = Diagnostic::new(Phase::Type, item.span, &message);
-        d.source = item.origin.as_ref().map(|o| o.source.to_string());
-        self.diagnostics.push(d);
-        if let Some(instance) = &item.instance {
-            item.target = Some(
-                FunctionInstance {
-                    function: self.target(&instance.function),
-                    arguments: instance.arguments.clone(),
-                }
-                .into(),
-            );
-        }
-        item.evaluation = Some(EvaluationState::Error(message));
-        item.pending = None;
-        item.children.clear();
-        item
+    fn error(&mut self, source: &Node, message: String, expansion: &SourceChain) -> Node {
+        let mut node = error_content(source, message.clone());
+        append_expansion(&mut node, expansion);
+        let mut diagnostic = Diagnostic::new(Phase::Type, node.span, message);
+        diagnostic.source = node.origin.as_ref().map(|o| o.source.to_string());
+        self.diagnostics.push(diagnostic);
+        node
     }
-    fn error_at(&mut self, item: Item, failure: Failure) -> Item {
-        let item = failure_content(item, failure);
-        let Some(EvaluationState::Error(message)) = &item.evaluation else {
+    fn error_at(&mut self, source: &Node, failure: Failure, expansion: &SourceChain) -> Node {
+        let node = failure_content(source, failure);
+        let Ctor::Error(message) = node.ctor() else {
             unreachable!()
         };
-        let message = message.clone();
-        self.error(item, message)
+        self.error(&node, message, expansion)
     }
     fn read_text(&mut self, call: &Invocation, fields: &Dict) -> Result<Runtime, Failure> {
         if self.mode == EvaluationMode::Comptime {
@@ -924,27 +968,27 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             return Err(Failure::at("read_text requires a Path", call));
         };
         self.dependencies.insert(path.clone());
-        let data = match self
+        let bytes = match self
             .inputs
-            .map(|inputs| inputs.file(path))
+            .map(|i| i.file(path))
             .unwrap_or(InputRead::Failed(InputError::Unavailable))
         {
-            InputRead::Ready(data) => data,
+            InputRead::Ready(bytes) => bytes,
+            InputRead::Pending => {
+                self.needed.insert(path.clone());
+                return Err(Failure::at("resource input is not prepared", call));
+            }
             InputRead::Failed(error) => {
                 return Err(Failure::at(
                     format!("read_text `{}`: {error}", path.path()),
                     call,
                 ));
             }
-            InputRead::Pending => {
-                self.needed.insert(path.clone());
-                return Err(Failure::at("resource input is not prepared", call));
-            }
         };
-        if data.len() > self.limits.value_bytes {
+        if bytes.len() > self.limits.value_bytes {
             return Err(Failure::at("value size limit exceeded", call));
         }
-        let text = std::str::from_utf8(&data).map_err(|_| {
+        let text = std::str::from_utf8(&bytes).map_err(|_| {
             Failure::at(
                 format!("read_text `{}`: resource is not valid UTF-8", path.path()),
                 call,
@@ -956,12 +1000,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         &mut self,
         call: &Invocation,
         scope: &Scope,
-        children: Vec<Item>,
-        prototype: &mut Option<Item>,
+        children: Content,
+        source: Option<&Node>,
     ) -> Result<Runtime, Failure> {
         self.tick()?;
-        if let Some(m) = &call.invalid {
-            return Err(m.clone().into());
+        if let Some(message) = &call.invalid {
+            return Err(message.clone().into());
         }
         let target = FunctionInstance {
             function: self.target(&call.instance.function),
@@ -971,47 +1015,44 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .context
             .registry()
             .get(&target.function)
-            .is_some_and(|definition| definition.implementation.is_code());
+            .is_some_and(|d| d.implementation.is_code());
         let mut inputs = Scope::new();
         let mut fields = Dict::default();
-        for (name, expr) in &call.arguments {
-            let value = self.expr(expr, scope)?;
-            let param = call.definition.parameters.iter().find(|p| p.name == *name);
-            // Forwarding unwraps one layer: some(v) provides v, none omits.
-            let provided = if param.is_some_and(|p| p.mode == ParameterMode::Optional)
-                && matches!(&expr.ty, Some(Type::Option(_)))
+        for (name, expression) in &call.arguments {
+            let value = self.expr(expression, scope)?;
+            let parameter = call.definition.parameters.iter().find(|p| p.name == *name);
+            let value = if parameter.is_some_and(|p| p.mode == ParameterMode::Optional)
+                && matches!(expression.ty, Some(Type::Option(_)))
             {
                 match value {
-                    Runtime::Value(ComptimeValue::Data(Value::Some(v))) => {
-                        Some(Runtime::Value(ComptimeValue::Data(*v)))
+                    Runtime::Value(ComptimeValue::Data(Value::Some(value))) => {
+                        Runtime::Value(ComptimeValue::Data(*value))
                     }
-                    Runtime::Value(ComptimeValue::Data(Value::None)) => None,
+                    Runtime::Value(ComptimeValue::Data(Value::None)) => continue,
                     _ => {
                         return Err(format!(
-                            "invalid option for `{}.{}`",
-                            call.instance.function, name
+                            "invalid option for `{}.{name}`",
+                            call.instance.function
                         )
                         .into());
                     }
                 }
             } else {
-                Some(value)
+                value
             };
-            let Some(value) = provided else { continue };
-            if let Some(param) = param
+            if let Some(parameter) = parameter
                 && let Runtime::Value(ComptimeValue::Data(value)) = &value
-                && !param.accepts(value)
+                && !parameter.accepts(value)
             {
                 return Err(
                     format!("invalid value for `{}.{name}`", call.instance.function).into(),
                 );
             }
-            if let Runtime::Value(ComptimeValue::Data(v)) = &value {
-                fields.insert(name, v.clone());
+            if let Runtime::Value(ComptimeValue::Data(value)) = &value {
+                fields.insert(name, value.clone());
             }
-            // Code bodies observe a `?: T` parameter as Option<T>.
             if code {
-                let input = if param.is_some_and(|p| p.mode == ParameterMode::Optional) {
+                let input = if parameter.is_some_and(|p| p.mode == ParameterMode::Optional) {
                     match value {
                         Runtime::Value(ComptimeValue::Data(v)) => {
                             Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(v))))
@@ -1024,7 +1065,6 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 inputs.insert(name.clone(), input);
             }
         }
-        let mut children = Some(children);
         if code {
             for p in &call.definition.parameters {
                 if p.mode == ParameterMode::Optional && !inputs.contains_key(&p.name) {
@@ -1037,30 +1077,32 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             if let Some(ty) = &call.definition.children_type {
                 inputs.insert(
                     "children".into(),
-                    Runtime::Content(ty.clone(), Arc::new(children.take().unwrap())),
+                    Runtime::Content(ty.clone(), children.clone()),
                 );
             }
         }
         let implementation = self.implementation(&target)?;
         let definition = &implementation.definition;
         if code {
-            for (param, value) in definition.comptime.iter().zip(&target.arguments) {
-                inputs.insert(param.name.clone(), Runtime::Value(value.clone()));
+            for (parameter, value) in definition.comptime.iter().zip(&target.arguments) {
+                inputs.insert(parameter.name.clone(), Runtime::Value(value.clone()));
             }
         }
-        if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading")
-            && let Some(ComptimeValue::Data(v)) = call.instance.arguments.first()
+        if call.definition.id.module == "notist"
+            && call.definition.id.name == "heading"
+            && let Some(ComptimeValue::Data(value)) = call.instance.arguments.first()
         {
-            fields.insert("level", v.clone());
+            fields.insert("level", value.clone());
         }
-        let value_call = call.definition.returns.level().is_none();
-        if value_call {
+        let data_call = call.definition.returns.level().is_none();
+        if data_call {
             if self.depth >= self.limits.call_depth.min(32) {
                 return Err("evaluation call-depth limit exceeded".into());
             }
             self.depth += 1;
         }
-        let result = match definition.implementation {
+        // The closure ensures every early failure restores physical call depth.
+        let result = (|| match definition.implementation {
             FunctionImpl::Native(NativeFunction::Str) => {
                 let text: notist_core::shared::Text = match fields.get("value") {
                     Some(Value::Unit) => "()".into(),
@@ -1104,101 +1146,80 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             },
             FunctionImpl::Native(NativeFunction::Construct) => {
                 if definition.returns.level().is_none() {
-                    Err(format!(
+                    return Err(format!(
                         "native value function `{}` has no implementation",
                         definition.id
                     )
-                    .into())
-                } else if self.mode == EvaluationMode::Comptime {
-                    Err("content cannot be constructed at compile time".into())
-                } else {
-                    if definition.id == notist_core::definitions::FunctionId::new("notist", "embed")
-                    {
-                        notist_core::embed::normalize(
-                            &mut fields,
-                            call.resource_root
-                                .as_deref()
-                                .unwrap_or(self.context.resource_root()),
-                            &call.source,
-                        )?;
-                    }
-                    Ok(Runtime::Content(
-                        definition.returns.clone(),
-                        Arc::new(children.take().unwrap()),
-                    ))
+                    .into());
                 }
+                self.require_runtime()?;
+                if definition.id.module == "notist" && definition.id.name == "embed" {
+                    notist_core::embed::normalize(
+                        &mut fields,
+                        call.resource_root
+                            .as_deref()
+                            .unwrap_or(self.context.resource_root()),
+                        &call.source,
+                    )?;
+                }
+                let source = source.ok_or("missing content source")?;
+                let ctor = if target.function.module == "notist" {
+                    Ctor::from_name(&target.function.name).unwrap_or_else(|| source.ctor())
+                } else {
+                    Ctor::Extension(notist_core::item::ExtensionCtor {
+                        id: target.function.clone(),
+                        accepts: definition.children,
+                        level: source.level,
+                    })
+                };
+                let mut node = item_shell(source);
+                node.content = NodeContent::Item(ContentItem {
+                    ctor,
+                    fields,
+                    children: Default::default(),
+                    instance: Some(target.clone().into()),
+                });
+                let count = 1 + children.nodes;
+                Ok(Runtime::Content(
+                    call.definition.returns.clone(),
+                    Content::one(
+                        Piece {
+                            source: node,
+                            kind: Construction::Element(children),
+                        },
+                        count,
+                    ),
+                ))
             }
-        };
-        if value_call {
+        })();
+        if data_call {
             self.depth -= 1;
         }
         let result = result.map_err(|mut failure| {
             if failure.location.is_some() {
-                let location = SourceLocation {
-                    source: call.source.as_str().into(),
-                    start: call.span.start().into(),
-                    end: call.span.end().into(),
-                };
-                if failure.location.as_ref() != Some(&location)
-                    && failure.expansion.last() != Some(&location)
+                let here = location(call);
+                if failure.location.as_ref() != Some(&here)
+                    && failure.expansion.last() != Some(&here)
                 {
-                    failure.expansion.push(location);
+                    failure.expansion.push(here);
                 }
             }
             failure
         })?;
-        if call.definition.returns.level().is_some() {
-            let Runtime::Content(ty, mut forest) = result else {
-                return Err("content implementation produced a data value".into());
-            };
-            if ty != call.definition.returns {
-                return Err("implementation violated its content result type".into());
-            }
-            // Commit ownership only after every Result-producing operation.
-            // On failure the caller still owns its unmodified recovery shell.
-            let mut item = prototype
-                .take()
-                .ok_or("missing materialized content call boundary")?;
-            item.fields = fields;
-            item.pending = None;
-            item.target = Some(target.into());
-            let native =
-                definition.implementation == FunctionImpl::Native(NativeFunction::Construct);
-            item.evaluation = Some(if native {
-                EvaluationState::Native
+        let valid = match &result {
+            Runtime::Content(ty, _) => *ty == call.definition.returns,
+            Runtime::Value(ComptimeValue::Data(value)) => call.definition.returns.accepts(value),
+            Runtime::Value(ComptimeValue::Type(_)) => call.definition.returns == Type::Type,
+        };
+        if !valid {
+            return Err(if data_call {
+                "implementation violated its data result type"
             } else {
-                EvaluationState::Expanded
-            });
-            if !native {
-                let mut expansion = vec![SourceLocation {
-                    source: call.source.as_str().into(),
-                    start: call.span.start().into(),
-                    end: call.span.end().into(),
-                }];
-                if let Some(origin) = &item.origin {
-                    expansion.extend(origin.expansion.iter().cloned());
-                }
-                for child in Arc::make_mut(&mut forest) {
-                    expand(child, &expansion);
-                }
+                "implementation violated its content result type"
             }
-            Ok(Runtime::Content(call.definition.returns.clone(), {
-                item.children = Arc::unwrap_or_clone(forest);
-                Arc::new(vec![item])
-            }))
-        } else {
-            let valid = match &result {
-                Runtime::Value(ComptimeValue::Data(value)) => {
-                    call.definition.returns.accepts(value)
-                }
-                Runtime::Value(ComptimeValue::Type(_)) => call.definition.returns == Type::Type,
-                Runtime::Content(..) => false,
-            };
-            if !valid {
-                return Err("implementation violated its data result type".into());
-            }
-            Ok(result)
+            .into());
         }
+        Ok(result)
     }
     fn implementation(
         &mut self,
@@ -1216,8 +1237,6 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         }
         let key = instance.key();
         if !self.program.instances.contains_key(&key) {
-            // Runtime specializations share the same retained backing-store
-            // budget, including comptime views in currently unselected arms.
             self.program.data_retention = self.data_retention.clone();
             let (program, diagnostics) = self
                 .context
@@ -1231,395 +1250,156 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .instances
             .get(&key)
             .ok_or("missing function instance")?;
-        if let Some(d) = record.diagnostics.first() {
-            return Err(format!("{}: {}", instance.function, d.message).into());
+        if let Some(diagnostic) = record.diagnostics.first() {
+            return Err(format!("{}: {}", instance.function, diagnostic.message).into());
         }
         self.implementations.insert(instance, record);
         Ok(record.clone())
     }
 }
-// Capture only free inputs in pending expressions. Content calls remain opaque;
-// substitution performs no interpretation, including in unused branches.
-fn capture_call(call: &Invocation, scope: &Scope) -> Invocation {
-    if scope.is_empty() {
-        return call.clone();
-    }
-    Invocation {
-        instance: call.instance.clone(),
-        definition: call.definition.clone(),
-        arguments: call
-            .arguments
-            .iter()
-            .map(|(name, expr)| (name.clone(), capture_expr(expr, scope)))
-            .collect(),
-        children: call
-            .children
-            .as_ref()
-            .map(|e| Box::new(capture_expr(e, scope))),
-        attrs: call.attrs.clone(),
-        span: call.span,
-        source: call.source.clone(),
-        site: call.site,
-        resource_root: call.resource_root.clone(),
-        invalid: call.invalid.clone(),
+fn location(call: &Invocation) -> SourceLocation {
+    SourceLocation {
+        source: call.source.as_str().into(),
+        start: call.span.start().into(),
+        end: call.span.end().into(),
     }
 }
-fn capture_item(item: &Item, scope: &Scope) -> Item {
-    let mut captured = item_shell(item);
-    captured.pending = item.pending.as_deref().map(|pending| {
-        Box::new(match pending {
-            PendingEvaluation::Call(call) => PendingEvaluation::Call(capture_call(call, scope)),
-            PendingEvaluation::Splice(expr) => PendingEvaluation::Splice(capture_expr(expr, scope)),
-            PendingEvaluation::Repeat(expr) => PendingEvaluation::Repeat(capture_expr(expr, scope)),
-            failure => failure.clone(),
-        })
+fn ready_count(root: &Node) -> Option<usize> {
+    let mut count = 0;
+    for node in root.descendants() {
+        let NodeContent::Item(item) = &node.content else {
+            return None;
+        };
+        if matches!(item.ctor, Ctor::Error(_) | Ctor::Interpolation) || !valid_structure(node) {
+            return None;
+        }
+        count += 1;
+    }
+    Some(count)
+}
+fn expand_ready(node: &mut Node, expansion: &SourceChain) {
+    if expansion.is_empty() {
+        return;
+    }
+    append_expansion(node, expansion);
+    for child in node.children_mut().into_iter().flatten() {
+        expand_ready(child, expansion);
+    }
+}
+fn item_shell(source: &Node) -> Node {
+    Node {
+        content: NodeContent::Item(ContentItem {
+            ctor: source.ctor(),
+            fields: source
+                .as_item()
+                .map(|i| i.fields.clone())
+                .unwrap_or_default(),
+            children: Default::default(),
+            instance: source.as_item().and_then(|i| i.instance.clone()),
+        }),
+        attrs: source.attrs.clone(),
+        origin: source.origin.clone(),
+        level: source.level,
+        span: source.span,
+    }
+}
+fn error_content(source: &Node, message: String) -> Node {
+    let mut node = item_shell(source);
+    node.content = NodeContent::Item(ContentItem {
+        ctor: Ctor::Error(message),
+        fields: Dict::default(),
+        children: Default::default(),
+        instance: None,
     });
-    captured.children = item
-        .children
-        .iter()
-        .map(|i| capture_item(i, scope))
-        .collect();
-    captured
+    node
 }
-fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
-    if scope.is_empty() || expr.known.is_some() {
-        return expr.clone();
-    }
-    let mut known = expr.known.clone();
-    let kind = match &expr.kind {
-        ExprKind::Input(name) => match scope.get(name) {
-            Some(Runtime::Value(v)) => {
-                known = Some(v.clone());
-                ExprKind::Constant(v.clone())
-            }
-            Some(Runtime::Content(_, forest)) => {
-                ExprKind::Content(forest.iter().map(Item::recipe).collect())
-            }
-            None => expr.kind.clone(),
-        },
-        ExprKind::For {
-            binding,
-            subject,
-            body,
-        } => {
-            let mut local = scope.clone();
-            local.remove(binding);
-            ExprKind::For {
-                binding: binding.clone(),
-                subject: Box::new(capture_expr(subject, scope)),
-                body: Box::new(capture_expr(body, &local)),
-            }
-        }
-        ExprKind::Array(values) => {
-            ExprKind::Array(values.iter().map(|e| capture_expr(e, scope)).collect())
-        }
-        ExprKind::Dict(values) => ExprKind::Dict(
-            values
-                .iter()
-                .map(|(k, e)| (k.clone(), capture_expr(e, scope)))
-                .collect(),
-        ),
-        ExprKind::Unary(op, e) => ExprKind::Unary(op.clone(), Box::new(capture_expr(e, scope))),
-        ExprKind::Some(e) => ExprKind::Some(Box::new(capture_expr(e, scope))),
-        ExprKind::Unwrap(e) => ExprKind::Unwrap(Box::new(capture_expr(e, scope))),
-        ExprKind::Ok(e) => ExprKind::Ok(Box::new(capture_expr(e, scope))),
-        ExprKind::Err(e) => ExprKind::Err(Box::new(capture_expr(e, scope))),
-        ExprKind::MatchResult { subject, arms } => ExprKind::MatchResult {
-            subject: Box::new(capture_expr(subject, scope)),
-            arms: arms
-                .iter()
-                .map(|arm| {
-                    let mut local = scope.clone();
-                    match &arm.pattern {
-                        ResultPattern::Ok(name) | ResultPattern::Err(name) => {
-                            local.remove(name);
-                        }
-                        ResultPattern::Wildcard => {}
-                    }
-                    ResultArm {
-                        pattern: arm.pattern.clone(),
-                        body: capture_expr(&arm.body, &local),
-                    }
-                })
-                .collect(),
-        },
-        ExprKind::Binary(op, l, r) => ExprKind::Binary(
-            op.clone(),
-            Box::new(capture_expr(l, scope)),
-            Box::new(capture_expr(r, scope)),
-        ),
-        ExprKind::If(c, y, n) => ExprKind::If(
-            Box::new(capture_expr(c, scope)),
-            Box::new(capture_expr(y, scope)),
-            Box::new(capture_expr(n, scope)),
-        ),
-        ExprKind::Call(call) => ExprKind::Call(Box::new(capture_call(call, scope))),
-        ExprKind::Content(forest) => ExprKind::Content(
-            forest
-                .iter()
-                .map(|i| capture_item(&Item::from_node(i), scope).recipe())
-                .collect(),
-        ),
-        ExprKind::Block(bindings, value) => {
-            let mut local = scope.clone();
-            let bindings = bindings
-                .iter()
-                .map(|(name, value)| {
-                    let value = capture_expr(value, &local);
-                    local.remove(name);
-                    (name.clone(), value)
-                })
-                .collect();
-            ExprKind::Block(bindings, Box::new(capture_expr(value, &local)))
-        }
-        other => other.clone(),
-    };
-    TypedExpr {
-        ty: expr.ty.clone(),
-        known,
-        kind,
-        span: expr.span,
-        source: expr.source.clone(),
-        shape: expr.shape,
+fn error_piece(source: &Node, message: String) -> Piece {
+    Piece {
+        source: error_content(source, message),
+        kind: Construction::Error,
     }
 }
-
-/// Copy one boundary, never children or the pending computation being rebuilt.
-fn item_shell(item: &Item) -> Item {
-    Item {
-        ctor: item.ctor.clone(),
-        pending: None,
-        instance: item.instance.clone(),
-        target: item.target.clone(),
-        evaluation: item.evaluation.clone(),
-        origin: item.origin.clone(),
-        level: item.level,
-        fields: item.fields.clone(),
-        children: Vec::new(),
-        attrs: item.attrs.clone(),
-        span: item.span,
-    }
-}
-
-fn failure_content(mut item: Item, failure: Failure) -> Item {
+fn failure_content(source: &Node, failure: Failure) -> Node {
+    let mut node = error_content(source, failure.message);
     if let Some(location) = failure.location {
         let mut expansion = failure.expansion;
-        if let Some(origin) = &item.origin {
-            let location = SourceLocation {
+        if let Some(origin) = &source.origin {
+            let here = SourceLocation {
                 source: origin.source.clone(),
                 start: origin.start,
                 end: origin.end,
             };
-            if expansion.last() != Some(&location) {
-                expansion.push(location);
+            if expansion.last() != Some(&here) {
+                expansion.push(here);
             }
             expansion.extend(origin.expansion.iter().cloned());
         }
-        item.span = rowan::TextRange::new(location.start.into(), location.end.into());
-        item.origin = Some(notist_core::item::Origin {
+        node.span = rowan::TextRange::new(location.start.into(), location.end.into());
+        node.origin = Some(Origin {
             source: location.source,
             start: location.start,
             end: location.end,
             expansion: expansion.into(),
         });
     }
-    error_content(item, failure.message)
+    node
 }
-fn error_content(mut item: Item, message: String) -> Item {
-    item.evaluation = Some(EvaluationState::Error(message));
-    item.pending = None;
-    item.children.clear();
-    item
+fn append_expansion(node: &mut Node, expansion: &SourceChain) {
+    if !expansion.is_empty()
+        && let Some(origin) = &mut node.origin
+    {
+        if origin.expansion.is_empty() {
+            origin.expansion = expansion.clone();
+        } else {
+            origin.expansion.extend_from_slice(expansion);
+        }
+    }
 }
-fn content_count(forest: &[Item]) -> usize {
-    forest
-        .iter()
-        .flat_map(Item::descendants)
-        .filter(|i| !matches!(i.evaluation, Some(EvaluationState::Error(_))))
-        .count()
+fn emit_mount(source: &Node, nodes: Vec<Node>, expansion: &SourceChain, out: &mut Vec<Node>) {
+    if source.attrs.is_empty() {
+        out.extend(nodes);
+    } else {
+        let mut group = item_shell(source);
+        group.content = NodeContent::Item(ContentItem {
+            ctor: Ctor::Group,
+            fields: Dict::default(),
+            children: nodes.into(),
+            instance: None,
+        });
+        append_expansion(&mut group, expansion);
+        out.push(group);
+    }
 }
-fn valid_structure(item: &Item) -> bool {
-    fn children(items: &[Item], expected: &Ctor) -> bool {
-        items.iter().all(|item| {
-            matches!(item.evaluation, Some(EvaluationState::Error(_)))
-                || if matches!(item.ctor, Ctor::Node | Ctor::Group)
-                    || item.is_evaluated_interpolation()
-                {
-                    children(&item.children, expected)
+fn valid_structure(node: &Node) -> bool {
+    fn children(nodes: &[Node], expected: &Ctor) -> bool {
+        nodes.iter().all(|node| {
+            node.is_error()
+                || if matches!(node.ctor(), Ctor::Node | Ctor::Group) {
+                    children(node.children(), expected)
                 } else {
-                    &item.ctor == expected
+                    node.ctor() == *expected
                 }
         })
     }
-    match item.ctor.accepts() {
-        Some(notist_core::builtins::Accepts::Rows) => children(&item.children, &Ctor::TableRow),
-        Some(notist_core::builtins::Accepts::Cells) => children(&item.children, &Ctor::TableCell),
-        Some(notist_core::builtins::Accepts::Items) => children(&item.children, &Ctor::ListItem),
+    match node.ctor().accepts() {
+        Some(notist_core::builtins::Accepts::Rows) => children(node.children(), &Ctor::TableRow),
+        Some(notist_core::builtins::Accepts::Cells) => children(node.children(), &Ctor::TableCell),
+        Some(notist_core::builtins::Accepts::Items) => children(node.children(), &Ctor::ListItem),
         _ => true,
     }
 }
-fn expand(item: &mut Item, locations: &[SourceLocation]) {
-    if locations.is_empty() {
-        return;
-    }
-    use notist_core::source_chain::SourceChain;
-    fn visit(
-        item: &mut Item,
-        locations: &[SourceLocation],
-        chains: &mut std::collections::HashMap<usize, (SourceChain, SourceChain)>,
-    ) {
-        if let Some(origin) = &mut item.origin {
-            // Storage identity only deduplicates an immutable append operation.
-            // Retain the old chain too: allocator address reuse cannot alias keys.
-            let key = origin.expansion.as_ptr() as usize;
-            let (_, extended) = chains.entry(key).or_insert_with(|| {
-                let original = origin.expansion.clone();
-                let mut extended = original.clone();
-                extended.extend_from_slice(locations);
-                (original, extended)
-            });
-            origin.expansion = extended.clone();
-        }
-        for child in &mut item.children {
-            visit(child, locations, chains);
-        }
-    }
-    visit(item, locations, &mut std::collections::HashMap::new());
-}
-fn value_of(v: Runtime) -> Result<ComptimeValue, String> {
-    match v {
+fn value_of(value: Runtime) -> Result<ComptimeValue, String> {
+    match value {
         Runtime::Value(v) => Ok(v),
         _ => Err("expected a data or Type value".into()),
     }
 }
-fn data(v: Runtime) -> Result<Value, String> {
-    match v {
+fn data(value: Runtime) -> Result<Value, String> {
+    match value {
         Runtime::Value(ComptimeValue::Data(v)) => Ok(v),
         _ => Err("expected a data value".into()),
     }
 }
-
-pub fn unary(op: &str, v: &ComptimeValue) -> Result<ComptimeValue, String> {
-    let v = match (op, v) {
-        ("!", ComptimeValue::Data(Value::Bool(v))) => Value::Bool(!v),
-        ("-", ComptimeValue::Data(Value::Int(v))) => {
-            Value::Int(v.checked_neg().ok_or("integer overflow")?)
-        }
-        ("-", ComptimeValue::Data(Value::Float(v))) => Value::Float(-v),
-        _ => return Err("invalid unary operator".into()),
-    };
-    Ok(ComptimeValue::Data(v))
-}
-pub fn binary(op: &str, a: &ComptimeValue, b: &ComptimeValue) -> Result<ComptimeValue, String> {
-    use ComptimeValue::{Data as D, Type as T};
-    let boolean = |v| Ok(D(Value::Bool(v)));
-    if let (T(a), T(b)) = (a, b) {
-        return match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("Type only supports equality".into()),
-        };
-    }
-    match (a, b) {
-        (D(Value::Int(a)), D(Value::Int(b))) => {
-            let v = match op {
-                "+" => a.checked_add(*b),
-                "-" => a.checked_sub(*b),
-                "*" => a.checked_mul(*b),
-                "/" => a.checked_div(*b),
-                "%" => a.checked_rem(*b),
-                "==" => return boolean(a == b),
-                "!=" => return boolean(a != b),
-                "<" => return boolean(a < b),
-                "<=" => return boolean(a <= b),
-                ">" => return boolean(a > b),
-                ">=" => return boolean(a >= b),
-                _ => return Err("invalid integer operator".into()),
-            };
-            Ok(D(Value::Int(
-                v.ok_or("integer overflow or division by zero")?,
-            )))
-        }
-        (D(Value::Float(a)), D(Value::Float(b))) => Ok(D(match op {
-            "+" => Value::Float(a + b),
-            "-" => Value::Float(a - b),
-            "*" => Value::Float(a * b),
-            "/" => Value::Float(a / b),
-            "%" => Value::Float(a % b),
-            "==" => Value::Bool(a == b),
-            "!=" => Value::Bool(a != b),
-            "<" => Value::Bool(a < b),
-            "<=" => Value::Bool(a <= b),
-            ">" => Value::Bool(a > b),
-            ">=" => Value::Bool(a >= b),
-            _ => return Err("invalid float operator".into()),
-        })),
-        (D(Value::Str(a)), D(Value::Str(b))) => match op {
-            "+" => {
-                if a.len().saturating_add(b.len()) > 16 * 1024 * 1024 {
-                    return Err("value size limit exceeded".into());
-                }
-                Ok(D(Value::Str(format!("{a}{b}").into())))
-            }
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            "<" => boolean(a < b),
-            "<=" => boolean(a <= b),
-            ">" => boolean(a > b),
-            ">=" => boolean(a >= b),
-            _ => Err("invalid string operator".into()),
-        },
-        (D(Value::Path(a)), D(Value::Path(b))) => match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("Path only supports equality".into()),
-        },
-        (D(Value::Bool(a)), D(Value::Bool(b))) => match op {
-            "&&" => boolean(*a && *b),
-            "||" => boolean(*a || *b),
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("invalid Bool operator".into()),
-        },
-        (D(Value::Some(a)), D(Value::Some(b))) => match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("Option only supports equality".into()),
-        },
-        (D(Value::None), D(Value::None)) => match op {
-            "==" => boolean(true),
-            "!=" => boolean(false),
-            _ => Err("Option only supports equality".into()),
-        },
-        (D(Value::Some(_)), D(Value::None)) | (D(Value::None), D(Value::Some(_))) => match op {
-            "==" => boolean(false),
-            "!=" => boolean(true),
-            _ => Err("Option only supports equality".into()),
-        },
-        (D(Value::Ok(a)), D(Value::Ok(b))) | (D(Value::Err(a)), D(Value::Err(b))) => match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("Result only supports equality".into()),
-        },
-        (D(Value::Ok(_)), D(Value::Err(_))) | (D(Value::Err(_)), D(Value::Ok(_))) => match op {
-            "==" => boolean(false),
-            "!=" => boolean(true),
-            _ => Err("Result only supports equality".into()),
-        },
-        (D(Value::Data(a)), D(Value::Data(b))) => match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("Data only supports equality".into()),
-        },
-        (D(Value::DataError(a)), D(Value::DataError(b))) => match op {
-            "==" => boolean(a == b),
-            "!=" => boolean(a != b),
-            _ => Err("DataError only supports equality".into()),
-        },
-        _ => Err("operator requires matching scalar operands".into()),
-    }
-}
-
 fn check_value_size(value: &ComptimeValue, limit: usize) -> Result<(), String> {
     if let ComptimeValue::Data(v) = value
         && v.logical_size() > limit
@@ -1632,73 +1412,216 @@ fn check_value_size(value: &ComptimeValue, limit: usize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notist_core::{definitions::FunctionId, registry::Registry};
 
-    #[test]
-    fn expansion_append_shares_storage_without_merging_origins_or_reordering() {
-        use notist_core::item::Origin;
-        let location = |source: &str, start| SourceLocation {
-            source: source.into(),
-            start,
-            end: start + 1,
-        };
-        let mut first = Item::new(Ctor::Text, Default::default());
-        first.origin = Some(Origin {
+    struct Context;
+    impl EvaluationContext for Context {
+        fn registry(&self) -> &Registry {
+            notist_core::builtins::registry()
+        }
+        fn resource_root(&self) -> &str {
+            "/project"
+        }
+        fn target(&self, id: &FunctionId) -> FunctionId {
+            id.clone()
+        }
+        fn has_mappings(&self) -> bool {
+            false
+        }
+        fn specialize(
+            &self,
+            _: &FunctionInstance,
+            _: CheckedProgram,
+        ) -> (CheckedProgram, Vec<Diagnostic>) {
+            panic!("constructing a closure must not execute or specialize it")
+        }
+    }
+    fn input(name: &str, ty: Type) -> TypedExpr {
+        TypedExpr {
+            ty: Some(ty),
+            known: None,
+            kind: ExprKind::Input(name.into()),
+            span: Default::default(),
             source: "definition.notc".into(),
-            start: 1,
-            end: 2,
-            expansion: vec![location("inner.notc", 3)].into(),
-        });
-        let mut different = first.clone();
-        different.origin.as_mut().unwrap().expansion[0].start = 8;
-        let mut root = Item::new(Ctor::Node, Default::default()).with_children(vec![
-            first.clone(),
-            first.clone(),
-            different,
-        ]);
-        expand(&mut root, &[location("outer.not", 5)]);
-        let chains: Vec<_> = root
-            .children
-            .iter()
-            .map(|item| &item.origin.as_ref().unwrap().expansion)
-            .collect();
-        assert!(chains[0].shares_storage(chains[1]));
-        assert!(!chains[0].shares_storage(chains[2]));
-        assert_eq!(
-            chains[0]
-                .iter()
-                .map(|location| (location.source.as_str(), location.start))
-                .collect::<Vec<_>>(),
-            [("inner.notc", 3), ("outer.not", 5)]
+            shape: Default::default(),
+        }
+    }
+    fn evaluator<'a>(context: &'a Context, program: &CheckedProgram) -> Evaluator<'a, Context> {
+        Evaluator::new(
+            context,
+            program,
+            Limits::default(),
+            None,
+            EvaluationMode::Runtime,
+        )
+    }
+    #[test]
+    fn call_closures_share_code_and_capture_lexical_snapshots_without_substitution() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        let definition = context
+            .registry()
+            .function("notist", "text")
+            .unwrap()
+            .clone();
+        let call: Shared<Invocation> = Invocation {
+            instance: FunctionInstance {
+                function: definition.id.clone(),
+                arguments: Vec::new(),
+            },
+            definition: definition.into(),
+            arguments: vec![("text".into(), input("x", Type::String))],
+            children: None,
+            attrs: Dict::default(),
+            span: Default::default(),
+            source: "definition.notc".into(),
+            site: CallSite::Code,
+            resource_root: None,
+            invalid: None,
+        }
+        .into();
+        let expression = TypedExpr {
+            ty: Some(Type::InlineContent),
+            kind: ExprKind::Call(call.clone()),
+            known: None,
+            span: Default::default(),
+            source: "definition.notc".into(),
+            shape: Default::default(),
+        };
+        let node = Node::expression(expression);
+        let mut scope = Scope::new();
+        scope.insert(
+            "x".into(),
+            Runtime::Value(ComptimeValue::Data(Value::Str("first".into()))),
         );
-        assert_eq!(chains[2][0].start, 8);
-        assert_eq!(first.origin.as_ref().unwrap().expansion.len(), 1);
-        root.children[0].origin.as_mut().unwrap().expansion.clear();
-        assert_eq!(root.children[1].origin.as_ref().unwrap().expansion.len(), 2);
+        let content = e.bind_content(&[node], &scope, 100);
+        scope.insert(
+            "x".into(),
+            Runtime::Value(ComptimeValue::Data(Value::Str("second".into()))),
+        );
+        let Construction::Call {
+            call: saved,
+            environment,
+            ..
+        } = &content.pieces[0].kind
+        else {
+            panic!()
+        };
+        assert!(saved.shares_storage(&call));
+        assert!(matches!(&saved.arguments[0].1.kind, ExprKind::Input(name) if name == "x"));
+        assert!(
+            matches!(environment.get("x"), Some(Runtime::Value(ComptimeValue::Data(Value::Str(v)))) if v.as_str() == "first")
+        );
+        assert!(content.pieces.shares_storage(&content.clone().pieces));
+        assert_eq!(e.requests, 0);
     }
-
     #[test]
-    fn first_node_and_unchanged_boundaries_need_no_call_backup() {
-        let original = Item::text("before".into(), Default::default());
-        let mut checkpoint = PresentCheckpoint::new(false);
-        checkpoint.before_call(&original);
-        assert!(checkpoint.call_fields.is_none());
-        let mut checkpoint = PresentCheckpoint::new(true);
-        checkpoint.before_call(&original);
-        let changed = Item::text("after".into(), Default::default());
-        let restored = checkpoint.restore(changed);
-        assert_eq!(restored.fields, original.fields);
-        assert_eq!(restored.target, original.target);
+    fn loop_closures_share_templates_and_do_not_evaluate_the_subject_when_saved() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        let body: Shared<TypedExpr> = input("content", Type::InlineContent).into();
+        let expression = TypedExpr {
+            ty: Some(Type::InlineContent),
+            known: None,
+            kind: ExprKind::For {
+                binding: "x".into(),
+                subject: input("missing", Type::Array(None)).into(),
+                body: body.clone(),
+            },
+            source: "definition.notc".into(),
+            span: Default::default(),
+            shape: Default::default(),
+        };
+        let Runtime::Content(_, content) = e.expr(&expression, &Scope::new()).unwrap() else {
+            panic!()
+        };
+        let Construction::Repeat {
+            expression: saved, ..
+        } = &content.pieces[0].kind
+        else {
+            panic!()
+        };
+        let ExprKind::For { body: saved, .. } = &saved.kind else {
+            panic!()
+        };
+        assert!(body.shares_storage(saved));
+        assert_eq!(e.iterations, 0);
     }
-
     #[test]
-    fn both_result_payloads_count_towards_the_value_size_limit() {
+    fn concrete_content_shares_output_storage_but_mutation_detaches() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        let source = Node::new(Ctor::Doc, Default::default())
+            .with_children(vec![Node::text("one".into(), Default::default())]);
+        let content = e.bind_content(std::slice::from_ref(&source), &Scope::new(), 100);
+        assert!(matches!(
+            content.pieces[0].kind,
+            Construction::Ready { nodes: 2 }
+        ));
+        let (mut result, summary) = e.present(&content, 100, &SourceChain::default());
+        assert_eq!(summary.nodes, 2);
+        assert!(
+            result[0]
+                .as_item()
+                .unwrap()
+                .children
+                .shares_storage(&source.as_item().unwrap().children)
+        );
+        result[0].children_mut().unwrap().clear();
+        assert_eq!(source.children().len(), 1);
+        assert_eq!(content.nodes, 2);
+    }
+    #[test]
+    fn recovered_source_children_are_never_bound_or_executed() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        let source =
+            Node::new(Ctor::Error("broken".into()), Default::default()).with_children(vec![
+                Node::expression(input("missing", Type::InlineContent)),
+            ]);
+        let content = e.bind_content(&[source], &Scope::new(), 100);
+        assert_eq!(e.steps, 0);
+        let (nodes, summary) = e.present(&content, 100, &SourceChain::default());
+        assert!(nodes[0].is_error());
+        assert!(nodes[0].children().is_empty());
+        assert!(summary.failed);
+        assert_eq!(e.diagnostics.len(), 1);
+    }
+    #[test]
+    fn expansion_shares_new_suffixes_without_merging_distinct_source_chains() {
+        let suffix: SourceChain = vec![SourceLocation {
+            source: "outer.not".into(),
+            start: 5,
+            end: 9,
+        }]
+        .into();
+        let mut first = Node::expression(input("x", Type::InlineContent));
+        let mut second = first.clone();
+        append_expansion(&mut first, &suffix);
+        append_expansion(&mut second, &suffix);
+        assert!(
+            first
+                .origin
+                .as_ref()
+                .unwrap()
+                .expansion
+                .shares_storage(&second.origin.as_ref().unwrap().expansion)
+        );
+        first.origin.as_mut().unwrap().expansion[0].start = 1;
+        assert_eq!(second.origin.as_ref().unwrap().expansion[0].start, 5);
+        append_expansion(&mut first, &suffix);
+        assert_eq!(first.origin.as_ref().unwrap().expansion.len(), 2);
+        assert_eq!(second.origin.as_ref().unwrap().expansion.len(), 1);
+    }
+    #[test]
+    fn both_result_payloads_count_towards_the_value_limit() {
         for value in [
-            Value::Ok(Box::new(Value::Str("x".repeat(16 * 1024 * 1024).into()))),
-            Value::Err(Box::new(Value::Str("x".repeat(16 * 1024 * 1024).into()))),
+            Value::Ok(Box::new(Value::Str("oversized".into()))),
+            Value::Err(Box::new(Value::Str("oversized".into()))),
         ] {
             assert_eq!(
-                check_value_size(&ComptimeValue::Data(value), 16 * 1024 * 1024).unwrap_err(),
-                "value size limit exceeded",
+                check_value_size(&ComptimeValue::Data(value), 3).unwrap_err(),
+                "value size limit exceeded"
             );
         }
     }

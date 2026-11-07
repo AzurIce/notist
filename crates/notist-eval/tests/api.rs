@@ -59,6 +59,9 @@ impl NativeContext {
 }
 
 impl EvaluationContext for NativeContext {
+    fn has_mappings(&self) -> bool {
+        false
+    }
     fn registry(&self) -> &Registry {
         &self.registry
     }
@@ -116,7 +119,7 @@ fn document(context: &NativeContext, text: TypedExpr) -> Item {
     let item = Item::expression(TypedExpr {
         ty: Some(Type::InlineContent),
         known: None,
-        kind: ExprKind::Call(Box::new(call)),
+        kind: ExprKind::Call(call.into()),
         span: Default::default(),
         source: "native".into(),
         shape: Default::default(),
@@ -153,9 +156,11 @@ fn comptime_uses_the_same_engine_without_runtime_mapping() {
     let expr = TypedExpr {
         ty: Some(Type::String),
         known: None,
-        kind: ExprKind::Call(Box::new(
-            context.call("str", vec![("value", value(Value::Int(42)))]),
-        )),
+        kind: ExprKind::Call(
+            context
+                .call("str", vec![("value", value(Value::Int(42)))])
+                .into(),
+        ),
         span: Default::default(),
         source: "/doc.not".into(),
         shape: Default::default(),
@@ -186,10 +191,14 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
     let expr = TypedExpr {
         ty: Some(Type::String),
         known: None,
-        kind: ExprKind::Call(Box::new(context.call(
-            "read_text",
-            vec![("source", value(Value::Path(path.clone())))],
-        ))),
+        kind: ExprKind::Call(
+            context
+                .call(
+                    "read_text",
+                    vec![("source", value(Value::Path(path.clone())))],
+                )
+                .into(),
+        ),
         span: Default::default(),
         source: "/doc.not".into(),
         shape: Default::default(),

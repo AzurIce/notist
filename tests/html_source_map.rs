@@ -43,7 +43,8 @@ fn mapping_is_optional_reserved_and_attached_to_real_output() {
 fn structural_groups_are_flattened_and_empty_generated_cells_are_unmapped() {
     let mut row = span(1, 5);
     row.as_item_mut().unwrap().ctor = Ctor::TableRow;
-    row.as_item_mut().unwrap().children = vec![Item::new(Ctor::TableCell, Default::default())];
+    row.as_item_mut().unwrap().children =
+        vec![Item::new(Ctor::TableCell, Default::default())].into();
     let group = Item::new(Ctor::Node, row.span).with_children(vec![row]);
     let table = Item::new(Ctor::Table, group.span).with_children(vec![group]);
     let result = Renderer::new()

@@ -16,9 +16,7 @@ class ResidualProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode', prefix='residual-probe-test-') as directory:
             directory = Path(directory)
             template = directory / 'template'
-            extract(REPO, '214de5f', template)
-            patch = git(REPO, 'diff', '--binary', '214de5f', '--', 'src', 'crates', 'Cargo.toml', 'Cargo.lock')
-            subprocess.run(['git', 'apply', '-'], cwd=template, input=patch, check=True)
+            extract(REPO, '18f893a', template)
             instrument(template)
             for mode, rewrite, files in [
                 ('io', io_probe, ['src/resources.rs', 'crates/notist-cli/src/publication.rs']),

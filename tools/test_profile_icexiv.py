@@ -20,7 +20,9 @@ class IceXivProfileTests(unittest.TestCase):
         for detailed in [False, True]:
             with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
                 root = Path(directory) / "source"
-                extract(REPO, git(REPO, "rev-parse", "HEAD").decode().strip(), root)
+                # Source-insertion probes belong to the frozen experiment's
+                # revision; current SSG and kernel layouts are not that input.
+                extract(REPO, "18f893a", root)
                 lock = (root / "Cargo.lock").read_bytes()
                 instrument(root, detailed)
                 text = (root / "crates/notist-ssg/src/build.rs").read_text()

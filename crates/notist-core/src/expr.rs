@@ -409,7 +409,7 @@ impl Expr {
     }
 }
 
-/// IR₂: a resolved content node with bound data fields and checked pending
+/// IR₂: a resolved content node with bound data fields and a checked expression
 /// computations. Shape carries those computations opaquely and uses only the
 /// public content contract. IR₂′ uses the same representation after Shape has
 /// finalized section structure. Resolve has already validated source
@@ -420,7 +420,7 @@ pub struct RExpr {
     pub level: Option<crate::builtins::Level>,
     pub instance: Option<crate::definitions::FunctionInstance>,
     /// Checked computation retained through Shape and copied into Item.
-    pub pending: Option<Box<crate::evaluation::PendingEvaluation>>,
+    pub expression: Option<crate::evaluation::TypedExpr>,
     pub fields: Dict,
     pub children: Vec<RExpr>,
     pub body: BodyFlavor,
@@ -434,7 +434,7 @@ impl RExpr {
             ctor,
             level: None,
             instance: None,
-            pending: None,
+            expression: None,
             fields: Dict::default(),
             children: Vec::new(),
             body: BodyFlavor::None,

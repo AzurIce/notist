@@ -13,9 +13,7 @@ class OptimizationProfileTests(unittest.TestCase):
         original = (REPO / 'crates/notist-ssg/src/build.rs').read_bytes()
         with tempfile.TemporaryDirectory(dir='/tmp/opencode', prefix='optimized-probe-test-') as directory:
             source = Path(directory) / 'source'
-            extract(REPO, '214de5f', source)
-            patch = git(REPO, 'diff', '--binary', '214de5f', '--', 'src', 'crates', 'Cargo.toml', 'Cargo.lock')
-            subprocess.run(['git', 'apply', '-'], cwd=source, input=patch, check=True)
+            extract(REPO, '18f893a', source)
             instrument(source)
             build = (source / 'crates/notist-ssg/src/build.rs').read_text()
             head, body = build.split('pub(crate) fn build', 1)

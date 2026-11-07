@@ -41,8 +41,8 @@ fn a_reference_to_a_constructor_does_not_invoke_it() {
     assert_eq!(diagnostics[0].message, "unbound reference `divider`");
     assert_eq!(forest[0].ctor, Ctor::Interpolation);
     assert!(matches!(
-        forest[0].pending.as_deref(),
-        Some(notist_core::evaluation::PendingEvaluation::Splice(expr))
+        forest[0].expression.as_ref(),
+        Some(expr)
             if matches!(&expr.kind, notist_core::evaluation::ExprKind::Failure(message)
                 if message == "unbound reference `divider`")
     ));

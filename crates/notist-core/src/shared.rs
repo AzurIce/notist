@@ -78,6 +78,12 @@ impl<T: PartialEq> PartialEq for Shared<T> {
 }
 impl<T: Eq> Eq for Shared<T> {}
 
+impl<T> FromIterator<T> for Shared<Vec<T>> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::new(iter.into_iter().collect())
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Text(Arc<str>);
 impl Text {

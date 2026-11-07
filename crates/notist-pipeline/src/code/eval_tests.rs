@@ -6,7 +6,7 @@ use notist_core::item::{Ctor, SourceLocation, Value};
 use notist_eval::{evaluate, test_support::*};
 
 #[test]
-fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
+fn immutable_content_replays_deterministically_across_budgets_and_replacements() {
     use notist_core::{
         definitions::FunctionId,
         extensions::{Replace, Replacement},
@@ -68,7 +68,6 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
         ),
     ];
     let pipeline = Pipeline::default();
-    reset_checkpoint_restores();
     for dialect in ["doc.not", "doc.md"] {
         for (source, document, replacement) in fixtures {
             let mut context = Context::default()
@@ -113,8 +112,10 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
                         ..Limits::default()
                     };
                     let actual = evaluate(&root, &analysis.program, &context, limits);
-                    let expected =
-                        reference_present(|| evaluate(&root, &analysis.program, &context, limits));
+                    let before = root.clone();
+                    let expected = evaluate(&root, &analysis.program, &context, limits);
+                    assert_eq!(root, before, "execution must not mutate shared code");
+                    assert_summaries(&root, &analysis.program, &context, limits);
                     assert_eq!(
                         actual, expected,
                         "{dialect}, {content_nodes}, constrained={constrained}, {source}"
@@ -123,10 +124,6 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
             }
         }
     }
-    assert!(
-        checkpoint_restores() > 0,
-        "must exercise rollback after a successful call"
-    );
 }
 
 #[test]
@@ -179,6 +176,44 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
             assert!(recovered.as_expr().is_none());
         }
     }
+}
+
+#[test]
+fn dissolved_code_results_retain_preexisting_call_expansion_locations() {
+    let pipeline = Pipeline::default();
+    let context = Context::default()
+        .with_module(
+            pipeline
+                .compile_module(
+                    "doc.not",
+                    "demo",
+                    "demo/lib.notc",
+                    "fn view() -> InlineContent { text(text: \"result\") }",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let analysis = pipeline
+        .analyze("doc.not", "#self.view()", &context)
+        .unwrap();
+    let mut root = analysis.root().clone();
+    let call = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
+    let outer = SourceLocation {
+        source: "outer.notc".into(),
+        start: 3,
+        end: 8,
+    };
+    call.origin.as_mut().unwrap().expansion.push(outer.clone());
+    let result = evaluate(&root, &analysis.program, &context, Limits::default());
+    assert!(result.diagnostics.is_empty());
+    let text = result
+        .root
+        .find(|n| n.field("text") == Some(&Value::Str("result".into())))
+        .unwrap();
+    let chain = &text.origin.as_ref().unwrap().expansion;
+    assert!(chain.contains(&outer));
+    assert_eq!(chain[0].source.as_str(), "doc.not");
+    assert!(result.root.descendants().all(|n| n.as_expr().is_none()));
 }
 
 #[test]

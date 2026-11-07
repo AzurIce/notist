@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
 
 from profile_boundaries import EVAL, REPO
 from profile_source_text import FILES, instrument
@@ -11,7 +12,7 @@ class SourceTextProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
             source = Path(directory)
             for relative, text in {
-                EVAL: (REPO / EVAL).read_text(),
+                EVAL: subprocess.check_output(["git", "show", "e5c65a3:" + EVAL], cwd=REPO, text=True),
                 "crates/notist-core/src/lib.rs": "// core\n",
                 "src/lib.rs": "// facade\n",
                 "crates/notist-cli/src/main.rs": "fn main() -> ExitCode { ExitCode::SUCCESS }\n",
@@ -22,7 +23,7 @@ class SourceTextProfileTests(unittest.TestCase):
             instrument(source)
             observed = (source / EVAL).read_text()
             self.assertEqual(observed.count("boundary_probe::field("), 10)
-            self.assertIn("field(4, || origin.expansion.extend_from_slice(locations))", observed)
+            self.assertIn("field(4, || extended.extend_from_slice(locations))", observed)
             probe = (source / "crates/notist-core/src/boundary_probe.rs").read_text()
             self.assertIn('"expand"', probe)
             self.assertIn('"checkpoint"', probe)

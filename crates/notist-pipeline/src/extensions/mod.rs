@@ -35,6 +35,9 @@ impl ExtensionPlan {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+    pub fn has_replacements(&self) -> bool {
+        !self.replacements.is_empty()
+    }
 
     /// Each rule selects its target once. Mappings never affect comptime checks.
     pub fn target(&self, source: &FunctionId) -> FunctionId {

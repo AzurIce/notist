@@ -46,7 +46,7 @@ for this package must not enable notist-eval's `test-support` feature either.
 | capture_dead_branch | Increasing *unselected* parameter-dependent expression size, constant output; balanced expression avoids conflating size with stack depth |
 | capture_dead_branch_pruned | Same source-size axis but a compile-time true condition removes the unused branch; control, not a generally equivalent program |
 | unused_content | Increasing body size of an unmounted opaque call, constant output; negative control |
-| many_parameters | Increasing call/signature width, constant text/node count but more observable call fields |
+| many_parameters | Increasing call/signature width with constant result text/node count; ordinary parameters still bind even though Code call shells dissolve |
 | recover_errors | Expected failures/recovery, not falsely successful work |
 | read_text | Shared immutable input bytes, one logical read per item |
 | json_uncached / json_cached | Same input/results: per-read parse vs warmed parsed-data cache |

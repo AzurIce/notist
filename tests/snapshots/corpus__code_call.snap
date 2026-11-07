@@ -319,7 +319,7 @@ error[type] @587..597: unknown constructor or function `f`
     (text @104..109 :text "#(42)")
   )
   (paragraph @111..131
-    (interpolation @111..112)
+    (error @111..112)
     (text @112..131 :text "fn(嵌套 (深度))")
   )
   (paragraph @133..151
@@ -341,7 +341,7 @@ error[type] @587..597: unknown constructor or function `f`
     )
   )
   (error @214..312
-    (interpolation @214..218)
+    (error @214..218)
     (text @218..228 :text "[未闭合")
     (error @229..312
       (paragraph @250..268

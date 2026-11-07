@@ -1,33 +1,8 @@
-//! Test-only access to the existing presentation oracle and invariant checks.
-//! Not enabled by normal consumers; this is not an alternate evaluator API.
+//! Test-only verification of construction accounting and final-output invariants.
 use super::*;
 
-pub fn reset_checkpoint_restores() {
-    CHECKPOINT_RESTORES.set(0);
-}
-
-pub fn checkpoint_restores() -> usize {
-    CHECKPOINT_RESTORES.get()
-}
-
-pub fn reference_present<T>(operation: impl FnOnce() -> T) -> T {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            REFERENCE_PRESENT.set(false);
-        }
-    }
-    assert!(!REFERENCE_PRESENT.replace(true));
-    let _reset = Reset;
-    operation()
-}
-
 pub fn item_shell(item: &Node) -> Node {
-    let mut node = item.clone();
-    if let Some(item) = node.as_item_mut() {
-        item.children.clear();
-    }
-    node
+    super::item_shell(item)
 }
 
 pub fn assert_summaries<C: EvaluationContext + ?Sized>(
@@ -36,51 +11,47 @@ pub fn assert_summaries<C: EvaluationContext + ?Sized>(
     context: &C,
     limits: Limits,
 ) {
-    let mut evaluator = Evaluator {
-        context,
-        program: program.clone(),
-        implementations: InstanceCache::default(),
-        diagnostics: Vec::new(),
-        limits,
-        steps: 0,
-        iterations: 0,
-        loop_work: 0,
-        active_loops: 0,
-        depth: 0,
-        mode: EvaluationMode::Runtime,
-        inputs: None,
-        requests: 0,
-        dependencies: Default::default(),
-        needed: Default::default(),
-        sources: Default::default(),
-        data_retention: program.data_retention.clone(),
-    };
-    let root = Item::from_node(root);
-    let (bound, count) = evaluator.bind_content(
-        std::slice::from_ref(&root),
+    fn count(content: &Content) -> usize {
+        content
+            .pieces
+            .iter()
+            .map(|piece| match &piece.kind {
+                Construction::Error => 0,
+                Construction::Ready { nodes } => *nodes,
+                Construction::Element(children) | Construction::Splice(children) => {
+                    1 + count(children)
+                }
+                Construction::Call { children, .. } => 1 + count(children),
+                Construction::Repeat { .. } => 1,
+            })
+            .sum()
+    }
+    let mut evaluator = Evaluator::new(context, program, limits, None, EvaluationMode::Runtime);
+    let bound = evaluator.bind_content(
+        std::slice::from_ref(root),
         &Scope::new(),
         limits.content_nodes,
     );
-    assert_eq!(count, content_count(&bound), "binding: {limits:?}");
-    let (presented, summary) = evaluator.present(bound, limits.content_nodes);
-    assert_eq!(presented.len(), 1);
-    assert_eq!(
-        summary.nodes,
-        content_count(&presented),
-        "presentation: {limits:?}"
-    );
+    assert_eq!(bound.nodes, count(&bound), "binding: {limits:?}");
+    let (nodes, summary) = evaluator.present(&bound, limits.content_nodes, &SourceChain::default());
     assert!(summary.nodes <= limits.content_nodes);
+    let actual = nodes
+        .iter()
+        .flat_map(Node::descendants)
+        .filter(|n| !n.is_error())
+        .count();
+    assert!(
+        actual <= summary.nodes,
+        "dissolved output exceeds logical work: {limits:?}"
+    );
     assert_eq!(
         summary.failed,
-        presented
-            .iter()
-            .flat_map(Item::descendants)
-            .any(|item| matches!(item.evaluation, Some(EvaluationState::Error(_))))
+        nodes.iter().flat_map(Node::descendants).any(Node::is_error)
     );
     assert!(
-        presented
+        nodes
             .iter()
-            .flat_map(Item::descendants)
-            .all(|item| item.pending.is_none())
+            .flat_map(Node::descendants)
+            .all(|n| n.as_expr().is_none())
     );
 }

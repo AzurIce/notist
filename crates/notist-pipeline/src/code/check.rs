@@ -187,7 +187,7 @@ impl<'a> Checker<'a> {
         let mut doc = Item::new(Ctor::Doc, span);
         doc.attrs = self.resolve_attributes(&attrs);
         doc.origin = Some(self.origin(span));
-        doc.as_item_mut().expect("document").children = children;
+        doc.as_item_mut().expect("document").children = children.into();
         for diagnostic in &mut self.diagnostics {
             diagnostic.recovered = true;
         }
@@ -387,7 +387,7 @@ impl<'a> Checker<'a> {
                 let (forest, _) = self.content(forest, annotations, *body);
                 self.typed(
                     Some(content_type(*body)),
-                    ExprKind::Content(forest),
+                    ExprKind::Content(forest.into()),
                     None,
                     span,
                 )
@@ -698,8 +698,8 @@ impl<'a> Checker<'a> {
                     ty,
                     ExprKind::For {
                         binding: binding.clone(),
-                        subject: Box::new(subject),
-                        body: Box::new(body),
+                        subject: subject.into(),
+                        body: body.into(),
                     },
                     None,
                     span,

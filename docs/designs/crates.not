@@ -84,7 +84,7 @@ src/
 
 === 模型与算法
 
-Expr、Item、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。core.evaluation 定义 CheckedProgram、InstanceRecord、TypedExpr、Invocation 与 PendingEvaluation，Item 与 RExpr 直接携带待求值信息；这些类型只描述 IR，检查算法位于 pipeline，执行算法位于 eval。Expr.Content 保存 Markup IR₁、注解 side list 和 body flavor，不依赖前端语法树。syntax 提供 Markup 与 Code 的解析和 AST 视图；pipeline 在第一阶段完成 Parse / Lower，第二阶段在具体实例环境中将 IR₁ 经共享内容后端转换为 Item 森林。
+Expr、Node、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。core.evaluation 定义 CheckedProgram、InstanceRecord、TypedExpr 与 Invocation；NodeContent 区分内容与表达式，RExpr.expression 保存 Shape 前的已检查计算，不另设 pending 模型。这些类型只描述 IR，检查算法位于 pipeline，执行算法位于 eval。执行内核的内容值由共享代码与词法环境构成，挂载时直接生成最终 Node，不复制改写捕获表达式，也不往公共 IR 导出执行状态。Expr.Content 保存 Markup IR₁、注解 side list 和 body flavor，不依赖前端语法树。syntax 提供 Markup 与 Code 的解析和 AST 视图；pipeline 在第一阶段完成 Parse / Lower，第二阶段在具体实例环境中将 IR₁ 经共享内容后端转换为 Node 森林。
 
 crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在 crate 引用模块与算法。Context 从 notist-pipeline 导出；顶层 notist 公开供宿主使用的 Context、Pipeline、NotistFrontend、MarkdownFrontend、Frontend、syntax 模块和共享模型，同时组织查询、调试输出、资源与后端处理。
 

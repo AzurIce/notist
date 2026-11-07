@@ -29,6 +29,11 @@ pub trait EvaluationContext {
     fn registry(&self) -> &Registry;
     fn resource_root(&self) -> &str;
     fn target(&self, id: &FunctionId) -> FunctionId;
+    /// Conservative default for custom hosts. Hosts without replacement rules
+    /// can let already concrete content bypass call synthesis entirely.
+    fn has_mappings(&self) -> bool {
+        true
+    }
     fn specialize(
         &self,
         instance: &FunctionInstance,

@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
 
 from profile_boundaries import EVAL, REPO
 from profile_present_checkpoint import instrument
@@ -8,7 +9,7 @@ from profile_present_checkpoint import instrument
 
 class PresentCheckpointProbeTests(unittest.TestCase):
     def test_both_old_shell_and_new_checkpoint_fields_are_observed(self):
-        current = (REPO / EVAL).read_text()
+        current = subprocess.check_output(["git", "show", "e5c65a3:" + EVAL], cwd=REPO, text=True)
         for checkpoint in [False, True]:
             with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
                 source = Path(directory)

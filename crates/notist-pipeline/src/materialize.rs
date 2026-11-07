@@ -34,8 +34,10 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
         .iter()
         .map(|child| build_item(child, source))
         .collect::<Vec<_>>();
-    if let Some(notist_core::evaluation::PendingEvaluation::Failure { message, .. }) =
-        expr.pending.as_deref()
+    if let Some(notist_core::evaluation::TypedExpr {
+        kind: notist_core::evaluation::ExprKind::Failure(message),
+        ..
+    }) = &expr.expression
     {
         // Keep damaged source structure available to inspection and language
         // services. Error content does not execute its children; evaluation
@@ -43,24 +45,24 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
         let data = item.as_item_mut().expect("new content node");
         data.ctor = Ctor::Error(message.clone());
         data.fields = expr.fields.clone();
-        data.children = children;
-    } else if let Some(pending) = expr.pending.as_deref() {
-        use notist_core::evaluation::{ExprKind, PendingEvaluation, TypedExpr};
-        let value = match pending {
-            PendingEvaluation::Call(call) => {
+        data.children = children.into();
+    } else if let Some(expression) = &expr.expression {
+        use notist_core::evaluation::{ExprKind, TypedExpr};
+        let value = match &expression.kind {
+            ExprKind::Call(call) => {
                 let mut call = call.clone();
                 if call.definition.children_type.is_some() || !children.is_empty() {
                     call.children = Some(Box::new(TypedExpr {
                         ty: call.definition.children_type.clone(),
                         known: None,
                         shape: notist_core::evaluation::ContentShape::of_items(&children),
-                        kind: ExprKind::Content(children),
+                        kind: ExprKind::Content(children.into()),
                         span: expr.span,
                         source: source.to_string(),
                     }));
                 }
                 let ty = Some(call.definition.returns.clone());
-                let kind = ExprKind::Call(Box::new(call));
+                let kind = ExprKind::Call(call);
                 let shape = notist_core::evaluation::ContentShape::of_expr(&kind);
                 TypedExpr {
                     ty,
@@ -71,22 +73,14 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
                     shape,
                 }
             }
-            PendingEvaluation::Splice(value) | PendingEvaluation::Repeat(value) => value.clone(),
-            PendingEvaluation::Failure { ty, message } => TypedExpr {
-                ty: ty.clone(),
-                known: None,
-                kind: ExprKind::Failure(message.clone()),
-                span: expr.span,
-                source: source.to_string(),
-                shape: Default::default(),
-            },
+            _ => expression.clone(),
         };
-        item.content = NodeContent::Expr(Box::new(value));
+        item.content = NodeContent::Expr(value.into());
     } else {
         let data = item.as_item_mut().expect("new content node");
         data.instance = expr.instance.clone().map(Into::into);
         data.fields = expr.fields.clone();
-        data.children = children;
+        data.children = children.into();
     }
     item.attrs = expr.attrs.clone();
     item.level = if is_block_element(expr) {
@@ -229,12 +223,12 @@ fn find_inline(seq: &mut [RExpr], pos: TextSize) -> Option<&mut RExpr> {
 fn is_content_element(expr: &RExpr) -> bool {
     if expr.ctor == Ctor::Interpolation {
         return matches!(
-            expr.pending.as_deref(),
-            Some(notist_core::evaluation::PendingEvaluation::Splice(value))
+            expr.expression.as_ref(),
+            Some(value)
                 if value.ty.as_ref().and_then(notist_core::definitions::Type::level).is_some()
         );
     }
-    expr.pending.is_some() && expr.ctor != Ctor::Text
+    expr.expression.is_some() && expr.ctor != Ctor::Text
 }
 
 fn contains(expr: &RExpr, span: TextRange) -> bool {

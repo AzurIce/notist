@@ -1,13 +1,16 @@
 import tempfile
 from pathlib import Path
 import unittest
+import subprocess
 
 from profile_boundaries import EVAL, REPO, evaluator_path, instrument, once
 
 
 class BoundaryProfileTests(unittest.TestCase):
     def test_field_instrumentation_handles_both_recovery_representations(self):
-        current = (REPO / EVAL).read_text()
+        # This is a historical field/checkpoint experiment, not a current-kernel
+        # instrumenter. Keep testing its original source contract explicitly.
+        current = subprocess.check_output(["git", "show", "e5c65a3:" + EVAL], cwd=REPO, text=True)
         for owned in [False, True]:
             with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
                 source = Path(directory)
@@ -35,6 +38,17 @@ class BoundaryProfileTests(unittest.TestCase):
             once("a a", "a", "b")
         with self.assertRaises(AssertionError):
             once("a", "missing", "b")
+
+    def test_closure_kernel_is_rejected_before_any_snapshot_file_is_modified(self):
+        with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
+            source = Path(directory)
+            path = source / EVAL
+            path.parent.mkdir(parents=True)
+            original = (REPO / EVAL).read_text()
+            path.write_text(original)
+            with self.assertRaisesRegex(ValueError, "closure kernel"):
+                instrument(source)
+            self.assertEqual(path.read_text(), original)
 
     def test_snapshot_layout_not_live_checkout_selects_the_evaluator(self):
         for relative in ["crates/notist-pipeline/src/code/eval.rs", "crates/notist-eval/src/eval.rs"]:

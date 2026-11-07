@@ -1,4 +1,4 @@
-//! Checked expressions and pending computations carried by content Items.
+//! Shared checked expression IR and specialization contracts.
 //! These are pure IR data; checking and interpretation belong to the pipeline.
 
 use crate::{
@@ -141,12 +141,12 @@ pub enum ExprKind {
         arms: Vec<ResultArm>,
     },
     /// Function application, independent of whether its result is data or content.
-    Call(Box<Invocation>),
-    Content(Vec<Item>),
+    Call(crate::shared::Shared<Invocation>),
+    Content(crate::shared::Shared<Vec<Item>>),
     For {
         binding: String,
-        subject: Box<TypedExpr>,
-        body: Box<TypedExpr>,
+        subject: crate::shared::Shared<TypedExpr>,
+        body: crate::shared::Shared<TypedExpr>,
     },
     Failure(String),
 }
@@ -174,7 +174,7 @@ pub struct Invocation {
     /// detaches its copy instead of changing another call's contract.
     pub definition: crate::shared::Shared<FunctionDef>,
     pub arguments: Vec<(String, TypedExpr)>,
-    /// Value-call children. Content-call children live on the enclosing Item.
+    /// Checked children expression, for both data and content calls.
     pub children: Option<Box<TypedExpr>>,
     pub attrs: Dict,
     #[cfg_attr(feature = "serde", serde(with = "span"))]
@@ -206,21 +206,6 @@ impl CallSite {
     pub fn is_markup(&self) -> bool {
         *self == Self::Markup
     }
-}
-
-/// A checked content call or forest interpolation awaiting evaluation.
-/// Ordinary structural Items have no pending computation.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum PendingEvaluation {
-    Call(Invocation),
-    Splice(TypedExpr),
-    /// Captured content traversal, interpreted only when the forest is mounted.
-    Repeat(TypedExpr),
-    Failure {
-        ty: Option<Type>,
-        message: String,
-    },
 }
 
 #[cfg(feature = "serde")]

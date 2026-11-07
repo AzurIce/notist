@@ -14,10 +14,26 @@ to no annotation. Explicit `Ctor::Node` boundaries remain. Native/component
 nodes retain concrete parameters, but no source-call/target pair or evaluation
 flags. Recovered failures are `Ctor::Error` content with source metadata.
 
-Execution/recovery frames are private to the engine (`src/frame.rs`). This
-representation refactor does not replace the capture algorithm or promise a
-performance improvement. Current logical budgets still include intermediate
-execution boundaries; output-tree size alone is not total evaluation work.
+## Execution model
+
+Content values are immutable construction plans. An opaque call or loop holds
+shared checked code and a copy-on-write lexical environment. Saving or replaying
+content does not substitute captured values into expressions, and does not
+memoize the result of a mount. Sequential strict bindings and selected data
+branches execute normally; unused content implementations remain opaque.
+
+Binding resolves content splices while preserving opaque calls. Mounting emits
+final `Node`s directly, with no execution-state tree or round-trip through
+public IR. Aggregate overflow truncates an output suffix using the immutable
+source boundary for recovery; there are no mutable-call backup checkpoints.
+Concrete valid subtrees without execution mappings share their child storage.
+Children, literal forests, calls and loop templates use shared COW containers;
+editing checked input detaches it without changing another owner.
+
+Logical budgets still include mounts which dissolve in the output. Loop work,
+iterations and resource requests remain cumulative. Each mounted call owns its
+step budget, and physical calls/loop nesting are capped. An unprepared resource
+returns only `NeedResources`, never a partial output tree.
 
 ## Dependency boundary
 
@@ -47,8 +63,9 @@ receive the raw engine result, not those pipeline hooks.
 `cargo test -p notist-eval` exercises native/core-only embedding and runtime
 internals without a pipeline dependency. Compiler/evaluator integration tests
 remain in pipeline. Its dev-dependency enables the internal `test-support`
-feature for the existing checkpoint oracle and summary assertions. Normal
-builds do not enable that feature.
+feature for independent construction-count and output-invariant assertions.
+Replay, rollback, source immutability and constrained-budget tests exercise
+the same production engine. Normal builds do not enable that feature.
 
 ## Scenario benchmarks
 

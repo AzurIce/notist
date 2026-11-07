@@ -286,6 +286,9 @@ impl Default for Context {
 }
 
 impl notist_eval::EvaluationContext for Context {
+    fn has_mappings(&self) -> bool {
+        self.extensions().has_replacements()
+    }
     fn registry(&self) -> &Registry {
         self.registry()
     }

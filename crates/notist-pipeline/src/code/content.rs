@@ -33,7 +33,12 @@ impl Checker<'_> {
                     &mut self.diagnostics,
                 );
                 call.children = call.definition.children_type.as_ref().map(|ty| {
-                    Box::new(self.typed(Some(ty.clone()), ExprKind::Content(children), None, span))
+                    Box::new(self.typed(
+                        Some(ty.clone()),
+                        ExprKind::Content(children.into()),
+                        None,
+                        span,
+                    ))
                 });
                 let ty = if call
                     .arguments
@@ -44,11 +49,15 @@ impl Checker<'_> {
                 } else {
                     call.definition.returns.clone()
                 };
-                return self.typed(Some(ty), ExprKind::Call(Box::new(call)), None, span);
+                return self.typed(Some(ty), ExprKind::Call(call.into()), None, span);
             }
             Ok((call, children)) => self.call_node(expression, call, children, false),
             Err(r) => {
-                if let Some(PendingEvaluation::Failure { ty, message }) = r.pending.as_deref()
+                if let Some(TypedExpr {
+                    ty,
+                    kind: ExprKind::Failure(message),
+                    ..
+                }) = &r.expression
                     && ty.as_ref().is_none_or(|ty| ty.level().is_none())
                 {
                     return self.typed(ty.clone(), ExprKind::Failure(message.clone()), None, span);
@@ -82,7 +91,7 @@ impl Checker<'_> {
             } else {
                 Type::BlockContent
             }),
-            ExprKind::Content(vec![node]),
+            ExprKind::Content(vec![node].into()),
             None,
             span,
         )
@@ -136,10 +145,12 @@ impl Checker<'_> {
             if invalid {
                 let message = "a content fragment must be all inline or a single block expression; separate blocks with a blank line";
                 self.report(span, message);
-                paragraph.pending = Some(Box::new(PendingEvaluation::Failure {
-                    ty: Some(Type::BlockContent),
-                    message: message.into(),
-                }));
+                paragraph.expression = Some(self.typed(
+                    Some(Type::BlockContent),
+                    ExprKind::Failure(message.into()),
+                    None,
+                    span,
+                ));
             }
             return paragraph;
         }
@@ -164,14 +175,18 @@ impl Checker<'_> {
                 );
             }
             let mut r = RExpr::new(Ctor::Interpolation, span);
-            r.pending = Some(Box::new(if invalid {
-                PendingEvaluation::Failure {
-                    ty: value.ty,
-                    message: "content interpolation requires InlineContent or BlockContent".into(),
-                }
+            r.expression = Some(if invalid {
+                self.typed(
+                    value.ty,
+                    ExprKind::Failure(
+                        "content interpolation requires InlineContent or BlockContent".into(),
+                    ),
+                    None,
+                    span,
+                )
             } else {
-                PendingEvaluation::Splice(value)
-            }));
+                value
+            });
             r.level = level;
             return r;
         };
@@ -198,12 +213,12 @@ impl Checker<'_> {
                 // data constructor or a claim to a structural content role.
                 let value = self.typed(
                     Some(Type::Never),
-                    ExprKind::Call(Box::new(call)),
+                    ExprKind::Call(call.into()),
                     None,
                     e.span(),
                 );
                 let mut r = RExpr::new(Ctor::Interpolation, e.span());
-                r.pending = Some(Box::new(PendingEvaluation::Splice(value)));
+                r.expression = Some(value);
                 r
             }
             Ok((call, children)) => self.call_node(e, call, children, interpolation),
@@ -273,7 +288,7 @@ impl Checker<'_> {
         let child = if *body != BodyFlavor::None || !children.is_empty() {
             Some(Box::new(self.typed(
                 Some(content_type(flavor)),
-                ExprKind::Content(Vec::new()),
+                ExprKind::Content(Vec::new().into()),
                 None,
                 span,
             )))
@@ -300,10 +315,7 @@ impl Checker<'_> {
                 r.level = ty.as_ref().and_then(Type::level);
                 r.body = *body;
                 r.attrs = attrs.clone();
-                r.pending = Some(Box::new(PendingEvaluation::Failure {
-                    ty,
-                    message: failure.message,
-                }));
+                r.expression = Some(self.typed(ty, ExprKind::Failure(failure.message), None, span));
                 return Err(Box::new(r));
             }
         };
@@ -368,7 +380,12 @@ impl Checker<'_> {
             }
         }
 
-        r.pending = Some(Box::new(PendingEvaluation::Call(call)));
+        r.expression = Some(self.typed(
+            Some(call.definition.returns.clone()),
+            ExprKind::Call(call.into()),
+            None,
+            span,
+        ));
         r
     }
 }

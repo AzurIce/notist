@@ -32,6 +32,8 @@ def instrument(source):
     probe = "notist_core::boundary_probe"
     path = source / evaluator_path(source)
     text = path.read_text()
+    if "enum Construction" in text:
+        raise ValueError("This field/checkpoint experiment targets the archived evaluator (e5c65a3), not the closure kernel; use tools/run_eval_bench.py for the current engine")
     text = once(text, "let boundary = item_shell(&node);", f"let boundary = {probe}::site(1, || item_shell(&node));")
     if "let boundary = item_shell(&item);" in text:
         text = once(text, "let boundary = item_shell(&item);", f"let boundary = {probe}::site(2, || item_shell(&item));")

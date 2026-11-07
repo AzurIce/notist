@@ -403,7 +403,7 @@ pub struct Node {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodeContent {
     Item(ContentItem),
-    Expr(Box<crate::evaluation::TypedExpr>),
+    Expr(crate::shared::Shared<crate::evaluation::TypedExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -411,7 +411,7 @@ pub enum NodeContent {
 pub struct ContentItem {
     pub ctor: Ctor,
     pub fields: Dict,
-    pub children: Vec<Node>,
+    pub children: crate::shared::Shared<Vec<Node>>,
     /// Concrete native/component parameters, not a source call or execution state.
     pub instance: Option<crate::shared::Shared<crate::definitions::FunctionInstance>>,
 }
@@ -542,7 +542,13 @@ impl Node {
         }
     }
     pub fn is_error(&self) -> bool {
-        matches!(self.ctor(), Ctor::Error(_))
+        matches!(
+            &self.content,
+            NodeContent::Item(ContentItem {
+                ctor: Ctor::Error(_),
+                ..
+            })
+        )
     }
     pub fn as_item(&self) -> Option<&ContentItem> {
         match &self.content {
@@ -593,12 +599,11 @@ impl Node {
             .as_ref()
             .and_then(crate::definitions::Type::level)
             .unwrap_or(builtins::Level::Inline);
-        node.content = NodeContent::Expr(Box::new(expr));
+        node.content = NodeContent::Expr(expr.into());
         node
     }
-    /// Compatibility predicate for ordinary transparent `Ctor::Group` content.
-    /// No evaluation history is stored on a node.
-    pub fn is_evaluated_interpolation(&self) -> bool {
+    /// Whether this is ordinary transparent group content.
+    pub fn is_group(&self) -> bool {
         self.as_item().is_some_and(|item| item.ctor == Ctor::Group)
     }
 
@@ -620,7 +625,7 @@ impl Node {
             content: NodeContent::Item(ContentItem {
                 ctor,
                 fields: Dict::default(),
-                children: Vec::new(),
+                children: Vec::new().into(),
                 instance: None,
             }),
             origin: None,
@@ -643,7 +648,7 @@ impl Node {
     }
 
     pub fn with_children(mut self, children: Vec<Item>) -> Self {
-        self.as_item_mut().expect("content constructor").children = children;
+        self.as_item_mut().expect("content constructor").children = children.into();
         self.infer_level();
         self
     }

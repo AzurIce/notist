@@ -525,7 +525,7 @@ fn annotations_source_ranges_and_markdown_container_offsets_cover_the_whole_loop
             .root
             .find(|n| n.attrs.get("id") == Some(&Value::Str("loop".into())))
             .unwrap();
-        assert!(group.is_evaluated_interpolation());
+        assert!(group.is_group());
         let range = usize::from(group.span.start())..usize::from(group.span.end());
         assert_eq!(&document[range], "#for x in (1,2) [#text(text: str(x))]");
         let rendered = html(&result.root);
@@ -560,12 +560,7 @@ fn loop_spelling_stays_opaque_in_native_raw_code_and_math() {
     ] {
         let result = evaluate("doc.not", "", document);
         assert!(html(&result.root).contains("#for"), "{document}");
-        assert!(
-            !result
-                .root
-                .descendants()
-                .any(Item::is_evaluated_interpolation)
-        );
+        assert!(!result.root.descendants().any(Item::is_group));
     }
 }
 
@@ -766,19 +761,16 @@ fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads(
         known: None,
         kind: ExprKind::For {
             binding: "x".into(),
-            subject: Box::new(subject.clone()),
-            body: Box::new(subject),
+            subject: subject.clone().into(),
+            body: subject.into(),
         },
         span: Default::default(),
         source: "test.notc".into(),
         shape: Default::default(),
     };
-    let encoded = serde_json::to_string(&notist_core::evaluation::PendingEvaluation::Repeat(
-        expr.clone(),
-    ))
-    .unwrap();
+    let encoded = serde_json::to_string(&Item::expression(expr.clone())).unwrap();
     assert_eq!(
-        serde_json::from_str::<notist_core::evaluation::PendingEvaluation>(&encoded).unwrap(),
-        notist_core::evaluation::PendingEvaluation::Repeat(expr)
+        serde_json::from_str::<Item>(&encoded).unwrap(),
+        Item::expression(expr)
     );
 }

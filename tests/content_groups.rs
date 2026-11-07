@@ -39,9 +39,7 @@ fn evaluate(dialect: &str, source: &str) -> (Analysis, Evaluation) {
 }
 
 fn groups(root: &Item) -> Vec<&Item> {
-    root.descendants()
-        .filter(|node| node.is_evaluated_interpolation())
-        .collect()
+    root.descendants().filter(|node| node.is_group()).collect()
 }
 
 fn with_id<'a>(root: &'a Item, id: &str) -> &'a Item {
@@ -63,7 +61,7 @@ fn view() -> InlineContent {
         let left = with_id(&evaluation.root, "left");
         let right = with_id(&evaluation.root, "right");
         for group in [left, right] {
-            assert!(group.is_evaluated_interpolation());
+            assert!(group.is_group());
             assert!(group.function_id().is_none());
             assert_eq!(group.children().len(), 2);
             assert_eq!(group.children()[0].ctor(), Ctor::Strong);
@@ -118,7 +116,7 @@ after
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         let group = with_id(&evaluation.root, "whole");
-        assert!(group.is_evaluated_interpolation());
+        assert!(group.is_group());
         assert_eq!(group.level, notist::builtins::Level::Block);
         assert_eq!(group.children().len(), 2);
         assert!(
@@ -209,7 +207,7 @@ after
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         let group = with_id(&evaluation.root, "empty-block");
-        assert!(group.is_evaluated_interpolation());
+        assert!(group.is_group());
         assert!(group.children().is_empty());
         let rendered = Renderer::new().render_with_diagnostics(&evaluation.root);
         assert!(
@@ -245,7 +243,7 @@ fn view() -> InlineContent { select(false) }
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         let selected = with_id(&evaluation.root, "selected");
-        assert!(selected.is_evaluated_interpolation());
+        assert!(selected.is_group());
         assert_eq!(
             selected.children()[0].field("text"),
             Some(&Value::Str("B".into()))
@@ -289,7 +287,7 @@ fn view() -> InlineContent {
 "#;
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
-        assert!(with_id(&evaluation.root, "outer").is_evaluated_interpolation());
+        assert!(with_id(&evaluation.root, "outer").is_group());
         assert_eq!(with_id(&evaluation.root, "inner").ctor(), Ctor::Strong);
         assert_eq!(
             Renderer::new().render(&evaluation.root),
@@ -429,9 +427,9 @@ fn view() -> InlineContent {
 #[test]
 fn groups_are_explicit_content_not_a_combination_of_execution_flags() {
     let group = Item::new(Ctor::Interpolation, Default::default());
-    assert!(!group.is_evaluated_interpolation());
+    assert!(!group.is_group());
     let group = Item::new(Ctor::Group, Default::default());
-    assert!(group.is_evaluated_interpolation());
+    assert!(group.is_group());
     assert!(group.as_expr().is_none());
     assert!(group.instance().is_none());
 }
@@ -500,6 +498,6 @@ fn retained_group_state_attributes_and_empty_children_round_trip() {
     let encoded = serde_json::to_string(&evaluation.root).unwrap();
     let decoded: Item = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, evaluation.root);
-    assert!(with_id(&decoded, "empty").is_evaluated_interpolation());
+    assert!(with_id(&decoded, "empty").is_group());
     assert!(with_id(&decoded, "empty").children().is_empty());
 }

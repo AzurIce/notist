@@ -1,6 +1,6 @@
 use notist_core::{
     definitions::FunctionId,
-    item::{EvaluationState, Value},
+    item::{Ctor, Value},
 };
 use notist_pipeline::{Context, Pipeline};
 fn context(src: &str) -> Context {
@@ -24,7 +24,7 @@ fn underline_is_available_to_code_content_functions() {
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     let underline = e
         .root
-        .find(|i| i.ctor == notist_core::item::Ctor::Underline)
+        .find(|i| i.ctor() == notist_core::item::Ctor::Underline)
         .unwrap();
     assert_eq!(
         underline.function_id(),
@@ -33,7 +33,7 @@ fn underline_is_available_to_code_content_functions() {
     assert!(
         underline
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("内容".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("内容".into())))
     );
 }
 
@@ -47,20 +47,20 @@ fn code_bodies_are_opaque_until_evaluation() {
         .root()
         .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
         .unwrap();
-    assert!(original.children.is_empty());
+    assert!(original.children().is_empty());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
-    let expanded = e
-        .root
-        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
-        .unwrap();
-    assert_eq!(expanded.evaluation, Some(EvaluationState::Expanded));
     assert!(
-        expanded
-            .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("world".into())))
+        e.root
+            .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
+            .is_none()
     );
-    assert!(original.children.is_empty());
+    assert!(
+        e.root
+            .descendants()
+            .any(|i| i.field("text") == Some(&Value::Str("world".into())))
+    );
+    assert!(original.children().is_empty());
 }
 #[test]
 fn concrete_type_branch_preserves_category_and_splices_forests() {
@@ -74,7 +74,7 @@ fn concrete_type_branch_preserves_category_and_splices_forests() {
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert!(
         e.root
-            .find(|i| i.ctor == notist_core::item::Ctor::Emph)
+            .find(|i| i.ctor() == notist_core::item::Ctor::Emph)
             .is_some()
     );
 }
@@ -92,7 +92,7 @@ fn value_functions_runtime_arguments_and_failure_recovery() {
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("ok".into()))),
+            .any(|i| i.field("text") == Some(&Value::Str("ok".into()))),
         "{:?} {:?}",
         a.diagnostics(),
         e
@@ -110,11 +110,7 @@ fn runtime_branches_cannot_widen_return_types_or_specialize_on_arguments() {
         let a = p.analyze("doc.not", "#self.f(true)", &c).unwrap();
         assert!(!a.diagnostics().is_empty(), "{src}");
         let e = p.evaluate(&a, &c);
-        assert!(
-            e.root
-                .descendants()
-                .any(|i| matches!(i.evaluation, Some(EvaluationState::Error(_))))
-        );
+        assert!(e.root.descendants().any(|i| i.is_error()));
     }
 }
 #[test]
@@ -130,7 +126,7 @@ fn compile_time_values_are_explicit_or_inferred_from_input_types() {
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("yes".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("yes".into())))
     );
 }
 #[test]
@@ -193,7 +189,7 @@ fn code_literals_use_selected_frontend_and_preserve_definition_origins() {
     let e = p.evaluate(&a, &c);
     let strong = e
         .root
-        .find(|i| i.ctor == notist_core::item::Ctor::Strong)
+        .find(|i| i.ctor() == notist_core::item::Ctor::Strong)
         .unwrap();
     let o = strong.origin.as_ref().unwrap();
     assert_eq!(o.source, "widgets/widget.mdc");
@@ -222,7 +218,7 @@ fn recursive_calls_are_bounded_and_siblings_survive() {
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("fine".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("fine".into())))
     );
 }
 #[test]
@@ -237,22 +233,19 @@ fn shape_is_finished_before_repeated_block_forest_splicing() {
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
-    assert_eq!(e.root.children.len(), 1);
-    let twice = e
-        .root
-        .find(|i| i.function_id() == Some(FunctionId::new("demo", "twice")))
-        .unwrap();
+    assert_eq!(e.root.children().len(), 1);
     assert_eq!(
-        twice
+        e.root.children()[0]
             .descendants()
-            .filter(|i| i.ctor == notist_core::item::Ctor::Section)
+            .skip(1)
+            .filter(|i| i.ctor() == notist_core::item::Ctor::Section)
             .count(),
         2
     );
 }
 
 #[test]
-fn nested_literals_keep_mount_groups_without_adding_named_call_nodes() {
+fn unannotated_nested_literals_dissolve_their_mount_groups() {
     let c = context(
         "fn f()[children: InlineContent] -> InlineContent { let a = [#children]; let b = [#a]; [#b] }",
     );
@@ -260,19 +253,10 @@ fn nested_literals_keep_mount_groups_without_adding_named_call_nodes() {
     let a = p.analyze("doc.not", "#self.f[x]", &c).unwrap();
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
-    let f = e
-        .root
-        .find(|i| i.function_id() == Some(FunctionId::new("demo", "f")))
-        .unwrap();
-    assert_eq!(f.children.len(), 1);
-    let mut group = &f.children[0];
-    for _ in 0..3 {
-        assert!(group.is_evaluated_interpolation());
-        assert!(group.function_id().is_none());
-        assert_eq!(group.children.len(), 1);
-        group = &group.children[0];
-    }
-    assert_eq!(group.ctor, notist_core::item::Ctor::Text);
+    let paragraph = &e.root.children()[0];
+    assert_eq!(paragraph.children().len(), 1);
+    assert_eq!(paragraph.children()[0].ctor(), Ctor::Text);
+    assert!(e.root.find(|n| n.ctor() == Ctor::Group).is_none());
 }
 #[test]
 fn shared_interpolation_grammar_has_context_specific_validation() {
@@ -306,11 +290,7 @@ fn default_limits_recover_recursive_content_expansion() {
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "#self.spin()", &c).unwrap();
     let e = p.evaluate(&a, &c);
-    assert!(
-        e.root
-            .descendants()
-            .any(|i| matches!(i.evaluation, Some(EvaluationState::Error(_))))
-    );
+    assert!(e.root.descendants().any(|i| i.is_error()));
 }
 
 #[test]
@@ -324,7 +304,7 @@ fn malformed_body_does_not_remove_unrelated_public_definitions() {
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("survives".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("survives".into())))
     );
     assert!(!a.diagnostics().is_empty());
 }
@@ -336,12 +316,7 @@ fn native_comptime_constraints_fail_at_content_boundaries() {
         .analyze("doc.not", "#heading<level: 0>[bad]\n\nnormal", &c)
         .unwrap();
     let e = p.evaluate(&a, &c);
-    assert!(
-        e.root
-            .descendants()
-            .any(|i| i.ctor == notist_core::item::Ctor::Heading
-                && matches!(i.evaluation, Some(EvaluationState::Error(_))))
-    );
+    assert!(e.root.descendants().any(|i| i.is_error()));
 }
 
 #[test]
@@ -359,7 +334,7 @@ fn comptime_expressions_share_normal_operators_and_parsing() {
     assert_eq!(
         e.root
             .descendants()
-            .filter(|i| i.fields.get("text") == Some(&Value::Str("yes".into())))
+            .filter(|i| i.field("text") == Some(&Value::Str("yes".into())))
             .count(),
         2
     );
@@ -374,24 +349,15 @@ fn checking_failure_recovers_at_nested_literal_interpolation_not_parent_function
     let a = p.analyze("doc.not", "#self.outer()", &c).unwrap();
     assert!(!a.diagnostics().is_empty());
     let e = p.evaluate(&a, &c);
-    assert!(
-        e.root
-            .find(
-                |i| i.function_id() == Some(FunctionId::new("demo", "outer"))
-                    && i.evaluation == Some(EvaluationState::Expanded)
-            )
-            .is_some(),
-        "{e:?}"
-    );
+    assert!(e.root.descendants().all(|n| n.as_expr().is_none()));
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("good child".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("good child".into())))
     );
     assert!(
         e.root
-            .find(|i| i.function_id() == Some(FunctionId::new("demo", "bad"))
-                && matches!(i.evaluation, Some(EvaluationState::Error(_))))
+            .find(|i| matches!(i.ctor(), Ctor::Error(ref message) if message.contains("bad child")))
             .is_some()
     );
 }
@@ -408,7 +374,7 @@ fn generic_defaults_are_checked_after_concrete_type_binding() {
 }
 
 #[test]
-fn content_bindings_stay_opaque_until_interpolated_and_preserve_failed_call_identity() {
+fn content_bindings_stay_opaque_until_interpolated_and_recover_failures() {
     let c = context(
         "fn bad() -> InlineContent { compile_error(\"bad binding\") } fn good() -> InlineContent { [good binding] } fn outer() -> InlineContent { let content = bad(); [#content #good()] }",
     );
@@ -417,15 +383,16 @@ fn content_bindings_stay_opaque_until_interpolated_and_preserve_failed_call_iden
     let e = p.evaluate(&a, &c);
     assert!(
         e.root
-            .find(|i| i.function_id() == Some(FunctionId::new("demo", "bad"))
-                && matches!(i.evaluation, Some(EvaluationState::Error(_))))
+            .find(
+                |i| matches!(i.ctor(), Ctor::Error(ref message) if message.contains("bad binding"))
+            )
             .is_some(),
         "{e:?}"
     );
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("good binding".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("good binding".into())))
     );
 }
 #[test]
@@ -441,7 +408,7 @@ fn discarded_content_is_not_evaluated() {
     assert!(
         e.root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("kept".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("kept".into())))
     );
 }
 
@@ -473,17 +440,16 @@ fn direct_calls_and_literal_interpolations_share_structural_validation() {
                 a.diagnostics()
             );
             let e = p.evaluate(&a, &c);
-            let list = e.root.find(|n| n.ctor == Ctor::List).unwrap();
-            assert!(matches!(list.evaluation, Some(EvaluationState::Error(_))));
-            assert!(list.children.is_empty());
+            let list = e.root.find(|n| n.is_error()).unwrap();
+            assert!(list.children().is_empty());
         }
         let a = p.analyze(dialect, "#self.valid()", &c).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let e = p.evaluate(&a, &c);
-        assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
-        let table = e.root.find(|n| n.ctor == Ctor::Table).unwrap();
-        assert_eq!(table.children[0].ctor, Ctor::TableRow);
-        assert_eq!(table.children[0].children[0].ctor, Ctor::TableCell);
+        assert!(e.diagnostics.is_empty(), "{e:#?}");
+        let table = e.root.find(|n| n.ctor() == Ctor::Table).unwrap();
+        assert_eq!(table.children()[0].ctor(), Ctor::TableRow);
+        assert_eq!(table.children()[0].children()[0].ctor(), Ctor::TableCell);
     }
 }
 
@@ -504,20 +470,9 @@ fn incomplete_binding_preserves_known_call_contract_and_recovers_at_its_boundary
         ] {
             let a = p.analyze(path, src, &c).unwrap();
             let e = p.evaluate(&a, &c);
-            let required = e
-                .root
-                .find(|n| n.function_id() == Some(FunctionId::new("demo", "required")))
-                .unwrap();
+            let required = e.root.find(|n| n.is_error()).unwrap();
             assert_eq!(required.level, Level::Block);
-            assert_eq!(
-                required.fields.get("label"),
-                Some(&Value::Str("kept".into()))
-            );
-            assert!(matches!(
-                required.evaluation,
-                Some(EvaluationState::Error(_))
-            ));
-            assert!(required.children.is_empty());
+            assert!(required.children().is_empty());
             assert!(required.origin.as_ref().unwrap().source.ends_with(
                 if src.contains("forwarded") {
                     "lib.notc"
@@ -529,16 +484,14 @@ fn incomplete_binding_preserves_known_call_contract_and_recovers_at_its_boundary
                 assert_eq!(required.attrs.get("id"), Some(&Value::Str("failed".into())));
                 let semantic = a
                     .root()
-                    .find(|n| n.function_id() == required.function_id())
+                    .find(|n| n.attrs.get("id") == Some(&Value::Str("failed".into())))
                     .unwrap();
                 assert_eq!(semantic.level, Level::Block);
-                assert_eq!(semantic.children[0].ctor, Ctor::Text);
-                assert!(semantic.evaluation.is_none());
-                assert_eq!(a.root().children[0].function_id(), required.function_id());
+                assert!(semantic.is_error());
             }
             assert!(
-                e.root.descendants().any(|n| n.ctor == Ctor::Text
-                    && n.fields.get("text") == Some(&Value::Str("end".into())))
+                e.root.descendants().any(|n| n.ctor() == Ctor::Text
+                    && n.field("text") == Some(&Value::Str("end".into())))
             );
         }
     }
@@ -573,7 +526,7 @@ fn nested_content_in_interpolation_arguments_uses_the_selected_frontend() {
             assert!(
                 e.root
                     .descendants()
-                    .any(|n| n.fields.get("text") == Some(&Value::Str("label".into())))
+                    .any(|n| n.field("text") == Some(&Value::Str("label".into())))
             );
         }
     }
@@ -607,14 +560,10 @@ fn exhausted_content_budget_does_not_disable_independent_siblings() {
                 .iter()
                 .any(|d| d.message.contains("step limit"))
         );
-        let good = e
-            .root
-            .find(|n| n.function_id() == Some(FunctionId::new("demo", "good")))
-            .unwrap();
-        assert_eq!(good.evaluation, Some(EvaluationState::Expanded));
         assert!(
-            good.descendants()
-                .any(|n| n.fields.get("text") == Some(&Value::Str("survives".into())))
+            e.root
+                .descendants()
+                .any(|n| n.field("text") == Some(&Value::Str("survives".into())))
         );
     }
 }
@@ -646,13 +595,9 @@ fn recovered_dependency_diagnostics_do_not_invalidate_a_successful_argument_call
         assert!(
             e.root
                 .descendants()
-                .any(|n| n.fields.get("text") == Some(&Value::Str("ok".into())))
+                .any(|n| n.field("text") == Some(&Value::Str("ok".into())))
         );
-        assert!(
-            !e.root
-                .descendants()
-                .any(|n| matches!(n.evaluation, Some(EvaluationState::Error(_))))
-        );
+        assert!(!e.root.descendants().any(|n| n.is_error()));
     }
 }
 
@@ -719,7 +664,7 @@ fn comptime_only_call_suffixes_work_in_code_and_both_content_dialects() {
             assert!(
                 e.root
                     .descendants()
-                    .any(|n| n.fields.get("text") == Some(&Value::Str("one".into())))
+                    .any(|n| n.field("text") == Some(&Value::Str("one".into())))
             );
         }
     }
@@ -759,7 +704,7 @@ fn comparisons_and_attached_comptime_calls_are_unambiguous() {
         assert!(
             e.root
                 .descendants()
-                .any(|n| n.fields.get("text") == Some(&Value::Str("passed".into())))
+                .any(|n| n.field("text") == Some(&Value::Str("passed".into())))
         );
     }
 }
@@ -785,7 +730,7 @@ fn comptime_and_runtime_match_share_numeric_equality() {
     let text: Vec<_> = e
         .root
         .descendants()
-        .filter_map(|n| match n.fields.get("text") {
+        .filter_map(|n| match n.field("text") {
             Some(Value::Str(text)) => Some(text.as_str()),
             _ => None,
         })
@@ -816,28 +761,14 @@ fn expanded_content_size_recovery_preserves_later_siblings() {
                 ..Default::default()
             },
         );
-        let chunks: Vec<_> = e
-            .root
-            .descendants()
-            .filter(|n| n.function_id() == Some(FunctionId::new("demo", "chunk")))
-            .collect();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].evaluation, Some(EvaluationState::Expanded));
-        assert!(
-            matches!(&chunks[1].evaluation, Some(EvaluationState::Error(m)) if m.contains("size limit"))
-        );
+        assert!(e.root.find(|n| n.ctor() == Ctor::Strong).is_some());
+        assert!(e.root.find(|n| matches!(n.ctor(), Ctor::Error(ref message) if message.contains("size limit"))).is_some());
         assert!(
             e.root
                 .descendants()
-                .any(|n| n.fields.get("text") == Some(&Value::Str("survives".into())))
+                .any(|n| n.field("text") == Some(&Value::Str("survives".into())))
         );
-        assert!(
-            e.root
-                .descendants()
-                .filter(|n| !matches!(n.evaluation, Some(EvaluationState::Error(_))))
-                .count()
-                <= 80
-        );
+        assert!(e.root.descendants().filter(|n| !n.is_error()).count() <= 80);
     }
 }
 
@@ -872,15 +803,9 @@ fn spliced_forest_size_recovery_keeps_small_later_content() {
     assert!(
         e.root
             .descendants()
-            .any(|n| n.fields.get("text") == Some(&Value::Str("tail".into())))
+            .any(|n| n.field("text") == Some(&Value::Str("tail".into())))
     );
-    assert!(
-        e.root
-            .descendants()
-            .filter(|n| !matches!(n.evaluation, Some(EvaluationState::Error(_))))
-            .count()
-            <= 75
-    );
+    assert!(e.root.descendants().filter(|n| !n.is_error()).count() <= 75);
 }
 
 #[test]
@@ -897,12 +822,7 @@ fn comptime_arrays_check_all_elements_and_accept_known_empty_values() {
     for call in ["#self.bad()", "#self.bad_default()"] {
         let a = p.analyze("doc.not", call, &c).unwrap();
         assert!(!a.diagnostics().is_empty(), "{call}");
-        assert!(
-            p.evaluate(&a, &c)
-                .root
-                .descendants()
-                .any(|i| matches!(i.evaluation, Some(EvaluationState::Error(_))))
-        );
+        assert!(p.evaluate(&a, &c).root.descendants().any(|i| i.is_error()));
     }
     for path in ["doc.not", "doc.md"] {
         let a = p.analyze(path, "#self.accept<(,)>", &c).unwrap();
@@ -912,7 +832,7 @@ fn comptime_arrays_check_all_elements_and_accept_known_empty_values() {
         assert!(
             e.root
                 .descendants()
-                .any(|i| i.fields.get("text") == Some(&Value::Str("accepted".into())))
+                .any(|i| i.field("text") == Some(&Value::Str("accepted".into())))
         );
     }
 }
@@ -979,14 +899,14 @@ fn reused_content_items_capture_each_calls_lexical_inputs_without_executing_unus
             let texts: Vec<_> = result
                 .root
                 .descendants()
-                .filter_map(|i| match i.fields.get("text") {
+                .filter_map(|i| match i.field("text") {
                     Some(Value::Str(s)) if s == "first!" || s == "second?" => Some(s.as_str()),
                     _ => None,
                 })
                 .collect();
             assert_eq!(texts, ["first!", "first!", "second?", "second?"]);
-            assert!(result.root.descendants().all(|i| i.pending.is_none()));
+            assert!(result.root.descendants().all(|i| i.as_expr().is_none()));
         }
-        assert!(a.root().descendants().any(|i| i.pending.is_some()));
+        assert!(a.root().descendants().any(|i| i.as_expr().is_some()));
     }
 }

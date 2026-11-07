@@ -4,7 +4,7 @@
 use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
-use notist_core::item::{Ctor, Item, Origin};
+use notist_core::item::{Ctor, Item, NodeContent, Origin};
 use notist_core::shared::Text;
 use rowan::{TextRange, TextSize};
 
@@ -29,14 +29,65 @@ pub fn materialize(
 
 fn build_item(expr: &RExpr, source: &Text) -> Item {
     let mut item = Item::new(expr.ctor.clone(), expr.span);
-    item.instance = expr.instance.clone().map(Into::into);
-    item.pending = expr.pending.clone();
-    item.fields = expr.fields.clone();
-    item.children = expr
+    let children = expr
         .children
         .iter()
         .map(|child| build_item(child, source))
-        .collect();
+        .collect::<Vec<_>>();
+    if let Some(notist_core::evaluation::PendingEvaluation::Failure { message, .. }) =
+        expr.pending.as_deref()
+    {
+        // Keep damaged source structure available to inspection and language
+        // services. Error content does not execute its children; evaluation
+        // exports a leaf error at this boundary.
+        let data = item.as_item_mut().expect("new content node");
+        data.ctor = Ctor::Error(message.clone());
+        data.fields = expr.fields.clone();
+        data.children = children;
+    } else if let Some(pending) = expr.pending.as_deref() {
+        use notist_core::evaluation::{ExprKind, PendingEvaluation, TypedExpr};
+        let value = match pending {
+            PendingEvaluation::Call(call) => {
+                let mut call = call.clone();
+                if call.definition.children_type.is_some() || !children.is_empty() {
+                    call.children = Some(Box::new(TypedExpr {
+                        ty: call.definition.children_type.clone(),
+                        known: None,
+                        shape: notist_core::evaluation::ContentShape::of_items(&children),
+                        kind: ExprKind::Content(children),
+                        span: expr.span,
+                        source: source.to_string(),
+                    }));
+                }
+                let ty = Some(call.definition.returns.clone());
+                let kind = ExprKind::Call(Box::new(call));
+                let shape = notist_core::evaluation::ContentShape::of_expr(&kind);
+                TypedExpr {
+                    ty,
+                    known: None,
+                    kind,
+                    span: expr.span,
+                    source: source.to_string(),
+                    shape,
+                }
+            }
+            PendingEvaluation::Splice(value) | PendingEvaluation::Repeat(value) => value.clone(),
+            PendingEvaluation::Failure { ty, message } => TypedExpr {
+                ty: ty.clone(),
+                known: None,
+                kind: ExprKind::Failure(message.clone()),
+                span: expr.span,
+                source: source.to_string(),
+                shape: Default::default(),
+            },
+        };
+        item.content = NodeContent::Expr(Box::new(value));
+    } else {
+        let data = item.as_item_mut().expect("new content node");
+        data.instance = expr.instance.clone().map(Into::into);
+        data.fields = expr.fields.clone();
+        data.children = children;
+    }
     item.attrs = expr.attrs.clone();
     item.level = if is_block_element(expr) {
         notist_core::builtins::Level::Block
@@ -221,7 +272,7 @@ mod source_tests {
         let items = materialize(&mut forest, &[], "docs/source.not", &mut diagnostics);
         assert!(diagnostics.is_empty());
         let root = items[0].origin.as_ref().unwrap();
-        for child in &items[0].children {
+        for child in items[0].children() {
             let origin = child.origin.as_ref().unwrap();
             assert_eq!(origin.source, "docs/source.not");
             assert!(root.source.shares_storage(&origin.source));

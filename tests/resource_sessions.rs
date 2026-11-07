@@ -668,7 +668,7 @@ fn document_input_registration_keeps_the_first_text_until_a_new_batch() {
             evaluated
                 .root
                 .descendants()
-                .any(|n| n.fields.get("text") == Some(&notist::Value::Str(first.into())))
+                .any(|n| n.field("text") == Some(&notist::Value::Str(first.into())))
         );
     }
     let mut fresh = Vault::new(&files);
@@ -679,7 +679,7 @@ fn document_input_registration_keeps_the_first_text_until_a_new_batch() {
         evaluated
             .root
             .descendants()
-            .any(|n| n.fields.get("text") == Some(&notist::Value::Str(second.clone().into())))
+            .any(|n| n.field("text") == Some(&notist::Value::Str(second.clone().into())))
     );
 }
 

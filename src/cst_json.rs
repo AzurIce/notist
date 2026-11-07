@@ -637,7 +637,7 @@ fn write_resolved(out: &mut String, expr: &RExpr) {
 fn write_item(out: &mut String, item: &Item) {
     out.push_str(&format!(
         "{{\"kind\":\"{}\",\"start\":{},\"end\":{}",
-        item.ctor.name(),
+        item.ctor().name(),
         u32::from(item.span.start()),
         u32::from(item.span.end()),
     ));
@@ -647,7 +647,7 @@ fn write_item(out: &mut String, item: &Item) {
     out.push_str(",\"attrs\":");
     crate::json::write_value(out, &crate::Value::Dict(item.attrs.clone()));
     let mut label = String::new();
-    for (key, value) in item.fields.iter() {
+    for (key, value) in item.fields().iter() {
         label.push_str(&format!(" :{key} {value}"));
     }
     for (key, value) in item.attrs.iter() {
@@ -656,9 +656,9 @@ fn write_item(out: &mut String, item: &Item) {
     if !label.is_empty() {
         out.push_str(&format!(",\"label\":{}", escape(&label)));
     }
-    if !item.children.is_empty() {
+    if !item.children().is_empty() {
         out.push_str(",\"children\":[");
-        for (i, child) in item.children.iter().enumerate() {
+        for (i, child) in item.children().iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }

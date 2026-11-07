@@ -431,14 +431,14 @@ fn docs_status_annotations_keep_native_nodes_and_nested_component_bindings() {
             .unwrap();
         assert!(output.analysis.diagnostics().is_empty());
         assert!(output.rendered.diagnostics.is_empty());
-        let section = &output.analysis.root().children[0];
-        assert_eq!(section.ctor, notist::Ctor::Section);
+        let section = &output.analysis.root().children()[0];
+        assert_eq!(section.ctor(), notist::Ctor::Section);
         assert_eq!(
             section.attrs.get("status"),
             Some(&Value::Str(status.into()))
         );
-        assert_eq!(section.children.len(), 3);
-        assert_eq!(section.children[0].ctor, notist::Ctor::Heading);
+        assert_eq!(section.children().len(), 3);
+        assert_eq!(section.children()[0].ctor(), notist::Ctor::Heading);
         assert!(
             output
                 .rendered

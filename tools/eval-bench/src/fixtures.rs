@@ -2,7 +2,7 @@ use notist_core::{
     data::{DataCache, ParsedDataCache},
     definitions::{FunctionId, FunctionInstance},
     diag::Diagnostic,
-    evaluation::{CheckedProgram, ExprKind, Invocation, PendingEvaluation, TypedExpr},
+    evaluation::{CheckedProgram, ExprKind, Invocation, TypedExpr},
     inputs::{EvaluationInputs, InputError, InputRead},
     item::{Item, Value},
     registry::Registry,
@@ -390,14 +390,14 @@ impl Fixture {
                 let mut origin_depth = 0;
                 for item in result.root.descendants() {
                     nodes += 1;
-                    if item.pending.is_some() {
+                    if item.as_expr().is_some() {
                         return Err(format!("{}: pending node in complete result", self.id));
                     }
                     if let Some(origin) = &item.origin {
                         origin_depth = origin_depth.max(origin.expansion.len());
                     }
-                    if item.ctor == notist_core::item::Ctor::Text
-                        && let Some(Value::Str(value)) = item.fields.get("text")
+                    if item.ctor() == notist_core::item::Ctor::Text
+                        && let Some(Value::Str(value)) = item.field("text")
                     {
                         text.push_str(value);
                     }
@@ -475,14 +475,11 @@ fn ir_counts(root: Option<&Item>, program: &CheckedProgram) -> Json {
     }
     fn item(node: &Item, counts: &mut Counts) {
         counts.items += 1;
-        match node.pending.as_deref() {
-            Some(PendingEvaluation::Call(call)) => invocation(call, counts),
-            Some(PendingEvaluation::Splice(expr) | PendingEvaluation::Repeat(expr)) => {
-                expression(expr, counts)
-            }
-            _ => {}
+        if let Some(expr) = node.as_expr() {
+            expression(expr, counts);
+            return;
         }
-        for child in &node.children {
+        for child in node.children() {
             item(child, counts);
         }
     }
@@ -522,7 +519,7 @@ fn ir_counts(root: Option<&Item>, program: &CheckedProgram) -> Json {
                     expression(&arm.body, counts);
                 }
             }
-            ExprKind::ValueCall(call) => invocation(call, counts),
+            ExprKind::Call(call) => invocation(call, counts),
             ExprKind::Content(forest) => {
                 for node in forest {
                     item(node, counts);

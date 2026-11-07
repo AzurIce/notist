@@ -28,16 +28,20 @@ fn normalized(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
     item.origin = None;
     // Compare semantic structure independently of source-bound computation metadata.
-    item.pending = None;
-    item.children = item.children.into_iter().map(normalized).collect();
+    item.content = notist::NodeContent::Item(notist::ContentItem {
+        ctor: item.ctor(),
+        fields: item.fields(),
+        children: item.children().iter().cloned().map(normalized).collect(),
+        instance: item.instance().cloned().map(Into::into),
+    });
     item
 }
 
 fn text(item: &Item) -> String {
     item.descendants()
         .filter_map(|node| {
-            if node.ctor == Ctor::Text
-                && let Some(Value::Str(text)) = node.fields.get("text")
+            if node.ctor() == Ctor::Text
+                && let Some(Value::Str(text)) = node.field("text")
             {
                 return Some(text.as_str());
             }
@@ -57,38 +61,43 @@ fn notist_markdown_and_content_functions_share_the_same_table_ir() {
         normalized(not.clone()),
         normalized(analyze("test.not", calls))
     );
-    let table = &not.children[0];
-    assert_eq!(table.ctor, Ctor::Table);
-    assert_eq!(table.ctor.accepts(), Some(Accepts::Rows));
-    assert_eq!(table.ctor.level(), Some(Level::Block));
-    assert_eq!(table.children[0].ctor.accepts(), Some(Accepts::Cells));
+    let table = &not.children()[0];
+    assert_eq!(table.ctor(), Ctor::Table);
+    assert_eq!(table.ctor().accepts(), Some(Accepts::Rows));
+    assert_eq!(table.ctor().level(), Some(Level::Block));
+    assert_eq!(table.children()[0].ctor().accepts(), Some(Accepts::Cells));
     assert_eq!(
-        table.children[0].children[0].ctor.accepts(),
+        table.children()[0].children()[0].ctor().accepts(),
         Some(Accepts::Any)
     );
     assert_eq!(
-        table.children[0].fields.get("header"),
+        table.children()[0].field("header"),
         Some(&Value::Bool(true))
     );
     assert_eq!(
-        table.children[1].fields.get("header"),
+        table.children()[1].field("header"),
         Some(&Value::Bool(false))
     );
-    assert!(table.children.iter().all(|row| row.ctor == Ctor::TableRow));
     assert!(
         table
-            .children
+            .children()
             .iter()
-            .flat_map(|row| &row.children)
-            .all(|cell| cell.ctor == Ctor::TableCell)
+            .all(|row| row.ctor() == Ctor::TableRow)
+    );
+    assert!(
+        table
+            .children()
+            .iter()
+            .flat_map(|row| row.children())
+            .all(|cell| cell.ctor() == Ctor::TableCell)
     );
     assert_eq!(
-        table.children[1].children[0].children[0].ctor,
+        table.children()[1].children()[0].children()[0].ctor(),
         Ctor::Paragraph
     );
     assert!(
-        table.children[1].children[0]
-            .find(|node| node.ctor == Ctor::Strong)
+        table.children()[1].children()[0]
+            .find(|node| node.ctor() == Ctor::Strong)
             .is_some()
     );
 }
@@ -146,7 +155,7 @@ fn outer_pipes_are_optional_and_header_only_and_single_column_tables_work() {
         "| | |\n| --- | --- |\n| | |",
     ] {
         let not = analyze("test.not", src);
-        assert_eq!(not.children[0].ctor, Ctor::Table, "{src:?}");
+        assert_eq!(not.children()[0].ctor(), Ctor::Table, "{src:?}");
         assert_eq!(
             normalized(not),
             normalized(analyze("test.md", src)),
@@ -159,18 +168,18 @@ fn outer_pipes_are_optional_and_header_only_and_single_column_tables_work() {
 fn body_rows_pad_missing_cells_and_ignore_excess_cells() {
     let src = "| a | b |\n| --- | --- |\n| short |\n| x | y | extra |\n";
     let not = analyze("test.not", src);
-    let table = &not.children[0];
-    assert!(table.children.iter().all(|row| row.children.len() == 2));
-    assert!(table.children[1].children[1].children.is_empty());
+    let table = &not.children()[0];
+    assert!(table.children().iter().all(|row| row.children().len() == 2));
+    assert!(table.children()[1].children()[1].children().is_empty());
     assert_eq!(text(table), "abshortxy");
     let md = analyze("test.md", src);
-    for row in &md.children[0].children {
+    for row in md.children()[0].children() {
         assert!(
             row.descendants()
                 .all(|node| row.span.contains_range(node.span))
         );
     }
-    assert!(md.children[0].children[1].children[1].span.is_empty());
+    assert!(md.children()[0].children()[1].children()[1].span.is_empty());
     assert_eq!(normalized(not), normalized(md));
 }
 
@@ -180,29 +189,29 @@ fn table_pipes_are_escaped_in_markup_and_owned_by_opaque_payloads() {
     let md = "| value |\n| --- |\n| a\\|b **c\\|d** `e\\|f` $g\\|h$ |";
     let not = analyze("test.not", not);
     assert_eq!(normalized(not.clone()), normalized(analyze("test.md", md)));
-    let cell = &not.children[0].children[1].children[0];
+    let cell = &not.children()[0].children()[1].children()[0];
     assert_eq!(text(cell), "a|b c|d  ");
-    let raw = cell.find(|n| n.ctor == Ctor::RawInline).unwrap();
-    assert_eq!(raw.fields.get("text"), Some(&Value::Str("e|f".into())));
-    let math = cell.find(|n| n.ctor == Ctor::Math).unwrap();
-    assert_eq!(math.fields.get("text"), Some(&Value::Str("g|h".into())));
+    let raw = cell.find(|n| n.ctor() == Ctor::RawInline).unwrap();
+    assert_eq!(raw.field("text"), Some(&Value::Str("e|f".into())));
+    let math = cell.find(|n| n.ctor() == Ctor::Math).unwrap();
+    assert_eq!(math.field("text"), Some(&Value::Str("g|h".into())));
     let calls = analyze(
         "test.not",
         "| value |\n| --- |\n| #raw(\"a\\\\|b\") #math(\"c\\\\|d\") |",
     );
     assert_eq!(
         calls
-            .find(|n| n.ctor == Ctor::RawInline)
+            .find(|n| n.ctor() == Ctor::RawInline)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str("a\\|b".into()))
     );
     assert_eq!(
         calls
-            .find(|n| n.ctor == Ctor::Math)
+            .find(|n| n.ctor() == Ctor::Math)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str("c\\|d".into()))
     );
@@ -219,16 +228,16 @@ fn standalone_block_math_in_cells_preserves_frontend_pipe_rules() {
         ("test.md", source.replace("x|y", r"x\|y")),
     ] {
         let root = analyze(path, &source);
-        let cell = &root.children[0].children[1].children[0];
+        let cell = &root.children()[0].children()[1].children()[0];
         assert_eq!(
-            cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-            [&Ctor::Math]
+            cell.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+            [Ctor::Math]
         );
         assert_eq!(
-            cell.children[0].fields.get("text"),
+            cell.children()[0].field("text"),
             Some(&Value::Str("x|y".into()))
         );
-        assert_eq!(text(&root.children[0].children[1].children[1]), "end");
+        assert_eq!(text(&root.children()[0].children()[1].children()[1]), "end");
     }
     let root = analyze(
         "test.not",
@@ -244,15 +253,12 @@ $ x|y $
     );
     let equations = root
         .descendants()
-        .filter(|n| n.ctor == Ctor::Math)
+        .filter(|n| n.ctor() == Ctor::Math)
         .collect::<Vec<_>>();
     assert_eq!(equations.len(), 2);
+    assert_eq!(equations[0].field("text"), Some(&Value::Str("x|y".into())));
     assert_eq!(
-        equations[0].fields.get("text"),
-        Some(&Value::Str("x|y".into()))
-    );
-    assert_eq!(
-        equations[1].fields.get("text"),
+        equations[1].field("text"),
         Some(&Value::Str("a\\|b".into()))
     );
 }
@@ -273,25 +279,25 @@ fn multiline_math_keeps_the_example_in_one_cell_and_preserves_source_spans() {
              | after | following |{newline}{newline}outside"
         );
         let root = analyze("test.not", &source);
-        let table = &root.children[0];
-        assert_eq!(table.ctor, Ctor::Table);
-        assert_eq!(table.children.len(), 3);
-        assert!(table.children.iter().all(|row| row.children.len() == 2));
-        let cell = &table.children[1].children[1];
+        let table = &root.children()[0];
+        assert_eq!(table.ctor(), Ctor::Table);
+        assert_eq!(table.children().len(), 3);
+        assert!(table.children().iter().all(|row| row.children().len() == 2));
+        let cell = &table.children()[1].children()[1];
         assert_eq!(
-            cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-            [&Ctor::Math]
+            cell.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+            [Ctor::Math]
         );
-        let math = &cell.children[0];
+        let math = &cell.children()[0];
         assert_eq!(math.level, Level::Block);
-        assert_eq!(math.fields.get("text"), Some(&Value::Str(payload.into())));
+        assert_eq!(math.field("text"), Some(&Value::Str(payload.into())));
         assert_eq!(
             &source[usize::from(math.span.start())..usize::from(math.span.end())],
             formula
         );
         assert!(cell.span.contains_range(math.span));
-        assert_eq!(text(&table.children[2]), "afterfollowing");
-        assert_eq!(text(&root.children[1]), "outside");
+        assert_eq!(text(&table.children()[2]), "afterfollowing");
+        assert_eq!(text(&root.children()[1]), "outside");
         let html = notist_html::Renderer::new().render_with_diagnostics(&root);
         assert!(html.diagnostics.is_empty(), "{:?}", html.diagnostics);
         assert_eq!(html.html.matches("<tr>").count(), 3);
@@ -311,49 +317,46 @@ fn math_in_headers_and_cells_owns_blank_lines_pipes_and_markup_tokens() {
          | $\n{payload}\n$ | end |\n| next | row |"
     );
     let root = analyze("test.not", &source);
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 3);
-    assert!(table.children.iter().all(|row| row.children.len() == 2));
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 3);
+    assert!(table.children().iter().all(|row| row.children().len() == 2));
     let equations: Vec<_> = table
         .descendants()
-        .filter(|n| n.ctor == Ctor::Math)
+        .filter(|n| n.ctor() == Ctor::Math)
         .collect();
     assert_eq!(equations.len(), 3);
     assert_eq!(
-        equations[0].fields.get("text"),
+        equations[0].field("text"),
         Some(&Value::Str(payload.into()))
     );
-    assert_eq!(
-        equations[1].fields.get("text"),
-        Some(&Value::Str("a|b".into()))
-    );
+    assert_eq!(equations[1].field("text"), Some(&Value::Str("a|b".into())));
     assert_eq!(equations[1].level, Level::Inline);
     assert_eq!(
-        equations[2].fields.get("text"),
+        equations[2].field("text"),
         Some(&Value::Str(payload.into()))
     );
-    let cell = &table.children[1].children[0];
+    let cell = &table.children()[1].children()[0];
     assert_eq!(
-        cell.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-        [&Ctor::Math]
+        cell.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+        [Ctor::Math]
     );
-    assert!(table.find(|n| n.ctor == Ctor::Strong).is_none());
-    assert_eq!(text(&table.children[2]), "nextrow");
+    assert!(table.find(|n| n.ctor() == Ctor::Strong).is_none());
+    assert_eq!(text(&table.children()[2]), "nextrow");
 }
 
 #[test]
 fn newline_after_a_math_closer_ends_the_row_even_before_a_standalone_pipe() {
     let source = "| name | content |\n| --- | --- |\n| math | $\nx\n$\n|\n| next | row |";
     let root = analyze("test.not", source);
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 4);
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 4);
     assert!(
-        table.children[2]
-            .children
+        table.children()[2]
+            .children()
             .iter()
-            .all(|cell| cell.children.is_empty())
+            .all(|cell| cell.children().is_empty())
     );
-    assert_eq!(text(&table.children[3]), "nextrow");
+    assert_eq!(text(&table.children()[3]), "nextrow");
 }
 
 #[test]
@@ -361,13 +364,13 @@ fn markdown_tables_keep_physical_rows_and_gfm_pipe_escaping() {
     let source = "| name | content |\n| --- | --- |\n| math | $\nx +\ny\n$ |\n| next | row |";
     let not = analyze("test.not", source);
     let md = analyze("test.md", source);
-    assert_eq!(not.children[0].children.len(), 3);
-    assert_eq!(md.children[0].children.len(), 6);
-    assert!(md.find(|n| n.ctor == Ctor::Math).is_none());
+    assert_eq!(not.children()[0].children().len(), 3);
+    assert_eq!(md.children()[0].children().len(), 6);
+    assert!(md.find(|n| n.ctor() == Ctor::Math).is_none());
     let source = "| first | second |\n| --- | --- |\n| `left | right` |\n| $left | right$ |";
     let md = analyze("test.md", source);
     assert!(
-        md.find(|n| matches!(n.ctor, Ctor::RawInline | Ctor::Math))
+        md.find(|n| matches!(n.ctor(), Ctor::RawInline | Ctor::Math))
             .is_none()
     );
 }
@@ -394,21 +397,18 @@ fn multiline_strings_keep_their_payload_and_following_cells_and_rows() {
                  | next | plain | end |{newline}{newline}after"
             );
             let root = analyze("test.not", &src);
-            let table = &root.children[0];
-            assert_eq!(table.ctor, Ctor::Table);
-            assert_eq!(table.children.len(), 3);
-            assert!(table.children.iter().all(|row| row.children.len() == 3));
-            let raw = table.children[1].children[1]
-                .find(|node| node.ctor == Ctor::RawInline)
+            let table = &root.children()[0];
+            assert_eq!(table.ctor(), Ctor::Table);
+            assert_eq!(table.children().len(), 3);
+            assert!(table.children().iter().all(|row| row.children().len() == 3));
+            let raw = table.children()[1].children()[1]
+                .find(|node| node.ctor() == Ctor::RawInline)
                 .unwrap();
-            assert_eq!(
-                raw.fields.get("text"),
-                Some(&Value::Str(payload.clone().into()))
-            );
-            assert_eq!(text(&table.children[1].children[2]), "tail");
-            assert_eq!(text(&table.children[2]), "nextplainend");
-            assert_eq!(text(&root.children[1]), "after");
-            for cell in table.children.iter().flat_map(|row| &row.children) {
+            assert_eq!(raw.field("text"), Some(&Value::Str(payload.clone().into())));
+            assert_eq!(text(&table.children()[1].children()[2]), "tail");
+            assert_eq!(text(&table.children()[2]), "nextplainend");
+            assert_eq!(text(&root.children()[1]), "after");
+            for cell in table.children().iter().flat_map(|row| row.children()) {
                 assert!(
                     cell.descendants()
                         .all(|node| cell.span.contains_range(node.span))
@@ -452,21 +452,21 @@ stateDiagram-v2
         "{:?}",
         analysis.diagnostics()
     );
-    let table = &analysis.root().children[0];
-    assert_eq!(table.children.len(), 3);
-    assert!(table.children.iter().all(|row| row.children.len() == 2));
+    let table = &analysis.root().children()[0];
+    assert_eq!(table.children().len(), 3);
+    assert!(table.children().iter().all(|row| row.children().len() == 2));
     let id = notist::FunctionId::new("mermaid", "diagram");
-    let diagram = table.children[1].children[1]
-        .find(|node| node.ctor.function_id() == Some(id.clone()))
+    let diagram = table.children()[1].children()[1]
+        .find(|node| node.ctor().function_id() == Some(id.clone()))
         .unwrap();
     assert_eq!(diagram.level, Level::Block);
     assert_eq!(
-        diagram.fields.get("source"),
+        diagram.field("source"),
         Some(&Value::Str(
             "stateDiagram-v2\n    [*] --> s1\n    s1 --> [*]".into()
         ))
     );
-    assert_eq!(text(&table.children[2]), "afterfollowing");
+    assert_eq!(text(&table.children()[2]), "afterfollowing");
     let mut html_registry = notist_html::HtmlRegistry::default();
     html_registry
         .bind_component(context.registry().get(&id).unwrap(), "/mermaid/diagram.js")
@@ -493,13 +493,13 @@ fn complete_calls_protect_pipes_and_wrap_headers_and_arguments() {
         normalized(root.clone()),
         normalized(analyze("test.not", calls))
     );
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 3);
-    assert_eq!(text(&table.children[1].children[1]), "one | two");
-    let embed = table.children[1].children[0]
-        .find(|node| node.ctor == Ctor::Embed)
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 3);
+    assert_eq!(text(&table.children()[1].children()[1]), "one | two");
+    let embed = table.children()[1].children()[0]
+        .find(|node| node.ctor() == Ctor::Embed)
         .unwrap();
-    assert_eq!(embed.fields.get("title"), Some(&Value::Str("a|b".into())));
+    assert_eq!(embed.field("title"), Some(&Value::Str("a|b".into())));
 }
 
 #[test]
@@ -519,19 +519,19 @@ fn grouped_cells_accept_paragraphs_lists_and_nested_pipe_tables() {
         normalized(root.clone()),
         normalized(analyze("test.not", &calls))
     );
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 3);
-    let cell = &table.children[1].children[1];
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 3);
+    let cell = &table.children()[1].children()[1];
     assert_eq!(
-        cell.find(|node| node.ctor == Ctor::Table)
+        cell.find(|node| node.ctor() == Ctor::Table)
             .unwrap()
-            .children
+            .children()
             .len(),
         2
     );
-    assert!(cell.find(|node| node.ctor == Ctor::List).is_some());
-    assert_eq!(text(&table.children[2]), "afterend");
-    assert_eq!(text(&root.children[1]), "outside");
+    assert!(cell.find(|node| node.ctor() == Ctor::List).is_some());
+    assert_eq!(text(&table.children()[2]), "afterend");
+    assert_eq!(text(&root.children()[1]), "outside");
     assert!(
         cell.descendants()
             .all(|node| cell.span.contains_range(node.span))
@@ -565,8 +565,8 @@ fn calls_and_nested_tables_keep_opaque_payloads_unchanged() {
     );
     let payloads: Vec<_> = root
         .descendants()
-        .filter(|node| matches!(node.ctor, Ctor::RawInline | Ctor::Math))
-        .map(|node| node.fields.get("text").unwrap().clone())
+        .filter(|node| matches!(node.ctor(), Ctor::RawInline | Ctor::Math))
+        .map(|node| node.field("text").unwrap().clone())
         .collect();
     assert_eq!(
         payloads,
@@ -592,11 +592,11 @@ fn logical_rows_work_inside_call_bodies_and_list_items() {
         format!("- item\n{indented}\n- next\n\noutside"),
     ] {
         let root = analyze("test.not", &src);
-        let table = root.find(|node| node.ctor == Ctor::Table).unwrap();
-        assert_eq!(table.children.len(), 3);
-        assert_eq!(text(&table.children[1]), "richfirstsecond");
-        assert_eq!(text(&table.children[2]), "afterend");
-        assert_eq!(text(root.children.last().unwrap()), "outside");
+        let table = root.find(|node| node.ctor() == Ctor::Table).unwrap();
+        assert_eq!(table.children().len(), 3);
+        assert_eq!(text(&table.children()[1]), "richfirstsecond");
+        assert_eq!(text(&table.children()[2]), "afterend");
+        assert_eq!(text(root.children().last().unwrap()), "outside");
     }
 }
 
@@ -606,12 +606,12 @@ fn multiline_comments_are_opaque_inside_a_logical_row() {
                | first /* a|b\n\n#call[x] */ last | #raw(\n/* ) |\ncomment */ \"value\"\n) |\n\
                | next | row |";
     let root = analyze("test.not", src);
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 3);
-    assert_eq!(text(&table.children[1].children[0]), "first  last");
-    assert_eq!(text(&table.children[2]), "nextrow");
-    let raw = table.find(|node| node.ctor == Ctor::RawInline).unwrap();
-    assert_eq!(raw.fields.get("text"), Some(&Value::Str("value".into())));
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 3);
+    assert_eq!(text(&table.children()[1].children()[0]), "first  last");
+    assert_eq!(text(&table.children()[2]), "nextrow");
+    let raw = table.find(|node| node.ctor() == Ctor::RawInline).unwrap();
+    assert_eq!(raw.field("text"), Some(&Value::Str("value".into())));
 }
 
 #[test]
@@ -627,22 +627,22 @@ fn opaque_payloads_own_literal_calls_and_pipes() {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[1].cells().count(), 2, "{src}");
         let root = analyze("test.not", &src);
-        let cell = &root.children[0].children[1].children[0];
+        let cell = &root.children()[0].children()[1].children()[0];
         let node = cell
-            .find(|node| matches!(node.ctor, Ctor::RawInline | Ctor::Math))
+            .find(|node| matches!(node.ctor(), Ctor::RawInline | Ctor::Math))
             .unwrap();
-        assert_eq!(node.fields.get("text"), Some(&Value::Str(payload.into())));
-        assert!(cell.find(|node| node.ctor == Ctor::Strong).is_none());
+        assert_eq!(node.field("text"), Some(&Value::Str(payload.into())));
+        assert!(cell.find(|node| node.ctor() == Ctor::Strong).is_none());
     }
     let root = analyze(
         "test.not",
         "| a | b |\n| --- | --- |\n| `left | #strong[x | y] right` |",
     );
     assert_eq!(
-        root.children[0].children[1].children[0]
-            .find(|n| n.ctor == Ctor::RawInline)
+        root.children()[0].children()[1].children()[0]
+            .find(|n| n.ctor() == Ctor::RawInline)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str("left | #strong[x | y] right".into()))
     );
@@ -677,14 +677,14 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
 fn emphasis_and_links_cannot_pair_across_cells_or_rows() {
     let src = "| *left | right* |\n| --- | --- |\n| `left | right` |\n| $left | right$ |\n| [broken | label](target) |";
     let root = analyze("test.not", src);
-    let table = &root.children[0];
-    assert_eq!(table.children.len(), 4);
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 4);
     assert!(
         table
-            .find(|n| matches!(n.ctor, Ctor::Strong | Ctor::Link))
+            .find(|n| matches!(n.ctor(), Ctor::Strong | Ctor::Link))
             .is_none()
     );
-    for cell in table.children.iter().flat_map(|r| &r.children) {
+    for cell in table.children().iter().flat_map(|r| r.children()) {
         for node in cell.descendants() {
             assert!(cell.span.contains_range(node.span));
         }
@@ -696,33 +696,28 @@ fn tables_split_surrounding_paragraphs_and_work_in_block_bodies_with_attrs() {
     let src = "before\n@(id: \"grid\")\n| a | b |\n| --- | --- |\n| x | y |\n\nafter\n---";
     let root = analyze("test.not", src);
     assert_eq!(
-        root.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-        [
-            &Ctor::Paragraph,
-            &Ctor::Table,
-            &Ctor::Paragraph,
-            &Ctor::Divider
-        ]
+        root.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+        [Ctor::Paragraph, Ctor::Table, Ctor::Paragraph, Ctor::Divider]
     );
     assert_eq!(
-        root.children[1].attrs.get("id"),
+        root.children()[1].attrs.get("id"),
         Some(&Value::Str("grid".into()))
     );
     let direct = analyze(
         "test.not",
         "before\n| a | b |\n| --- | --- |\n| x | y |\n\nafter",
     );
-    assert_eq!(direct.children[1].ctor, Ctor::Table);
+    assert_eq!(direct.children()[1].ctor(), Ctor::Table);
     let nested = analyze(
         "test.not",
         "#callout[\n| a | b |\n| --- | --- |\n| x | y |\n]",
     );
-    assert_eq!(nested.children[0].children[0].ctor, Ctor::Table);
+    assert_eq!(nested.children()[0].children()[0].ctor(), Ctor::Table);
     let headed = analyze(
         "test.not",
         "= Section\n| a |\n| --- |\n| x |\n\n== Next\ntext",
     );
-    assert_eq!(headed.children[0].children[1].ctor, Ctor::Table);
+    assert_eq!(headed.children()[0].children()[1].ctor(), Ctor::Table);
 }
 
 #[test]
@@ -731,27 +726,27 @@ fn explicit_cells_accept_block_content_and_inline_structural_mounts_recurse() {
         "test.not",
         "#table[\n#row[\n@(id: \"cell\")#cell[ \n= Inside\nfirst\n\nsecond\n ]\n]\n]",
     );
-    let cell = &root.children[0].children[0].children[0];
-    assert_eq!(cell.ctor, Ctor::TableCell);
+    let cell = &root.children()[0].children()[0].children()[0];
+    assert_eq!(cell.ctor(), Ctor::TableCell);
     assert_eq!(cell.attrs.get("id"), Some(&Value::Str("cell".into())));
-    assert_eq!(cell.children[0].ctor, Ctor::Section);
-    assert_eq!(cell.children[0].children.len(), 3);
+    assert_eq!(cell.children()[0].ctor(), Ctor::Section);
+    assert_eq!(cell.children()[0].children().len(), 3);
     let inline = analyze(
         "test.not",
         "#table[#row[#cell[ first\n\n#callout[hint]\n\nsecond ]]]",
     );
     assert_eq!(
-        inline.children[0].children[0].children[0]
-            .children
+        inline.children()[0].children()[0].children()[0]
+            .children()
             .iter()
-            .map(|n| &n.ctor)
+            .map(|n| n.ctor())
             .collect::<Vec<_>>(),
-        [&Ctor::Paragraph, &Ctor::Callout, &Ctor::Paragraph]
+        [Ctor::Paragraph, Ctor::Callout, Ctor::Paragraph]
     );
     let empty = analyze("test.not", "#table[#row[#cell[]]]");
     assert!(
-        empty.children[0].children[0].children[0]
-            .children
+        empty.children()[0].children()[0].children()[0]
+            .children()
             .is_empty()
     );
 }
@@ -770,7 +765,7 @@ fn malformed_table_markers_remain_prose_and_wrong_structural_children_diagnose()
         "| a | b |",
     ] {
         let root = analyze("test.not", src);
-        assert!(root.find(|n| n.ctor == Ctor::Table).is_none(), "{src:?}");
+        assert!(root.find(|n| n.ctor() == Ctor::Table).is_none(), "{src:?}");
     }
     for (src, message) in [
         ("#table[text]", "`table` takes only row children"),

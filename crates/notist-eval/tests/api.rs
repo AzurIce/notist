@@ -2,10 +2,7 @@ use notist_core::{
     builtins,
     definitions::{ComptimeValue, FunctionId, FunctionInstance, Type},
     diag::Diagnostic,
-    evaluation::{
-        CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, PendingEvaluation,
-        TypedExpr,
-    },
+    evaluation::{CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, TypedExpr},
     inputs::{EvaluationInputs, InputRead},
     item::{Ctor, Item, Value},
     registry::Registry,
@@ -115,10 +112,15 @@ fn value(value: Value) -> TypedExpr {
 }
 
 fn document(context: &NativeContext, text: TypedExpr) -> Item {
-    let mut item = Item::new(Ctor::Text, Default::default());
     let call = context.call("text", vec![("text", text)]);
-    item.instance = Some(call.instance.clone().into());
-    item.pending = Some(Box::new(PendingEvaluation::Call(call)));
+    let item = Item::expression(TypedExpr {
+        ty: Some(Type::InlineContent),
+        known: None,
+        kind: ExprKind::Call(Box::new(call)),
+        span: Default::default(),
+        source: "native".into(),
+        shape: Default::default(),
+    });
     Item::new(Ctor::Doc, Default::default()).with_children(vec![item])
 }
 
@@ -131,10 +133,15 @@ fn checked_ir_evaluates_without_the_compiler_and_does_not_mutate_inputs() {
     let result = notist_eval::evaluate(&root, &program, &context, Limits::default());
     assert!(result.diagnostics.is_empty());
     assert_eq!(
-        result.root.children[0].fields.get("text"),
+        result.root.children()[0].field("text"),
         Some(&Value::Str("hello".into()))
     );
-    assert!(result.root.descendants().all(|item| item.pending.is_none()));
+    assert!(
+        result
+            .root
+            .descendants()
+            .all(|item| item.as_expr().is_none())
+    );
     assert_eq!(root, before);
     assert!(program.instances.is_empty());
     assert_eq!(context.specializations.get(), 1);
@@ -146,7 +153,7 @@ fn comptime_uses_the_same_engine_without_runtime_mapping() {
     let expr = TypedExpr {
         ty: Some(Type::String),
         known: None,
-        kind: ExprKind::ValueCall(Box::new(
+        kind: ExprKind::Call(Box::new(
             context.call("str", vec![("value", value(Value::Int(42)))]),
         )),
         span: Default::default(),
@@ -179,7 +186,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
     let expr = TypedExpr {
         ty: Some(Type::String),
         known: None,
-        kind: ExprKind::ValueCall(Box::new(context.call(
+        kind: ExprKind::Call(Box::new(context.call(
             "read_text",
             vec![("source", value(Value::Path(path.clone())))],
         ))),
@@ -219,7 +226,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.dependencies, [path].into_iter().collect());
     assert_eq!(
-        result.root.children[0].fields.get("text"),
+        result.root.children()[0].field("text"),
         Some(&Value::Str("loaded".into()))
     );
     assert_eq!(ready.reads.get(), 1);

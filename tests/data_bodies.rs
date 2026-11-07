@@ -30,7 +30,7 @@ fn evaluate(dialect: &str, module: &str, document: &str) -> Evaluation {
     let result = pipeline.evaluate(&analysis, &context);
     assert_eq!(analysis, before);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert!(result.root.descendants().all(|n| n.pending.is_none()));
+    assert!(result.root.descendants().all(|n| n.as_expr().is_none()));
     result
 }
 fn html(root: &Item) -> String {
@@ -179,13 +179,13 @@ fn capture_shadowing_repeated_mounts_and_nested_loops_are_lexical() {
             html(&result.root),
             "<p><span id=\"first\">13142324</span>9<span id=\"second\">13142324</span></p>"
         );
-        assert!(
+        assert_eq!(
             result
                 .root
                 .descendants()
-                .filter(|n| n.ctor == Ctor::Interpolation)
-                .count()
-                >= 8
+                .filter(|n| n.ctor() == Ctor::Group)
+                .count(),
+            2
         );
     }
 }
@@ -382,7 +382,7 @@ fn empty_outputs_nested_calls_and_repeated_mounts_share_cumulative_budgets() {
     ] {
         let result = p.evaluate_with_limits(&a, &c, limits);
         assert!(!result.diagnostics.is_empty());
-        assert!(result.root.descendants().all(|n| n.pending.is_none()));
+        assert!(result.root.descendants().all(|n| n.as_expr().is_none()));
     }
     let (p, c, a) = analyze(
         "doc.not",
@@ -413,7 +413,7 @@ fn failing_iteration_does_not_publish_a_partial_prefix() {
         "{:?}",
         result.diagnostics
     );
-    assert!(result.root.descendants().all(|n| n.ctor != Ctor::Text));
+    assert!(result.root.descendants().all(|n| n.ctor() != Ctor::Text));
     assert!(
         result
             .diagnostics
@@ -439,7 +439,7 @@ body
             result
                 .root
                 .descendants()
-                .filter(|n| n.ctor == Ctor::Section)
+                .filter(|n| n.ctor() == Ctor::Section)
                 .count(),
             2
         );
@@ -450,7 +450,7 @@ body
                 .filter(|n| n.function_id()
                     == Some(notist_core::definitions::FunctionId::new("demo", "view")))
                 .count(),
-            1
+            0
         );
         assert_eq!(html(&result.root).matches("<section>").count(), 2);
     }

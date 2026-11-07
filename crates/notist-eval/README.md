@@ -2,8 +2,22 @@
 
 Bounded evaluation of checked Notist IR. Runtime content binding, presentation,
 native/data calls, compile-time evaluation and the evaluation-local instance
-cache live here. The existing language, Item results and logical limits are
-preserved; this crate split does not introduce a new execution model.
+cache live here. Content trees use `Node { content: NodeContent, attrs, ... }`:
+`NodeContent::Expr` holds a checked expression (including calls), while
+`NodeContent::Item` holds constructed content. `Item` remains a compatibility
+alias for `Node`; the item payload is `ContentItem`.
+
+Complete output contains no expressions. Unannotated expanded expressions
+dissolve into their resulting forest; nonempty annotations retain an ordinary
+`Ctor::Group`, including for empty results. An empty annotation is equivalent
+to no annotation. Explicit `Ctor::Node` boundaries remain. Native/component
+nodes retain concrete parameters, but no source-call/target pair or evaluation
+flags. Recovered failures are `Ctor::Error` content with source metadata.
+
+Execution/recovery frames are private to the engine (`src/frame.rs`). This
+representation refactor does not replace the capture algorithm or promise a
+performance improvement. Current logical budgets still include intermediate
+execution boundaries; output-tree size alone is not total evaluation work.
 
 ## Dependency boundary
 
@@ -13,7 +27,8 @@ notist-pipeline ──→ notist-eval ──→ notist-core
 ```
 
 - `notist-core::evaluation` owns the shared `CheckedProgram`, `InstanceRecord`,
-  `TypedExpr` and pending-content models.
+  `TypedExpr` and content-expression models. Calls use `ExprKind::Call` for
+  both data and content results; call children are expressions as well.
 - `EvaluationContext` supplies definitions, execution mappings and the callback
   for checking a missing specialization. Pipeline implements it with its checker.
   Generic dispatch avoids adding a trait-object lookup to every constructor call.

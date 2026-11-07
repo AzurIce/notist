@@ -74,8 +74,8 @@ impl EvaluationInputs for Inputs {
 }
 fn text(root: &Item) -> String {
     root.descendants()
-        .filter(|n| matches!(n.ctor, Ctor::Text | Ctor::RawInline))
-        .filter_map(|n| match n.fields.get("text") {
+        .filter(|n| matches!(n.ctor(), Ctor::Text | Ctor::RawInline))
+        .filter_map(|n| match n.field("text") {
             Some(notist::Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -207,8 +207,8 @@ fn main() {
         );
         evaluation_time += now.elapsed();
         for node in result.root.descendants() {
-            assert!(node.pending.is_none());
-            if let Some(instance) = &node.instance {
+            assert!(node.as_expr().is_none());
+            if let Some(instance) = node.instance() {
                 specializations.insert(instance.key());
             }
             nodes += 1;
@@ -243,12 +243,12 @@ fn main() {
             &|root, html| {
                 let rows: Vec<_> = root
                     .descendants()
-                    .filter(|n| n.ctor == Ctor::TableRow)
+                    .filter(|n| n.ctor() == Ctor::TableRow)
                     .collect();
                 assert_eq!(rows.len(), 13);
                 for row in rows {
-                    let name = text(&row.children[0]);
-                    let actual = text(&row.children[1]);
+                    let name = text(&row.children()[0]);
+                    let actual = text(&row.children()[1]);
                     let expected = match &record[&name] {
                         Value::String(s) => s.clone(),
                         Value::Bool(b) => if *b { "是" } else { "否" }.into(),
@@ -275,14 +275,14 @@ fn main() {
             &|root, _| {
                 let rows: Vec<_> = root
                     .descendants()
-                    .filter(|n| n.ctor == Ctor::TableRow)
+                    .filter(|n| n.ctor() == Ctor::TableRow)
                     .collect();
                 let expected = records.as_array().unwrap();
                 assert_eq!(rows.len(), expected.len());
                 for (row, record) in rows.into_iter().zip(expected) {
-                    assert_eq!(text(&row.children[0]), record["id"].to_string());
-                    assert_eq!(text(&row.children[1]), record["name"].as_str().unwrap());
-                    assert_eq!(text(&row.children[2]), record["category"].to_string());
+                    assert_eq!(text(&row.children()[0]), record["id"].to_string());
+                    assert_eq!(text(&row.children()[1]), record["name"].as_str().unwrap());
+                    assert_eq!(text(&row.children()[2]), record["category"].to_string());
                 }
             },
         );
@@ -302,19 +302,19 @@ fn main() {
                 let raw: Vec<_> = root
                     .descendants()
                     .filter(|n| {
-                        n.ctor == Ctor::RawInline && n.level == notist::builtins::Level::Block
+                        n.ctor() == Ctor::RawInline && n.level == notist::builtins::Level::Block
                     })
                     .collect();
                 assert_eq!(raw.len(), 2);
                 for (raw, source) in raw.into_iter().zip(record["sources"].as_array().unwrap()) {
                     assert_eq!(
-                        raw.fields.get("text"),
+                        raw.field("text"),
                         Some(&notist::Value::Str(source["text"].as_str().unwrap().into()))
                     );
                 }
                 let links: Vec<_> = root
                     .descendants()
-                    .filter(|n| n.ctor == Ctor::Link)
+                    .filter(|n| n.ctor() == Ctor::Link)
                     .collect();
                 assert_eq!(
                     links.len(),

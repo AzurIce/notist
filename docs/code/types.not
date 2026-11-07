@@ -71,7 +71,7 @@ flavor(open, close) =
 
 InlineContent 与 BlockContent 没有隐式转换。固定 BlockContent 参数需要块级字面量；类别多态的参数通过输入类型推导编译期类别。node 保持输入类别，callout、item、cell 接受两种输入并固定返回 BlockContent。
 
-Code 的内容值是森林；字面量内 `#value` 挂载时保留一个 Interpolation 分组，作为这次插值的属性与来源落点。空分组、无属性分组也不消除；每个内容函数调用仍保留自己的边界节点。详情见 [Code 函数系统](functions.not)。
+Code 的内容值是森林；字面量内 `#value` 求值后直接引入结果森林。插值带有非空属性时保留透明 Group，作为这次挂载的属性落点，包括结果为空的情况；无属性和空注解不额外保留分组。显式 node 与原生内容元素仍有自己的节点。详情见 [Code 函数系统](functions.not)。
 
 == 集合
 

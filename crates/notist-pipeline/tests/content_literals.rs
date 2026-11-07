@@ -22,14 +22,14 @@ fn host_selects_content_syntax_and_compiles_items_without_a_document_root() {
         );
         assert_eq!(lowered.body, BodyFlavor::Inline);
         assert_eq!(lowered.forest.len(), 1);
-        assert_eq!(lowered.forest[0].ctor, target);
+        assert_eq!(lowered.forest[0].ctor(), target);
         assert_eq!(parsed.syntax().kind(), SyntaxKind::ContentLiteral);
         assert!(parsed.syntax().children().next().is_none());
         assert_eq!(parsed.contents.len(), 1);
         let end = source.find("] remaining").unwrap() + 1;
         assert_eq!(usize::from(parsed.consumed()), end);
-        let text = &lowered.forest[0].children[0];
-        let value = text.fields.get("text").unwrap();
+        let text = &lowered.forest[0].children()[0];
+        let value = text.field("text").unwrap();
         let Value::Str(value) = value else { panic!() };
         assert_eq!(
             &source[usize::from(text.span.start())..usize::from(text.span.end())],
@@ -87,7 +87,7 @@ fn block_literals_keep_blocks_and_annotations_without_a_literal_wrapper() {
         );
         assert_eq!(lowered.body, BodyFlavor::Block);
         assert_eq!(lowered.forest.len(), 1);
-        assert_eq!(lowered.forest[0].ctor, Ctor::Paragraph);
+        assert_eq!(lowered.forest[0].ctor(), Ctor::Paragraph);
         assert_eq!(
             lowered.forest[0].attrs.get("status"),
             Some(&Value::Str("draft".into()))
@@ -283,7 +283,7 @@ fn code_lowers_markup_once_then_reuses_ir_across_concrete_instances() {
             evaluated
                 .root
                 .descendants()
-                .any(|n| n.fields.get("text") == Some(&Value::Str(text.into())))
+                .any(|n| n.field("text") == Some(&Value::Str(text.into())))
         );
     }
     assert_eq!(
@@ -324,12 +324,9 @@ fn content_resolution_uses_the_selected_instance_and_keeps_source_ranges() {
     let result = pipeline.evaluate(&invalid, &context);
     let call = result
         .root
-        .find(|n| matches!(&n.ctor, Ctor::Custom(name) if name == "missing"))
+        .find(|n| matches!(n.ctor(), Ctor::Error(ref message) if message.contains("missing")))
         .unwrap();
-    assert!(matches!(
-        call.evaluation,
-        Some(notist_core::item::EvaluationState::Error(_))
-    ));
+    assert!(call.is_error());
 }
 
 #[test]
@@ -365,8 +362,8 @@ fn block() -> BlockContent { callout()[
         let item = result
             .root
             .find(|n| n.attrs.get("id") == Some(&Value::Str(id.into())))
-            .unwrap();
-        assert_eq!(item.ctor, ctor);
+            .unwrap_or_else(|| panic!("missing {id}: {result:#?}"));
+        assert_eq!(item.ctor(), ctor);
     }
 }
 
@@ -428,8 +425,8 @@ fn complete_content_entry_uses_code_expression_rules_and_the_supplied_module_sco
         analysis.diagnostics
     );
     assert_eq!(analysis.forest.len(), 1);
-    assert_eq!(analysis.forest[0].ctor, Ctor::Text);
-    assert!(analysis.forest[0].pending.is_some());
+    assert_eq!(analysis.forest[0].ctor(), Ctor::Text);
+    assert!(analysis.forest[0].as_expr().is_some());
 }
 
 #[test]
@@ -460,16 +457,8 @@ fn invalid_content_lowering_in_a_direct_mount_is_recorded_before_instance_checki
         1
     );
     let result = pipeline.evaluate(&analysis, &context);
-    let boundary = result
-        .root
-        .find(|n| {
-            n.function_id() == Some(notist_core::definitions::FunctionId::new("demo", "view"))
-        })
-        .unwrap();
-    assert!(matches!(
-        boundary.evaluation,
-        Some(notist_core::item::EvaluationState::Error(_))
-    ));
+    let boundary = result.root.find(|n| n.is_error()).unwrap();
+    assert!(boundary.is_error());
 }
 
 #[test]

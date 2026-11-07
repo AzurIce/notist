@@ -6,8 +6,9 @@ pub fn render_json(sources: &notist::Sources, matches: &[&Item]) -> String {
         .iter()
         .map(|item| {
             let mut data = notist::json::item(item);
-            let name = item.ctor.name();
-            data["ctor"] = serde_json::json!(if matches!(item.ctor, Ctor::Extension(_)) {
+            let ctor = item.ctor();
+            let name = ctor.name();
+            data["ctor"] = serde_json::json!(if matches!(ctor, Ctor::Extension(_)) {
                 name.into_owned()
             } else {
                 name.to_lowercase()

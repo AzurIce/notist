@@ -24,7 +24,7 @@ pub fn assemble(
     let mut assets = Assets::new(output);
     let mut resource_urls = BTreeMap::new();
     for item in notist::embed::targets(root) {
-        let Some(notist::Value::Path(path)) = item.fields.get("target") else {
+        let Some(notist::Value::Path(path)) = item.field("target") else {
             continue;
         };
         if resource_urls.contains_key(path) {

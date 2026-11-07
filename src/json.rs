@@ -107,32 +107,14 @@ fn instance_json(i: Option<&notist_core::definitions::FunctionInstance>) -> serd
 
 fn metadata(item: &Item) -> serde_json::Value {
     serde_json::json!({
-        "pending": item.pending.as_deref().map(|pending| match pending {
-            notist_core::evaluation::PendingEvaluation::Call(call) => serde_json::json!({
-                "kind": "call",
-                "arguments": call.arguments.iter().map(|(name, expr)| serde_json::json!({
-                    "name": name, "type": expr.ty.as_ref().map(ToString::to_string),
-                    "source": expr.source, "start": u32::from(expr.span.start()), "end": u32::from(expr.span.end()),
-                })).collect::<Vec<_>>(),
-            }),
-            notist_core::evaluation::PendingEvaluation::Splice(expr) => serde_json::json!({
-                "kind": "splice", "type": expr.ty.as_ref().map(ToString::to_string),
-                "reference": match &expr.kind { notist_core::evaluation::ExprKind::Input(name) => Some(name), _ => None },
-            }),
-            notist_core::evaluation::PendingEvaluation::Repeat(expr) => serde_json::json!({
-                "kind": "for", "type": expr.ty.as_ref().map(ToString::to_string),
-                "source": expr.source, "start": u32::from(expr.span.start()), "end": u32::from(expr.span.end()),
-            }),
-            notist_core::evaluation::PendingEvaluation::Failure { message, .. } => serde_json::json!({"kind":"failure", "message":message}),
-        }),
-        "function": item.ctor.function_id().map(|id| id.to_string()),
-        "instance":instance_json(item.instance.as_deref()),
-        "target":instance_json(item.target.as_deref()),
-        "evaluation":match &item.evaluation {None=>serde_json::Value::Null,Some(notist_core::item::EvaluationState::Native)=>"native".into(),Some(notist_core::item::EvaluationState::Expanded)=>"expanded".into(),Some(notist_core::item::EvaluationState::Error(m))=>serde_json::json!({"error":m})},
+        "expression": item.as_expr(),
+        "function": item.function_id().map(|id| id.to_string()),
+        "instance":instance_json(item.instance()),
+        "error": match item.ctor() { crate::Ctor::Error(message) => Some(message), _ => None },
         "origin":item.origin.as_ref().map(|o|serde_json::json!({"source":o.source.as_str(),"start":o.start,"end":o.end,"expansion":o.expansion.iter().map(|x|serde_json::json!({"source":x.source.as_str(),"start":x.start,"end":x.end})).collect::<Vec<_>>()})),
         "level": if item.level == crate::builtins::Level::Block { "block" } else { "inline" },
-        "fields": value(&Value::Dict(item.fields.clone())),
-        "typed_fields": notist_html::components::value_json(&Value::Dict(item.fields.clone())),
+        "fields": value(&Value::Dict(item.fields())),
+        "typed_fields": notist_html::components::value_json(&Value::Dict(item.fields())),
         "typed_attrs": notist_html::components::value_json(&Value::Dict(item.attrs.clone())),
     })
 }
@@ -146,11 +128,11 @@ pub(crate) fn write_metadata(out: &mut String, item: &Item) {
 /// descendants. Typed values preserve numeric bits and dictionary order.
 pub fn item(item: &Item) -> serde_json::Value {
     let mut object = metadata(item);
-    object["ctor"] = item.ctor.name().as_ref().into();
+    object["ctor"] = item.ctor().name().as_ref().into();
     object["start"] = u32::from(item.span.start()).into();
     object["end"] = u32::from(item.span.end()).into();
     object["attrs"] = value(&Value::Dict(item.attrs.clone()));
-    object["children"] = serde_json::Value::Array(item.children.iter().map(self::item).collect());
+    object["children"] = serde_json::Value::Array(item.children().iter().map(self::item).collect());
     object
 }
 

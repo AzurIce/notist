@@ -74,12 +74,12 @@ fn diagnostic(span: TextRange, message: impl Into<String>) -> Diagnostic {
 fn text_of(item: &Item) -> String {
     let mut out = String::new();
     fn walk(item: &Item, out: &mut String) {
-        if item.ctor == Ctor::Text
-            && let Some(Value::Str(text)) = item.fields.get("text")
+        if item.ctor() == Ctor::Text
+            && let Some(Value::Str(text)) = item.field("text")
         {
             out.push_str(text);
         }
-        for child in &item.children {
+        for child in item.children() {
             walk(child, out);
         }
     }
@@ -88,14 +88,14 @@ fn text_of(item: &Item) -> String {
 }
 
 fn blank(item: &Item) -> bool {
-    item.ctor == Ctor::Text
-        && matches!(&item.fields.get("text"), Some(Value::Str(text)) if text.trim().is_empty())
+    item.ctor() == Ctor::Text
+        && matches!(item.field("text"), Some(Value::Str(text)) if text.trim().is_empty())
 }
 
 /// Transparent containers carry no structure of their own.
 fn flatten<'a>(item: &'a Item, blocks: &mut Vec<&'a Item>) {
-    if matches!(item.ctor, Ctor::Section | Ctor::Node) {
-        for child in &item.children {
+    if matches!(item.ctor(), Ctor::Section | Ctor::Node | Ctor::Group) {
+        for child in item.children() {
             flatten(child, blocks);
         }
     } else {
@@ -109,7 +109,7 @@ fn interpret_label(
 ) -> Option<(Option<String>, Option<String>)> {
     let mut links = vec![];
     for node in paragraph.descendants() {
-        match node.ctor {
+        match node.ctor() {
             Ctor::Link => links.push(node),
             Ctor::Embed => {
                 errors.push(diagnostic(
@@ -136,11 +136,11 @@ fn interpret_label(
         }
         [link] => {
             let meaningful: Vec<_> = paragraph
-                .children
+                .children()
                 .iter()
                 .filter(|child| !blank(child))
                 .collect();
-            if meaningful.len() != 1 || meaningful[0].ctor != Ctor::Link {
+            if meaningful.len() != 1 || meaningful[0].ctor() != Ctor::Link {
                 errors.push(diagnostic(
                     paragraph.span,
                     "a structure link must be the whole label",
@@ -148,7 +148,7 @@ fn interpret_label(
                 return None;
             }
             let label = text_of(link);
-            let target = match link.fields.get("target") {
+            let target = match link.field("target") {
                 Some(Value::Str(target)) => target.to_string(),
                 _ => String::new(),
             };
@@ -165,20 +165,20 @@ fn interpret_label(
 }
 
 fn chapter_list(list: &Item, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
-    if matches!(list.fields.get("ordered"), Some(Value::Bool(true))) {
+    if matches!(list.field("ordered"), Some(Value::Bool(true))) {
         errors.push(diagnostic(
             list.span,
             "structure chapter lists use unordered markers; write chapter numbers in the label",
         ));
     }
-    list.children
+    list.children()
         .iter()
         .filter_map(|item| entry(item, errors))
         .collect()
 }
 
 fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
-    if item.ctor != Ctor::ListItem {
+    if item.ctor() != Ctor::ListItem {
         errors.push(diagnostic(
             item.span,
             "structure entries must be list items",
@@ -187,8 +187,8 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
     }
     let mut label = None;
     let mut nested = None;
-    for child in &item.children {
-        match child.ctor {
+    for child in item.children() {
+        match child.ctor() {
             Ctor::Paragraph if label.is_none() => label = Some(child),
             Ctor::List if nested.is_none() => nested = Some(child),
             _ => errors.push(diagnostic(
@@ -206,7 +206,7 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
     };
     let collapsed = match label.attrs.get("collapsed").or_else(|| {
         label
-            .children
+            .children()
             .iter()
             .find(|child| !blank(child))
             .and_then(|child| child.attrs.get("collapsed"))
@@ -242,7 +242,7 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
 /// Interpret the analyzed document as a structure declaration.
 pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> {
     let mut blocks = vec![];
-    for child in &document.children {
+    for child in document.children() {
         flatten(child, &mut blocks);
     }
     let mut errors = vec![];
@@ -250,9 +250,9 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
     let mut chapters_started = false;
     let mut suffix = false;
     for (index, block) in blocks.iter().enumerate() {
-        match block.ctor {
+        match block.ctor() {
             Ctor::Heading => {
-                if matches!(block.fields.get("level"), Some(Value::Int(1))) && index != 0 {
+                if matches!(block.field("level"), Some(Value::Int(1))) && index != 0 {
                     if suffix {
                         errors.push(diagnostic(
                             block.span,
@@ -293,11 +293,11 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
             }
             Ctor::Paragraph => {
                 let links: Vec<_> = block
-                    .children
+                    .children()
                     .iter()
                     .filter(|child| !blank(child))
                     .collect();
-                if links.is_empty() || links.iter().any(|link| link.ctor != Ctor::Link) {
+                if links.is_empty() || links.iter().any(|link| link.ctor() != Ctor::Link) {
                     errors.push(diagnostic(
                         block.span,
                         "prefix and suffix chapters must contain only standalone links",
@@ -306,7 +306,7 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
                 }
                 suffix |= chapters_started;
                 for link in links {
-                    let target = match link.fields.get("target") {
+                    let target = match link.field("target") {
                         Some(Value::Str(target)) => target.to_string(),
                         _ => String::new(),
                     };

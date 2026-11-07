@@ -28,7 +28,7 @@ fn code_renderer_preserves_the_shell_and_escapes_fallbacks() {
     let before = root.clone();
     let rendered = Renderer::new()
         .with_code_renderer(|item| {
-            (item.fields.get("lang") == Some(&Value::Str("rust".into())))
+            (item.field("lang") == Some(&Value::Str("rust".into())))
                 .then(|| "<span class=\"keyword\">let</span> x = 1 &lt; 2;".into())
         })
         .render(&root);
@@ -106,7 +106,9 @@ fn analyze(extension: &str, src: &str) -> Item {
         "{src}: {:?}",
         document.diagnostics()
     );
-    document.into_parts().0
+    Pipeline::default()
+        .evaluate(&document, &notist::Context::default())
+        .root
 }
 
 #[test]
@@ -149,7 +151,7 @@ fn block_math_renders_outside_paragraphs_and_shares_math_hooks() {
             )
         );
         let equation = root
-            .find(|n| n.ctor == Ctor::Math && n.level == notist::builtins::Level::Block)
+            .find(|n| n.ctor() == Ctor::Math && n.level == notist::builtins::Level::Block)
             .unwrap();
         let mapped = Renderer::new()
             .with_source_map()
@@ -309,7 +311,7 @@ fn escaping_occurs_after_frontend_decoding_and_in_all_attributes() {
         "<p>&lt;script&gt; &amp;amp; &amp;</p>"
     );
     let mut root = analyze("not", "#text(text: \"<script>&\")");
-    let text = &mut root.children[0].children[0];
+    let text = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
     text.attrs
         .insert("id", Value::Str("\" onmouseover=\"bad".into()));
     text.attrs.insert("onclick", Value::Str("bad()".into()));
@@ -345,8 +347,11 @@ fn unsafe_urls_are_omitted_with_source_diagnostics() {
     ] {
         assert!(!is_safe_url(target), "{target:?}");
         let mut root = analyze("not", "[label](safe)");
-        let link = &mut root.children[0].children[0];
-        link.fields.insert("target", Value::Str(target.into()));
+        let link = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
+        link.as_item_mut()
+            .unwrap()
+            .fields
+            .insert("target", Value::Str(target.into()));
         let span = link.span;
         let result = Renderer::new().render_with_diagnostics(&root);
         assert_eq!(result.html, "<p><a>label</a></p>");
@@ -381,7 +386,7 @@ fn callbacks_override_selected_resources_and_preserve_outer_attributes() {
     let prefix = "resources/";
     let renderer = Renderer::new()
         .with_embed_renderer(|item| {
-            let Value::Path(target) = item.fields.get("target")? else {
+            let Value::Path(target) = item.field("target")? else {
                 return None;
             };
             if target.path() != "a.png" {
@@ -391,7 +396,7 @@ fn callbacks_override_selected_resources_and_preserve_outer_attributes() {
         })
         .with_resource_resolver(|_, path| (path.path() == "b.pdf").then(|| "b.pdf".into()))
         .with_math_renderer(|item| {
-            let Value::Str(text) = item.fields.get("text")? else {
+            let Value::Str(text) = item.field("text")? else {
                 return None;
             };
             if text != "x" {
@@ -481,15 +486,20 @@ fn recovery_nodes_render_without_panicking_and_report_rendering_issues() {
     let result = Renderer::new().render_with_diagnostics(document.root());
     assert_eq!(
         result.html,
-        "<p><span class=\"notist-custom\" data-notist-constructor=\"unknown\">body</span></p><ul><li>text</li></ul><table><tbody><tr><td>wrong</td></tr></tbody></table>"
+        "<p><span class=\"notist-error\" role=\"alert\">unknown constructor or function `unknown`</span></p><ul><li>text</li></ul><table><tbody><tr><td>wrong</td></tr></tbody></table>"
     );
-    assert_eq!(result.diagnostics.len(), 3);
+    assert_eq!(result.diagnostics.len(), 2);
     let mut item = analyze("not", "#embed(\"target\")")
-        .children
+        .children_mut()
+        .unwrap()
         .remove(0)
-        .children
+        .children_mut()
+        .unwrap()
         .remove(0);
-    item.fields.insert("target", Value::Int(3));
+    item.as_item_mut()
+        .unwrap()
+        .fields
+        .insert("target", Value::Int(3));
     assert_eq!(render(&item), "<span class=\"notist-embed\"><a></a></span>");
-    assert_eq!(item.ctor, Ctor::Embed);
+    assert_eq!(item.ctor(), Ctor::Embed);
 }

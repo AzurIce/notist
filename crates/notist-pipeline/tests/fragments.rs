@@ -1,7 +1,6 @@
 use notist_core::{
-    evaluation::PendingEvaluation,
     expr::Expr,
-    item::{Ctor, EvaluationState, Value},
+    item::{Ctor, Value},
 };
 use notist_pipeline::{Context, Pipeline};
 
@@ -42,10 +41,10 @@ fn soft_newlines_keep_inline_calls_in_one_paragraph() {
             "{path}: {:?}",
             analysis.diagnostics()
         );
-        let paragraphs = &analysis.root().children;
+        let paragraphs = analysis.root().children();
         assert_eq!(paragraphs.len(), 1, "{path}");
-        assert_eq!(paragraphs[0].ctor, Ctor::Paragraph);
-        assert_eq!(paragraphs[0].children.len(), 2);
+        assert_eq!(paragraphs[0].ctor(), Ctor::Paragraph);
+        assert_eq!(paragraphs[0].children().len(), 2);
     }
 }
 
@@ -72,7 +71,7 @@ fn separate_blocks_require_a_hard_separator() {
             );
             // Recovery keeps the source fragment together instead of silently
             // exposing block children as valid siblings.
-            assert_eq!(analysis.root().children.len(), 1, "{path} {source:?}");
+            assert_eq!(analysis.root().children().len(), 1, "{path} {source:?}");
         }
         for separator in ["\n\n", "\r\n \t\r\n", "\\\n"] {
             let source = format!("#divider(){separator}#divider()");
@@ -83,13 +82,13 @@ fn separate_blocks_require_a_hard_separator() {
                 analysis.diagnostics(),
                 pipeline.inspect(path, &source, &context).unwrap().1.lowered
             );
-            assert_eq!(analysis.root().children.len(), 2, "{path} {source:?}");
+            assert_eq!(analysis.root().children().len(), 2, "{path} {source:?}");
             assert!(
                 analysis
                     .root()
-                    .children
+                    .children()
                     .iter()
-                    .all(|item| item.ctor == Ctor::Divider)
+                    .all(|item| item.ctor() == Ctor::Divider)
             );
         }
     }
@@ -109,12 +108,12 @@ fn invalid_fragment_recovers_without_discarding_the_next_fragment() {
             .unwrap();
         let evaluation = pipeline.evaluate(&analysis, &context);
         assert!(matches!(
-            evaluation.root.children[0].evaluation,
-            Some(EvaluationState::Error(_))
+            evaluation.root.children()[0].ctor(),
+            Ctor::Error(_)
         ));
         assert!(
-            evaluation.root.children[1]
-                .find(|item| item.fields.get("text") == Some(&Value::Str("still here".into())))
+            evaluation.root.children()[1]
+                .find(|item| item.field("text") == Some(&Value::Str("still here".into())))
                 .is_some()
         );
     }
@@ -181,7 +180,7 @@ fn invalid() -> BlockContent { [ #divider()
         let paragraphs: Vec<_> = result
             .root
             .descendants()
-            .filter(|item| item.ctor == Ctor::Paragraph)
+            .filter(|item| item.ctor() == Ctor::Paragraph)
             .collect();
         assert_eq!(paragraphs.len(), 2, "{path}");
         let bad = pipeline
@@ -247,24 +246,19 @@ fn explicit_paragraphs_are_checked_and_evaluated_as_calls() {
             "{path}: {:?}",
             good.diagnostics()
         );
-        assert!(matches!(
-            good.root().children[0].pending.as_deref(),
-            Some(PendingEvaluation::Call(_))
-        ));
-        assert_eq!(
-            pipeline.evaluate(&good, &context).root.children[0].evaluation,
-            Some(EvaluationState::Native)
+        assert!(good.root().children()[0].call().is_some());
+        assert!(
+            pipeline.evaluate(&good, &context).root.children()[0]
+                .as_item()
+                .is_some()
         );
         let bad = pipeline
             .analyze(path, "#paragraph<true>()\n\n#emph[ok]", &context)
             .unwrap();
         assert!(!bad.diagnostics().is_empty());
         let result = pipeline.evaluate(&bad, &context);
-        assert!(matches!(
-            result.root.children[0].evaluation,
-            Some(EvaluationState::Error(_))
-        ));
-        assert_eq!(result.root.children.len(), 2);
+        assert!(matches!(result.root.children()[0].ctor(), Ctor::Error(_)));
+        assert_eq!(result.root.children().len(), 2);
         let invalid_mount = pipeline
             .analyze(path, "#paragraph()[#divider()]", &context)
             .unwrap();
@@ -275,11 +269,10 @@ fn explicit_paragraphs_are_checked_and_evaluated_as_calls() {
                 .any(|d| d.message.contains("takes inline content"))
         );
         let evaluated = pipeline.evaluate(&invalid_mount, &context);
-        assert_eq!(evaluated.root.children.len(), 1);
-        assert_eq!(evaluated.root.children[0].ctor, Ctor::Paragraph);
+        assert_eq!(evaluated.root.children().len(), 1);
         assert!(matches!(
-            evaluated.root.children[0].evaluation,
-            Some(EvaluationState::Error(_))
+            evaluated.root.children()[0].ctor(),
+            Ctor::Error(_)
         ));
     }
 }
@@ -347,8 +340,8 @@ fn pipe_cells_obey_content_rules_and_structural_mounts_keep_their_roles() {
             "{path}: {:?}",
             table.diagnostics()
         );
-        assert_eq!(table.root().children[0].ctor, Ctor::Table);
-        assert_eq!(table.root().children[0].children[0].children.len(), 2);
+        assert_eq!(table.root().children()[0].ctor(), Ctor::Table);
+        assert_eq!(table.root().children()[0].children()[0].children().len(), 2);
         let paragraph = pipeline
             .analyze(path, "#table[ #paragraph() ]", &context)
             .unwrap();

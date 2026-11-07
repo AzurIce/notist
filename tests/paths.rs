@@ -67,7 +67,7 @@ fn evaluated(path: &str, source: &str) -> Item {
 
 fn captured(root: &Item) -> &Item {
     root.find(|node| {
-        node.ctor
+        node.ctor()
             .function_id()
             .is_some_and(|id| id.name == "capture")
     })
@@ -134,18 +134,18 @@ fn caller_paths_defaults_module_literals_and_forwarding_keep_their_origins() {
         ] {
             let root = evaluated(&path, source);
             assert_eq!(
-                captured(&root).fields.get("source"),
+                captured(&root).field("source"),
                 Some(&expected(target)),
                 "{source}"
             );
         }
         let root = evaluated(&path, r#"#self.optional(p"./extra.json")"#);
         assert_eq!(
-            captured(&root).fields.get("extra"),
+            captured(&root).field("extra"),
             Some(&expected("pages/extra.json"))
         );
         let root = evaluated(&path, "#self.optional()");
-        assert_eq!(captured(&root).fields.get("extra"), None);
+        assert_eq!(captured(&root).field("extra"), None);
     }
 }
 
@@ -174,7 +174,7 @@ fn nested_defaults_collections_and_annotations_resolve_in_their_own_files() {
         );
         let dividers: Vec<_> = root
             .descendants()
-            .filter(|node| node.ctor == Ctor::Divider)
+            .filter(|node| node.ctor() == Ctor::Divider)
             .collect();
         assert_eq!(
             dividers[0].attrs.get("input"),
@@ -185,15 +185,15 @@ fn nested_defaults_collections_and_annotations_resolve_in_their_own_files() {
             Some(&expected("views/annotation.json"))
         );
         let bag = root
-            .find(|node| node.ctor.function_id() == Some(FunctionId::new("view", "bag")))
+            .find(|node| node.ctor().function_id() == Some(FunctionId::new("view", "bag")))
             .unwrap();
         assert_eq!(
-            bag.fields.get("paths"),
+            bag.field("paths"),
             Some(&Value::Array(
                 vec![expected("views/a.json"), expected("views/b.json")].into()
             ))
         );
-        let Some(Value::Dict(data)) = bag.fields.get("data") else {
+        let Some(Value::Dict(data)) = bag.field("data") else {
             panic!("missing default dict")
         };
         assert_eq!(data.get("file"), Some(&expected("views/dict.json")));
@@ -214,7 +214,7 @@ fn path_identity_is_normalized_and_equality_is_not_string_conversion() {
         );
         assert!(
             root.descendants()
-                .any(|node| node.fields.get("text") == Some(&Value::Str(result.into())))
+                .any(|node| node.field("text") == Some(&Value::Str(result.into())))
         );
     }
     let context = context();
@@ -358,7 +358,7 @@ fn real_imports_use_defining_paths_but_never_read_path_literal_targets() {
         evaluation.diagnostics
     );
     assert_eq!(
-        captured(&evaluation.root).fields.get("source"),
+        captured(&evaluation.root).field("source"),
         Some(&expected("pages/does-not-exist.json"))
     );
     assert_eq!(
@@ -461,7 +461,7 @@ fn before_check_can_edit_path_literals_and_metadata_stays_literal_only() {
         evaluation.diagnostics
     );
     assert_eq!(
-        captured(&evaluation.root).fields.get("source"),
+        captured(&evaluation.root).field("source"),
         Some(&expected("pages/edited.json"))
     );
 }
@@ -485,7 +485,7 @@ fn content_fragments_use_the_explicit_source_not_the_dialect_placeholder() {
             analysis.diagnostics
         );
         assert_eq!(
-            analysis.forest[0].fields.get("source"),
+            analysis.forest[0].field("source"),
             Some(&expected("fragments/input.json"))
         );
     }
@@ -531,7 +531,7 @@ fn filesystem_and_memory_hosts_bind_identical_logical_paths_without_target_files
     let analysis = memory.analyze("pages/page.not", source).unwrap();
     let b = memory.evaluate("pages/page.not", &analysis).unwrap();
     assert!(a.diagnostics.is_empty() && b.diagnostics.is_empty());
-    assert_eq!(captured(&a.root).fields, captured(&b.root).fields);
+    assert_eq!(captured(&a.root).fields(), captured(&b.root).fields());
     assert!(!directory.path().join("views/default.json").exists());
 }
 
@@ -658,10 +658,10 @@ fn show() -> BlockContent { [ #capture(p"/value.json") ] }"#;
     for (module, root) in [("one", "/virtual"), ("two", "/")] {
         let item = evaluation
             .root
-            .find(|node| node.ctor.function_id() == Some(FunctionId::new(module, "capture")))
+            .find(|node| node.ctor().function_id() == Some(FunctionId::new(module, "capture")))
             .unwrap();
         assert_eq!(
-            item.fields.get("source"),
+            item.field("source"),
             Some(&Value::Path(
                 ResourcePath::resolve(root, "/virtual/lib.notc", "/value.json").unwrap()
             ))

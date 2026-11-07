@@ -66,23 +66,37 @@ impl ContentShape {
     pub fn of_items(items: &[Item]) -> Self {
         use crate::item::Ctor;
         items.iter().fold(Self::Empty, |shape, item| {
-            shape.join(match item.ctor {
+            shape.join(match item.ctor() {
                 Ctor::TableRow => Self::Rows,
                 Ctor::TableCell => Self::Cells,
                 Ctor::ListItem => Self::Items,
-                Ctor::Node => Self::of_items(&item.children),
-                Ctor::Interpolation => match item.pending.as_deref() {
-                    Some(PendingEvaluation::Splice(expr) | PendingEvaluation::Repeat(expr)) => {
-                        expr.shape
-                    }
-                    _ => Self::Other,
-                },
+                Ctor::Node | Ctor::Group => Self::of_items(item.children()),
+                Ctor::Interpolation => item.as_expr().map(|expr| expr.shape).unwrap_or(Self::Other),
                 _ => Self::Other,
             })
         })
     }
     pub fn of_expr(kind: &ExprKind) -> Self {
         match kind {
+            ExprKind::Call(call)
+                if call.definition.implementation
+                    == crate::definitions::FunctionImpl::Native(
+                        crate::definitions::NativeFunction::Construct,
+                    )
+                    && call.definition.id.module == "notist" =>
+            {
+                match call.definition.id.name.as_str() {
+                    "row" => Self::Rows,
+                    "cell" => Self::Cells,
+                    "item" => Self::Items,
+                    "node" => call
+                        .children
+                        .as_ref()
+                        .map(|e| e.shape)
+                        .unwrap_or(Self::Empty),
+                    _ => Self::Other,
+                }
+            }
             ExprKind::Content(items) => Self::of_items(items),
             ExprKind::Block(_, value) => value.shape,
             ExprKind::For { body, .. } => body.shape,
@@ -126,7 +140,8 @@ pub enum ExprKind {
         subject: Box<TypedExpr>,
         arms: Vec<ResultArm>,
     },
-    ValueCall(Box<Invocation>),
+    /// Function application, independent of whether its result is data or content.
+    Call(Box<Invocation>),
     Content(Vec<Item>),
     For {
         binding: String,

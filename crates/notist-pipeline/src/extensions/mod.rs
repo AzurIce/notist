@@ -7,7 +7,7 @@ use notist_core::{
     extensions::{
         DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument, Replacement,
     },
-    item::{Ctor, EvaluationState, Item},
+    item::{Ctor, Item},
     registry::Registry,
 };
 use std::sync::Arc;
@@ -196,27 +196,20 @@ fn validate_lowered(
 }
 
 fn validate_output(root: &Item, limit: usize) -> ExtensionResult {
-    let problem = if root.ctor != Ctor::Doc || root.level != Level::Block {
+    let problem = if root.ctor() != Ctor::Doc || root.level != Level::Block {
         Some("output root must remain a block document")
     } else if root
         .descendants()
         .skip(1)
-        .any(|node| node.ctor == Ctor::Doc)
+        .any(|node| node.ctor() == Ctor::Doc)
     {
         Some("output cannot contain nested document roots")
-    } else if root.descendants().any(|node| {
-        node.pending.is_some()
-            || (node.ctor == Ctor::Interpolation
-                && !node.is_evaluated_interpolation()
-                && !matches!(node.evaluation, Some(EvaluationState::Error(_))))
-    }) {
-        Some("output contains unevaluated content; insert expressions in before_check instead")
     } else if root
         .descendants()
-        .filter(|node| !matches!(node.evaluation, Some(EvaluationState::Error(_))))
-        .count()
-        > limit
+        .any(|node| node.as_expr().is_some() || node.ctor() == Ctor::Interpolation)
     {
+        Some("output contains unevaluated content; insert expressions in before_check instead")
+    } else if root.descendants().filter(|node| !node.is_error()).count() > limit {
         Some("output exceeds the evaluation content size limit")
     } else {
         None

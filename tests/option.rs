@@ -136,7 +136,7 @@ fn evaluate_text(source: &str) -> String {
     evaluation
         .root
         .descendants()
-        .find_map(|item| match item.fields.get("text") {
+        .find_map(|item| match item.field("text") {
             Some(Value::Str(text)) => Some(text.to_string()),
             _ => None,
         })
@@ -271,17 +271,17 @@ fn forwarding_an_omitted_argument_omits_the_native_field() {
             .find(|item| item.function_id() == Some(graph_id.clone()))
             .unwrap_or_else(|| panic!("{source}: graph boundary"));
         assert_eq!(
-            graph.fields.get("source"),
+            graph.field("source"),
             Some(&Value::Str("src".into())),
             "{source}"
         );
         assert_eq!(
-            graph.fields.get("theme"),
+            graph.field("theme"),
             Some(&Value::Str("light".into())),
             "{source}"
         );
         assert_eq!(
-            graph.fields.get("rule"),
+            graph.field("rule"),
             expected.map(|rule| Value::Str(rule.into())).as_ref(),
             "{source}"
         );

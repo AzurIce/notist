@@ -16,8 +16,6 @@ pub(super) fn observe(documents: &[Document]) {
     let mut dict_keys = BTreeMap::<String, usize>::new();
     let mut instances = HashSet::new();
     let mut instance_uses = 0usize;
-    let mut target_uses = 0usize;
-    let mut shared_instance_target_uses = 0usize;
     let mut instance_string_capacity = 0usize;
     let mut instance_argument_capacity_bytes = 0usize;
     let mut field_texts = HashSet::new();
@@ -25,19 +23,17 @@ pub(super) fn observe(documents: &[Document]) {
     for document in documents {
         for node in document.root.descendants() {
             nodes += 1;
-            child_capacity += node.children.capacity();
-            instance_uses += usize::from(node.instance.is_some());
-            target_uses += usize::from(node.target.is_some());
-            shared_instance_target_uses += usize::from(node.instance.as_ref().zip(node.target.as_ref())
-                .is_some_and(|(instance, target)| instance.shares_storage(target)));
-            for instance in [node.instance.as_ref(), node.target.as_ref()].into_iter().flatten() {
-                let id = instance.as_ref() as *const notist::FunctionInstance as usize;
+            child_capacity += node.as_item().map_or(0, |item| item.children.capacity());
+            instance_uses += usize::from(node.instance().is_some());
+            if let Some(instance) = node.instance() {
+                let id = instance as *const notist::FunctionInstance as usize;
                 if instances.insert(id) {
                     instance_string_capacity += instance.function.module.capacity() + instance.function.name.capacity();
                     instance_argument_capacity_bytes += instance.arguments.capacity() * std::mem::size_of::<notist::ComptimeValue>();
                 }
             }
-            for (dict, uses) in [(&node.fields, &mut field_uses), (&node.attrs, &mut attr_uses)] {
+            let fields = node.fields();
+            for (dict, uses) in [(&fields, &mut field_uses), (&node.attrs, &mut attr_uses)] {
                 let (id, len, capacity, index_len, bytes) = dict.residency_probe();
                 *uses.entry(len).or_default() += 1;
                 if seen.insert(id) {
@@ -72,8 +68,7 @@ pub(super) fn observe(documents: &[Document]) {
         "dict_index_entries": index_entries,
         "unique_dicts_by_length_and_capacity": dict_capacities,
         "dict_key_occurrences_by_unique_dict": dict_keys,
-        "instance_uses": instance_uses, "target_uses": target_uses,
-        "shared_instance_target_uses": shared_instance_target_uses,
+        "instance_uses": instance_uses,
         "unique_instances": instances.len(),
         "unique_instance_value_bytes": instances.len() * std::mem::size_of::<notist::FunctionInstance>(),
         "instance_string_capacity": instance_string_capacity,

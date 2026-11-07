@@ -17,7 +17,7 @@ fn markdown_wikilinks_lower_to_normal_links_with_raw_targets() {
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let links: Vec<_> = root
         .descendants()
-        .filter(|n| n.ctor == Ctor::Link)
+        .filter(|n| n.ctor() == Ctor::Link)
         .collect();
     assert_eq!(links.len(), 4);
     for (link, target, source) in [
@@ -30,15 +30,15 @@ fn markdown_wikilinks_lower_to_normal_links_with_raw_targets() {
         (links[2], "a\\!b&copy;.not", "[[a\\!b&copy;.not]]"),
         (links[3], "page.not", "[[page.not|]]"),
     ] {
-        assert_eq!(link.fields.get("target"), Some(&Value::Str(target.into())));
+        assert_eq!(link.field("target"), Some(&Value::Str(target.into())));
         assert_eq!(
             &src[usize::from(link.span.start())..usize::from(link.span.end())],
             source
         );
     }
-    assert!(links[0].children.is_empty());
-    assert!(links[3].children.is_empty());
-    let strong = links[1].find(|n| n.ctor == Ctor::Strong).unwrap();
+    assert!(links[0].children().is_empty());
+    assert!(links[3].children().is_empty());
+    let strong = links[1].find(|n| n.ctor() == Ctor::Strong).unwrap();
     assert_eq!(
         &src[usize::from(strong.span.start())..usize::from(strong.span.end())],
         "**粗体**"
@@ -53,8 +53,8 @@ fn markdown_wikilinks_respect_code_escapes_and_line_boundaries() {
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let targets: Vec<_> = root
         .descendants()
-        .filter(|n| n.ctor == Ctor::Link)
-        .map(|n| n.fields.get("target").unwrap().clone())
+        .filter(|n| n.ctor() == Ctor::Link)
+        .map(|n| n.field("target").unwrap().clone())
         .collect();
     assert_eq!(
         targets,
@@ -77,13 +77,10 @@ fn markdown_wikilinks_inside_containers_and_content_keep_offsets() {
     ] {
         let (root, diagnostics) = analyze(src);
         assert!(diagnostics.is_empty(), "{src:?}: {diagnostics:?}");
-        let link = root.find(|n| n.ctor == Ctor::Link).unwrap();
+        let link = root.find(|n| n.ctor() == Ctor::Link).unwrap();
+        assert_eq!(link.field("target"), Some(&Value::Str("page.not".into())));
         assert_eq!(
-            link.fields.get("target"),
-            Some(&Value::Str("page.not".into()))
-        );
-        assert_eq!(
-            link.children[0].fields.get("text"),
+            link.children()[0].field("text"),
             Some(&Value::Str("显示".into()))
         );
         let source = &src[usize::from(link.span.start())..usize::from(link.span.end())];
@@ -99,9 +96,9 @@ fn markdown_wikilink_labels_keep_annotations_calls_and_diagnostic_offsets() {
     let src = "前文 [[page.not|@(id: \"label\")**粗体** #emph[显示]]]";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let strong = root.find(|n| n.ctor == Ctor::Strong).unwrap();
+    let strong = root.find(|n| n.ctor() == Ctor::Strong).unwrap();
     assert_eq!(strong.attrs.get("id"), Some(&Value::Str("label".into())));
-    let emph = root.find(|n| n.ctor == Ctor::Emph).unwrap();
+    let emph = root.find(|n| n.ctor() == Ctor::Emph).unwrap();
     assert_eq!(
         &src[usize::from(emph.span.start())..usize::from(emph.span.end())],
         "#emph[显示]"
@@ -150,7 +147,7 @@ fn atx_heading_spans_include_closing_markers_but_exclude_line_breaks() {
         let (root, diags) = analyze(src);
         assert!(diags.is_empty());
         let heading = root
-            .find(|n| n.ctor == notist_core::item::Ctor::Heading)
+            .find(|n| n.ctor() == notist_core::item::Ctor::Heading)
             .unwrap();
         assert_eq!(
             &src[usize::from(heading.span.start())..usize::from(heading.span.end())],
@@ -177,7 +174,7 @@ fn markdown_notist_attributes_attach_to_module_blocks_and_inline_elements() {
         (Ctor::Strong, "color", "red"),
         (Ctor::Link, "id", "link"),
     ] {
-        let node = root.find(|n| n.ctor == ctor).unwrap();
+        let node = root.find(|n| n.ctor() == ctor).unwrap();
         assert_eq!(node.attrs.get(key), Some(&Value::Str(value.into())));
     }
 }
@@ -188,14 +185,14 @@ fn markdown_calls_lower_markdown_bodies_and_share_literal_arguments() {
     let src = "前缀 #strong[**粗体** 和 *斜体*]  #raw(r#\"a\\b\"#)\n\n@(id: \"box\")\n#callout(kind: \"note\")[\n## 标题\n\n- 项一\n- #emph[项二]\n\n```text\n#missing[] @(ignored: true) ]\n```\n]\n";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let callout = root.find(|n| n.ctor == Ctor::Callout).unwrap();
+    let callout = root.find(|n| n.ctor() == Ctor::Callout).unwrap();
     assert_eq!(callout.attrs.get("id"), Some(&Value::Str("box".into())));
-    assert_eq!(callout.fields.get("kind"), Some(&Value::Str("note".into())));
-    assert!(callout.find(|n| n.ctor == Ctor::Heading).is_some());
-    assert!(callout.find(|n| n.ctor == Ctor::List).is_some());
-    assert!(callout.find(|n| n.ctor == Ctor::Emph).is_some());
+    assert_eq!(callout.field("kind"), Some(&Value::Str("note".into())));
+    assert!(callout.find(|n| n.ctor() == Ctor::Heading).is_some());
+    assert!(callout.find(|n| n.ctor() == Ctor::List).is_some());
+    assert!(callout.find(|n| n.ctor() == Ctor::Emph).is_some());
     assert!(
-        root.find(|n| n.fields.get("text") == Some(&Value::Str("a\\b".into())))
+        root.find(|n| n.field("text") == Some(&Value::Str("a\\b".into())))
             .is_some()
     );
     for node in root.descendants() {
@@ -218,7 +215,7 @@ fn markdown_extensions_preserve_opaque_and_escaped_text() {
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(root.descendants().all(|n| n.attrs.is_empty()));
     assert!(
-        root.find(|n| n.ctor == notist_core::item::Ctor::Strong)
+        root.find(|n| n.ctor() == notist_core::item::Ctor::Strong)
             .is_none()
     );
 }
@@ -266,12 +263,12 @@ fn markdown_extensions_inside_containers_keep_original_offsets() {
     let src = "> @(id: \"quote\")\n> 引用 #strong[粗体]\n\n- @(id: \"item\")\n  正文 @(id: \"em\")*强调*\n";
     let (root, diagnostics) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let strong = root.find(|n| n.ctor == Ctor::Strong).unwrap();
+    let strong = root.find(|n| n.ctor() == Ctor::Strong).unwrap();
     assert_eq!(
         &src[usize::from(strong.span.start())..usize::from(strong.span.end())],
         "#strong[粗体]"
     );
-    let emph = root.find(|n| n.ctor == Ctor::Emph).unwrap();
+    let emph = root.find(|n| n.ctor() == Ctor::Emph).unwrap();
     assert_eq!(emph.attrs.get("id"), Some(&Value::Str("em".into())));
     assert!(
         root.find(|n| n.attrs.get("id") == Some(&Value::Str("quote".into())))
@@ -293,10 +290,10 @@ fn markdown_call_boundaries_keep_inline_markers_and_trailing_text() {
             .iter()
             .any(|d| d.message.contains("unclosed Notist"))
     );
-    assert!(root.find(|n| n.ctor == Ctor::Heading).is_none());
+    assert!(root.find(|n| n.ctor() == Ctor::Heading).is_none());
     for text in ["# heading", "后面的文字", "#strong[未闭合"] {
         assert!(
-            root.find(|n| n.fields.get("text") == Some(&Value::Str(text.into())))
+            root.find(|n| n.field("text") == Some(&Value::Str(text.into())))
                 .is_some(),
             "{text}: {}",
             notist_core::dump::dump(&root)
@@ -313,13 +310,13 @@ fn markdown_nested_calls_anonymous_groups_and_multiline_payloads() {
     assert_eq!(root.attrs.get("title"), Some(&Value::Str("标题".into())));
     assert!(
         root.find(
-            |n| n.ctor == Ctor::Node && n.attrs.get("id") == Some(&Value::Str("group".into()))
+            |n| n.ctor() == Ctor::Node && n.attrs.get("id") == Some(&Value::Str("group".into()))
         )
         .is_some()
     );
-    assert!(root.find(|n| n.ctor == Ctor::Callout).is_some());
-    assert!(root.find(|n| n.ctor == Ctor::Emph).is_some());
-    let raw = root.find(|n| n.ctor == Ctor::RawInline).unwrap();
+    assert!(root.find(|n| n.ctor() == Ctor::Callout).is_some());
+    assert!(root.find(|n| n.ctor() == Ctor::Emph).is_some());
+    let raw = root.find(|n| n.ctor() == Ctor::RawInline).unwrap();
     assert_eq!(
         &src[usize::from(raw.span.start())..usize::from(raw.span.end())],
         "`]`"
@@ -340,16 +337,16 @@ fn markdown_call_fences_hide_brackets_and_extensions() {
         let (root, diagnostics) = analyze(&src);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let raw = root
-            .find(|n| n.ctor == notist_core::item::Ctor::RawInline)
+            .find(|n| n.ctor() == notist_core::item::Ctor::RawInline)
             .unwrap();
         assert_eq!(
-            raw.fields.get("text"),
+            raw.field("text"),
             Some(&notist_core::item::Value::Str(
                 "] #missing[] @(id: \"opaque\")\n".into()
             ))
         );
         assert!(
-            root.find(|n| n.ctor == notist_core::item::Ctor::Callout)
+            root.find(|n| n.ctor() == notist_core::item::Ctor::Callout)
                 .is_some()
         );
     }

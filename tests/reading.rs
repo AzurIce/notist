@@ -53,7 +53,7 @@ impl EvaluationInputs for Inputs {
 }
 fn text(root: &Item) -> String {
     root.descendants()
-        .filter_map(|node| match node.fields.get("text") {
+        .filter_map(|node| match node.field("text") {
             Some(Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -151,10 +151,7 @@ fn missing_capability_and_resource_errors_use_the_read_call_source() {
         "read_text(source)"
     );
     assert!(text(&output.root).contains("kept"));
-    let failed = output
-        .root
-        .find(|item| matches!(item.evaluation, Some(notist::EvaluationState::Error(_))))
-        .unwrap();
+    let failed = output.root.find(|item| item.is_error()).unwrap();
     assert!(
         failed
             .origin

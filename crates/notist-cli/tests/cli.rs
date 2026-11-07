@@ -621,7 +621,8 @@ fn eval_inspection_exposes_code_output_and_definition_source() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("strong"));
     let output = run(&["json", "--eval", "doc.not"]);
     let v: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(v["core"].to_string().contains("expanded"));
+    assert!(!v["core"].to_string().contains("\"evaluation\""));
+    assert!(v["core"].to_string().contains("strong"));
 }
 
 #[test]

@@ -122,7 +122,7 @@ impl LanguageServer for Backend {
         };
         let lines = LineIndex::new(&src);
         let symbols = item
-            .children
+            .children()
             .iter()
             .filter_map(|item| symbol(item, &lines, &src))
             .collect();
@@ -259,10 +259,10 @@ impl LanguageServer for Backend {
         let Some(target) = smallest_at(&item, offset) else {
             return Ok(None);
         };
-        if target.ctor != Ctor::Link {
+        if target.ctor() != Ctor::Link {
             return Ok(None);
         }
-        let Some(Value::Str(target_text)) = target.fields.get("target") else {
+        let Some(Value::Str(target_text)) = target.field("target") else {
             return Ok(None);
         };
         // `#item`：当前文档内的 id
@@ -500,7 +500,7 @@ fn source_errors(uri: &Url, error: notist::VaultError) -> Vec<notist::SourceDiag
 
 /// The smallest item whose span contains `offset`.
 fn smallest_at(item: &Item, offset: usize) -> Option<&Item> {
-    for child in &item.children {
+    for child in item.children() {
         if child.span.contains(notist::TextSize::from(offset as u32)) {
             return Some(smallest_at(child, offset).unwrap_or(child));
         }
@@ -511,13 +511,13 @@ fn smallest_at(item: &Item, offset: usize) -> Option<&Item> {
 fn hover_text(item: &Item) -> String {
     let mut out = format!(
         "`{}` ({:?})",
-        item.ctor
+        item.ctor()
             .function_id()
             .map(|id| id.to_string())
-            .unwrap_or_else(|| item.ctor.name().into_owned()),
+            .unwrap_or_else(|| item.ctor().name().into_owned()),
         item.level
     );
-    for (k, v) in item.fields.iter() {
+    for (k, v) in item.fields().iter() {
         out.push_str(&format!("\n- `{k}` = {v}"));
     }
     for (k, v) in item.attrs.iter() {
@@ -528,15 +528,15 @@ fn hover_text(item: &Item) -> String {
 
 /// A heading → a symbol; sections nest. Section names are their heading text.
 fn symbol(item: &Item, lines: &LineIndex, src: &str) -> Option<DocumentSymbol> {
-    let (name, range, selection, children) = match item.ctor {
+    let (name, range, selection, children) = match item.ctor() {
         Ctor::Section => {
-            let heading = item.children.first()?;
+            let heading = item.children().first()?;
             let name = text_of(heading);
             (
                 name,
                 lines.range(src, item.span),
                 lines.range(src, heading.span),
-                item.children[1..]
+                item.children()[1..]
                     .iter()
                     .filter_map(|c| symbol(c, lines, src))
                     .collect(),
@@ -565,9 +565,9 @@ fn symbol(item: &Item, lines: &LineIndex, src: &str) -> Option<DocumentSymbol> {
 
 /// The text content of a heading: its children's text fields, joined.
 fn text_of(item: &Item) -> String {
-    item.children
+    item.children()
         .iter()
-        .filter_map(|c| match c.fields.get("text") {
+        .filter_map(|c| match c.field("text") {
             Some(Value::Str(text)) => Some(text.as_str()),
             _ => None,
         })
@@ -651,12 +651,12 @@ mod tests {
             .into_parts();
         // 体 at byte 11，粗 at 8
         let found = smallest_at(&item, 11).unwrap();
-        assert_eq!(found.ctor.name(), "Text");
-        assert_eq!(found.fields.get("text").unwrap().to_string(), "\"粗体\"");
+        assert_eq!(found.ctor().name(), "Text");
+        assert_eq!(found.field("text").unwrap().to_string(), "\"粗体\"");
         let found = smallest_at(&item, 8).unwrap();
-        assert_eq!(found.ctor.name(), "Text");
+        assert_eq!(found.ctor().name(), "Text");
         // byte 2 (容) → 内容
         let found = smallest_at(&item, 2).unwrap();
-        assert_eq!(found.fields.get("text").unwrap().to_string(), "\"内容 \"");
+        assert_eq!(found.field("text").unwrap().to_string(), "\"内容 \"");
     }
 }

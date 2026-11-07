@@ -45,7 +45,7 @@ fn all_import_forms_work_in_code_markup_and_markdown() {
                 output.evaluation.diagnostics
             );
             assert!(output.rendered.html.contains("ticket"));
-            assert_eq!(output.analysis.root().children.len(), 1);
+            assert_eq!(output.analysis.root().children().len(), 1);
         }
         let mut files = library();
         let source = format!(
@@ -66,7 +66,7 @@ fn all_import_forms_work_in_code_markup_and_markdown() {
         assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
         assert!(
             e.root
-                .find(|i| i.fields.get("text") == Some(&Value::Str("ticket".into())))
+                .find(|i| i.field("text") == Some(&Value::Str("ticket".into())))
                 .is_some()
         );
     }
@@ -114,14 +114,14 @@ fn renamed_functions_keep_lexical_scope_canonical_identity_and_instance_cache() 
     assert!(
         calls
             .windows(2)
-            .all(|pair| pair[0].instance == pair[1].instance)
+            .all(|pair| pair[0].instance() == pair[1].instance())
     );
     let e = p.evaluate(&a, env.context());
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert_eq!(
         e.root
             .descendants()
-            .filter(|i| i.fields.get("text") == Some(&Value::Str("right".into())))
+            .filter(|i| i.field("text") == Some(&Value::Str("right".into())))
             .count(),
         3
     );
@@ -619,7 +619,7 @@ fn direct_imports_preserve_native_resources_output_mappings_and_published_asset_
             assert!(
                 calls
                     .windows(2)
-                    .all(|pair| pair[0].instance == pair[1].instance)
+                    .all(|pair| pair[0].instance() == pair[1].instance())
             );
             let (module, name, root) = if mapped {
                 ("/project/renderer/lib.notc", "card", "renderer")
@@ -707,7 +707,7 @@ fn member_imports_keep_file_level_restrictions_and_do_not_require_a_valid_file_s
         let mut vault = Vault::new(resources(&[("empty.notc", "")]));
         let a = vault.analyze(path, "#import \"empty.notc\": *;").unwrap();
         assert!(a.diagnostics().is_empty());
-        assert!(a.root().children.is_empty());
+        assert!(a.root().children().is_empty());
     }
 }
 

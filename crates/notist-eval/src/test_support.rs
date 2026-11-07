@@ -22,12 +22,16 @@ pub fn reference_present<T>(operation: impl FnOnce() -> T) -> T {
     operation()
 }
 
-pub fn item_shell(item: &Item) -> Item {
-    super::item_shell(item)
+pub fn item_shell(item: &Node) -> Node {
+    let mut node = item.clone();
+    if let Some(item) = node.as_item_mut() {
+        item.children.clear();
+    }
+    node
 }
 
 pub fn assert_summaries<C: EvaluationContext + ?Sized>(
-    root: &Item,
+    root: &Node,
     program: &CheckedProgram,
     context: &C,
     limits: Limits,
@@ -51,8 +55,9 @@ pub fn assert_summaries<C: EvaluationContext + ?Sized>(
         sources: Default::default(),
         data_retention: program.data_retention.clone(),
     };
+    let root = Item::from_node(root);
     let (bound, count) = evaluator.bind_content(
-        std::slice::from_ref(root),
+        std::slice::from_ref(&root),
         &Scope::new(),
         limits.content_nodes,
     );

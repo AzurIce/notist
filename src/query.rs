@@ -14,10 +14,12 @@ pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
                     .any(|t| matches!(t, Value::Str(t) if t == needle)),
                 _ => false,
             }),
-            "ctor" if matches!(item.ctor, crate::Ctor::Extension(_)) => item.ctor.name() == needle,
-            "ctor" => item.ctor.name().eq_ignore_ascii_case(needle),
+            "ctor" if matches!(item.ctor(), crate::Ctor::Extension(_)) => {
+                item.ctor().name() == needle
+            }
+            "ctor" => item.ctor().name().eq_ignore_ascii_case(needle),
             "function" => item
-                .ctor
+                .ctor()
                 .function_id()
                 .is_some_and(|id| id.to_string() == needle),
             "level" => match item.level {

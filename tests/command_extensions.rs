@@ -78,7 +78,7 @@ fn commands_edit_lowered_content_then_the_output_tree_and_preserve_ranges() {
             output
                 .analysis
                 .root()
-                .find(|i| i.ctor == Ctor::Text)
+                .find(|i| i.ctor() == Ctor::Text)
                 .unwrap()
                 .span
                 .start()
@@ -87,7 +87,8 @@ fn commands_edit_lowered_content_then_the_output_tree_and_preserve_ranges() {
     );
 
     let mut tree = output.evaluation.root;
-    tree.children
+    tree.children_mut()
+        .unwrap()
         .push(Item::new(Ctor::Divider, Default::default()));
     setup(
         root.path(),
@@ -104,7 +105,7 @@ fn commands_edit_lowered_content_then_the_output_tree_and_preserve_ranges() {
     );
     assert!(output.rendered.html.contains("generated"));
     assert!(output.rendered.html.contains("<hr"));
-    assert_eq!(output.analysis.root().children.len(), 1);
+    assert_eq!(output.analysis.root().children().len(), 1);
     let request: Value =
         serde_json::from_str(&fs::read_to_string(root.path().join("request.json")).unwrap())
             .unwrap();

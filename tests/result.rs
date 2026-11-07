@@ -25,7 +25,7 @@ fn diagnostics(module: &str) -> Vec<Diagnostic> {
 
 fn text(root: &Item) -> String {
     root.descendants()
-        .filter_map(|item| match item.fields.get("text") {
+        .filter_map(|item| match item.field("text") {
             Some(Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -173,7 +173,7 @@ fn show() -> InlineContent {
         .find(|item| item.function_id() == Some(FunctionId::new("result", "widget")))
         .unwrap();
     assert_eq!(
-        widget.fields.get("values"),
+        widget.field("values"),
         Some(&Value::Array(
             vec![
                 Value::Ok(Box::new(Value::Int(1))),
@@ -612,10 +612,10 @@ fn show() -> InlineContent { [#widget(err("<invalid>"), ok(1))#widget(ok(2))] }
         .filter(|item| item.function_id() == Some(definition.id.clone()))
         .collect();
     assert_eq!(
-        widgets[0].fields.get("optional"),
+        widgets[0].field("optional"),
         Some(&Value::Ok(Box::new(Value::Int(1))))
     );
-    assert!(widgets[1].fields.get("optional").is_none());
+    assert!(widgets[1].field("optional").is_none());
     assert_eq!(output.html.matches("notist-optional=").count(), 1);
     let inspection = notist::json::item(widgets[0]);
     assert_eq!(
@@ -774,7 +774,7 @@ fn host_supplied_result_defaults_keep_the_declared_inactive_type() {
         .find(|item| item.function_id() == Some(FunctionId::new("result", "widget")))
         .unwrap();
     assert_eq!(
-        widget.fields.get("value"),
+        widget.field("value"),
         Some(&Value::Ok(Box::new(Value::Int(1))))
     );
 }

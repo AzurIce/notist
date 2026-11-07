@@ -110,9 +110,9 @@ fn duplicate_named_arguments_survive_lowering_and_are_diagnosed() {
         );
         let raw = analysis
             .root()
-            .find(|node| node.ctor == Ctor::RawInline)
+            .find(|node| node.ctor() == Ctor::RawInline)
             .unwrap();
-        assert_eq!(raw.fields.get("text"), Some(&Value::Str("last".into())));
+        assert_eq!(raw.field("text"), Some(&Value::Str("last".into())));
     }
 }
 
@@ -130,15 +130,15 @@ fn annotations_attach_to_the_target_call_and_module_without_extra_nodes() {
         );
         let root = analysis.root();
         assert_eq!(root.attrs.get("id"), Some(&Value::Str("doc".into())));
-        assert_eq!(root.children.len(), 1);
-        let paragraph = &root.children[0];
-        assert_eq!(paragraph.ctor, Ctor::Paragraph);
+        assert_eq!(root.children().len(), 1);
+        let paragraph = &root.children()[0];
+        assert_eq!(paragraph.ctor(), Ctor::Paragraph);
         assert_eq!(paragraph.attrs.get("id"), Some(&Value::Str("range".into())));
-        assert_eq!(paragraph.children.len(), 3);
-        let raw = &paragraph.children[1];
-        assert_eq!(raw.ctor, Ctor::RawInline);
+        assert_eq!(paragraph.children().len(), 3);
+        let raw = &paragraph.children()[1];
+        assert_eq!(raw.ctor(), Ctor::RawInline);
         assert_eq!(raw.attrs.get("status"), Some(&Value::Str("outdate".into())));
-        assert!(raw.fields.get("status").is_none());
+        assert!(raw.field("status").is_none());
     }
     let mut reference = Expr::reference("content", span(0, 7));
     let mut attrs = Dict::default();
@@ -169,10 +169,10 @@ fn unsupported_callee_expressions_recover_without_losing_content_or_metadata() {
     assert_eq!(forest[1].ctor, Ctor::Divider);
     let root = analysis.root();
     assert_eq!(
-        root.children[0].attrs.get("id"),
+        root.children()[0].attrs.get("id"),
         Some(&Value::Str("call".into()))
     );
-    assert_eq!(root.children[1].ctor, Ctor::Divider);
+    assert_eq!(root.children()[1].ctor(), Ctor::Divider);
 }
 
 #[test]

@@ -48,8 +48,8 @@ fn both_frontends_lower_imports_separately_and_load_the_same_module_graph() {
             output.evaluation.diagnostics
         );
         assert!(output.rendered.html.contains("imported result"));
-        assert_eq!(output.analysis.root().children.len(), 1);
-        assert_eq!(output.analysis.root().children[0].ctor, Ctor::Paragraph);
+        assert_eq!(output.analysis.root().children().len(), 1);
+        assert_eq!(output.analysis.root().children()[0].ctor(), Ctor::Paragraph);
         assert_eq!(
             vault.environment_for(path, source).unwrap().modules().len(),
             2
@@ -64,7 +64,7 @@ fn imports_are_global_to_the_file_but_do_not_create_content_or_empty_paragraphs(
         let source = "#import \"./views.notc\" as ui;\n";
         let a = vault.analyze(path, source).unwrap();
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
-        assert!(a.root().children.is_empty());
+        assert!(a.root().children().is_empty());
         let source = "#ui.view()\n\n#import \"./views.notc\" as ui;\n";
         let output = vault.render_html(path, source, Default::default()).unwrap();
         assert!(
@@ -105,7 +105,7 @@ fn changing_source_imports_preserves_the_context_of_each_existing_analysis() {
         assert!(
             result
                 .root
-                .find(|i| i.fields.get("text") == Some(&Value::Str(expected.into())))
+                .find(|i| i.field("text") == Some(&Value::Str(expected.into())))
                 .is_some()
         );
     }

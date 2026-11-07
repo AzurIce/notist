@@ -1,8 +1,5 @@
 use notist::{Analysis, Context, Ctor, Evaluation, Item, Limits, Pipeline, Value};
-use notist_core::{
-    extensions::{DocumentContext, DocumentExtension, ExtensionResult},
-    item::EvaluationState,
-};
+use notist_core::extensions::{DocumentContext, DocumentExtension, ExtensionResult};
 use notist_html::Renderer;
 
 fn context(dialect: &str, source: &str) -> Context {
@@ -36,7 +33,7 @@ fn evaluate(dialect: &str, source: &str) -> (Analysis, Evaluation) {
         evaluation
             .root
             .descendants()
-            .all(|node| node.pending.is_none())
+            .all(|node| node.as_expr().is_none())
     );
     (analysis, evaluation)
 }
@@ -68,16 +65,16 @@ fn view() -> InlineContent {
         for group in [left, right] {
             assert!(group.is_evaluated_interpolation());
             assert!(group.function_id().is_none());
-            assert_eq!(group.children.len(), 2);
-            assert_eq!(group.children[0].ctor, Ctor::Strong);
-            assert_eq!(group.children[1].ctor, Ctor::Emph);
-            assert!(group.children.iter().all(|child| child.attrs.is_empty()));
+            assert_eq!(group.children().len(), 2);
+            assert_eq!(group.children()[0].ctor(), Ctor::Strong);
+            assert_eq!(group.children()[1].ctor(), Ctor::Emph);
+            assert!(group.children().iter().all(|child| child.attrs.is_empty()));
             let origin = group.origin.as_ref().unwrap();
             assert_eq!(origin.source, "widgets/lib.notc");
             assert_eq!(origin.expansion[0].source, dialect);
         }
         assert_ne!(left.span, right.span);
-        assert_eq!(left.children, right.children);
+        assert_eq!(left.children(), right.children());
         let before = evaluation.root.clone();
         let rendered = Renderer::new().render_with_diagnostics(&evaluation.root);
         assert!(
@@ -123,12 +120,12 @@ after
         let group = with_id(&evaluation.root, "whole");
         assert!(group.is_evaluated_interpolation());
         assert_eq!(group.level, notist::builtins::Level::Block);
-        assert_eq!(group.children.len(), 2);
+        assert_eq!(group.children().len(), 2);
         assert!(
             group
-                .children
+                .children()
                 .iter()
-                .all(|child| { child.ctor == Ctor::Paragraph && child.attrs.is_empty() })
+                .all(|child| { child.ctor() == Ctor::Paragraph && child.attrs.is_empty() })
         );
         let rendered = Renderer::new().render_with_diagnostics(&evaluation.root);
         assert!(
@@ -144,7 +141,7 @@ after
 }
 
 #[test]
-fn empty_and_attribute_free_mounts_are_retained_without_expanding_unused_calls() {
+fn annotated_empty_mounts_remain_but_attribute_free_mounts_dissolve() {
     let source = r#"
 fn spin() -> InlineContent { [#spin()] }
 fn view() -> InlineContent {
@@ -156,13 +153,12 @@ fn view() -> InlineContent {
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         let mounted = groups(&evaluation.root);
-        assert_eq!(mounted.len(), 2);
-        assert!(mounted.iter().all(|group| group.children.is_empty()));
+        assert_eq!(mounted.len(), 1);
+        assert!(mounted.iter().all(|group| group.children().is_empty()));
         assert_eq!(
             mounted[0].attrs.get("id"),
             Some(&Value::Str("empty".into()))
         );
-        assert!(mounted[1].attrs.is_empty());
         let rendered = Renderer::new().render_with_diagnostics(&evaluation.root);
         assert!(
             rendered.diagnostics.is_empty(),
@@ -170,12 +166,12 @@ fn view() -> InlineContent {
             rendered.diagnostics
         );
         assert_eq!(rendered.html, "<p><span id=\"empty\"></span></p>");
-        assert_eq!(groups(&evaluation.root).len(), 2);
+        assert_eq!(groups(&evaluation.root).len(), 1);
     }
 }
 
 #[test]
-fn nested_value_mounts_keep_all_group_levels_and_no_named_node_identity() {
+fn unannotated_nested_value_mounts_dissolve_all_group_levels() {
     let source = r#"
 fn view() -> InlineContent {
     let a = [A];
@@ -187,14 +183,13 @@ fn view() -> InlineContent {
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         let mounted = groups(&evaluation.root);
-        assert_eq!(mounted.len(), 3);
-        assert!(mounted.iter().all(|group| group.attrs.is_empty()));
-        assert!(mounted.iter().all(|group| group.function_id().is_none()));
-        assert!(mounted[0].children[0].is_evaluated_interpolation());
-        assert!(mounted[1].children[0].is_evaluated_interpolation());
-        assert_eq!(mounted[2].children[0].ctor, Ctor::Text);
+        assert!(mounted.is_empty());
+        assert_eq!(
+            evaluation.root.children()[0].children()[0].ctor(),
+            Ctor::Text
+        );
         assert_eq!(Renderer::new().render(&evaluation.root), "<p>A</p>");
-        assert_eq!(groups(&evaluation.root).len(), 3);
+        assert!(groups(&evaluation.root).is_empty());
     }
 }
 
@@ -215,7 +210,7 @@ after
         let (_, evaluation) = evaluate(dialect, source);
         let group = with_id(&evaluation.root, "empty-block");
         assert!(group.is_evaluated_interpolation());
-        assert!(group.children.is_empty());
+        assert!(group.children().is_empty());
         let rendered = Renderer::new().render_with_diagnostics(&evaluation.root);
         assert!(
             rendered.diagnostics.is_empty(),
@@ -227,16 +222,14 @@ after
 }
 
 #[test]
-fn an_explicit_empty_annotation_does_not_cause_the_mount_to_disappear() {
+fn an_empty_annotation_has_the_same_dissolution_semantics_as_no_annotation() {
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(
             dialect,
             "fn view() -> InlineContent { let empty = []; [@(:)#empty] }",
         );
         let mounted = groups(&evaluation.root);
-        assert_eq!(mounted.len(), 1);
-        assert!(mounted[0].attrs.is_empty());
-        assert!(mounted[0].children.is_empty());
+        assert!(mounted.is_empty());
     }
 }
 
@@ -254,7 +247,7 @@ fn view() -> InlineContent { select(false) }
         let selected = with_id(&evaluation.root, "selected");
         assert!(selected.is_evaluated_interpolation());
         assert_eq!(
-            selected.children[0].fields.get("text"),
+            selected.children()[0].field("text"),
             Some(&Value::Str("B".into()))
         );
         assert_eq!(
@@ -297,7 +290,7 @@ fn view() -> InlineContent {
     for dialect in ["doc.not", "doc.md"] {
         let (_, evaluation) = evaluate(dialect, source);
         assert!(with_id(&evaluation.root, "outer").is_evaluated_interpolation());
-        assert_eq!(with_id(&evaluation.root, "inner").ctor, Ctor::Strong);
+        assert_eq!(with_id(&evaluation.root, "inner").ctor(), Ctor::Strong);
         assert_eq!(
             Renderer::new().render(&evaluation.root),
             "<p><span id=\"outer\"><strong id=\"inner\">A</strong><em>B</em></span></p>"
@@ -309,7 +302,7 @@ fn view() -> InlineContent {
 fn retained_empty_groups_consume_the_content_node_budget() {
     let source = format!(
         "fn view() -> InlineContent {{ let empty = []; [{}] }}",
-        "#empty".repeat(20)
+        "@(status: \"kept\")#empty".repeat(20)
     );
     let pipeline = Pipeline::default();
     let context = context("doc.not", &source);
@@ -335,13 +328,13 @@ fn retained_empty_groups_consume_the_content_node_budget() {
         evaluation
             .root
             .descendants()
-            .all(|node| node.pending.is_none())
+            .all(|node| node.as_expr().is_none())
     );
     assert!(
         evaluation
             .root
             .descendants()
-            .filter(|node| !matches!(node.evaluation, Some(EvaluationState::Error(_))))
+            .filter(|node| !node.is_error())
             .count()
             <= 6
     );
@@ -365,7 +358,7 @@ fn completed_groups_survive_output_extension_validation() {
     let pipeline = Pipeline::default();
     let context = context(
         "doc.not",
-        "fn view() -> InlineContent { let value = [A]; [#value] }",
+        "fn view() -> InlineContent { let value = [A]; [@(id: \"value\")#value] }",
     )
     .with_extension(TouchOutput)
     .unwrap();
@@ -434,21 +427,13 @@ fn view() -> InlineContent {
 }
 
 #[test]
-fn evaluated_group_detection_does_not_accept_pending_or_named_calls() {
-    let mut group = Item::new(Ctor::Interpolation, Default::default());
+fn groups_are_explicit_content_not_a_combination_of_execution_flags() {
+    let group = Item::new(Ctor::Interpolation, Default::default());
     assert!(!group.is_evaluated_interpolation());
-    group.evaluation = Some(EvaluationState::Native);
-    assert!(!group.is_evaluated_interpolation());
-    group.evaluation = Some(EvaluationState::Expanded);
+    let group = Item::new(Ctor::Group, Default::default());
     assert!(group.is_evaluated_interpolation());
-    group.instance = Some(
-        notist_core::definitions::FunctionInstance {
-            function: notist_core::definitions::FunctionId::new("notist", "node"),
-            arguments: Vec::new(),
-        }
-        .into(),
-    );
-    assert!(!group.is_evaluated_interpolation());
+    assert!(group.as_expr().is_none());
+    assert!(group.instance().is_none());
 }
 
 #[test]
@@ -457,13 +442,12 @@ fn rendering_structural_groups_checks_their_children_without_mutating_the_tree()
         .analyze("doc.not", "#table[#row[#cell[A]]]", &Context::default())
         .unwrap()
         .root()
-        .children[0]
+        .children()[0]
         .clone();
     let mut table = table;
-    let mut group = Item::new(Ctor::Interpolation, table.span)
-        .with_children(std::mem::take(&mut table.children));
-    group.evaluation = Some(EvaluationState::Expanded);
-    table.children = vec![group];
+    let group = Item::new(Ctor::Group, table.span)
+        .with_children(std::mem::take(table.children_mut().unwrap()));
+    *table.children_mut().unwrap() = vec![group];
     let before = table.clone();
     let rendered = Renderer::new().render_with_diagnostics(&table);
     assert!(
@@ -476,7 +460,7 @@ fn rendering_structural_groups_checks_their_children_without_mutating_the_tree()
         "<table><tbody><tr><td>A</td></tr></tbody></table>"
     );
     assert_eq!(table, before);
-    table.children[0]
+    table.children_mut().unwrap()[0]
         .attrs
         .insert("id", Value::Str("rows".into()));
     let rendered = Renderer::new().render_with_diagnostics(&table);
@@ -517,5 +501,5 @@ fn retained_group_state_attributes_and_empty_children_round_trip() {
     let decoded: Item = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, evaluation.root);
     assert!(with_id(&decoded, "empty").is_evaluated_interpolation());
-    assert!(with_id(&decoded, "empty").children.is_empty());
+    assert!(with_id(&decoded, "empty").children().is_empty());
 }

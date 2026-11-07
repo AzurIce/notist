@@ -22,8 +22,8 @@ fn analyze(src: &str) -> Item {
 
 fn text_of(item: &Item) -> String {
     item.descendants()
-        .filter(|node| node.ctor == Ctor::Text)
-        .filter_map(|node| match node.fields.get("text") {
+        .filter(|node| node.ctor() == Ctor::Text)
+        .filter_map(|node| match node.field("text") {
             Some(Value::Str(text)) => Some(text.as_str()),
             _ => None,
         })
@@ -36,21 +36,21 @@ fn underline_function_supports_nested_inline_content_and_attrs() {
         let root = analyze(&format!(
             "@(id: \"underlined\")#{name}[*粗体* _强调_ [链接](target)]"
         ));
-        let underline = root.find(|node| node.ctor == Ctor::Underline).unwrap();
+        let underline = root.find(|node| node.ctor() == Ctor::Underline).unwrap();
         assert_eq!(
             underline.attrs.get("id"),
             Some(&Value::Str("underlined".into()))
         );
-        assert_eq!(underline.ctor.level(), Some(Level::Inline));
-        assert_eq!(underline.ctor.accepts(), Some(Accepts::Inline));
+        assert_eq!(underline.ctor().level(), Some(Level::Inline));
+        assert_eq!(underline.ctor().accepts(), Some(Accepts::Inline));
         assert_eq!(text_of(underline), "粗体 强调 链接");
-        assert!(underline.find(|node| node.ctor == Ctor::Strong).is_some());
-        assert!(underline.find(|node| node.ctor == Ctor::Emph).is_some());
-        assert!(underline.find(|node| node.ctor == Ctor::Link).is_some());
+        assert!(underline.find(|node| node.ctor() == Ctor::Strong).is_some());
+        assert!(underline.find(|node| node.ctor() == Ctor::Emph).is_some());
+        assert!(underline.find(|node| node.ctor() == Ctor::Link).is_some());
     }
     let root = analyze("_仍是强调_");
-    assert!(root.find(|node| node.ctor == Ctor::Emph).is_some());
-    assert!(root.find(|node| node.ctor == Ctor::Underline).is_none());
+    assert!(root.find(|node| node.ctor() == Ctor::Emph).is_some());
+    assert!(root.find(|node| node.ctor() == Ctor::Underline).is_none());
 }
 
 #[test]
@@ -60,14 +60,14 @@ fn strike_sugar_and_function_support_nested_inline_content_and_attrs() {
         "@(id: \"removed\")#strike[*粗体* _强调_ [链接](target)]",
     ] {
         let root = analyze(src);
-        let strike = root.find(|node| node.ctor == Ctor::Strike).unwrap();
+        let strike = root.find(|node| node.ctor() == Ctor::Strike).unwrap();
         assert_eq!(strike.attrs.get("id"), Some(&Value::Str("removed".into())));
-        assert_eq!(strike.ctor.level(), Some(Level::Inline));
-        assert_eq!(strike.ctor.accepts(), Some(Accepts::Inline));
+        assert_eq!(strike.ctor().level(), Some(Level::Inline));
+        assert_eq!(strike.ctor().accepts(), Some(Accepts::Inline));
         assert_eq!(text_of(strike), "粗体 强调 链接");
-        assert!(strike.find(|node| node.ctor == Ctor::Strong).is_some());
-        assert!(strike.find(|node| node.ctor == Ctor::Emph).is_some());
-        assert!(strike.find(|node| node.ctor == Ctor::Link).is_some());
+        assert!(strike.find(|node| node.ctor() == Ctor::Strong).is_some());
+        assert!(strike.find(|node| node.ctor() == Ctor::Emph).is_some());
+        assert!(strike.find(|node| node.ctor() == Ctor::Link).is_some());
     }
     assert_eq!(text_of(&analyze("~甲\n乙~")), "甲乙");
 }
@@ -87,7 +87,7 @@ fn strike_delimiters_remain_literal_when_escaped_unpaired_or_in_payloads() {
     ] {
         let root = analyze(src);
         assert!(
-            root.find(|node| node.ctor == Ctor::Strike).is_none(),
+            root.find(|node| node.ctor() == Ctor::Strike).is_none(),
             "{src:?}"
         );
     }
@@ -98,38 +98,38 @@ fn strike_delimiters_remain_literal_when_escaped_unpaired_or_in_payloads() {
 fn divider_splits_blocks_without_blank_lines_and_carries_attrs() {
     let src = "前文\n@(id: \"break\")\n--- \t\r\n后文\n\n#divider()\n";
     let root = analyze(src);
-    let ctors: Vec<_> = root.children.iter().map(|node| &node.ctor).collect();
+    let ctors: Vec<_> = root.children().iter().map(|node| node.ctor()).collect();
     assert_eq!(
         ctors,
         [
-            &Ctor::Paragraph,
-            &Ctor::Divider,
-            &Ctor::Paragraph,
-            &Ctor::Divider
+            Ctor::Paragraph,
+            Ctor::Divider,
+            Ctor::Paragraph,
+            Ctor::Divider
         ]
     );
-    let divider = &root.children[1];
+    let divider = &root.children()[1];
     assert_eq!(divider.attrs.get("id"), Some(&Value::Str("break".into())));
     assert_eq!(
         &src[usize::from(divider.span.start())..usize::from(divider.span.end())],
         "---"
     );
-    assert_eq!(divider.ctor.level(), Some(Level::Block));
-    assert_eq!(divider.ctor.accepts(), Some(Accepts::Nothing));
-    assert!(divider.children.is_empty());
+    assert_eq!(divider.ctor().level(), Some(Level::Block));
+    assert_eq!(divider.ctor().accepts(), Some(Accepts::Nothing));
+    assert!(divider.children().is_empty());
 
     let root = analyze("前\n---\n后");
-    assert_eq!(root.children.len(), 3);
-    assert_eq!(root.children[1].ctor, Ctor::Divider);
+    assert_eq!(root.children().len(), 3);
+    assert_eq!(root.children()[1].ctor(), Ctor::Divider);
     let root = analyze("- 第一项\n---\n- 第二项");
     assert_eq!(
-        root.children
+        root.children()
             .iter()
-            .map(|node| &node.ctor)
+            .map(|node| node.ctor())
             .collect::<Vec<_>>(),
-        [&Ctor::List, &Ctor::Divider, &Ctor::List]
+        [Ctor::List, Ctor::Divider, Ctor::List]
     );
-    assert_eq!(analyze("---").children[0].ctor, Ctor::Divider);
+    assert_eq!(analyze("---").children()[0].ctor(), Ctor::Divider);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
     ] {
         let root = analyze(src);
         assert!(
-            root.find(|node| node.ctor == Ctor::Divider).is_none(),
+            root.find(|node| node.ctor() == Ctor::Divider).is_none(),
             "{src:?}"
         );
     }
@@ -164,37 +164,37 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
 #[test]
 fn callout_mounts_are_shaped_recursively() {
     let root = analyze("#callout(kind: \"note\")[ \n= 小节\n前文\n---\n~后文~\n ]");
-    let callout = &root.children[0];
-    assert_eq!(callout.ctor, Ctor::Callout);
-    assert_eq!(callout.fields.get("kind"), Some(&Value::Str("note".into())));
-    assert_eq!(callout.ctor.level(), Some(Level::Block));
-    assert_eq!(callout.ctor.accepts(), Some(Accepts::Any));
-    let section = &callout.children[0];
-    assert_eq!(section.ctor, Ctor::Section);
+    let callout = &root.children()[0];
+    assert_eq!(callout.ctor(), Ctor::Callout);
+    assert_eq!(callout.field("kind"), Some(&Value::Str("note".into())));
+    assert_eq!(callout.ctor().level(), Some(Level::Block));
+    assert_eq!(callout.ctor().accepts(), Some(Accepts::Any));
+    let section = &callout.children()[0];
+    assert_eq!(section.ctor(), Ctor::Section);
     assert_eq!(
         section
-            .children
+            .children()
             .iter()
-            .map(|node| &node.ctor)
+            .map(|node| node.ctor())
             .collect::<Vec<_>>(),
         [
-            &Ctor::Heading,
-            &Ctor::Paragraph,
-            &Ctor::Divider,
-            &Ctor::Paragraph
+            Ctor::Heading,
+            Ctor::Paragraph,
+            Ctor::Divider,
+            Ctor::Paragraph
         ]
     );
-    assert!(section.find(|node| node.ctor == Ctor::Strike).is_some());
+    assert!(section.find(|node| node.ctor() == Ctor::Strike).is_some());
 
     let root = analyze("前\n\n#callout[ 提示 ]\n\n后");
     assert_eq!(
-        root.children
+        root.children()
             .iter()
-            .map(|node| &node.ctor)
+            .map(|node| node.ctor())
             .collect::<Vec<_>>(),
-        [&Ctor::Paragraph, &Ctor::Callout, &Ctor::Paragraph]
+        [Ctor::Paragraph, Ctor::Callout, Ctor::Paragraph]
     );
-    assert_eq!(root.children[1].children[0].ctor, Ctor::Paragraph);
+    assert_eq!(root.children()[1].children()[0].ctor(), Ctor::Paragraph);
 }
 
 #[test]
@@ -221,8 +221,12 @@ fn without_spans(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
     item.origin = None;
     // Compare semantic structure independently of source-bound computation metadata.
-    item.pending = None;
-    item.children = item.children.into_iter().map(without_spans).collect();
+    item.content = notist::NodeContent::Item(notist::ContentItem {
+        ctor: item.ctor(),
+        fields: item.fields(),
+        children: item.children().iter().cloned().map(without_spans).collect(),
+        instance: item.instance().cloned().map(Into::into),
+    });
     item
 }
 
@@ -259,16 +263,12 @@ fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
         .unwrap();
     assert!(doc.diagnostics().is_empty(), "{:?}", doc.diagnostics());
     assert_eq!(text_of(doc.root()), "alpha beta gammaomega");
-    assert!(
-        doc.root()
-            .find(|node| matches!(node.ctor, Ctor::Custom(_)))
-            .is_none()
-    );
+    assert!(doc.root().find(|node| node.is_error()).is_none());
     let raw = doc
         .root()
-        .find(|node| node.ctor == Ctor::RawInline)
+        .find(|node| node.ctor() == Ctor::RawInline)
         .unwrap();
-    assert_eq!(raw.fields.get("text"), Some(&Value::Str("<span>".into())));
+    assert_eq!(raw.field("text"), Some(&Value::Str("<span>".into())));
 
     let doc = Pipeline::default()
         .analyze(
@@ -278,7 +278,7 @@ fn markdown_html_is_ignored_while_text_and_code_are_preserved() {
         )
         .unwrap();
     assert!(doc.diagnostics().is_empty());
-    assert!(doc.root().children.is_empty());
+    assert!(doc.root().children().is_empty());
 }
 
 #[test]
@@ -309,13 +309,13 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
     let md = engine
         .analyze("test.md", src, &notist::Context::default())
         .unwrap();
-    let math = md.root().find(|node| node.ctor == Ctor::Math).unwrap();
-    assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
+    let math = md.root().find(|node| node.ctor() == Ctor::Math).unwrap();
+    assert_eq!(math.field("text"), Some(&Value::Str("x".into())));
     assert_eq!(
         &src[usize::from(math.span.start())..usize::from(math.span.end())],
         "$x$"
     );
-    assert!(math.children.is_empty());
+    assert!(math.children().is_empty());
 
     let md = engine
         .analyze(
@@ -328,7 +328,7 @@ fn markdown_math_matches_notist_and_preserves_opaque_payload_and_span() {
     assert_eq!(
         md.root()
             .descendants()
-            .filter(|n| n.ctor == Ctor::Math)
+            .filter(|n| n.ctor() == Ctor::Math)
             .count(),
         4
     );
@@ -357,11 +357,11 @@ fn padded_math_is_block_content_and_matches_explicit_calls() {
             assert!(doc.diagnostics().is_empty(), "{path}: {sugar:?}");
             let equation = doc
                 .root()
-                .find(|n| n.ctor == Ctor::Math && n.level == Level::Block)
+                .find(|n| n.ctor() == Ctor::Math && n.level == Level::Block)
                 .unwrap();
             assert_eq!(equation.level, Level::Block);
-            assert_eq!(equation.ctor.accepts(), Some(Accepts::Nothing));
-            assert!(equation.children.is_empty());
+            assert_eq!(equation.ctor().accepts(), Some(Accepts::Nothing));
+            assert!(equation.children().is_empty());
             assert_eq!(
                 without_spans(doc.into_parts().0),
                 explicit,
@@ -371,10 +371,10 @@ fn padded_math_is_block_content_and_matches_explicit_calls() {
     }
     let root = analyze("前 $x$ 中\n\n$ x^2 $\n\n后");
     assert_eq!(
-        root.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-        [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+        root.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+        [Ctor::Paragraph, Ctor::Math, Ctor::Paragraph]
     );
-    assert_eq!(root.children[0].children[1].ctor, Ctor::Math);
+    assert_eq!(root.children()[0].children()[1].ctor(), Ctor::Math);
 }
 
 #[test]
@@ -385,15 +385,15 @@ fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
             "- before{newline}{newline}  $ {newline}  x +{newline}    y{newline}  ${newline}{newline}  after"
         );
         let root = analyze(&source);
-        let item = root.find(|n| n.ctor == Ctor::ListItem).unwrap();
-        let equation = &item.children[1];
-        assert_eq!(equation.ctor, Ctor::Math);
+        let item = root.find(|n| n.ctor() == Ctor::ListItem).unwrap();
+        let equation = &item.children()[1];
+        assert_eq!(equation.ctor(), Ctor::Math);
         assert_eq!(
-            equation.fields.get("text"),
+            equation.field("text"),
             Some(&Value::Str(format!("x +{newline}  y").into()))
         );
-        assert_eq!(item.children[0].ctor, Ctor::Paragraph);
-        assert_eq!(item.children[2].ctor, Ctor::Paragraph);
+        assert_eq!(item.children()[0].ctor(), Ctor::Paragraph);
+        assert_eq!(item.children()[2].ctor(), Ctor::Paragraph);
         assert_eq!(
             &source[usize::from(equation.span.start())..usize::from(equation.span.end())],
             format!("$ {newline}  x +{newline}    y{newline}  $")
@@ -403,17 +403,17 @@ fn multiline_block_math_keeps_payload_container_indentation_and_source_spans() {
                 .analyze("test.md", &source, &notist::Context::default())
                 .unwrap();
             assert!(md.diagnostics().is_empty(), "{:?}", md.diagnostics());
-            let item = md.root().find(|n| n.ctor == Ctor::ListItem).unwrap();
+            let item = md.root().find(|n| n.ctor() == Ctor::ListItem).unwrap();
             assert_eq!(
-                item.children.iter().map(|n| &n.ctor).collect::<Vec<_>>(),
-                [&Ctor::Paragraph, &Ctor::Math, &Ctor::Paragraph]
+                item.children().iter().map(|n| n.ctor()).collect::<Vec<_>>(),
+                [Ctor::Paragraph, Ctor::Math, Ctor::Paragraph]
             );
             // Markdown paragraphs remove continuation-line leading spaces.
             assert_eq!(
-                item.children[1].fields.get("text"),
+                item.children()[1].field("text"),
                 Some(&Value::Str("x +\ny".into()))
             );
-            assert_eq!(item.children[1].span, equation.span);
+            assert_eq!(item.children()[1].span, equation.span);
         }
     }
 }
@@ -444,26 +444,26 @@ fn block_math_owns_blank_lines_block_markers_and_brackets_within_containers() {
             let root = analyze(&source);
             let equations: Vec<_> = root
                 .descendants()
-                .filter(|n| n.ctor == Ctor::Math)
+                .filter(|n| n.ctor() == Ctor::Math)
                 .collect();
             assert_eq!(equations.len(), 1, "{source}");
             let equation = equations[0];
             assert_eq!(equation.level, Level::Block);
             assert_eq!(
-                equation.fields.get("text"),
+                equation.field("text"),
                 Some(&Value::Str(payload.clone().into()))
             );
-            assert!(root.find(|n| n.ctor == Ctor::Strong).is_none());
+            assert!(root.find(|n| n.ctor() == Ctor::Strong).is_none());
             let source_formula =
                 &source[usize::from(equation.span.start())..usize::from(equation.span.end())];
             assert!(source_formula.starts_with('$') && source_formula.ends_with('$'));
             if source.starts_with("#callout") {
-                assert_eq!(root.children[0].ctor, Ctor::Callout);
-                assert_eq!(text_of(&root.children[1]), "outside");
+                assert_eq!(root.children()[0].ctor(), Ctor::Callout);
+                assert_eq!(text_of(&root.children()[1]), "outside");
             }
             if source.starts_with('-') {
-                assert_eq!(root.children[0].children.len(), 2);
-                assert_eq!(text_of(&root.children[0].children[1]), "next");
+                assert_eq!(root.children()[0].children().len(), 2);
+                assert_eq!(text_of(&root.children()[0].children()[1]), "next");
             }
         }
     }
@@ -473,21 +473,25 @@ fn block_math_owns_blank_lines_block_markers_and_brackets_within_containers() {
 fn inline_math_keeps_block_boundaries_and_block_math_keeps_list_item_limits() {
     for source in ["$first\n\nsecond$", "$first\n---\nsecond$"] {
         let root = analyze(source);
-        assert!(root.find(|n| n.ctor == Ctor::Math).is_none(), "{source}");
+        assert!(root.find(|n| n.ctor() == Ctor::Math).is_none(), "{source}");
     }
     let root = analyze("- before $ unclosed\n- $ x $\n\noutside");
-    let list = &root.children[0];
-    assert_eq!(list.children.len(), 2);
-    assert!(list.children[0].find(|n| n.ctor == Ctor::Math).is_none());
+    let list = &root.children()[0];
+    assert_eq!(list.children().len(), 2);
+    assert!(
+        list.children()[0]
+            .find(|n| n.ctor() == Ctor::Math)
+            .is_none()
+    );
     assert_eq!(
-        list.children[1]
-            .find(|n| n.ctor == Ctor::Math)
+        list.children()[1]
+            .find(|n| n.ctor() == Ctor::Math)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str("x".into()))
     );
-    assert_eq!(text_of(&root.children[1]), "outside");
+    assert_eq!(text_of(&root.children()[1]), "outside");
 }
 
 #[test]
@@ -509,7 +513,7 @@ fn empty_mismatched_escaped_or_unclosed_math_remains_literal() {
                 .unwrap();
             assert!(doc.diagnostics().is_empty(), "{path}: {source:?}");
             assert!(
-                doc.root().find(|n| n.ctor == Ctor::Math).is_none(),
+                doc.root().find(|n| n.ctor() == Ctor::Math).is_none(),
                 "{path}: {source:?}"
             );
         }
@@ -538,7 +542,7 @@ fn markdown_math_does_not_parse_escapes_code_or_unpaired_delimiters() {
             .unwrap();
         assert!(md.diagnostics().is_empty(), "{src:?}");
         assert!(
-            md.root().find(|n| n.ctor == Ctor::Math).is_none(),
+            md.root().find(|n| n.ctor() == Ctor::Math).is_none(),
             "{src:?}"
         );
     }
@@ -581,13 +585,13 @@ fn markdown_line_breaks_match_notist_and_preserve_inline_spaces() {
         .analyze("test.md", "甲\\\n乙\n\n丙", &notist::Context::default())
         .unwrap();
     assert_eq!(text_of(md.root()), "甲乙丙");
-    assert_eq!(md.root().children.len(), 3);
+    assert_eq!(md.root().children().len(), 3);
 
     let md = engine
         .analyze("test.md", "```\n甲\n乙\n```\n", &notist::Context::default())
         .unwrap();
-    let raw = md.root().find(|n| n.ctor == Ctor::RawInline).unwrap();
-    assert_eq!(raw.fields.get("text"), Some(&Value::Str("甲\n乙\n".into())));
+    let raw = md.root().find(|n| n.ctor() == Ctor::RawInline).unwrap();
+    assert_eq!(raw.field("text"), Some(&Value::Str("甲\n乙\n".into())));
 }
 
 #[test]
@@ -620,8 +624,8 @@ fn notist_embed_sugar_matches_function_and_markdown() {
         "![说明](<asset(1).pdf> '标题')",
     ] {
         let root = analyze(src);
-        let embed = root.find(|node| node.ctor == Ctor::Embed).unwrap();
-        assert!(embed.children.is_empty());
+        let embed = root.find(|node| node.ctor() == Ctor::Embed).unwrap();
+        assert!(embed.children().is_empty());
     }
 }
 
@@ -629,19 +633,16 @@ fn notist_embed_sugar_matches_function_and_markdown() {
 fn notist_embed_sugar_preserves_nested_description_attrs_and_spans() {
     let src = r#"前 @(id: "resource")![前 *粗* _斜_ ~删~ `code` [链接](somewhere) $x$ \] 后](asset\(1\).pdf "说明\"文字") 后"#;
     let root = analyze(src);
-    let embed = root.find(|node| node.ctor == Ctor::Embed).unwrap();
+    let embed = root.find(|node| node.ctor() == Ctor::Embed).unwrap();
     assert_eq!(
-        embed.fields.get("target"),
+        embed.field("target"),
         Some(&local_embed_path("asset(1).pdf"))
     );
     assert_eq!(
-        embed.fields.get("description"),
+        embed.field("description"),
         Some(&Value::Str("前 粗 斜 删 code 链接 x ] 后".into()))
     );
-    assert_eq!(
-        embed.fields.get("title"),
-        Some(&Value::Str("说明\"文字".into()))
-    );
+    assert_eq!(embed.field("title"), Some(&Value::Str("说明\"文字".into())));
     assert_eq!(embed.attrs.get("id"), Some(&Value::Str("resource".into())));
     assert!(src[usize::from(embed.span.start())..usize::from(embed.span.end())].starts_with("!["));
     assert_eq!(text_of(&root), "前  后");
@@ -649,31 +650,31 @@ fn notist_embed_sugar_preserves_nested_description_attrs_and_spans() {
     let table = analyze("| 资源 |\n| --- |\n| ![*描述*](asset) |\n");
     assert_eq!(
         table
-            .find(|node| node.ctor == Ctor::Embed)
+            .find(|node| node.ctor() == Ctor::Embed)
             .unwrap()
-            .fields
+            .fields()
             .get("description"),
         Some(&Value::Str("描述".into()))
     );
     let link = analyze("[![说明](asset)](destination)");
-    let link = link.find(|node| node.ctor == Ctor::Link).unwrap();
-    assert_eq!(link.children[0].ctor, Ctor::Embed);
+    let link = link.find(|node| node.ctor() == Ctor::Link).unwrap();
+    assert_eq!(link.children()[0].ctor(), Ctor::Embed);
     assert_eq!(
-        link.fields.get("target"),
+        link.field("target"),
         Some(&Value::Str("destination".into()))
     );
     let root = analyze("![计算 (A) `]` $[$](Bob's(1).pdf \"含 ) 的标题\")");
-    let embed = root.find(|node| node.ctor == Ctor::Embed).unwrap();
+    let embed = root.find(|node| node.ctor() == Ctor::Embed).unwrap();
     assert_eq!(
-        embed.fields.get("target"),
+        embed.field("target"),
         Some(&local_embed_path("Bob's(1).pdf"))
     );
     assert_eq!(
-        embed.fields.get("description"),
+        embed.field("description"),
         Some(&Value::Str("计算 (A) ] [".into()))
     );
     assert_eq!(
-        embed.fields.get("title"),
+        embed.field("title"),
         Some(&Value::Str("含 ) 的标题".into()))
     );
 }
@@ -691,7 +692,9 @@ fn malformed_or_escaped_embeds_remain_literal_and_lossless() {
         "$![text](asset)$",
     ] {
         assert!(
-            analyze(src).find(|node| node.ctor == Ctor::Embed).is_none(),
+            analyze(src)
+                .find(|node| node.ctor() == Ctor::Embed)
+                .is_none(),
             "{src:?}"
         );
     }
@@ -703,18 +706,18 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
     let md = engine
         .analyze("test.md", "> 甲\\\n> 乙\n", &notist::Context::default())
         .unwrap();
-    let quote = md.root().find(|node| node.ctor == Ctor::Callout).unwrap();
-    assert_eq!(quote.children.len(), 2);
-    assert_eq!(text_of(&quote.children[0]), "甲");
-    assert_eq!(text_of(&quote.children[1]), "乙");
+    let quote = md.root().find(|node| node.ctor() == Ctor::Callout).unwrap();
+    assert_eq!(quote.children().len(), 2);
+    assert_eq!(text_of(&quote.children()[0]), "甲");
+    assert_eq!(text_of(&quote.children()[1]), "乙");
     let md = engine
         .analyze("test.md", "- 甲\\\n  乙\n", &notist::Context::default())
         .unwrap();
     assert_eq!(
         md.root()
-            .find(|node| node.ctor == Ctor::ListItem)
+            .find(|node| node.ctor() == Ctor::ListItem)
             .unwrap()
-            .children
+            .children()
             .len(),
         2
     );
@@ -727,7 +730,7 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
         let md = engine
             .analyze("test.md", src, &notist::Context::default())
             .unwrap();
-        assert_eq!(md.root().children.len(), 1, "{src:?}");
+        assert_eq!(md.root().children().len(), 1, "{src:?}");
     }
     for (extension, src) in [("not", "*甲\\\n乙*"), ("md", "**甲\\\n乙**")] {
         let root = engine
@@ -737,8 +740,12 @@ fn explicit_breaks_preserve_containers_and_opaque_payloads() {
                 &notist::Context::default(),
             )
             .unwrap();
-        assert_eq!(root.root().children.len(), 2);
-        assert!(root.root().find(|node| node.ctor == Ctor::Strong).is_none());
+        assert_eq!(root.root().children().len(), 2);
+        assert!(
+            root.root()
+                .find(|node| node.ctor() == Ctor::Strong)
+                .is_none()
+        );
     }
 }
 
@@ -772,7 +779,7 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
             "{target}"
         );
 
-        let embed = md.root().find(|node| node.ctor == Ctor::Embed).unwrap();
+        let embed = md.root().find(|node| node.ctor() == Ctor::Embed).unwrap();
         let (path, fragment) = target
             .split_once('#')
             .map_or((target, None), |(p, f)| (p, Some(f)));
@@ -781,27 +788,24 @@ fn embed_function_and_markdown_share_fields_for_every_resource_type() {
         } else {
             local_embed_path(path)
         };
-        assert_eq!(embed.fields.get("target"), Some(&expected));
+        assert_eq!(embed.field("target"), Some(&expected));
         assert_eq!(
-            embed.fields.get("fragment"),
+            embed.field("fragment"),
             fragment.map(|f| Value::Str(f.into())).as_ref()
         );
+        assert_eq!(embed.field("description"), Some(&Value::Str("资源".into())));
+        assert_eq!(embed.field("title"), Some(&Value::Str("说明".into())));
         assert_eq!(
-            embed.fields.get("description"),
-            Some(&Value::Str("资源".into()))
-        );
-        assert_eq!(embed.fields.get("title"), Some(&Value::Str("说明".into())));
-        assert_eq!(
-            embed.fields.iter().count(),
+            embed.fields().iter().count(),
             3 + usize::from(fragment.is_some())
         );
-        assert!(embed.children.is_empty());
-        assert_eq!(embed.ctor.level(), Some(Level::Inline));
-        assert_eq!(embed.ctor.accepts(), Some(Accepts::Nothing));
+        assert!(embed.children().is_empty());
+        assert_eq!(embed.ctor().level(), Some(Level::Inline));
+        assert_eq!(embed.ctor().accepts(), Some(Accepts::Nothing));
 
         let positional = analyze(&format!("#embed(\"{target}\")"));
-        let embed = positional.find(|node| node.ctor == Ctor::Embed).unwrap();
-        assert_eq!(embed.fields.get("target"), Some(&expected));
+        let embed = positional.find(|node| node.ctor() == Ctor::Embed).unwrap();
+        assert_eq!(embed.field("target"), Some(&expected));
     }
 }
 
@@ -817,31 +821,25 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
     let embeds: Vec<_> = md
         .root()
         .descendants()
-        .filter(|n| n.ctor == Ctor::Embed)
+        .filter(|n| n.ctor() == Ctor::Embed)
         .collect();
     assert_eq!(embeds.len(), 3);
     assert_eq!(
-        embeds[0].fields.get("description"),
+        embeds[0].field("description"),
         Some(&Value::Str("前 粗 斜 code 链接 x 后".into()))
     );
+    assert_eq!(embeds[0].field("target"), Some(&local_embed_path("asset")));
+    assert!(embeds[0].field("title").is_none());
     assert_eq!(
-        embeds[0].fields.get("target"),
-        Some(&local_embed_path("asset"))
-    );
-    assert!(embeds[0].fields.get("title").is_none());
-    assert_eq!(
-        embeds[1].fields.get("target"),
+        embeds[1].field("target"),
         Some(&local_embed_path("clip.mp4"))
     );
+    assert_eq!(embeds[1].field("title"), Some(&Value::Str("说明".into())));
     assert_eq!(
-        embeds[1].fields.get("title"),
-        Some(&Value::Str("说明".into()))
-    );
-    assert_eq!(
-        embeds[2].fields.get("description"),
+        embeds[2].field("description"),
         Some(&Value::Str(String::new().into()))
     );
-    assert!(embeds.iter().all(|e| e.children.is_empty()));
+    assert!(embeds.iter().all(|e| e.children().is_empty()));
 
     let md = engine
         .analyze(
@@ -851,19 +849,19 @@ fn markdown_embed_keeps_complete_plain_description_and_reference_title() {
         )
         .unwrap();
     assert!(md.diagnostics().is_empty());
-    let link = md.root().find(|n| n.ctor == Ctor::Link).unwrap();
+    let link = md.root().find(|n| n.ctor() == Ctor::Link).unwrap();
     assert_eq!(
-        link.fields.get("target"),
+        link.field("target"),
         Some(&Value::Str("destination".into()))
     );
-    assert_eq!(link.children[0].ctor, Ctor::Embed);
+    assert_eq!(link.children()[0].ctor(), Ctor::Embed);
 }
 
 #[test]
 fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
     let root =
         analyze("前 @(id: \"resource\")#embed(target: \"paper.pdf\", description: \"说明\") 后");
-    let embed = root.find(|n| n.ctor == Ctor::Embed).unwrap();
+    let embed = root.find(|n| n.ctor() == Ctor::Embed).unwrap();
     assert_eq!(embed.attrs.get("id"), Some(&Value::Str("resource".into())));
     assert_eq!(notist::query::select(&root, "ctor:embed").len(), 1);
     assert_eq!(text_of(&root), "前  后");
@@ -894,23 +892,17 @@ fn markdown_embed_decodes_fields_once_and_keeps_code_payload_literal() {
         .analyze("test.md", r#"![A &amp; B &#20013; \*literal\* \&amp; &#38;amp; `&amp;` $\alpha$](asset\(1\)?a=1&amp;b=2 "A &quot;title&quot;")"#, &notist::Context::default())
         .unwrap();
     assert!(doc.diagnostics().is_empty());
-    let embed = doc.root().find(|n| n.ctor == Ctor::Embed).unwrap();
+    let embed = doc.root().find(|n| n.ctor() == Ctor::Embed).unwrap();
     assert_eq!(
-        embed.fields.get("description"),
+        embed.field("description"),
         Some(&Value::Str(
             "A & B 中 *literal* &amp; &amp; &amp; \\alpha".into()
         ))
     );
+    assert_eq!(embed.field("target"), Some(&local_embed_path("asset(1)")));
+    assert_eq!(embed.field("query"), Some(&Value::Str("a=1&b=2".into())));
     assert_eq!(
-        embed.fields.get("target"),
-        Some(&local_embed_path("asset(1)"))
-    );
-    assert_eq!(
-        embed.fields.get("query"),
-        Some(&Value::Str("a=1&b=2".into()))
-    );
-    assert_eq!(
-        embed.fields.get("title"),
+        embed.field("title"),
         Some(&Value::Str("A \"title\"".into()))
     );
 }

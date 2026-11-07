@@ -44,7 +44,7 @@ impl Checker<'_> {
                 } else {
                     call.definition.returns.clone()
                 };
-                return self.typed(Some(ty), ExprKind::ValueCall(Box::new(call)), None, span);
+                return self.typed(Some(ty), ExprKind::Call(Box::new(call)), None, span);
             }
             Ok((call, children)) => self.call_node(expression, call, children, false),
             Err(r) => {
@@ -64,6 +64,18 @@ impl Checker<'_> {
             &mut self.diagnostics,
         )
         .remove(0);
+        if node.attrs.is_empty() {
+            if let notist_core::item::NodeContent::Expr(value) = &node.content
+                && matches!(value.kind, ExprKind::Call(_))
+            {
+                return self.typed(
+                    value.ty.clone(),
+                    value.kind.clone(),
+                    value.known.clone(),
+                    value.span,
+                );
+            }
+        }
         self.typed(
             Some(if node.level == Level::Inline {
                 Type::InlineContent
@@ -186,7 +198,7 @@ impl Checker<'_> {
                 // data constructor or a claim to a structural content role.
                 let value = self.typed(
                     Some(Type::Never),
-                    ExprKind::ValueCall(Box::new(call)),
+                    ExprKind::Call(Box::new(call)),
                     None,
                     e.span(),
                 );

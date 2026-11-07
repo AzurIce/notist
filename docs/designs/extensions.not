@@ -149,7 +149,7 @@ import 路径相对于配置文件。from / to 使用 Code 相同的名称解析
 
 每条规则按序选择目标一次，不求固定点。A → B、B → C 得到 C；反序得到 B。目标可为 Code 或原生实现，实例在执行前检查。原编译期实参、字段、输入 children 原样转发，不计算参数映射。
 
-输出 Item 仍记录原调用 f；target 记录实际执行的 g。Code 结果替换原边界内的 children，原生结果使用目标输出绑定。替换不重跑 Resolve 或 Shape。失败生成保持原类别与身份的错误节点，独立内容继续处理。
+求值前的 Call 保持原调用 f；求值后的原生内容元素记录实际构造 g 的身份与具体参数，不另存 target。Code 结果直接引入结果森林，无属性时溶解调用边界，有非空属性时由透明 Group 承接整个结果。替换不重跑 Resolve 或 Shape。失败生成保留类别、属性与来源的 Error 内容，独立内容继续处理。
 
 == Replace API
 
@@ -167,4 +167,4 @@ let context = Context::default()
     }]))?;
 ```
 
-HTML 根据 target 绑定原生处理器或组件；Code 的 Expanded 边界不要求对应 Web Component。源码映射记录文件身份和展开链。配置失败属于 environment 诊断；analysis、evaluate、render 分别报告所属阶段。严格导出保留失败状态；交互预览可以呈现错误节点及其余内容。
+HTML 根据具体内容元素的构造身份绑定原生处理器或组件；透明 Group 不要求对应 Web Component。源码映射记录文件身份和展开链。配置失败属于 environment 诊断；analysis、evaluate、render 分别报告所属阶段。严格导出保留诊断中的失败状态；交互预览可以呈现 Error 内容及其余内容。

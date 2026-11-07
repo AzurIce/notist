@@ -85,7 +85,7 @@ fn paths_forward_defaults_and_function_literals_keep_their_binding_sites() {
         ] {
             let root = evaluate(&path, source, &context());
             assert_eq!(
-                embed(&root).fields.get("target"),
+                embed(&root).field("target"),
                 Some(&expected(target)),
                 "{source}"
             );
@@ -117,15 +117,9 @@ fn deferred_strings_bind_at_the_embed_operation_and_keep_the_captured_root() {
             evaluation.diagnostics
         );
         let item = embed(&evaluation.root);
-        assert_eq!(
-            item.fields.get("target"),
-            Some(&expected("views/image one.svg"))
-        );
-        assert_eq!(item.fields.get("query"), Some(&Value::Str("q=1".into())));
-        assert_eq!(
-            item.fields.get("fragment"),
-            Some(&Value::Str("part%20".into()))
-        );
+        assert_eq!(item.field("target"), Some(&expected("views/image one.svg")));
+        assert_eq!(item.field("query"), Some(&Value::Str("q=1".into())));
+        assert_eq!(item.field("fragment"), Some(&Value::Str("part%20".into())));
     }
 }
 
@@ -139,21 +133,15 @@ fn legacy_sugar_decodes_url_paths_once_and_separates_query_and_svg_fragment() {
             &context(),
         );
         let item = embed(&root);
-        assert_eq!(
-            item.fields.get("target"),
-            Some(&expected("assets/a%20b?#.svg"))
-        );
-        assert_eq!(
-            item.fields.get("fragment"),
-            Some(&Value::Str("part%20".into()))
-        );
+        assert_eq!(item.field("target"), Some(&expected("assets/a%20b?#.svg")));
+        assert_eq!(item.field("fragment"), Some(&Value::Str("part%20".into())));
         // Only Markdown decodes character references in its surface syntax.
         let query = if extension == "md" {
             "x=1&y=2"
         } else {
             "x=1&amp;y=2"
         };
-        assert_eq!(item.fields.get("query"), Some(&Value::Str(query.into())));
+        assert_eq!(item.field("query"), Some(&Value::Str(query.into())));
         let output = Renderer::new()
             .with_resource_resolver(|_, path| {
                 assert_eq!(Value::Path(path.clone()), expected("assets/a%20b?#.svg"));
@@ -174,7 +162,7 @@ fn explicit_path_filenames_are_not_split_or_url_decoded() {
         &context(),
     );
     assert_eq!(
-        embed(&root).fields.get("target"),
+        embed(&root).field("target"),
         Some(&expected("pages/a?b#c%20.svg"))
     );
     let before = root.clone();
@@ -207,12 +195,9 @@ fn optional_suffixes_forward_without_rebinding_paths_or_inventing_empty_fields()
     ] {
         let root = evaluate("/project/pages/page.not", source, &context());
         let item = embed(&root);
+        assert_eq!(item.field("target"), Some(&expected("pages/image.svg")));
         assert_eq!(
-            item.fields.get("target"),
-            Some(&expected("pages/image.svg"))
-        );
-        assert_eq!(
-            item.fields.get("fragment"),
+            item.field("fragment"),
             fragment.map(|s| Value::Str(s.into())).as_ref()
         );
     }
@@ -231,10 +216,10 @@ fn remote_targets_remain_urls_and_do_not_request_local_resource_bindings() {
             &context(),
         );
         assert_eq!(
-            embed(&root).fields.get("target"),
+            embed(&root).field("target"),
             Some(&Value::Str(target.into()))
         );
-        assert!(embed(&root).fields.get("fragment").is_none());
+        assert!(embed(&root).field("fragment").is_none());
         let output = Renderer::new()
             .with_resource_resolver(|_, _| panic!("remote embed requested a local resource"))
             .render_with_diagnostics(&root);
@@ -352,9 +337,9 @@ fn links_keep_the_string_contract_and_do_not_use_the_path_resolver() {
         "[Guide](guide.not?q=1#part)",
         &context(),
     );
-    let link = root.find(|item| item.ctor == Ctor::Link).unwrap();
+    let link = root.find(|item| item.ctor() == Ctor::Link).unwrap();
     assert_eq!(
-        link.fields.get("target"),
+        link.field("target"),
         Some(&Value::Str("guide.not?q=1#part".into()))
     );
     let analysis = Pipeline::default()
@@ -372,6 +357,8 @@ fn links_keep_the_string_contract_and_do_not_use_the_path_resolver() {
     );
     let mut malformed = link.clone();
     malformed
+        .as_item_mut()
+        .unwrap()
         .fields
         .insert("target", expected("pages/guide.not"));
     let output = Renderer::new()
@@ -418,11 +405,11 @@ fn execution_replacements_publish_only_effective_native_embeds() {
         &context,
     );
     assert_eq!(
-        embed(&root).fields.get("target"),
+        embed(&root).field("target"),
         Some(&expected("pages/image.svg"))
     );
     assert_eq!(
-        embed(&root).fields.get("fragment"),
+        embed(&root).field("fragment"),
         Some(&Value::Str("part".into()))
     );
 }
@@ -447,7 +434,7 @@ fn virtual_vault_preview_maps_resources_without_requiring_them_to_exist() {
             .contains("href=\"../assets/a%3Fb%23c%25.svg#part\"")
     );
     assert_eq!(
-        embed(&output.evaluation.root).fields.get("target"),
+        embed(&output.evaluation.root).field("target"),
         Some(&expected("assets/a?b#c%.svg"))
     );
 }
@@ -489,13 +476,12 @@ fn deferred_outside_vault_embeds_report_one_host_boundary_diagnostic() {
 
 #[test]
 fn error_boundaries_hide_embeds_while_expanded_boundaries_expose_results() {
-    use notist::EvaluationState;
     let image =
         Item::new(Ctor::Embed, Default::default()).with_field("target", expected("missing.svg"));
     let mut wrapper = Item::new(Ctor::Node, Default::default()).with_children(vec![image]);
-    wrapper.evaluation = Some(EvaluationState::Error("hidden".into()));
+    wrapper.as_item_mut().unwrap().ctor = Ctor::Error("hidden".into());
     assert_eq!(notist::embed::targets(&wrapper).count(), 0);
-    wrapper.evaluation = Some(EvaluationState::Expanded);
+    wrapper.as_item_mut().unwrap().ctor = Ctor::Group;
     assert_eq!(notist::embed::targets(&wrapper).count(), 1);
 }
 

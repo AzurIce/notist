@@ -2,7 +2,7 @@
 //! notist-eval; these tests deliberately exercise real checked programs.
 use super::*;
 use crate::{Context, Pipeline};
-use notist_core::item::{Ctor, EvaluationState, SourceLocation, Value};
+use notist_core::item::{Ctor, SourceLocation, Value};
 use notist_eval::{evaluate, test_support::*};
 
 #[test]
@@ -12,8 +12,11 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
         extensions::{Replace, Replacement},
     };
     fn decorate(item: &mut Item) {
-        item.fields
-            .insert("checkpoint_sentinel", Value::Str("original".into()));
+        if let Some(value) = item.as_item_mut() {
+            value
+                .fields
+                .insert("checkpoint_sentinel", Value::Str("original".into()));
+        }
         item.attrs
             .insert("checkpoint_attr", Value::Str("kept".into()));
         if let Some(origin) = &mut item.origin {
@@ -23,20 +26,7 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
                 end: 8,
             });
         }
-        if matches!(item.pending.as_deref(), Some(PendingEvaluation::Call(_)))
-            || item.ctor == Ctor::Strong
-        {
-            // Recovery must preserve a target even when the host omitted instance.
-            item.instance = None;
-            item.target = Some(
-                FunctionInstance {
-                    function: FunctionId::new("host", "original"),
-                    arguments: vec![],
-                }
-                .into(),
-            );
-        }
-        for child in &mut item.children {
+        for child in item.children_mut().into_iter().flatten() {
             decorate(child);
         }
     }
@@ -105,17 +95,6 @@ fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
             );
             let mut root = analysis.root().clone();
             decorate(&mut root);
-            if replacement {
-                fn make_synthetic(item: &mut Item) {
-                    if item.ctor == Ctor::Strong {
-                        item.pending = None;
-                    }
-                    for child in &mut item.children {
-                        make_synthetic(child);
-                    }
-                }
-                make_synthetic(&mut root);
-            }
             for content_nodes in 0..64 {
                 for constrained in [false, true] {
                     let limits = Limits {
@@ -165,10 +144,7 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
         );
         for failure in 0..4 {
             let mut root = analysis.root().clone();
-            let boundary = &mut root.children[0].children[0];
-            boundary
-                .fields
-                .insert("sentinel", Value::Str("original".into()));
+            let boundary = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
             boundary.attrs.insert("id", Value::Str("recovery".into()));
             boundary
                 .origin
@@ -181,9 +157,7 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
                     end: 7,
                 });
             let before = item_shell(boundary);
-            let Some(PendingEvaluation::Call(call)) = boundary.pending.as_deref_mut() else {
-                panic!("expected a content call")
-            };
+            let call = boundary.call_mut().expect("content call expression");
             match failure {
                 0 => call.invalid = Some("deliberate failure".into()),
                 1 => {
@@ -195,20 +169,14 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
             }
             let evaluated = evaluate(&root, &analysis.program, &context, Limits::default());
             assert!(!evaluated.diagnostics.is_empty());
-            let recovered = &evaluated.root.children[0].children[0];
-            assert!(matches!(
-                recovered.evaluation,
-                Some(EvaluationState::Error(_))
-            ));
-            assert_eq!(recovered.ctor, before.ctor);
-            assert_eq!(recovered.instance, before.instance);
-            assert_eq!(recovered.fields, before.fields);
+            let recovered = &evaluated.root.children()[0].children()[0];
+            assert!(recovered.is_error());
             assert_eq!(recovered.attrs, before.attrs);
             assert_eq!(recovered.origin, before.origin);
             assert_eq!(recovered.span, before.span);
             assert_eq!(recovered.level, before.level);
-            assert!(recovered.children.is_empty());
-            assert!(recovered.pending.is_none());
+            assert!(recovered.children().is_empty());
+            assert!(recovered.as_expr().is_none());
         }
     }
 }
@@ -242,12 +210,9 @@ fn returned_summaries_match_trees_across_mounts_failures_and_limits() {
                 let mut root = analysis.root().clone();
                 if limit % 7 == 0 {
                     // Binding must count even the children of supplied recovery nodes.
-                    let mut recovery = Item::text("discarded".into(), Default::default());
-                    recovery.evaluation = Some(EvaluationState::Error("recovery".into()));
-                    recovery
-                        .children
-                        .push(Item::text("child".into(), Default::default()));
-                    root.children.push(recovery);
+                    let recovery = Item::new(Ctor::Error("recovery".into()), Default::default())
+                        .with_children(vec![Item::text("child".into(), Default::default())]);
+                    root.children_mut().unwrap().push(recovery);
                 }
                 assert_summaries(
                     &root,
@@ -285,10 +250,9 @@ fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
         .analyze("doc.not", "#self.greet(\"before\")", &context)
         .unwrap();
     let mut root = analysis.root().clone();
-    let call = root.children[0].children[0].pending.as_deref_mut().unwrap();
-    let PendingEvaluation::Call(call) = call else {
-        panic!("expected a pending call")
-    };
+    let call = root.children_mut().unwrap()[0].children_mut().unwrap()[0]
+        .call_mut()
+        .unwrap();
     let argument = &mut call.arguments[0].1;
     argument.known = Some(ComptimeValue::Data(Value::Str("after".into())));
     argument.kind = ExprKind::Constant(argument.known.clone().unwrap());
@@ -304,11 +268,11 @@ fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
         result
             .root
             .descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("after".into())))
+            .any(|i| i.field("text") == Some(&Value::Str("after".into())))
     );
-    assert!(result.root.descendants().all(|i| i.pending.is_none()));
+    assert!(result.root.descendants().all(|i| i.as_expr().is_none()));
     assert_eq!(
-        analysis.root().children[0].children[0].fields.get("name"),
+        analysis.root().children()[0].children()[0].field("name"),
         Some(&Value::Str("before".into()))
     );
 }
@@ -332,18 +296,11 @@ fn editing_a_captured_signature_detaches_and_remains_authoritative() {
         .analyze("doc.not", "#self.show(-1)", &context)
         .unwrap();
     assert!(analysis.diagnostics().is_empty());
-    let original = analysis.root().children[0].children[0]
-        .pending
-        .as_deref()
-        .unwrap();
-    let PendingEvaluation::Call(original) = original else {
-        panic!("expected a call")
-    };
+    let original = analysis.root().children()[0].children()[0].call().unwrap();
     let mut root = analysis.root().clone();
-    let changed = root.children[0].children[0].pending.as_deref_mut().unwrap();
-    let PendingEvaluation::Call(changed) = changed else {
-        panic!("expected a call")
-    };
+    let changed = root.children_mut().unwrap()[0].children_mut().unwrap()[0]
+        .call_mut()
+        .unwrap();
     assert!(changed.definition.shares_storage(&original.definition));
     changed.definition.parameters[0].constraint =
         notist_core::definitions::ValueConstraint::PositiveInt;
@@ -365,7 +322,7 @@ fn editing_a_captured_signature_detaches_and_remains_authoritative() {
         original
             .root
             .descendants()
-            .any(|item| item.fields.get("text") == Some(&Value::Str("-1".into())))
+            .any(|item| item.field("text") == Some(&Value::Str("-1".into())))
     );
 }
 
@@ -402,25 +359,19 @@ fn checked_function_bodies_contain_typed_item_interpolations() {
     let ExprKind::Content(forest) = &value.kind else {
         panic!("expected Item forest")
     };
-    assert_eq!(forest[0].ctor, Ctor::Interpolation);
-    let Some(PendingEvaluation::Splice(expr)) = forest[0].pending.as_deref() else {
-        panic!("expected interpolation")
-    };
+    let expr = forest[0].as_expr().expect("interpolation expression");
     assert_eq!(expr.ty, Some(Type::InlineContent));
     assert!(matches!(&expr.kind, ExprKind::Input(name) if name == "children"));
     let evaluation = pipeline.evaluate(&analysis, &context);
     assert!(evaluation.diagnostics.is_empty());
-    let pass = evaluation
-        .root
-        .find(|i| {
-            i.function_id() == Some(notist_core::definitions::FunctionId::new("demo", "pass"))
-        })
-        .unwrap();
-    assert_eq!(pass.children.len(), 1);
-    assert!(pass.children[0].is_evaluated_interpolation());
+    assert!(evaluation.root.find(|i| i.ctor() == Ctor::Group).is_none());
     assert_eq!(
-        pass.children[0].children[0].fields.get("text"),
+        evaluation
+            .root
+            .find(|i| i.ctor() == Ctor::Text)
+            .unwrap()
+            .field("text"),
         Some(&Value::Str("one".into()))
     );
-    assert!(evaluation.root.descendants().all(|i| i.pending.is_none()));
+    assert!(evaluation.root.descendants().all(|i| i.as_expr().is_none()));
 }

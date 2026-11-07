@@ -1,5 +1,5 @@
 use crate::{Error, Route};
-use notist::{Ctor, Diagnostic, EvaluationState, Item, SourceDiagnostic, Sources, Value};
+use notist::{Ctor, Diagnostic, Item, SourceDiagnostic, Sources, Value};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -70,8 +70,8 @@ fn value(input: &Value) -> serde_json::Value {
 
 fn text(item: &Item) -> String {
     item.descendants()
-        .filter(|n| matches!(n.ctor, Ctor::Text | Ctor::RawInline | Ctor::Math))
-        .filter_map(|n| match n.fields.get("text") {
+        .filter(|n| matches!(n.ctor(), Ctor::Text | Ctor::RawInline | Ctor::Math))
+        .filter_map(|n| match n.field("text") {
             Some(Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -101,10 +101,10 @@ fn headings(
     ids: &mut BTreeSet<String>,
     out: &mut Vec<Heading>,
 ) {
-    if matches!(item.evaluation, Some(EvaluationState::Error(_))) {
+    if item.is_error() {
         return;
     }
-    if item.ctor == Ctor::Heading {
+    if item.ctor() == Ctor::Heading {
         let title = text(item);
         let inherited_target = item.attrs.get("id").is_none() && inherited.is_some();
         let explicit = match item.attrs.get("id") {
@@ -125,7 +125,7 @@ fn headings(
         if !inherited_target {
             item.attrs.insert("id", Value::Str(id.clone().into()));
         }
-        let level = match item.fields.get("level") {
+        let level = match item.field("level") {
             Some(Value::Int(n)) => *n,
             _ => 1,
         };
@@ -136,7 +136,7 @@ fn headings(
             level,
         });
     }
-    let section_id = if item.ctor == Ctor::Section {
+    let section_id = if item.ctor() == Ctor::Section {
         match item.attrs.get("id") {
             Some(Value::Str(id)) => Some(id.to_string()),
             _ => None,
@@ -144,7 +144,7 @@ fn headings(
     } else {
         None
     };
-    for (n, child) in item.children.iter_mut().enumerate() {
+    for (n, child) in item.children_mut().into_iter().flatten().enumerate() {
         headings(
             child,
             if n == 0 { section_id.clone() } else { None },

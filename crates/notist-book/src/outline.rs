@@ -1,4 +1,4 @@
-use notist::{Ctor, EvaluationState, Item, Value};
+use notist::{Ctor, Item, Value};
 use serde::Serialize;
 use std::collections::BTreeSet;
 
@@ -16,9 +16,9 @@ pub(crate) struct Outline {
 pub(crate) fn text(item: &Item) -> String {
     let mut result = String::new();
     for node in item.descendants() {
-        if !matches!(node.evaluation, Some(EvaluationState::Error(_)))
-            && matches!(node.ctor, Ctor::Text | Ctor::RawInline | Ctor::Math)
-            && let Some(Value::Str(value)) = node.fields.get("text")
+        if !node.is_error()
+            && matches!(node.ctor(), Ctor::Text | Ctor::RawInline | Ctor::Math)
+            && let Some(Value::Str(value)) = node.field("text")
         {
             result.push_str(value);
         }
@@ -59,10 +59,10 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
         ids,
     };
     fn visit(node: &mut Item, inherited: Option<String>, outline: &mut Outline) {
-        if matches!(node.evaluation, Some(EvaluationState::Error(_))) {
+        if node.is_error() {
             return;
         }
-        if node.ctor == Ctor::Heading {
+        if node.ctor() == Ctor::Heading {
             let title = text(node);
             if outline.headings.is_empty() {
                 outline.title = title.clone();
@@ -83,13 +83,13 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
                 node.attrs.insert("id", Value::Str(value.clone().into()));
                 value
             });
-            let level = match node.fields.get("level") {
+            let level = match node.field("level") {
                 Some(Value::Int(level)) => *level,
                 _ => 1,
             };
             outline.headings.push(Heading { title, id, level });
         }
-        let section_id = if node.ctor == Ctor::Section {
+        let section_id = if node.ctor() == Ctor::Section {
             match node.attrs.get("id") {
                 Some(Value::Str(id)) => Some(id.to_string()),
                 _ => None,
@@ -97,7 +97,7 @@ pub(crate) fn prepare(root: &mut Item, fallback: &str) -> Outline {
         } else {
             None
         };
-        for (index, child) in node.children.iter_mut().enumerate() {
+        for (index, child) in node.children_mut().into_iter().flatten().enumerate() {
             visit(
                 child,
                 if index == 0 { section_id.clone() } else { None },

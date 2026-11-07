@@ -2,8 +2,8 @@
 //! the result is an owned publication artifact, not a filesystem mutation.
 use notist::resources::{ResourceError, ResourceKind};
 use notist::{
-    Ctor, Diagnostic, DiagnosticCode, EvaluationState, Item, Phase, Resources, SourceDiagnostic,
-    TextRange, Value, Vault,
+    Ctor, Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, TextRange, Value,
+    Vault,
 };
 use notist_html::Renderer;
 use serde::Serialize;
@@ -482,15 +482,16 @@ fn build_inner<R: Resources>(
             notist::progress::Span::enter(|| format!("Render {}", page.route.path.display()));
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
-        let links = page.root.descendants().filter(|node| {
-            node.ctor == Ctor::Link && !matches!(node.evaluation, Some(EvaluationState::Error(_)))
-        });
+        let links = page
+            .root
+            .descendants()
+            .filter(|node| node.ctor() == Ctor::Link && !node.is_error());
         for node in links.chain(notist::embed::targets(&page.root)) {
-            let resource = match node.fields.get("target") {
+            let resource = match node.field("target") {
                 Some(Value::Path(path)) if notist::embed::is_embed(node) => Some(path),
                 _ => None,
             };
-            let value = match node.fields.get("target") {
+            let value = match node.field("target") {
                 Some(Value::Str(value)) => value.as_str(),
                 Some(Value::Path(path)) if resource.is_some() => path.path(),
                 _ => continue,
@@ -499,7 +500,7 @@ fn build_inner<R: Resources>(
                 Ok(routes::Target::Local {
                     path: PathBuf::from(path.logical_path()),
                     query: String::new(),
-                    fragment: notist::embed::string(&node.fields, "fragment").map(str::to_owned),
+                    fragment: notist::embed::string(&node.fields(), "fragment").map(str::to_owned),
                 })
             } else if notist::embed::is_embed(node) {
                 // URL embeds do not request local files. Unsafe URLs remain
@@ -527,7 +528,7 @@ fn build_inner<R: Resources>(
                             ),
                         );
                         diagnostic.diagnostic.code = Some(DiagnosticCode::OutsideVault);
-                        if node.ctor == Ctor::Link {
+                        if node.ctor() == Ctor::Link {
                             warnings.push(diagnostic);
                         } else {
                             errors.push(diagnostic);
@@ -539,7 +540,7 @@ fn build_inner<R: Resources>(
                             && !anchor.is_empty()
                             && !ids[&path].contains(anchor)
                         {
-                            let diagnostics = if node.ctor == Ctor::Link {
+                            let diagnostics = if node.ctor() == Ctor::Link {
                                 &mut warnings
                             } else {
                                 &mut errors
@@ -568,7 +569,7 @@ fn build_inner<R: Resources>(
                                 path.display()
                             ),
                         );
-                        if node.ctor != Ctor::Link {
+                        if node.ctor() != Ctor::Link {
                             errors.push(diagnostic);
                             continue;
                         }
@@ -601,7 +602,7 @@ fn build_inner<R: Resources>(
                                 node,
                                 format!("missing local resource `{value}`"),
                             );
-                            if node.ctor != Ctor::Link {
+                            if node.ctor() != Ctor::Link {
                                 errors.push(diagnostic);
                                 continue;
                             }

@@ -66,8 +66,8 @@ fn parse_target(target: &str, file_dir: &Path) -> Target {
 
 fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
     item.descendants()
-        .filter(|item| item.ctor == Ctor::Link)
-        .filter_map(|item| match item.fields.get("target") {
+        .filter(|item| item.ctor() == Ctor::Link)
+        .filter_map(|item| match item.field("target") {
             Some(Value::Str(target)) => Some(Link {
                 span: item.span,
                 target: parse_target(target, file_dir),
@@ -94,7 +94,7 @@ pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Di
     let source = normalize(&root.join(path)).to_string_lossy().into_owned();
     crate::embed::targets(item)
         .filter_map(|node| {
-            let Some(Value::Path(target)) = node.fields.get("target") else {
+            let Some(Value::Path(target)) = node.field("target") else {
                 return None;
             };
             if Path::new(&target.logical_path()).starts_with(root) {
@@ -127,9 +127,9 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
     let source = path.to_string_lossy().into_owned();
     let mut diagnostics: Vec<_> = item
         .descendants()
-        .filter(|node| node.ctor == Ctor::Link)
+        .filter(|node| node.ctor() == Ctor::Link)
         .filter_map(|node| {
-            let Some(Value::Str(target)) = node.fields.get("target") else {
+            let Some(Value::Str(target)) = node.field("target") else {
                 return None;
             };
             match parse_target(target, file_dir) {
@@ -157,10 +157,10 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
 /// Same-document link checks, shared by single-file checks and the vault.
 pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) {
     for node in item.descendants() {
-        if node.ctor != Ctor::Link {
+        if node.ctor() != Ctor::Link {
             continue;
         }
-        let Some(Value::Str(target)) = node.fields.get("target") else {
+        let Some(Value::Str(target)) = node.field("target") else {
             continue;
         };
         let Some(item) = target.strip_prefix('#') else {

@@ -22,7 +22,8 @@ impl DocumentExtension for GeneratedView {
         Ok(())
     }
     fn after_evaluate(&self, _: &DocumentContext<'_>, root: &mut notist::Item) -> ExtensionResult {
-        root.children
+        root.children_mut()
+            .unwrap()
             .push(notist::Item::new(Ctor::Divider, Default::default()));
         Ok(())
     }
@@ -130,18 +131,15 @@ fn project_diagram_declaration_selects_either_renderer_without_a_local_component
                 .root()
                 .find(|item| item.function_id() == Some(semantic_id.clone()))
                 .unwrap();
-            assert!(semantic.target.is_none());
-            assert_eq!(
-                semantic.fields.get("theme"),
-                Some(&Value::Str(theme.into()))
-            );
+            assert!(semantic.as_expr().is_some());
+            assert_eq!(semantic.field("theme"), Some(&Value::Str(theme.into())));
             let evaluated = output
                 .evaluation
                 .root
-                .find(|item| item.function_id() == Some(semantic_id.clone()))
+                .find(|item| item.function_id() == Some(target_id.clone()))
                 .unwrap();
-            assert_eq!(evaluated.target.as_ref().unwrap().function, target_id);
-            assert_eq!(evaluated.fields, semantic.fields);
+            assert_eq!(evaluated.instance().unwrap().function, target_id);
+            assert_eq!(evaluated.fields(), semantic.fields());
             assert_eq!(output.rendered.used_components.len(), 1);
             assert_eq!(output.rendered.used_components[0].id, target_id);
             assert!(
@@ -203,8 +201,8 @@ fn importing_native_functions_does_not_implicitly_transform_content() {
         .analyze("doc.not", "#import \"math/view.notc\" as view;\n$x$")
         .unwrap();
     let e = v.evaluate("doc.not", &a).unwrap();
-    let math = e.root.find(|i| i.ctor == Ctor::Math).unwrap();
-    assert_eq!(math.target.as_ref().unwrap().function.module, "notist");
+    let math = e.root.find(|i| i.ctor() == Ctor::Math).unwrap();
+    assert_eq!(math.instance().unwrap().function.module, "notist");
 }
 #[test]
 fn explicit_extensions_resolve_private_imports_and_preserve_semantic_identity() {
@@ -218,20 +216,23 @@ fn explicit_extensions_resolve_private_imports_and_preserve_semantic_identity() 
     let original = output
         .analysis
         .root()
-        .find(|i| i.ctor == Ctor::Math)
+        .find(|i| i.ctor() == Ctor::Math)
         .unwrap();
-    assert!(original.target.is_none());
+    assert!(original.as_expr().is_some());
     let math = output
         .evaluation
         .root
-        .find(|i| i.ctor == Ctor::Math)
+        .find(|i| {
+            i.function_id()
+                .is_some_and(|id| id.module == "/project/math/view.notc")
+        })
         .unwrap();
-    assert_eq!(math.function_id().unwrap().module, "notist");
+    assert_eq!(original.function_id().unwrap().module, "notist");
     assert_eq!(
-        math.target.as_ref().unwrap().function.module,
+        math.instance().unwrap().function.module,
         "/project/math/view.notc"
     );
-    assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
+    assert_eq!(math.field("text"), Some(&Value::Str("x".into())));
     assert_eq!(output.rendered.used_components.len(), 1);
 }
 #[test]
@@ -298,9 +299,15 @@ to = "view.math"
     assert!(environment.context().resolve("previous.math").is_none());
     let evaluated = vault.evaluate("doc.not", &analysis).unwrap();
     assert!(evaluated.diagnostics.is_empty());
-    let math = evaluated.root.find(|i| i.ctor == Ctor::Math).unwrap();
+    let math = evaluated
+        .root
+        .find(|i| {
+            i.function_id()
+                .is_some_and(|id| id.module == "/project/second.notc")
+        })
+        .unwrap();
     assert_eq!(
-        math.target.as_ref().unwrap().function.module,
+        math.instance().unwrap().function.module,
         "/project/second.notc"
     );
     let direct = evaluated
@@ -311,7 +318,7 @@ to = "view.math"
         })
         .unwrap();
     assert_eq!(
-        direct.target.as_ref().unwrap().function.module,
+        direct.instance().unwrap().function.module,
         "/project/document.notc"
     );
 }
@@ -468,6 +475,6 @@ fn prepared_worker_and_native_hosts_share_module_scopes_and_extensions() {
     assert_eq!(json["used_components"].as_array().unwrap().len(), 1);
     assert_eq!(
         json["evaluated"]["children"][0]["children"][0]["function"],
-        "notist.math"
+        "/project/math/view.notc.math"
     );
 }

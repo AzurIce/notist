@@ -53,8 +53,8 @@ impl DocumentExtension for Edit {
         self.event("after_check")
     }
     fn after_evaluate(&self, _: &DocumentContext<'_>, document: &mut Item) -> ExtensionResult {
-        assert!(document.descendants().all(|i| i.pending.is_none()));
-        document.children.push(
+        assert!(document.descendants().all(|i| i.as_expr().is_none()));
+        document.children_mut().unwrap().push(
             Item::new(Ctor::Paragraph, Default::default()).with_children(vec![Item::text(
                 format!("{}!", self.label),
                 Default::default(),
@@ -79,7 +79,7 @@ fn context(fail: Option<&'static str>) -> (Context, Arc<Mutex<Vec<String>>>) {
 }
 fn text(root: &Item) -> String {
     root.descendants()
-        .filter_map(|node| match node.fields.get("text") {
+        .filter_map(|node| match node.field("text") {
             Some(Value::Str(value)) => Some(value.as_str()),
             _ => None,
         })
@@ -221,7 +221,7 @@ fn generated_expressions_replace_source_and_pass_through_normal_checking() {
                 analysis.diagnostics()
             );
             assert_eq!(text(analysis.root()), "generated");
-            assert_eq!(analysis.root().children[0].ctor, Ctor::Section);
+            assert_eq!(analysis.root().children()[0].ctor(), Ctor::Section);
         }
     }
 }
@@ -255,19 +255,24 @@ impl DocumentExtension for InvalidOutput {
     }
     fn after_evaluate(&self, _: &DocumentContext<'_>, root: &mut Item) -> ExtensionResult {
         match self.0 {
-            "root" => root.ctor = Ctor::Text,
-            "nested" => root.children.push(Item::new(Ctor::Doc, Default::default())),
+            "root" => root.as_item_mut().unwrap().ctor = Ctor::Text,
+            "nested" => root
+                .children_mut()
+                .unwrap()
+                .push(Item::new(Ctor::Doc, Default::default())),
             "pending" => root
-                .children
+                .children_mut()
+                .unwrap()
                 .push(Item::new(Ctor::Interpolation, Default::default())),
             "limit" => root
-                .children
+                .children_mut()
+                .unwrap()
                 .extend((0..10).map(|_| Item::new(Ctor::Divider, Default::default()))),
             "ids" => {
                 let node = Item::new(Ctor::Divider, Default::default());
                 let mut first = node.clone();
                 first.attrs.insert("id", Value::Str("duplicate".into()));
-                root.children.extend([first.clone(), first]);
+                root.children_mut().unwrap().extend([first.clone(), first]);
             }
             _ => unreachable!(),
         }
@@ -298,8 +303,8 @@ fn invalid_output_is_rejected_without_losing_evaluated_content() {
         );
         assert!(!evaluation.diagnostics[0].recovered);
         assert_eq!(text(&evaluation.root), "kept");
-        assert_eq!(evaluation.root.children.len(), 1);
-        assert_eq!(evaluation.root.ctor, Ctor::Doc);
+        assert_eq!(evaluation.root.children().len(), 1);
+        assert_eq!(evaluation.root.ctor(), Ctor::Doc);
     }
 }
 

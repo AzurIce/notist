@@ -12,7 +12,10 @@ fn span(from: u32, to: u32) -> notist_core::item::Item {
 #[test]
 fn mapping_is_optional_reserved_and_attached_to_real_output() {
     let mut text = span(2, 5);
-    text.fields.insert("text", Value::Str("abc".into()));
+    text.as_item_mut()
+        .unwrap()
+        .fields
+        .insert("text", Value::Str("abc".into()));
     text.attrs
         .insert("data-notist-node", Value::Str("fake".into()));
     let mut paragraph = Item::new(Ctor::Paragraph, text.span).with_children(vec![text]);
@@ -39,8 +42,8 @@ fn mapping_is_optional_reserved_and_attached_to_real_output() {
 #[test]
 fn structural_groups_are_flattened_and_empty_generated_cells_are_unmapped() {
     let mut row = span(1, 5);
-    row.ctor = Ctor::TableRow;
-    row.children = vec![Item::new(Ctor::TableCell, Default::default())];
+    row.as_item_mut().unwrap().ctor = Ctor::TableRow;
+    row.as_item_mut().unwrap().children = vec![Item::new(Ctor::TableCell, Default::default())];
     let group = Item::new(Ctor::Node, row.span).with_children(vec![row]);
     let table = Item::new(Ctor::Table, group.span).with_children(vec![group]);
     let result = Renderer::new()

@@ -110,7 +110,7 @@ fn unchanged_importer_uses_each_dependency_views_current_body_and_signature() {
         assert!(
             output
                 .root
-                .find(|item| item.fields.get("text") == Some(&Value::Str(expected.into())))
+                .find(|item| item.field("text") == Some(&Value::Str(expected.into())))
                 .is_some()
         );
     }

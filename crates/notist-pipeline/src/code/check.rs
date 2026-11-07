@@ -187,7 +187,7 @@ impl<'a> Checker<'a> {
         let mut doc = Item::new(Ctor::Doc, span);
         doc.attrs = self.resolve_attributes(&attrs);
         doc.origin = Some(self.origin(span));
-        doc.children = children;
+        doc.as_item_mut().expect("document").children = children;
         for diagnostic in &mut self.diagnostics {
             diagnostic.recovered = true;
         }

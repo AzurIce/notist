@@ -359,7 +359,7 @@ fn resolve_embed(
     let destination = documents.find(&source, content);
     let output = if let Some(destination) = destination {
         if let Some(anchor) =
-            notist::embed::string(&node.fields, "fragment").filter(|anchor| !anchor.is_empty())
+            notist::embed::string(&node.fields(), "fragment").filter(|anchor| !anchor.is_empty())
             && !destination.ids.contains(anchor)
         {
             return Err(format!(
@@ -405,7 +405,7 @@ fn image(node: &Item, url: &str) -> Option<String> {
     {
         return None;
     }
-    let alt = match node.fields.get("description") {
+    let alt = match node.field("description") {
         Some(Value::Str(s)) => s.as_str(),
         _ => "",
     };
@@ -644,10 +644,13 @@ pub(crate) fn build<R: Resources>(
         });
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
-        let links = document.root.descendants().filter(|n| n.ctor == Ctor::Link);
+        let links = document
+            .root
+            .descendants()
+            .filter(|n| n.ctor() == Ctor::Link);
         for node in links.chain(notist::embed::targets(&document.root)) {
             if notist::embed::is_embed(node) {
-                if let Some(Value::Path(path)) = node.fields.get("target") {
+                if let Some(Value::Path(path)) = node.field("target") {
                     match resolve_embed(&document, path, node, &content, &by_source, &outputs) {
                         Ok(url) => {
                             resource_urls.insert(path.clone(), url);
@@ -657,7 +660,7 @@ pub(crate) fn build<R: Resources>(
                 }
                 continue;
             }
-            let Some(Value::Str(target)) = node.fields.get("target") else {
+            let Some(Value::Str(target)) = node.field("target") else {
                 continue;
             };
             match resolve_link(&document, target, node, &content, &by_source, &outputs) {
@@ -673,7 +676,7 @@ pub(crate) fn build<R: Resources>(
                 Ok(None) => {}
                 Err(message) => {
                     let d = issue(&document, node, message);
-                    if node.ctor == Ctor::Embed {
+                    if node.ctor() == Ctor::Embed {
                         errors.push(d);
                     } else {
                         warnings.push(d);
@@ -692,12 +695,12 @@ pub(crate) fn build<R: Resources>(
             .with_url_resolver(lookup)
             .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
             .with_embed_renderer(|node| {
-                let base = match node.fields.get("target")? {
+                let base = match node.field("target")? {
                     Value::Path(path) => resource_urls.get(path)?.as_str(),
                     Value::Str(url) => url.as_str(),
                     _ => return None,
                 };
-                let url = notist::embed::append_suffix(base, &node.fields).ok()?;
+                let url = notist::embed::append_suffix(base, &node.fields()).ok()?;
                 image(node, &url)
             })
             .render_with_diagnostics(&document.root);

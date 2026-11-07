@@ -32,18 +32,17 @@ fn one_context_drives_analysis_and_extensions_without_transforming_analysis() {
         assert_eq!(analysis, inspected);
         assert!(analysis.diagnostics().is_empty());
         let original = analysis.root().clone();
-        assert!(original.find(|node| node.ctor == Ctor::Math).is_some());
+        assert!(original.find(|node| node.ctor() == Ctor::Math).is_some());
         let transformed = pipeline.evaluate(&analysis, &context);
         assert!(transformed.diagnostics.is_empty());
         let math = transformed
             .root
             .find(|node| {
-                node.target
-                    .as_ref()
+                node.instance()
                     .is_some_and(|i| i.function == FunctionId::new("demo", "math"))
             })
             .unwrap();
-        assert_eq!(math.fields.get("text"), Some(&Value::Str("x".into())));
+        assert_eq!(math.field("text"), Some(&Value::Str("x".into())));
         assert_eq!(*analysis.root(), original);
     }
 }
@@ -65,8 +64,8 @@ fn one_pipeline_uses_each_explicit_context_for_names_and_shape() {
                 .iter()
                 .any(|d| d.message.contains("separate blocks with a blank line"))
         );
-        assert_eq!(first.root().children.len(), 1);
-        assert_eq!(second.root().children.len(), 1);
+        assert_eq!(first.root().children().len(), 1);
+        assert_eq!(second.root().children().len(), 1);
         assert!(
             missing
                 .diagnostics()

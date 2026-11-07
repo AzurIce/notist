@@ -23,16 +23,16 @@ fn default_pipeline_produces_renderable_ir_for_both_formats() {
             .analyze(path, src, &notist::Context::default())
             .unwrap();
         assert!(document.diagnostics().is_empty(), "{path}");
-        assert_eq!(document.root().ctor, Ctor::Doc);
-        let section = &document.root().children[0];
-        assert_eq!(section.ctor, Ctor::Section);
-        assert_eq!(section.children[0].ctor, Ctor::Heading);
+        assert_eq!(document.root().ctor(), Ctor::Doc);
+        let section = &document.root().children()[0];
+        assert_eq!(section.ctor(), Ctor::Section);
+        assert_eq!(section.children()[0].ctor(), Ctor::Heading);
         let strong = document
             .root()
-            .find(|node| node.ctor == Ctor::Strong)
+            .find(|node| node.ctor() == Ctor::Strong)
             .unwrap();
         assert_eq!(
-            strong.children[0].fields.get("text"),
+            strong.children()[0].field("text"),
             Some(&Value::Str("强调".into()))
         );
     }
@@ -142,9 +142,9 @@ fn custom_frontend_extends_defaults_and_can_override_an_extension() {
             .analyze(path, "# literal", &notist::Context::default())
             .unwrap();
         assert!(document.diagnostics().is_empty());
-        assert_eq!(document.root().children[0].ctor, Ctor::Paragraph);
+        assert_eq!(document.root().children()[0].ctor(), Ctor::Paragraph);
         assert_eq!(
-            document.root().children[0].children[0].fields.get("text"),
+            document.root().children()[0].children()[0].field("text"),
             Some(&Value::Str("# literal".into()))
         );
     }
@@ -171,7 +171,7 @@ fn custom_frontend_extends_defaults_and_can_override_an_extension() {
         assert!(
             document
                 .root()
-                .find(|node| node.ctor == Ctor::Heading)
+                .find(|node| node.ctor() == Ctor::Heading)
                 .is_some()
         );
     }
@@ -186,14 +186,9 @@ fn source_errors_return_diagnostics_and_a_recovery_tree() {
         .unwrap();
     assert_eq!(document.diagnostics().len(), 1);
     assert_eq!(document.diagnostics()[0].phase, Phase::Type);
-    assert!(
-        document
-            .root()
-            .find(|node| node.ctor == Ctor::Custom("missing".into()))
-            .is_some()
-    );
+    assert!(document.root().find(|node| node.is_error()).is_some());
     let (root, diagnostics) = document.into_parts();
-    assert_eq!(root.ctor, Ctor::Doc);
+    assert_eq!(root.ctor(), Ctor::Doc);
     assert_eq!(diagnostics.len(), 1);
 }
 
@@ -237,9 +232,9 @@ fn custom_content_dialect_keeps_its_own_syntax_and_lowering() {
         .unwrap();
     assert!(lowered.diagnostics.is_empty());
     assert_eq!(lowered.forest.len(), 1);
-    assert_eq!(lowered.forest[0].ctor, notist::Ctor::Text);
+    assert_eq!(lowered.forest[0].ctor(), notist::Ctor::Text);
     assert_eq!(
-        lowered.forest[0].fields.get("text"),
+        lowered.forest[0].field("text"),
         Some(&notist::Value::Str("#unknown(\"中文\") plain".into()))
     );
     assert!(parsed.contents[0].syntax.as_ref().as_any().is::<String>());

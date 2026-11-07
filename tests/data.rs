@@ -55,7 +55,7 @@ fn text(output: &Evaluation) -> String {
     output
         .root
         .descendants()
-        .filter_map(|n| match n.fields.get("text") {
+        .filter_map(|n| match n.field("text") {
             Some(Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -413,11 +413,7 @@ fn data_fail_keeps_exact_data_source_path_span_and_expansion() {
         &attached[usize::from(error.span.start())..usize::from(error.span.end())],
         "123"
     );
-    let item = out
-        .evaluation
-        .root
-        .find(|n| matches!(n.evaluation, Some(notist::EvaluationState::Error(_))))
-        .unwrap();
+    let item = out.evaluation.root.find(|n| n.is_error()).unwrap();
     let expansion = &item.origin.as_ref().unwrap().expansion;
     assert!(
         expansion
@@ -678,7 +674,7 @@ fn show(source:Path)->InlineContent {
             .root
             .find(|n| n.function_id() == Some(notist::FunctionId::new("/project/view.notc", "bag")))
             .unwrap();
-        let Some(Value::Array(values)) = bag.fields.get("values") else {
+        let Some(Value::Array(values)) = bag.field("values") else {
             panic!()
         };
         arrays.push(values.clone());

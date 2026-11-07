@@ -4,12 +4,12 @@ use notist_html::{escape_attribute, is_safe_url};
 use std::{collections::BTreeMap, path::Path};
 
 pub(crate) fn image(item: &Item, resolved: &BTreeMap<ResourcePath, String>) -> Option<String> {
-    let base = match item.fields.get("target")? {
+    let base = match item.field("target")? {
         Value::Path(path) => resolved.get(path)?.as_str(),
         Value::Str(url) => url.as_str(),
         _ => return None,
     };
-    let url = notist::embed::append_suffix(base, &item.fields).ok()?;
+    let url = notist::embed::append_suffix(base, &item.fields()).ok()?;
     // Returning None preserves the renderer's diagnostics for unsafe URLs.
     if !is_safe_url(base) || !is_safe_url(&url) {
         return None;
@@ -24,7 +24,7 @@ pub(crate) fn image(item: &Item, resolved: &BTreeMap<ResourcePath, String>) -> O
     {
         return None;
     }
-    let description = match item.fields.get("description") {
+    let description = match item.field("description") {
         Some(Value::Str(value)) => value.as_str(),
         _ => "",
     };

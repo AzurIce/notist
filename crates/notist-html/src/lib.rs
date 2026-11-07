@@ -16,7 +16,7 @@
 //! and attributes; returning `None` selects the default rendering.
 
 use notist_core::diag::{Diagnostic, Phase};
-use notist_core::item::{Ctor, EvaluationState, Item, Value};
+use notist_core::item::{Ctor, Item, Value};
 
 mod attributes;
 pub mod components;
@@ -209,7 +209,6 @@ struct State<'r, 'a> {
 
 impl State<'_, '_> {
     fn node(&mut self, item: &Item) {
-        use notist_core::item::EvaluationState;
         for (key, value) in item.attrs.iter() {
             if value.contains_data_views() {
                 self.diagnostic(item, format!("Data or DataError in attribute `{key}` cannot be exported as HTML; decode selected ordinary values first"));
@@ -218,25 +217,21 @@ impl State<'_, '_> {
                 self.diagnostic(item, format!("Path in attribute `{key}` cannot be exported as HTML; publish the resource explicitly"));
             }
         }
-        if let Some(EvaluationState::Error(message)) = &item.evaluation {
+        if let Ctor::Error(message) = item.ctor() {
             let tag = if is_block(item) { "div" } else { "span" };
             self.open(tag, item, "notist-error");
             self.attr("role", "alert");
             self.output.push('>');
-            self.text(message);
+            self.text(&message);
             self.close(tag);
             return;
         }
-        if item.evaluation == Some(EvaluationState::Expanded) {
+        if item.ctor() == Ctor::Group {
             self.transparent(item, if is_block(item) { "div" } else { "span" });
             return;
         }
 
-        if let Some(id) = item
-            .target
-            .as_ref()
-            .map(|i| i.function.clone())
-            .or_else(|| item.ctor.function_id())
+        if let Some(id) = item.function_id()
             && let Some(target) = self.renderer.registry.get(&id)
         {
             match target {
@@ -250,7 +245,7 @@ impl State<'_, '_> {
                 }
             }
         }
-        if let Some(target) = &item.target
+        if let Some(target) = item.instance()
             && target.function.module != "notist"
         {
             self.diagnostic(
@@ -260,7 +255,7 @@ impl State<'_, '_> {
             self.transparent(item, if is_block(item) { "div" } else { "span" });
             return;
         }
-        self.native(item, &item.ctor);
+        self.native(item, &item.ctor());
     }
 
     fn component(&mut self, item: &Item, component: &Component) {
@@ -278,7 +273,7 @@ impl State<'_, '_> {
             "notist-content",
             if is_block(item) { "block" } else { "inline" },
         );
-        if let Some(instance) = item.target.as_ref().or(item.instance.as_ref()) {
+        if let Some(instance) = item.instance() {
             for (parameter, value) in component
                 .definition
                 .comptime
@@ -307,9 +302,7 @@ impl State<'_, '_> {
             }
         }
         let bindings = item
-            .target
-            .as_ref()
-            .or(item.instance.as_ref())
+            .instance()
             .map(|instance| {
                 component
                     .definition
@@ -321,7 +314,7 @@ impl State<'_, '_> {
             })
             .unwrap_or_default();
         for parameter in &component.definition.parameters {
-            if let Some(value) = item.fields.get(&parameter.name) {
+            if let Some(value) = item.field(&parameter.name) {
                 if parameter.ty.substitute(&bindings).accepts(value) {
                     match components::encode_parameter(value) {
                         Ok(encoded) => {
@@ -365,7 +358,7 @@ impl State<'_, '_> {
                 // An opaque inline extension can accept Content as light DOM.
                 // A p would be implicitly closed by its descendant block tags,
                 // so retain this IR paragraph as a flow container in that case.
-                if item.children.iter().any(has_block_content) {
+                if item.children().iter().any(has_block_content) {
                     self.container("div", item, "notist-paragraph");
                 } else {
                     self.container("p", item, "");
@@ -448,7 +441,7 @@ impl State<'_, '_> {
                         string_field(item, "description")
                             .filter(|s| !s.is_empty())
                             .or_else(|| string_field(item, "target"))
-                            .or_else(|| match item.fields.get("target") {
+                            .or_else(|| match item.field("target") {
                                 Some(Value::Path(path)) => path.path().rsplit('/').next(),
                                 _ => None,
                             })
@@ -489,8 +482,8 @@ impl State<'_, '_> {
                     self.attr("start", &start.to_string());
                 }
                 self.output.push('>');
-                for child in self.structural(&item.children, &Ctor::ListItem, "list") {
-                    if child.ctor == Ctor::ListItem && !is_error(child) {
+                for child in self.structural(item.children(), &Ctor::ListItem, "list") {
+                    if child.ctor() == Ctor::ListItem && !is_error(child) {
                         self.node(child);
                     } else {
                         self.output.push_str("<li>");
@@ -514,6 +507,9 @@ impl State<'_, '_> {
                     item,
                     "notist-extension",
                 );
+            }
+            Ctor::Group | Ctor::Error(_) => {
+                self.transparent(item, if is_block(item) { "div" } else { "span" })
             }
             Ctor::Interpolation => {
                 self.diagnostic(item, "content interpolation requires evaluation".into());
@@ -543,9 +539,9 @@ impl State<'_, '_> {
         self.output.push('<');
         self.output.push_str(tag);
         attributes::write(&mut self.output, &item.attrs, class);
-        if self.renderer.source_map && !item.span.is_empty() && item.ctor != Ctor::Doc {
+        if self.renderer.source_map && !item.span.is_empty() && item.ctor() != Ctor::Doc {
             let node_id = self.source_map.len();
-            let kind = if matches!(item.ctor, Ctor::Heading | Ctor::Paragraph) {
+            let kind = if matches!(item.ctor(), Ctor::Heading | Ctor::Paragraph) {
                 SourceMappingKind::Block
             } else {
                 match tag {
@@ -591,7 +587,7 @@ impl State<'_, '_> {
     }
 
     fn children(&mut self, item: &Item) {
-        for child in &item.children {
+        for child in item.children() {
             self.node(child);
         }
     }
@@ -613,7 +609,7 @@ impl State<'_, '_> {
     }
 
     fn url(&mut self, item: &Item, field: &str, attribute: &str, embed: bool) {
-        if let Some(Value::Path(path)) = item.fields.get(field) {
+        if let Some(Value::Path(path)) = item.field(field) {
             if !embed {
                 self.diagnostic(
                     item,
@@ -628,7 +624,7 @@ impl State<'_, '_> {
                 .and_then(|resolve| resolve(item, path));
             match resolved {
                 Some(url) if is_safe_url(&url) => {
-                    match notist_core::embed::append_suffix(&url, &item.fields) {
+                    match notist_core::embed::append_suffix(&url, &item.fields()) {
                         Ok(url) if is_safe_url(&url) => self.attr(attribute, &url),
                         Ok(_) => self.diagnostic(
                             item,
@@ -664,7 +660,7 @@ impl State<'_, '_> {
             let target = resolved.as_deref().unwrap_or(url);
             if is_safe_url(url) && is_safe_url(target) {
                 if embed {
-                    match notist_core::embed::append_suffix(target, &item.fields) {
+                    match notist_core::embed::append_suffix(target, &item.fields()) {
                         Ok(target) if is_safe_url(&target) => self.attr(attribute, &target),
                         Ok(_) => self.diagnostic(
                             item,
@@ -689,7 +685,7 @@ impl State<'_, '_> {
         self.url(item, "target", "href", false);
         self.field_title(item);
         self.output.push('>');
-        if item.children.is_empty() {
+        if item.children().is_empty() {
             self.text(string_field(item, "target").unwrap_or(""));
         } else {
             self.children(item);
@@ -698,15 +694,15 @@ impl State<'_, '_> {
     }
 
     fn table(&mut self, item: &Item) {
-        let align = match item.fields.get("align") {
+        let align = match item.field("align") {
             Some(Value::Array(values)) => &values[..],
             _ => &[],
         };
-        let rows = self.structural(&item.children, &Ctor::TableRow, "table");
+        let rows = self.structural(item.children(), &Ctor::TableRow, "table");
         let headers = rows
             .iter()
             .take_while(|row| {
-                row.ctor == Ctor::TableRow && !is_error(row) && bool_field(row, "header")
+                row.ctor() == Ctor::TableRow && !is_error(row) && bool_field(row, "header")
             })
             .count();
         self.open("table", item, "");
@@ -721,7 +717,7 @@ impl State<'_, '_> {
         if headers < rows.len() {
             self.output.push_str("<tbody>");
             for row in &rows[headers..] {
-                if row.ctor == Ctor::TableRow && !is_error(row) {
+                if row.ctor() == Ctor::TableRow && !is_error(row) {
                     self.row(row, align);
                 } else {
                     self.output.push_str("<tr><td>");
@@ -739,11 +735,11 @@ impl State<'_, '_> {
         self.output.push('>');
         let header = bool_field(item, "header");
         for (column, child) in self
-            .structural(&item.children, &Ctor::TableCell, "row")
+            .structural(item.children(), &Ctor::TableCell, "row")
             .into_iter()
             .enumerate()
         {
-            if child.ctor == Ctor::TableCell && !is_error(child) {
+            if child.ctor() == Ctor::TableCell && !is_error(child) {
                 self.cell(child, header, align.get(column));
             } else {
                 self.output.push_str("<td>");
@@ -780,23 +776,23 @@ impl State<'_, '_> {
         for child in children {
             if is_error(child) {
                 result.push(child);
-            } else if child.ctor == Ctor::Node || child.is_evaluated_interpolation() {
+            } else if child.ctor() == Ctor::Node || child.ctor() == Ctor::Group {
                 if attributes::has_html_attrs(&child.attrs) {
-                    let group = if child.ctor == Ctor::Node {
+                    let group = if child.ctor() == Ctor::Node {
                         "node"
                     } else {
                         "content group"
                     };
                     self.diagnostic(child, format!("{group} attributes omitted inside `{parent}`: HTML has no wrapper for this structural sequence"));
                 }
-                result.extend(self.structural(&child.children, expected, parent));
+                result.extend(self.structural(child.children(), expected, parent));
             } else {
-                if child.ctor != *expected {
+                if child.ctor() != *expected {
                     self.diagnostic(
                         child,
                         format!(
                             "unexpected `{}` inside `{parent}`; rendered in a recovery container",
-                            child.ctor.name()
+                            child.ctor().name()
                         ),
                     );
                 }
@@ -814,21 +810,21 @@ impl State<'_, '_> {
 }
 
 fn string_field<'n>(item: &'n Item, key: &str) -> Option<&'n str> {
-    match item.fields.get(key) {
+    match item.field(key) {
         Some(Value::Str(value)) => Some(value),
         _ => None,
     }
 }
 
 fn int_field(item: &Item, key: &str) -> Option<i64> {
-    match item.fields.get(key) {
+    match item.field(key) {
         Some(Value::Int(value)) => Some(*value),
         _ => None,
     }
 }
 
 fn bool_field(item: &Item, key: &str) -> bool {
-    matches!(item.fields.get(key), Some(Value::Bool(true)))
+    matches!(item.field(key), Some(Value::Bool(true)))
 }
 
 fn is_block(item: &Item) -> bool {
@@ -836,9 +832,9 @@ fn is_block(item: &Item) -> bool {
 }
 
 fn is_error(item: &Item) -> bool {
-    matches!(item.evaluation, Some(EvaluationState::Error(_)))
+    item.is_error()
 }
 
 fn has_block_content(item: &Item) -> bool {
-    is_block(item) || item.children.iter().any(has_block_content)
+    is_block(item) || item.children().iter().any(has_block_content)
 }

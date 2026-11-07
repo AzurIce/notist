@@ -25,7 +25,7 @@ fn diagnostics(module: &str) -> Vec<Diagnostic> {
 
 fn text(root: &Item) -> String {
     root.descendants()
-        .filter_map(|item| match item.fields.get("text") {
+        .filter_map(|item| match item.field("text") {
             Some(Value::Str(s)) => Some(s.as_str()),
             _ => None,
         })
@@ -95,10 +95,7 @@ fn show(message: String) -> InlineContent { [#text(text: if forward(message) == 
     assert!(error.recovered);
     assert!(text(&output.root).contains("independent"));
     assert!(!text(&output.root).contains("yes"));
-    let failed = output
-        .root
-        .find(|item| matches!(item.evaluation, Some(notist::EvaluationState::Error(_))))
-        .unwrap();
+    let failed = output.root.find(|item| item.is_error()).unwrap();
     assert!(
         failed
             .origin

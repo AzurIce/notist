@@ -31,7 +31,7 @@ fn relative_imports_work_without_manifests_and_retain_definition_identity() {
         assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
         assert!(
             e.root
-                .find(|i| i.fields.get("text") == Some(&Value::Str("hello".into())))
+                .find(|i| i.field("text") == Some(&Value::Str("hello".into())))
                 .is_some()
         );
         assert!(
@@ -66,7 +66,7 @@ fn aliases_share_instances_and_normalized_paths_load_once() {
         .filter(|i| i.function_id() == Some(FunctionId::new("/project/view.notc", "f")))
         .collect();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].instance, calls[1].instance);
+    assert_eq!(calls[0].instance(), calls[1].instance());
 }
 #[test]
 fn same_filenames_and_function_names_in_different_directories_stay_distinct() {
@@ -122,7 +122,7 @@ fn function_bodies_use_their_defining_scope_and_values_shadow_module_aliases() {
     let e = p.evaluate(&a, env.context());
     assert!(
         e.root
-            .find(|i| i.fields.get("text") == Some(&Value::Str("right".into())))
+            .find(|i| i.field("text") == Some(&Value::Str("right".into())))
             .is_some()
     );
     assert!(
@@ -277,7 +277,7 @@ fn old_qualification_and_package_manifests_are_rejected() {
         .analyze("doc.not", "#notist::strong[x]", &context)
         .unwrap();
     assert!(!a.diagnostics().is_empty());
-    assert!(a.root().find(|i| i.ctor == Ctor::Strong).is_none());
+    assert!(a.root().find(|i| i.ctor() == Ctor::Strong).is_none());
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn default_aliases_and_exported_namespace_chains_work_in_calls_and_bodies() {
             output
                 .root
                 .descendants()
-                .filter(|i| i.fields.get("text") == Some(&Value::Str("nested result".into())))
+                .filter(|i| i.field("text") == Some(&Value::Str("nested result".into())))
                 .count(),
             2
         );
@@ -338,13 +338,13 @@ fn reserved_builtin_namespace_keeps_markup_sugar_independent_of_value_bindings()
     assert!(
         evaluated
             .root
-            .find(|i| i.fields.get("text") == Some(&Value::Str("literal ".into())))
+            .find(|i| i.field("text") == Some(&Value::Str("literal ".into())))
             .is_some()
     );
     assert!(
         evaluated
             .root
-            .find(|i| i.fields.get("text") == Some(&Value::Str("argument".into())))
+            .find(|i| i.field("text") == Some(&Value::Str("argument".into())))
             .is_some()
     );
 }

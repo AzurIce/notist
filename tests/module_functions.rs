@@ -16,15 +16,15 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
     );
     let panel = analysis
         .root()
-        .find(|item| item.ctor.function_id() == Some(FunctionId::new("widgets", "panel")))
+        .find(|item| item.ctor().function_id() == Some(FunctionId::new("widgets", "panel")))
         .unwrap();
     assert_eq!(panel.level, Level::Block);
-    assert_eq!(panel.fields.get("title"), Some(&Value::Str("Panel".into())));
+    assert_eq!(panel.field("title"), Some(&Value::Str("Panel".into())));
     assert!(
         panel
-            .children
+            .children()
             .iter()
-            .any(|child| child.ctor == Ctor::Paragraph)
+            .any(|child| child.ctor() == Ctor::Paragraph)
     );
     assert_eq!(
         notist::query::select(analysis.root(), "function:widgets.badge").len(),
@@ -77,7 +77,7 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
         result
             .root()
             .descendants()
-            .any(|item| matches!(item.ctor, Ctor::Extension(_)))
+            .any(|item| matches!(item.ctor(), Ctor::Extension(_)))
     );
     assert!(
         !result
@@ -109,15 +109,15 @@ fn serialized_extensions_need_no_module_to_restore_category_and_children() {
     let json = serde_json::to_value(&root).unwrap();
     let restored: notist::Item = serde_json::from_value(json).unwrap();
     let panel = restored
-        .find(|node| matches!(node.ctor, Ctor::Extension(_)))
+        .find(|node| matches!(node.ctor(), Ctor::Extension(_)))
         .unwrap();
     assert_eq!(panel.level, Level::Block);
     assert_eq!(
-        panel.ctor.function_id(),
+        panel.ctor().function_id(),
         Some(FunctionId::new("widgets", "panel"))
     );
-    assert_eq!(panel.fields.get("title"), Some(&Value::Str("Panel".into())));
-    assert!(!panel.children.is_empty());
+    assert_eq!(panel.field("title"), Some(&Value::Str("Panel".into())));
+    assert!(!panel.children().is_empty());
     let mut incomplete = serde_json::to_value(&root).unwrap();
     incomplete.as_object_mut().unwrap().remove("level");
     assert!(serde_json::from_value::<notist::Item>(incomplete).is_err());
@@ -160,7 +160,7 @@ fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
 #[cfg(feature = "serde")]
 #[test]
 fn serialized_items_retain_pending_calls_and_checked_expressions() {
-    use notist::evaluation::{ExprKind, PendingEvaluation};
+    use notist::evaluation::ExprKind;
     let context = notist::Context::default()
         .with_module(
             notist_pipeline::Pipeline::default()
@@ -185,12 +185,13 @@ fn serialized_items_retain_pending_calls_and_checked_expressions() {
     let call = restored
         .find(|i| i.function_id() == original.function_id())
         .unwrap();
-    assert_eq!(call.pending, original.pending);
-    let Some(PendingEvaluation::Call(call)) = call.pending.as_deref() else {
-        panic!("expected pending call")
-    };
+    assert_eq!(call.as_expr(), original.as_expr());
+    let call = call.call().expect("call expression");
     assert!(matches!(&call.arguments[0].1.kind, ExprKind::Constant(_)));
     let json = notist::json::item(original);
-    assert_eq!(json["pending"]["kind"], "call");
-    assert_eq!(json["pending"]["arguments"][0]["name"], "name");
+    assert!(json.get("pending").is_none());
+    assert_eq!(
+        json["expression"]["kind"]["Call"]["arguments"][0][0],
+        "name"
+    );
 }

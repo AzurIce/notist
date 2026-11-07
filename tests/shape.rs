@@ -12,14 +12,14 @@ fn block_calls_require_source_fragment_boundaries() {
     assert_eq!(
         analysis
             .root()
-            .children
+            .children()
             .iter()
-            .map(|item| &item.ctor)
+            .map(|item| item.ctor())
             .collect::<Vec<_>>(),
         [
-            &notist::Ctor::Paragraph,
-            &notist::Ctor::Callout,
-            &notist::Ctor::Paragraph
+            notist::Ctor::Paragraph,
+            notist::Ctor::Callout,
+            notist::Ctor::Paragraph
         ]
     );
 }
@@ -93,19 +93,19 @@ fn shape_recurses_into_block_mounts() {
         "{:?}",
         analysis.diagnostics()
     );
-    let callout = &analysis.root().children[0];
-    assert_eq!(callout.ctor, notist::Ctor::Callout);
+    let callout = &analysis.root().children()[0];
+    assert_eq!(callout.ctor(), notist::Ctor::Callout);
     assert_eq!(
         callout
-            .children
+            .children()
             .iter()
-            .map(|item| &item.ctor)
+            .map(|item| item.ctor())
             .collect::<Vec<_>>(),
         [
-            &notist::Ctor::Paragraph,
-            &notist::Ctor::Divider,
-            &notist::Ctor::Paragraph,
-            &notist::Ctor::Section
+            notist::Ctor::Paragraph,
+            notist::Ctor::Divider,
+            notist::Ctor::Paragraph,
+            notist::Ctor::Section
         ]
     );
 }

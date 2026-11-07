@@ -20,10 +20,10 @@ pub const CSS: &str = include_str!("highlight.css");
 /// never implicit.
 /// Missing, unknown and explicit plain-text languages select escaped fallback.
 pub fn code(item: &Item) -> Option<String> {
-    let Value::Str(language) = item.fields.get("lang")? else {
+    let Value::Str(language) = item.field("lang")? else {
         return None;
     };
-    let Value::Str(text) = item.fields.get("text")? else {
+    let Value::Str(text) = item.field("text")? else {
         return None;
     };
     let language = crate::code_language(language)?.to_ascii_lowercase();

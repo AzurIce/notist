@@ -1,7 +1,7 @@
 //! Explicit embed inputs. Local URL spellings are normalized once at the
 //! constructor boundary; publication, existence checks and IO belong to hosts.
 use crate::{
-    item::{Ctor, Dict, EvaluationState, Item, Value},
+    item::{Ctor, Dict, Item, Value},
     resource::ResourcePath,
 };
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
@@ -31,16 +31,7 @@ pub fn is_remote(url: &str) -> bool {
 /// Whether this concrete output will use the native embed presentation. Expanded
 /// or failed wrappers do not publish their unused original input resources.
 pub fn is_embed(item: &Item) -> bool {
-    if matches!(
-        item.evaluation,
-        Some(EvaluationState::Expanded | EvaluationState::Error(_))
-    ) {
-        return false;
-    }
-    match &item.target {
-        Some(target) => target.function.module == "notist" && target.function.name == "embed",
-        None => item.ctor == Ctor::Embed,
-    }
+    item.ctor() == Ctor::Embed
 }
 
 /// Native embed outputs actually visited by presentation. Error boundaries hide
@@ -49,10 +40,10 @@ pub fn targets(root: &Item) -> impl Iterator<Item = &Item> {
     let mut stack = vec![root];
     std::iter::from_fn(move || {
         while let Some(item) = stack.pop() {
-            if matches!(item.evaluation, Some(EvaluationState::Error(_))) {
+            if item.is_error() {
                 continue;
             }
-            stack.extend(item.children.iter().rev());
+            stack.extend(item.children().iter().rev());
             if is_embed(item) {
                 return Some(item);
             }

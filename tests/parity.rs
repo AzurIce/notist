@@ -24,8 +24,12 @@ fn normalize(mut item: Item) -> Item {
     item.span = TextRange::empty(0.into());
     item.origin = None;
     // Compare semantic structure independently of source-bound computation metadata.
-    item.pending = None;
-    item.children = item.children.into_iter().map(normalize).collect();
+    item.content = notist::NodeContent::Item(notist::ContentItem {
+        ctor: item.ctor(),
+        fields: item.fields(),
+        children: item.children().iter().cloned().map(normalize).collect(),
+        instance: item.instance().cloned().map(Into::into),
+    });
     item
 }
 
@@ -129,43 +133,48 @@ fn lists_share_block_content_across_sugar_functions_and_frontends() {
 #[test]
 fn list_boundaries_types_and_inline_pairs_are_preserved() {
     let root = analyze("not", "- bullet\n+ numbered\n- bullet2\n");
-    assert_eq!(root.children.len(), 3);
-    for (list, ordered) in root.children.iter().zip([false, true, false]) {
-        assert_eq!(list.ctor, Ctor::List);
-        assert_eq!(list.fields.get("ordered"), Some(&Value::Bool(ordered)));
-        assert_eq!(list.fields.get("start"), Some(&Value::Int(1)));
+    assert_eq!(root.children().len(), 3);
+    for (list, ordered) in root.children().iter().zip([false, true, false]) {
+        assert_eq!(list.ctor(), Ctor::List);
+        assert_eq!(list.field("ordered"), Some(&Value::Bool(ordered)));
+        assert_eq!(list.field("start"), Some(&Value::Int(1)));
         assert!(
-            list.children
+            list.children()
                 .iter()
-                .all(|child| child.ctor == Ctor::ListItem)
+                .all(|child| child.ctor() == Ctor::ListItem)
         );
     }
     let root = analyze("not", "- first\n\noutside\n\n- next\n");
     assert_eq!(
-        root.children
+        root.children()
             .iter()
-            .map(|node| &node.ctor)
+            .map(|node| node.ctor())
             .collect::<Vec<_>>(),
-        [&Ctor::List, &Ctor::Paragraph, &Ctor::List]
+        [Ctor::List, Ctor::Paragraph, Ctor::List]
     );
     let root = analyze("not", "- *first\n- second*\n");
-    assert!(root.find(|node| node.ctor == Ctor::Strong).is_none());
+    assert!(root.find(|node| node.ctor() == Ctor::Strong).is_none());
     let root = analyze("not", "#callout[\n- first\n\n  second\n- next\n]");
-    assert_eq!(root.children[0].children[0].children[0].children.len(), 2);
+    assert_eq!(
+        root.children()[0].children()[0].children()[0]
+            .children()
+            .len(),
+        2
+    );
     let root = analyze("not", "- first\n\n  @(id: \"detail\")\n  second\n- next\n");
     assert_eq!(
-        notist::query::select(&root, "id:detail")[0].ctor,
+        notist::query::select(&root, "id:detail")[0].ctor(),
         Ctor::Paragraph
     );
     let root = analyze(
         "not",
         "- #callout[\n  - first\n\n    second\n  - next\n  ]\n- outside\n",
     );
-    let callout = root.find(|node| node.ctor == Ctor::Callout).unwrap();
-    assert_eq!(callout.children.len(), 1);
-    assert_eq!(callout.children[0].ctor, Ctor::List);
-    assert_eq!(callout.children[0].children.len(), 2);
-    assert_eq!(callout.children[0].children[0].children.len(), 2);
+    let callout = root.find(|node| node.ctor() == Ctor::Callout).unwrap();
+    assert_eq!(callout.children().len(), 1);
+    assert_eq!(callout.children()[0].ctor(), Ctor::List);
+    assert_eq!(callout.children()[0].children().len(), 2);
+    assert_eq!(callout.children()[0].children()[0].children().len(), 2);
 }
 
 #[test]
@@ -198,9 +207,9 @@ fn text_links_and_raw_payloads_are_normalized_once() {
         equal(not, md);
         assert_eq!(
             analyze("not", not)
-                .find(|node| node.ctor == Ctor::Link)
+                .find(|node| node.ctor() == Ctor::Link)
                 .unwrap()
-                .fields
+                .fields()
                 .get("target"),
             Some(&Value::Str(target.into()))
         );
@@ -219,16 +228,16 @@ fn text_links_and_raw_payloads_are_normalized_once() {
         "`&amp; \\*x\\*` $&amp; \\alpha$\n\n```\n&amp; \\*x\\*\n```\n",
     );
     assert_eq!(
-        root.find(|node| node.ctor == Ctor::Math)
+        root.find(|node| node.ctor() == Ctor::Math)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str(r"&amp; \alpha".into()))
     );
     assert_eq!(
-        root.find(|node| node.ctor == Ctor::RawInline)
+        root.find(|node| node.ctor() == Ctor::RawInline)
             .unwrap()
-            .fields
+            .fields()
             .get("text"),
         Some(&Value::Str(r"&amp; \*x\*".into()))
     );
@@ -282,9 +291,9 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
     assert_eq!(
         document
             .root()
-            .find(|node| node.ctor == Ctor::Link)
+            .find(|node| node.ctor() == Ctor::Link)
             .unwrap()
-            .fields
+            .fields()
             .get("target"),
         Some(&Value::Int(42))
     );
@@ -297,7 +306,7 @@ fn block_annotation_attaches_to_the_first_hard_delimited_fragment() {
     let matches = notist::query::select(&root, "id:keep");
     assert_eq!(matches.len(), 1);
     let target = matches[0];
-    assert_eq!(target.ctor, Ctor::Paragraph);
+    assert_eq!(target.ctor(), Ctor::Paragraph);
     assert_eq!(
         &src[usize::from(target.span.start())..usize::from(target.span.end())],
         "before"

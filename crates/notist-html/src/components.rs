@@ -2,7 +2,7 @@
 use notist_core::{
     builtins,
     definitions::{FunctionDef, FunctionId},
-    item::{Ctor, EvaluationState, Item, Value},
+    item::{Ctor, Item, Value},
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -14,20 +14,15 @@ pub fn component_ids(root: &Item) -> BTreeSet<FunctionId> {
     let mut ids = BTreeSet::new();
     let mut stack = vec![root];
     while let Some(item) = stack.pop() {
-        if matches!(item.evaluation, Some(EvaluationState::Error(_))) {
+        if item.is_error() {
             continue;
         }
-        if item.evaluation != Some(EvaluationState::Expanded)
-            && let Some(id) = item
-                .target
-                .as_ref()
-                .map(|target| target.function.clone())
-                .or_else(|| item.function_id())
+        if let Some(id) = item.function_id()
             && id.module != "notist"
         {
             ids.insert(id);
         }
-        stack.extend(item.children.iter());
+        stack.extend(item.children().iter());
     }
     ids
 }

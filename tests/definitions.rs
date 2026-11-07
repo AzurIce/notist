@@ -17,10 +17,7 @@ fn definitions_preserve_parameter_types_modes_and_defaults() {
         .analyze("doc.not", "#self.panel(\"Title\")[ text ]", &c)
         .unwrap();
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
-    assert_eq!(
-        a.root().children[0].fields.get("count"),
-        Some(&Value::Int(2))
-    );
+    assert_eq!(a.root().children()[0].field("count"), Some(&Value::Int(2)));
 }
 #[test]
 fn registry_is_atomic_and_indexes_definition_modules() {
@@ -214,7 +211,7 @@ fn native_and_source_comptime_signatures_select_content_category() {
             .find(|i| i.function_id() == Some(FunctionId::new("maths", "math")))
             .unwrap();
         assert_eq!(i.level, level);
-        assert!(i.fields.get("block").is_none());
+        assert!(i.field("block").is_none());
     }
 }
 #[test]
@@ -235,7 +232,8 @@ fn invalid_explicit_values_remain_visible_without_optional_fields() {
         .analyze("doc.not", "#self.f(n: \"bad\")", &c)
         .unwrap();
     assert!(!a.diagnostics().is_empty());
-    let f = &a.root().children[0];
-    assert_eq!(f.fields.get("n"), Some(&Value::Str("bad".into())));
-    assert!(f.fields.get("label").is_none());
+    let f = &a.root().children()[0];
+    assert!(f.call().is_some());
+    assert_eq!(f.field("n"), Some(&Value::Str("bad".into())));
+    assert!(f.field("label").is_none());
 }

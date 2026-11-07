@@ -34,7 +34,9 @@ pub use notist_core::frontend::{
     Frontend, FrontendCacheKey, FrontendOptions, FrontendOutput, FrontendSyntax,
 };
 pub use notist_core::inputs::{EvaluationInputs, InputError, InputRead};
-pub use notist_core::item::{Ctor, Dict, EvaluationState, Item, Origin, SourceLocation, Value};
+pub use notist_core::item::{
+    ContentItem, Ctor, Dict, Item, Node, NodeContent, Origin, SourceLocation, Value,
+};
 pub use notist_core::registry::Registry;
 pub use notist_core::resource::ResourcePath;
 pub use notist_core::{

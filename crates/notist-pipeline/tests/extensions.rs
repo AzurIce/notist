@@ -44,21 +44,20 @@ fn both_frontends_preserve_identity_and_select_native_targets() {
         let before: Vec<_> = a
             .root()
             .descendants()
-            .filter(|i| i.ctor == Ctor::Math)
+            .filter(|i| i.ctor() == Ctor::Math)
             .collect();
         let after: Vec<_> = e
             .root
             .descendants()
-            .filter(|i| i.ctor == Ctor::Math)
+            .filter(|i| i.function_id() == Some(FunctionId::new("maths", "first")))
             .collect();
         assert_eq!(after.len(), 2);
         for (a, b) in before.into_iter().zip(after) {
-            assert_eq!(a.function_id(), b.function_id());
-            assert_eq!(a.fields, b.fields);
+            assert_eq!(a.fields(), b.fields());
             assert_eq!(a.level, b.level);
             assert_eq!(a.span, b.span);
             assert_eq!(
-                b.target.as_ref().unwrap().function,
+                b.instance().unwrap().function,
                 FunctionId::new("maths", "first")
             );
         }
@@ -106,17 +105,18 @@ fn incompatible_contracts_and_roles_are_rejected() {
     }
 }
 #[test]
-fn replace_extension_can_execute_code_without_changing_semantic_call() {
+fn replace_extension_preserves_checked_call_but_dissolves_its_output_boundary() {
     let c=Context::default().with_module(notist_pipeline::Pipeline::default().compile_module("content.not", "demo", "demo/lib.notc","fn loud()[children: InlineContent] -> InlineContent { [#text(text: \"!\") #children] }").unwrap()).unwrap().with_extension(Replace::new([rule("notist.emph","demo.loud")])).unwrap();
     let p = Pipeline::default();
     let a = p.analyze("doc.not", "_hello_", &c).unwrap();
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
-    let emph = e.root.find(|i| i.ctor == Ctor::Emph).unwrap();
+    let emph = a.root().find(|i| i.ctor() == Ctor::Emph).unwrap();
     assert_eq!(emph.function_id(), Some(FunctionId::new("notist", "emph")));
     assert!(
-        emph.descendants()
-            .any(|i| i.fields.get("text") == Some(&Value::Str("!".into())))
+        e.root
+            .descendants()
+            .any(|i| i.field("text") == Some(&Value::Str("!".into())))
     );
 }
 #[test]
@@ -166,12 +166,12 @@ fn generated_paragraphs_participate_in_function_mapping() {
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert_eq!(
-        e.root.children[0].function_id(),
-        Some(FunctionId::new("notist", "paragraph"))
+        e.root.children()[0].function_id(),
+        Some(FunctionId::new("notist", "divider"))
     );
     assert_eq!(
-        e.root.children[0].target.as_ref().unwrap().function,
-        FunctionId::new("demo", "paragraph")
+        e.root.children()[0].instance().unwrap().function,
+        FunctionId::new("notist", "divider")
     );
 }
 
@@ -191,9 +191,9 @@ fn output_mapping_cannot_change_compile_time_source_analysis() {
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert_eq!(
         e.root
-            .find(|i| i.ctor == Ctor::Heading)
+            .find(|i| i.ctor() == Ctor::Heading)
             .unwrap()
-            .fields
+            .fields()
             .get("level"),
         Some(&Value::Int(1))
     );

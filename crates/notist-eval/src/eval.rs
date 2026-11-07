@@ -1,4 +1,7 @@
 use crate::{EvaluationContext, instance_cache::InstanceCache};
+#[path = "frame.rs"]
+mod frame;
+use frame::{EvaluationState, Frame as Item};
 #[path = "data.rs"]
 mod data;
 #[cfg(feature = "test-support")]
@@ -16,7 +19,7 @@ use notist_core::{
         ResultArm, ResultPattern, TypedExpr,
     },
     inputs::{EvaluationInputs, InputError, InputRead},
-    item::{Ctor, Dict, EvaluationState, Item, SourceLocation, Value},
+    item::{Ctor, Dict, Node, SourceLocation, Value},
     resource::ResourcePath,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -53,7 +56,7 @@ impl Default for Limits {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evaluation {
-    pub root: Item,
+    pub root: Node,
     pub diagnostics: Vec<Diagnostic>,
     pub dependencies: std::collections::BTreeSet<ResourcePath>,
     /// Exact-version data texts attached only when errors are upgraded.
@@ -204,7 +207,7 @@ struct Evaluator<'a, C: EvaluationContext + ?Sized> {
 }
 
 pub fn evaluate<C: EvaluationContext + ?Sized>(
-    root: &Item,
+    root: &Node,
     program: &CheckedProgram,
     context: &C,
     limits: Limits,
@@ -217,7 +220,7 @@ pub fn evaluate<C: EvaluationContext + ?Sized>(
     }
 }
 pub fn run<C: EvaluationContext + ?Sized>(
-    root: &Item,
+    root: &Node,
     program: &CheckedProgram,
     context: &C,
     limits: Limits,
@@ -242,8 +245,9 @@ pub fn run<C: EvaluationContext + ?Sized>(
         sources: Default::default(),
         data_retention: program.data_retention.clone(),
     };
+    let root = Item::from_node(root);
     let (forest, _) = e.bind_content(
-        std::slice::from_ref(root),
+        std::slice::from_ref(&root),
         &Scope::new(),
         limits.content_nodes,
     );
@@ -255,7 +259,14 @@ pub fn run<C: EvaluationContext + ?Sized>(
         diagnostic.recovered = true;
     }
     EvaluationOutcome::Complete(Box::new(Evaluation {
-        root: roots.remove(0),
+        root: {
+            let mut nodes = roots.remove(0).finish();
+            if nodes.len() == 1 {
+                nodes.remove(0)
+            } else {
+                Node::new(Ctor::Group, root.span).with_children(nodes)
+            }
+        },
         diagnostics: e.diagnostics,
         dependencies: e.dependencies,
         sources: e.sources,
@@ -339,8 +350,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 Ok(Runtime::Content(
                     t.ty.clone().unwrap(),
                     Arc::new(
-                        self.bind_content(forest, scope, self.limits.content_nodes)
-                            .0,
+                        self.bind_content(
+                            &forest.iter().map(Item::from_node).collect::<Vec<_>>(),
+                            scope,
+                            self.limits.content_nodes,
+                        )
+                        .0,
                     ),
                 ))
             }
@@ -447,7 +462,24 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 }
                 selected.unwrap_or_else(|| Err("non-exhaustive Result match".into()))
             }
-            ExprKind::ValueCall(call) => {
+            ExprKind::Call(call) => {
+                if call.definition.returns.level().is_some() {
+                    if self.mode == EvaluationMode::Comptime {
+                        return Err("content cannot be constructed at compile time".into());
+                    }
+                    let mut expr = t.clone();
+                    expr.kind = ExprKind::Call(Box::new(capture_call(call, scope)));
+                    let frame = Item::from_node(&Node::expression(expr));
+                    let (nodes, _) = self.bind_content(
+                        std::slice::from_ref(&frame),
+                        &Scope::new(),
+                        self.limits.content_nodes,
+                    );
+                    return Ok(Runtime::Content(
+                        call.definition.returns.clone(),
+                        Arc::new(nodes),
+                    ));
+                }
                 let children = match &call.children {
                     Some(child) => match self.expr(child, scope)? {
                         Runtime::Content(_, nodes) => Arc::unwrap_or_clone(nodes),
@@ -1260,7 +1292,9 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
                 known = Some(v.clone());
                 ExprKind::Constant(v.clone())
             }
-            Some(Runtime::Content(_, forest)) => ExprKind::Content(forest.as_ref().clone()),
+            Some(Runtime::Content(_, forest)) => {
+                ExprKind::Content(forest.iter().map(Item::recipe).collect())
+            }
             None => expr.kind.clone(),
         },
         ExprKind::For {
@@ -1319,10 +1353,13 @@ fn capture_expr(expr: &TypedExpr, scope: &Scope) -> TypedExpr {
             Box::new(capture_expr(y, scope)),
             Box::new(capture_expr(n, scope)),
         ),
-        ExprKind::ValueCall(call) => ExprKind::ValueCall(Box::new(capture_call(call, scope))),
-        ExprKind::Content(forest) => {
-            ExprKind::Content(forest.iter().map(|i| capture_item(i, scope)).collect())
-        }
+        ExprKind::Call(call) => ExprKind::Call(Box::new(capture_call(call, scope))),
+        ExprKind::Content(forest) => ExprKind::Content(
+            forest
+                .iter()
+                .map(|i| capture_item(&Item::from_node(i), scope).recipe())
+                .collect(),
+        ),
         ExprKind::Block(bindings, value) => {
             let mut local = scope.clone();
             let bindings = bindings
@@ -1405,7 +1442,9 @@ fn valid_structure(item: &Item) -> bool {
     fn children(items: &[Item], expected: &Ctor) -> bool {
         items.iter().all(|item| {
             matches!(item.evaluation, Some(EvaluationState::Error(_)))
-                || if item.ctor == Ctor::Node || item.is_evaluated_interpolation() {
+                || if matches!(item.ctor, Ctor::Node | Ctor::Group)
+                    || item.is_evaluated_interpolation()
+                {
                     children(&item.children, expected)
                 } else {
                     &item.ctor == expected

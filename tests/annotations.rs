@@ -12,7 +12,7 @@ fn analyze(extension: &str, src: &str) -> (Item, Vec<notist::Diagnostic>) {
 }
 
 fn find(item: &Item, ctor: Ctor) -> Option<&Item> {
-    item.find(|node| node.ctor == ctor)
+    item.find(|node| node.ctor() == ctor)
 }
 
 #[test]
@@ -30,7 +30,7 @@ fn block_annotation_targets_the_first_of_several_blocks() {
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let callouts: Vec<_> = root
         .descendants()
-        .filter(|node| node.ctor == Ctor::Callout)
+        .filter(|node| node.ctor() == Ctor::Callout)
         .collect();
     assert_eq!(callouts.len(), 2);
     assert_eq!(
@@ -72,7 +72,7 @@ fn inline_annotation_requires_adjacency_and_keeps_the_paragraph() {
     );
     let paragraphs: Vec<_> = root
         .descendants()
-        .filter(|node| node.ctor == Ctor::Paragraph)
+        .filter(|node| node.ctor() == Ctor::Paragraph)
         .collect();
     assert_eq!(paragraphs.len(), 1);
     assert!(find(&root, Ctor::Emph).unwrap().attrs.is_empty());
@@ -87,7 +87,7 @@ fn dangling_block_annotation_is_diagnosed() {
             .any(|diagnostic| diagnostic.message.contains("no following block")),
         "{diagnostics:?}"
     );
-    assert!(root.children.is_empty());
+    assert!(root.children().is_empty());
 }
 
 #[test]
@@ -164,12 +164,12 @@ fn inline() -> InlineContent {
     );
     let callout = evaluation
         .root
-        .find(|node| node.ctor == Ctor::Callout)
+        .find(|node| node.ctor() == Ctor::Callout)
         .unwrap();
     assert_eq!(callout.attrs.get("id"), Some(&Value::Str("x".into())));
     let emph = evaluation
         .root
-        .find(|node| node.ctor == Ctor::Emph)
+        .find(|node| node.ctor() == Ctor::Emph)
         .unwrap();
     assert_eq!(emph.attrs.get("id"), Some(&Value::Str("e".into())));
 }

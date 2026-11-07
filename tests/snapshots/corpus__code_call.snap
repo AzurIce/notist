@@ -340,10 +340,10 @@ error[type] @587..597: unknown constructor or function `f`
       (text @205..211 :text "粉碎")
     )
   )
-  (paragraph @214..312
+  (error @214..312
     (interpolation @214..218)
     (text @218..228 :text "[未闭合")
-    (note @229..312
+    (error @229..312
       (paragraph @250..268
         (text @250..268 :text "块 body 第一段")
       )
@@ -372,14 +372,14 @@ error[type] @587..597: unknown constructor or function `f`
     )
     (text @327..359 :text "块 body 喂给 inline 构造器")
   )
-  (paragraph @361..403
+  (error @361..403
     (list @361..372 :ordered false :start 1
       (text @367..371 :text "body")
     )
     (text @373..403 :text "结构槽只接受 item 角色")
   )
   (paragraph @405..450
-    (demo @405..422)
+    (error @405..422)
     (text @423..450 :text "参数位置内容字面量")
   )
   (node @452..488
@@ -401,15 +401,15 @@ error[type] @587..597: unknown constructor or function `f`
     (text @498..516 :text "不接受 children")
   )
   (paragraph @518..549
-    (f @518..527)
+    (error @518..527)
     (text @528..549 :text "grouping 透明求值")
   )
   (paragraph @551..585
-    (f @551..563)
+    (error @551..563)
     (text @564..585 :text "数组里的 grouping")
   )
   (paragraph @587..625
-    (f @587..597)
+    (error @587..597)
     (text @598..625 :text "单元素数组要尾逗号")
   )
 )

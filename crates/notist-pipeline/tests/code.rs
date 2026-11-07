@@ -192,8 +192,8 @@ fn code_literals_use_selected_frontend_and_preserve_definition_origins() {
         .find(|i| i.ctor() == notist_core::item::Ctor::Strong)
         .unwrap();
     let o = strong.origin.as_ref().unwrap();
-    assert_eq!(o.source, "widgets/widget.mdc");
-    assert_eq!(o.expansion[0].source, "doc.not");
+    assert_eq!(e.sources.name(o.source).unwrap(), "widgets/widget.mdc");
+    assert_eq!(e.sources.name(o.expansion[0].source).unwrap(), "doc.not");
 }
 #[test]
 fn recursive_calls_are_bounded_and_siblings_survive() {
@@ -473,13 +473,16 @@ fn incomplete_binding_preserves_known_call_contract_and_recovers_at_its_boundary
             let required = e.root.find(|n| n.is_error()).unwrap();
             assert_eq!(required.level, Level::Block);
             assert!(required.children().is_empty());
-            assert!(required.origin.as_ref().unwrap().source.ends_with(
-                if src.contains("forwarded") {
-                    "lib.notc"
-                } else {
-                    path
-                }
-            ));
+            assert!(
+                e.sources
+                    .name(required.origin.as_ref().unwrap().source)
+                    .unwrap()
+                    .ends_with(if src.contains("forwarded") {
+                        "lib.notc"
+                    } else {
+                        path
+                    })
+            );
             if !src.contains("forwarded") {
                 assert_eq!(required.attrs.get("id"), Some(&Value::Str("failed".into())));
                 let semantic = a

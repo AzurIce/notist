@@ -105,35 +105,47 @@ fn instance_json(i: Option<&notist_core::definitions::FunctionInstance>) -> serd
     i.map(|i|serde_json::json!({"function":i.function.to_string(),"comptime":i.arguments.iter().map(|v|match v{notist_core::definitions::ComptimeValue::Type(t)=>serde_json::json!({"type":t.to_string()}),notist_core::definitions::ComptimeValue::Data(v)=>notist_html::components::value_json(v)}).collect::<Vec<_>>()})).unwrap_or_default()
 }
 
-fn metadata(item: &Item) -> serde_json::Value {
-    serde_json::json!({
-        "expression": item.as_expr(),
+fn metadata(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, serde_json::Error> {
+    let expression = serde_json::to_value(sources.wire(&item.as_expr()))?;
+    let origin = serde_json::to_value(sources.wire(&item.origin))?;
+    Ok(serde_json::json!({
+        "expression": expression,
         "function": item.function_id().map(|id| id.to_string()),
         "instance":instance_json(item.instance()),
         "error": match item.ctor() { crate::Ctor::Error(message) => Some(message), _ => None },
-        "origin":item.origin.as_ref().map(|o|serde_json::json!({"source":o.source.as_str(),"start":o.start,"end":o.end,"expansion":o.expansion.iter().map(|x|serde_json::json!({"source":x.source.as_str(),"start":x.start,"end":x.end})).collect::<Vec<_>>()})),
+        "origin":origin,
         "level": if item.level == crate::builtins::Level::Block { "block" } else { "inline" },
         "fields": value(&Value::Dict(item.fields())),
         "typed_fields": notist_html::components::value_json(&Value::Dict(item.fields())),
         "typed_attrs": notist_html::components::value_json(&Value::Dict(item.attrs.clone())),
-    })
+    }))
 }
 
-pub(crate) fn write_metadata(out: &mut String, item: &Item) {
-    let object = metadata(item).to_string();
+pub(crate) fn write_metadata(
+    out: &mut String,
+    item: &Item,
+    sources: &crate::Sources,
+) -> Result<(), serde_json::Error> {
+    let object = metadata(item, sources)?.to_string();
     out.push_str(&object[1..object.len() - 1]);
+    Ok(())
 }
 
 /// Serialize one final IR node with its identity, byte range, metadata and
 /// descendants. Typed values preserve numeric bits and dictionary order.
-pub fn item(item: &Item) -> serde_json::Value {
-    let mut object = metadata(item);
+pub fn item(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, serde_json::Error> {
+    let mut object = metadata(item, sources)?;
     object["ctor"] = item.ctor().name().as_ref().into();
     object["start"] = u32::from(item.span.start()).into();
     object["end"] = u32::from(item.span.end()).into();
     object["attrs"] = value(&Value::Dict(item.attrs.clone()));
-    object["children"] = serde_json::Value::Array(item.children().iter().map(self::item).collect());
-    object
+    object["children"] = serde_json::Value::Array(
+        item.children()
+            .iter()
+            .map(|node| self::item(node, sources))
+            .collect::<Result<_, _>>()?,
+    );
+    Ok(object)
 }
 
 #[cfg(test)]

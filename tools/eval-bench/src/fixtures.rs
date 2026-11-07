@@ -117,7 +117,7 @@ pub struct Fixture {
     pub document: String,
     pub context: Context,
     pub analysis: Analysis,
-    concrete: Option<Item>,
+    concrete: Option<notist_core::source::Located<Item>>,
     empty_program: CheckedProgram,
     pub inputs: Inputs,
     pub expected_text: String,
@@ -325,7 +325,10 @@ pub fn prepare(kind: &str, n: usize) -> Result<Fixture, String> {
         let EvaluationOutcome::Complete(result) = fixture.evaluate() else {
             return Err("ready text must complete".into());
         };
-        fixture.concrete = Some(result.root);
+        fixture.concrete = Some(notist_core::source::Located::new(
+            result.root,
+            result.sources,
+        ));
     }
     fixture.audit()?;
     Ok(fixture)
@@ -335,6 +338,7 @@ impl Fixture {
     pub fn root(&self) -> &Item {
         self.concrete
             .as_ref()
+            .map(|v| &v.value)
             .unwrap_or_else(|| self.analysis.root())
     }
     pub fn program(&self) -> &CheckedProgram {
@@ -348,6 +352,9 @@ impl Fixture {
         notist_eval::run(
             std::hint::black_box(self.root()),
             self.program(),
+            self.concrete
+                .as_ref()
+                .map_or(self.analysis.sources(), |v| &v.sources),
             &self.context,
             Limits::default(),
             Some(&self.inputs),
@@ -365,6 +372,9 @@ impl Fixture {
         let result = notist_eval::run(
             self.root(),
             self.program(),
+            self.concrete
+                .as_ref()
+                .map_or(self.analysis.sources(), |v| &v.sources),
             &context,
             Limits::default(),
             Some(&inputs),
@@ -552,10 +562,14 @@ pub fn canonical(outcome: &EvaluationOutcome) -> Result<Vec<u8>, String> {
         EvaluationOutcome::Complete(result) => {
             let sources: std::collections::BTreeMap<_, _> = result
                 .sources
-                .iter()
-                .map(|(path, text)| (path.as_str(), text.as_ref()))
+                .texts()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|(path, text)| (path, text.as_ref()))
                 .collect();
-            json!({"complete": {"root": result.root, "diagnostics": result.diagnostics, "dependencies": result.dependencies, "sources": sources}})
+            let root = serde_json::to_value(result.sources.wire(&result.root))
+                .map_err(|e| e.to_string())?;
+            json!({"complete": {"root": root, "diagnostics": result.diagnostics, "dependencies": result.dependencies, "sources": sources}})
         }
         EvaluationOutcome::NeedResources(paths) => json!({"need_resources": paths}),
     };

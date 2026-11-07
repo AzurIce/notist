@@ -39,7 +39,7 @@ impl DocumentExtension for Edit {
         context: &DocumentContext<'_>,
         document: &mut LoweredDocument,
     ) -> ExtensionResult {
-        assert!(context.sources.contains_key(context.path));
+        assert!(context.sources.by_name(context.path).is_ok());
         assert!(context.registry.function("notist", "paragraph").is_some());
         document.attrs.insert(self.label, Value::Bool(true));
         document.forest.push(Expr::fragment(

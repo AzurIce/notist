@@ -16,4 +16,7 @@ pub mod item;
 pub mod registry;
 pub mod resource;
 pub mod shared;
+pub mod source;
 pub mod source_chain;
+#[cfg(feature = "serde")]
+pub mod source_wire;

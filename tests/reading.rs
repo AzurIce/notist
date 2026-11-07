@@ -159,7 +159,7 @@ fn missing_capability_and_resource_errors_use_the_read_call_source() {
             .unwrap()
             .expansion
             .iter()
-            .any(|e| e.source == "/project/pages/page.not")
+            .any(|e| output.sources.name(e.source).unwrap() == "/project/pages/page.not")
     );
     assert_eq!(output.dependencies.len(), 1);
 }

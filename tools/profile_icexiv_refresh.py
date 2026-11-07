@@ -97,7 +97,7 @@ def instrument(root, detailed):
         if detailed:
             for binding, end, label in [
                 ('let (registry, environment) = ', ';\n        let rendered', 'body.registry'),
-                ('let rendered = ', ';\n        errors.extend(rendered', 'body.html'),
+                ('let rendered = ', ';\n        errors.extend(', 'body.html'),
                 ('let registrations = ', ';\n        if !registrations', 'body.components'),
             ]:
                 body = measure_rhs(body, binding, end, label)

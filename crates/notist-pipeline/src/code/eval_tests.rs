@@ -11,7 +11,7 @@ fn immutable_content_replays_deterministically_across_budgets_and_replacements()
         definitions::FunctionId,
         extensions::{Replace, Replacement},
     };
-    fn decorate(item: &mut Item) {
+    fn decorate(item: &mut Item, source: notist_core::source::SourceId) {
         if let Some(value) = item.as_item_mut() {
             value
                 .fields
@@ -21,13 +21,13 @@ fn immutable_content_replays_deterministically_across_budgets_and_replacements()
             .insert("checkpoint_attr", Value::Str("kept".into()));
         if let Some(origin) = &mut item.origin {
             origin.expansion.push(SourceLocation {
-                source: "outer.notc".into(),
+                source,
                 start: 2,
                 end: 8,
             });
         }
         for child in item.children_mut().into_iter().flatten() {
-            decorate(child);
+            decorate(child, source);
         }
     }
     let fixtures = [
@@ -93,7 +93,10 @@ fn immutable_content_replays_deterministically_across_budgets_and_replacements()
                 analysis.diagnostics()
             );
             let mut root = analysis.root().clone();
-            decorate(&mut root);
+            let owner = notist_core::source::Source::metadata("outer.notc").unwrap();
+            let mut sources = analysis.sources().clone();
+            sources.insert(owner.clone()).unwrap();
+            decorate(&mut root, owner.id());
             for content_nodes in 0..64 {
                 for constrained in [false, true] {
                     let limits = Limits {
@@ -111,11 +114,11 @@ fn immutable_content_replays_deterministically_across_budgets_and_replacements()
                         },
                         ..Limits::default()
                     };
-                    let actual = evaluate(&root, &analysis.program, &context, limits);
+                    let actual = evaluate(&root, &analysis.program, &sources, &context, limits);
                     let before = root.clone();
-                    let expected = evaluate(&root, &analysis.program, &context, limits);
+                    let expected = evaluate(&root, &analysis.program, &sources, &context, limits);
                     assert_eq!(root, before, "execution must not mutate shared code");
-                    assert_summaries(&root, &analysis.program, &context, limits);
+                    assert_summaries(&root, &analysis.program, &sources, &context, limits);
                     assert_eq!(
                         actual, expected,
                         "{dialect}, {content_nodes}, constrained={constrained}, {source}"
@@ -140,6 +143,9 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
             analysis.diagnostics()
         );
         for failure in 0..4 {
+            let owner = notist_core::source::Source::metadata("outer.notc").unwrap();
+            let mut sources = analysis.sources().clone();
+            sources.insert(owner.clone()).unwrap();
             let mut root = analysis.root().clone();
             let boundary = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
             boundary.attrs.insert("id", Value::Str("recovery".into()));
@@ -149,7 +155,7 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
                 .unwrap()
                 .expansion
                 .push(SourceLocation {
-                    source: "outer.notc".into(),
+                    source: owner.id(),
                     start: 3,
                     end: 7,
                 });
@@ -164,7 +170,13 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
                 2 => call.definition.returns = Type::BlockContent,
                 _ => call.definition.returns = Type::String,
             }
-            let evaluated = evaluate(&root, &analysis.program, &context, Limits::default());
+            let evaluated = evaluate(
+                &root,
+                &analysis.program,
+                &sources,
+                &context,
+                Limits::default(),
+            );
             assert!(!evaluated.diagnostics.is_empty());
             let recovered = &evaluated.root.children()[0].children()[0];
             assert!(recovered.is_error());
@@ -198,13 +210,22 @@ fn dissolved_code_results_retain_preexisting_call_expansion_locations() {
         .unwrap();
     let mut root = analysis.root().clone();
     let call = &mut root.children_mut().unwrap()[0].children_mut().unwrap()[0];
+    let owner = notist_core::source::Source::metadata("outer.notc").unwrap();
+    let mut sources = analysis.sources().clone();
+    sources.insert(owner.clone()).unwrap();
     let outer = SourceLocation {
-        source: "outer.notc".into(),
+        source: owner.id(),
         start: 3,
         end: 8,
     };
     call.origin.as_mut().unwrap().expansion.push(outer.clone());
-    let result = evaluate(&root, &analysis.program, &context, Limits::default());
+    let result = evaluate(
+        &root,
+        &analysis.program,
+        &sources,
+        &context,
+        Limits::default(),
+    );
     assert!(result.diagnostics.is_empty());
     let text = result
         .root
@@ -212,7 +233,7 @@ fn dissolved_code_results_retain_preexisting_call_expansion_locations() {
         .unwrap();
     let chain = &text.origin.as_ref().unwrap().expansion;
     assert!(chain.contains(&outer));
-    assert_eq!(chain[0].source.as_str(), "doc.not");
+    assert_eq!(result.sources.name(chain[0].source).unwrap(), "doc.not");
     assert!(result.root.descendants().all(|n| n.as_expr().is_none()));
 }
 
@@ -252,6 +273,7 @@ fn returned_summaries_match_trees_across_mounts_failures_and_limits() {
                 assert_summaries(
                     &root,
                     &analysis.program,
+                    analysis.sources(),
                     &context,
                     Limits {
                         content_nodes: limit,
@@ -295,6 +317,7 @@ fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
     let result = evaluate(
         &root,
         &CheckedProgram::default(),
+        analysis.sources(),
         &context,
         Limits::default(),
     );
@@ -344,7 +367,13 @@ fn editing_a_captured_signature_detaches_and_remains_authoritative() {
         original.definition.parameters[0].constraint,
         notist_core::definitions::ValueConstraint::Any
     );
-    let changed = evaluate(&root, &analysis.program, &context, Limits::default());
+    let changed = evaluate(
+        &root,
+        &analysis.program,
+        analysis.sources(),
+        &context,
+        Limits::default(),
+    );
     assert!(
         changed
             .diagnostics

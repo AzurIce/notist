@@ -1,14 +1,15 @@
 use notist::{Ctor, Item, Pipeline, Value};
 
-fn analyze(extension: &str, src: &str) -> (Item, Vec<notist::Diagnostic>) {
-    Pipeline::default()
+fn analyze(extension: &str, src: &str) -> (notist::Located<Item>, Vec<notist::Diagnostic>) {
+    let (item, diagnostics, sources) = Pipeline::default()
         .analyze(
             format!("test.{extension}"),
             src,
             &notist::Context::default(),
         )
         .unwrap()
-        .into_parts()
+        .into_parts();
+    (notist::Located::new(item, sources), diagnostics)
 }
 
 fn find(item: &Item, ctor: Ctor) -> Option<&Item> {

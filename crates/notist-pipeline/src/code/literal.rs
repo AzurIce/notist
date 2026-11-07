@@ -7,10 +7,14 @@ use notist_core::{
     resource::ResourcePath,
 };
 
-pub(crate) fn resolve_literal(expr: &Expr, root: &str, source: &str) -> Result<Value, Diagnostic> {
+pub(crate) fn resolve_literal(
+    expr: &Expr,
+    root: &str,
+    source: &notist_core::source::Source,
+) -> Result<Value, Diagnostic> {
     let error = |message: String| {
         let mut diagnostic = Diagnostic::new(Phase::Type, expr.span(), message);
-        diagnostic.source = Some(source.into());
+        diagnostic.source = Some(source.clone());
         diagnostic
     };
     match expr {
@@ -37,7 +41,7 @@ pub(crate) fn resolve_literal(expr: &Expr, root: &str, source: &str) -> Result<V
 pub(crate) fn resolve_dict(
     dict: &LiteralDict,
     root: &str,
-    source: &str,
+    source: &notist_core::source::Source,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Dict {
     let mut result = Dict::default();

@@ -108,7 +108,14 @@ impl ExtensionPlan {
                     if candidate == *document {
                         Ok(())
                     } else {
-                        validate_output(&candidate, limit)
+                        validate_output(&candidate, context.sources, limit)?;
+                        context.sources.validate_node(&candidate).map_err(|error| {
+                            vec![Diagnostic::new(
+                                Phase::Semantic,
+                                candidate.span,
+                                error.to_string(),
+                            )]
+                        })
                     }
                 });
             if !report(
@@ -136,7 +143,15 @@ fn report(
         return true;
     };
     for mut error in describe(errors, extension, stage) {
-        error.source.get_or_insert_with(|| context.path.into());
+        if error.source.is_none() {
+            match context.sources.by_name(context.path) {
+                Ok(source) => error.source = Some(source.clone()),
+                Err(problem) => {
+                    error.message.push_str(&format!(" ({problem})"));
+                    error.span = Default::default();
+                }
+            }
+        }
         error.recovered = false;
         diagnostics.push(error);
     }
@@ -172,8 +187,10 @@ fn validate_lowered(
 ) -> ExtensionResult {
     let source = context
         .sources
-        .get(context.path)
-        .expect("document source exists");
+        .by_name(context.path)
+        .expect("document source exists")
+        .text()
+        .expect("document retains its input text");
     let mut invalid = false;
     let mut check = |span: rowan::TextRange| {
         invalid |= !source.is_char_boundary(u32::from(span.start()) as usize)
@@ -198,7 +215,11 @@ fn validate_lowered(
     }
 }
 
-fn validate_output(root: &Item, limit: usize) -> ExtensionResult {
+fn validate_output(
+    root: &Item,
+    sources: &notist_core::source::Sources,
+    limit: usize,
+) -> ExtensionResult {
     let problem = if root.ctor() != Ctor::Doc || root.level != Level::Block {
         Some("output root must remain a block document")
     } else if root
@@ -221,7 +242,7 @@ fn validate_output(root: &Item, limit: usize) -> ExtensionResult {
         return Err(vec![Diagnostic::new(Phase::Semantic, root.span, message)]);
     }
     let mut errors = vec![];
-    notist_core::index::Index::build(root, &mut errors);
+    notist_core::index::Index::build(root, sources, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {

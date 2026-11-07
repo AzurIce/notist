@@ -1,6 +1,12 @@
 use notist_core::frontend::{Frontend, FrontendOptions};
 
-fn analyze(src: &str) -> (notist_core::item::Item, Vec<notist_core::diag::Diagnostic>) {
+fn analyze(
+    src: &str,
+) -> (
+    notist_core::item::Item,
+    Vec<notist_core::diag::Diagnostic>,
+    notist_core::source::Sources,
+) {
     notist_pipeline::Pipeline::new()
         .with_frontend(notist_pipeline::frontend::markdown::MarkdownFrontend)
         .analyze("test.md", src, &notist_pipeline::Context::default())
@@ -13,7 +19,7 @@ fn markdown_wikilinks_lower_to_normal_links_with_raw_targets() {
     use notist_core::item::{Ctor, Value};
     let src =
         "前文 [[ page.not ]]，[[目录/笔记.md#节|显示 **粗体**]] [[a\\!b&copy;.not]] [[page.not|]]";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let links: Vec<_> = root
         .descendants()
@@ -49,7 +55,7 @@ fn markdown_wikilinks_lower_to_normal_links_with_raw_targets() {
 fn markdown_wikilinks_respect_code_escapes_and_line_boundaries() {
     use notist_core::item::{Ctor, Value};
     let src = "`[[code.not]]` \\[[escaped.not]] [[unclosed\nnext]]\n\n```text\n[[fenced.not]]\n```\n\n[普通](normal.not) [[valid.not]]";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let targets: Vec<_> = root
         .descendants()
@@ -75,7 +81,7 @@ fn markdown_wikilinks_inside_containers_and_content_keep_offsets() {
         "#strong[[[page.not|显示]]]",
         "| 链接 |\n| --- |\n| [[page.not\\|显示]] |\n",
     ] {
-        let (root, diagnostics) = analyze(src);
+        let (root, diagnostics, _sources) = analyze(src);
         assert!(diagnostics.is_empty(), "{src:?}: {diagnostics:?}");
         let link = root.find(|n| n.ctor() == Ctor::Link).unwrap();
         assert_eq!(link.field("target"), Some(&Value::Str("page.not".into())));
@@ -94,7 +100,7 @@ fn markdown_wikilinks_inside_containers_and_content_keep_offsets() {
 fn markdown_wikilink_labels_keep_annotations_calls_and_diagnostic_offsets() {
     use notist_core::item::{Ctor, Value};
     let src = "前文 [[page.not|@(id: \"label\")**粗体** #emph[显示]]]";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let strong = root.find(|n| n.ctor() == Ctor::Strong).unwrap();
     assert_eq!(strong.attrs.get("id"), Some(&Value::Str("label".into())));
@@ -104,7 +110,7 @@ fn markdown_wikilink_labels_keep_annotations_calls_and_diagnostic_offsets() {
         "#emph[显示]"
     );
     let src = "前文 [[page.not|#missing[]]]";
-    let (_, diagnostics) = analyze(src);
+    let (_, diagnostics, _sources) = analyze(src);
     assert!(!diagnostics.is_empty());
     for diagnostic in diagnostics {
         assert!(usize::from(diagnostic.span.start()) >= src.find('#').unwrap());
@@ -115,7 +121,7 @@ fn markdown_wikilink_labels_keep_annotations_calls_and_diagnostic_offsets() {
 #[test]
 fn markdown_lowering() {
     let src = "# 标题 *em*\n\n段落 **粗** _斜_ `代码` [链接](x.not)。\n\n- 项一\n- 项二\n\n```rust\nfn main() {}\n```\n";
-    let (item, diags) = analyze(src);
+    let (item, diags, _sources) = analyze(src);
     assert!(diags.is_empty(), "{diags:?}");
     let dump = notist_core::dump::dump(&item);
     assert!(dump.contains("(heading @0..13 :level 1"), "{dump}");
@@ -129,7 +135,7 @@ fn markdown_lowering() {
 #[test]
 fn markdown_table_and_quote() {
     let src = "> 引用\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
-    let (item, diags) = analyze(src);
+    let (item, diags, _sources) = analyze(src);
     assert!(diags.is_empty(), "{diags:?}");
     let dump = notist_core::dump::dump(&item);
     assert!(dump.contains("callout"), "{dump}");
@@ -144,7 +150,7 @@ fn atx_heading_spans_include_closing_markers_but_exclude_line_breaks() {
         ("> # [title](target)\n>\n> text", "# [title](target)"),
         ("#", "#"),
     ] {
-        let (root, diags) = analyze(src);
+        let (root, diags, _sources) = analyze(src);
         assert!(diags.is_empty());
         let heading = root
             .find(|n| n.ctor() == notist_core::item::Ctor::Heading)
@@ -165,7 +171,7 @@ fn atx_heading_spans_include_closing_markers_but_exclude_line_breaks() {
 fn markdown_notist_attributes_attach_to_module_blocks_and_inline_elements() {
     use notist_core::item::{Ctor, Value};
     let src = "@!(title: \"测试\", tags: (\"md\", \"notist\"))\n@(id: \"intro\")\n# 标题\n\n@(role: \"body\")\n正文 @(color: \"red\")**粗体** 和 @(id: \"link\")[链接](target)。\n";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert_eq!(root.attrs.get("title"), Some(&Value::Str("测试".into())));
     for (ctor, key, value) in [
@@ -183,7 +189,7 @@ fn markdown_notist_attributes_attach_to_module_blocks_and_inline_elements() {
 fn markdown_calls_lower_markdown_bodies_and_share_literal_arguments() {
     use notist_core::item::{Ctor, Value};
     let src = "前缀 #strong[**粗体** 和 *斜体*]  #raw(r#\"a\\b\"#)\n\n@(id: \"box\")\n#callout(kind: \"note\")[\n## 标题\n\n- 项一\n- #emph[项二]\n\n```text\n#missing[] @(ignored: true) ]\n```\n]\n";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let callout = root.find(|n| n.ctor() == Ctor::Callout).unwrap();
     assert_eq!(callout.attrs.get("id"), Some(&Value::Str("box".into())));
@@ -211,7 +217,7 @@ fn markdown_calls_lower_markdown_bodies_and_share_literal_arguments() {
 #[test]
 fn markdown_extensions_preserve_opaque_and_escaped_text() {
     let src = "# Heading\n\n`@(id: \"code\") #strong[x]` $a_{#strong[x]}$ \\#strong[x] \\@(id: \"escaped\") \\#tag mail@example.com\n\n```\n@!(id: \"raw\")\n#missing[]\n```\n";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert!(root.descendants().all(|n| n.attrs.is_empty()));
     assert!(
@@ -244,7 +250,7 @@ fn markdown_extension_diagnostics_cover_invalid_annotations_and_calls() {
             "module annotation is only valid at the document top",
         ),
     ] {
-        let (_, diagnostics) = analyze(src);
+        let (_, diagnostics, _sources) = analyze(src);
         assert!(
             diagnostics.iter().any(|d| d.message.contains(message)),
             "{src:?}: {diagnostics:?}"
@@ -261,7 +267,7 @@ fn markdown_extension_diagnostics_cover_invalid_annotations_and_calls() {
 fn markdown_extensions_inside_containers_keep_original_offsets() {
     use notist_core::item::{Ctor, Value};
     let src = "> @(id: \"quote\")\n> 引用 #strong[粗体]\n\n- @(id: \"item\")\n  正文 @(id: \"em\")*强调*\n";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     let strong = root.find(|n| n.ctor() == Ctor::Strong).unwrap();
     assert_eq!(
@@ -284,7 +290,7 @@ fn markdown_extensions_inside_containers_keep_original_offsets() {
 fn markdown_call_boundaries_keep_inline_markers_and_trailing_text() {
     use notist_core::item::{Ctor, Value};
     let src = "#strong[# heading]\n\n#callout[\n正文\n] 后面的文字\n\n前缀 #strong[未闭合";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(
         diagnostics
             .iter()
@@ -305,7 +311,7 @@ fn markdown_call_boundaries_keep_inline_markers_and_trailing_text() {
 fn markdown_nested_calls_anonymous_groups_and_multiline_payloads() {
     use notist_core::item::{Ctor, Value};
     let src = "@!(\n title: \"标题\",\n meta: (nested: (1, true, -2)),\n)\n@(id: \"group\")\n#node[\n#notist.callout(kind: \"note\")[\n@(id: \"inner\")\n正文 #strong[一 #emph[二] `]` $x_{]}$]\n]\n]\n";
-    let (root, diagnostics) = analyze(src);
+    let (root, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
     assert_eq!(root.attrs.get("title"), Some(&Value::Str("标题".into())));
     assert!(
@@ -334,7 +340,7 @@ fn markdown_nested_calls_anonymous_groups_and_multiline_payloads() {
 fn markdown_call_fences_hide_brackets_and_extensions() {
     for (open, close) in [("~~~", "~~~~"), ("```", "````")] {
         let src = format!("#callout[\n{open}text\n] #missing[] @(id: \"opaque\")\n{close}\n]\n");
-        let (root, diagnostics) = analyze(&src);
+        let (root, diagnostics, _sources) = analyze(&src);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let raw = root
             .find(|n| n.ctor() == notist_core::item::Ctor::RawInline)
@@ -365,14 +371,14 @@ fn malformed_markdown_extensions_recover_for_every_truncated_prefix() {
             .map(|(i, _)| i)
             .chain(std::iter::once(src.len()))
         {
-            let (_, diagnostics) = analyze(&src[..end]);
+            let (_, diagnostics, _sources) = analyze(&src[..end]);
             assert!(
                 diagnostics.iter().all(|d| usize::from(d.span.end()) <= end),
                 "{src:?} at {end}: {diagnostics:?}"
             );
         }
     }
-    let (_, diagnostics) = analyze("#raw(\n\n\"value\"\n)");
+    let (_, diagnostics, _sources) = analyze("#raw(\n\n\"value\"\n)");
     assert!(
         diagnostics
             .iter()
@@ -406,7 +412,7 @@ fn markdown_call_arguments_with_unicode_bodies_keep_valid_source_ranges() {
     for expr in &forest {
         check(expr, src);
     }
-    let (_, diagnostics) = analyze(src);
+    let (_, diagnostics, _sources) = analyze(src);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
 

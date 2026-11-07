@@ -32,7 +32,7 @@ fn text(root: &Item) -> String {
         .collect()
 }
 
-fn evaluate(module: &str, call: &str) -> Item {
+fn evaluate(module: &str, call: &str) -> notist::Located<Item> {
     let context = context(module);
     let pipeline = Pipeline::default();
     let errors = pipeline.check_module("result", &context);
@@ -49,7 +49,7 @@ fn evaluate(module: &str, call: &str) -> Item {
         "{call}: {:?}",
         output.diagnostics
     );
-    output.root
+    notist::Located::new(output.root, output.sources)
 }
 
 fn assert_error(module: &str, needle: &str) {
@@ -617,7 +617,7 @@ fn show() -> InlineContent { [#widget(err("<invalid>"), ok(1))#widget(ok(2))] }
     );
     assert!(widgets[1].field("optional").is_none());
     assert_eq!(output.html.matches("notist-optional=").count(), 1);
-    let inspection = notist::json::item(widgets[0]);
+    let inspection = notist::json::item(widgets[0], &root.sources).unwrap();
     assert_eq!(
         inspection["fields"]["value"],
         serde_json::json!({"err":"<invalid>"})

@@ -31,7 +31,7 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
         2
     );
     assert!(notist::query::select(analysis.root(), "level:block").contains(&panel));
-    let json = notist::json::item(panel);
+    let json = notist::json::item(panel, analysis.sources()).unwrap();
     assert_eq!(json["function"], "widgets.panel");
     assert_eq!(json["level"], "block");
     assert_eq!(json["fields"]["title"], "Panel");
@@ -39,10 +39,9 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
     let (analysis, inspection) = Pipeline::default()
         .inspect("test.not", src, &project)
         .unwrap();
-    let debug: serde_json::Value = serde_json::from_str(&notist::cst_json::inspection_json(
-        &analysis,
-        Some(&inspection),
-    ))
+    let debug: serde_json::Value = serde_json::from_str(
+        &notist::cst_json::inspection_json(&analysis, Some(&inspection)).unwrap(),
+    )
     .unwrap();
     assert!(debug["diagnostics"].as_array().unwrap().is_empty());
     assert!(notist::dump::dump(panel).contains("[block]"));
@@ -101,13 +100,12 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
 #[cfg(feature = "serde")]
 #[test]
 fn serialized_extensions_need_no_module_to_restore_category_and_children() {
-    let root = notist::Pipeline::default()
+    let (root, _, sources) = notist::Pipeline::default()
         .analyze("test.not", "#self.panel()[content]", &context())
         .unwrap()
-        .into_parts()
-        .0;
-    let json = serde_json::to_value(&root).unwrap();
-    let restored: notist::Item = serde_json::from_value(json).unwrap();
+        .into_parts();
+    let json = serde_json::to_value(sources.wire(&root)).unwrap();
+    let restored: notist::Item = sources.decode(json).unwrap();
     let panel = restored
         .find(|node| matches!(node.ctor(), Ctor::Extension(_)))
         .unwrap();
@@ -118,9 +116,9 @@ fn serialized_extensions_need_no_module_to_restore_category_and_children() {
     );
     assert_eq!(panel.field("title"), Some(&Value::Str("Panel".into())));
     assert!(!panel.children().is_empty());
-    let mut incomplete = serde_json::to_value(&root).unwrap();
+    let mut incomplete = serde_json::to_value(sources.wire(&root)).unwrap();
     incomplete.as_object_mut().unwrap().remove("level");
-    assert!(serde_json::from_value::<notist::Item>(incomplete).is_err());
+    assert!(sources.decode::<notist::Item>(incomplete).is_err());
 }
 #[cfg(feature = "serde")]
 #[test]
@@ -144,7 +142,7 @@ fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
         };
         assert_eq!(restored.to_bits(), value.to_bits());
         let item = notist::Item::new(Ctor::Text, Default::default()).with_field("float", original);
-        let json = notist::json::item(&item);
+        let json = notist::json::item(&item, &notist::Sources::new()).unwrap();
         assert_eq!(
             json["typed_fields"][1][0][1],
             serde_json::json!(["float", format!("{:016x}", value.to_bits())])
@@ -176,8 +174,10 @@ fn serialized_items_retain_pending_calls_and_checked_expressions() {
     let analysis = notist::Pipeline::default()
         .analyze("doc.not", "#self.greet(\"world\")", &context)
         .unwrap();
-    let restored: notist::Item =
-        serde_json::from_value(serde_json::to_value(analysis.root()).unwrap()).unwrap();
+    let restored: notist::Item = analysis
+        .sources()
+        .decode(serde_json::to_value(analysis.sources().wire(analysis.root())).unwrap())
+        .unwrap();
     let original = analysis
         .root()
         .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
@@ -188,7 +188,7 @@ fn serialized_items_retain_pending_calls_and_checked_expressions() {
     assert_eq!(call.as_expr(), original.as_expr());
     let call = call.call().expect("call expression");
     assert!(matches!(&call.arguments[0].1.kind, ExprKind::Constant(_)));
-    let json = notist::json::item(original);
+    let json = notist::json::item(original, analysis.sources()).unwrap();
     assert!(json.get("pending").is_none());
     assert_eq!(
         json["expression"]["kind"]["Call"]["arguments"][0][0],

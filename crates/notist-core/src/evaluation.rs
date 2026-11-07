@@ -23,6 +23,7 @@ pub struct InstanceRecord {
 pub struct CheckedProgram {
     pub instances: Arc<BTreeMap<String, Arc<InstanceRecord>>>,
     pub data_retention: crate::data::DataRetention,
+    pub sources: crate::source::Sources,
 }
 
 impl PartialEq for CheckedProgram {
@@ -32,16 +33,13 @@ impl PartialEq for CheckedProgram {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TypedExpr {
     pub ty: Option<Type>,
     pub known: Option<ComptimeValue>,
     pub kind: ExprKind,
-    #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
-    pub source: String,
+    pub source: crate::source::SourceId,
     /// Local checked forest evidence, not a public function return contract.
-    #[cfg_attr(feature = "serde", serde(default))]
     pub shape: ContentShape,
 }
 
@@ -119,7 +117,6 @@ impl ContentShape {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExprKind {
     Constant(ComptimeValue),
     Input(String),
@@ -152,7 +149,6 @@ pub enum ExprKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ResultArm {
     pub pattern: ResultPattern,
     pub body: TypedExpr,
@@ -167,7 +163,6 @@ pub enum ResultPattern {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Invocation {
     pub instance: FunctionInstance,
     /// The call's contract snapshot. Captures share it; editing one invocation
@@ -177,19 +172,10 @@ pub struct Invocation {
     /// Checked children expression, for both data and content calls.
     pub children: Option<Box<TypedExpr>>,
     pub attrs: Dict,
-    #[cfg_attr(feature = "serde", serde(with = "span"))]
     pub span: TextRange,
-    pub source: String,
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "CallSite::is_markup")
-    )]
+    pub source: crate::source::SourceId,
     pub site: CallSite,
     /// Captured only for resource-target inputs, including deferred URL strings.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub resource_root: Option<String>,
     pub invalid: Option<String>,
 }

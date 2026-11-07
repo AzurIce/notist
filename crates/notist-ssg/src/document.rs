@@ -34,20 +34,8 @@ pub(crate) struct Document {
     pub ids: BTreeSet<String>,
 }
 
-pub(crate) fn diagnostic(
-    path: &Path,
-    source: &str,
-    sources: &Sources,
-    d: Diagnostic,
-) -> SourceDiagnostic {
-    let origin = d.source.as_ref().and_then(|s| sources.get_key_value(s));
-    SourceDiagnostic {
-        path: origin.map(|(p, _)| p.into()).unwrap_or_else(|| path.into()),
-        source: origin
-            .map(|(_, s)| s.to_string())
-            .unwrap_or_else(|| source.into()),
-        diagnostic: d,
-    }
+pub(crate) fn diagnostic(path: &Path, source: &str, d: Diagnostic) -> SourceDiagnostic {
+    SourceDiagnostic::locate(path, source, d)
 }
 
 fn value(input: &Value) -> serde_json::Value {
@@ -167,12 +155,12 @@ impl Document {
                 errors.push(Diagnostic::new(notist::Phase::Type, root.span, format!("Data or DataError in template attribute `{key}` must be decoded to ordinary values")));
             }
         }
-        let index = notist::index::Index::build(&root, &mut errors);
+        let index = notist::index::Index::build(&root, &sources, &mut errors);
         if !errors.is_empty() {
             return Err(Error::Diagnostics(
                 errors
                     .into_iter()
-                    .map(|d| diagnostic(&route.source, &source, &sources, d))
+                    .map(|d| diagnostic(&route.source, &source, d))
                     .collect(),
             ));
         }

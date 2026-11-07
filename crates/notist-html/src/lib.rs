@@ -49,6 +49,8 @@ pub struct RenderResult {
     /// Empty unless `Renderer::with_source_map` is enabled.
     pub source_map: Vec<SourceMapping>,
     pub used_components: Vec<Component>,
+    /// Keeps source-map locations valid independently of the input analysis.
+    pub sources: notist_core::diag::Sources,
 }
 
 /// A mapping to an element actually emitted by this render. IDs are local to
@@ -93,9 +95,14 @@ pub struct Renderer<'a> {
     registry: HtmlRegistry,
     url_resolver: Option<UrlResolver<'a>>,
     resource_resolver: Option<ResourceResolver<'a>>,
+    sources: notist_core::diag::Sources,
 }
 
 impl<'a> Renderer<'a> {
+    pub fn with_sources(mut self, sources: &notist_core::diag::Sources) -> Self {
+        self.sources = sources.clone();
+        self
+    }
     /// Resolve link and URL-string embed targets using host data, without IO. `None`
     /// keeps the source URL. Both source and resolved URLs are checked for safety.
     pub fn with_url_resolver(
@@ -134,6 +141,7 @@ impl<'a> Renderer<'a> {
             registry,
             url_resolver: None,
             resource_resolver: None,
+            sources: Default::default(),
         }
     }
 
@@ -189,12 +197,28 @@ impl<'a> Renderer<'a> {
             source_map: Vec::new(),
             used_components: Vec::new(),
         };
+        if self.source_map
+            && let Err(error) = self.sources.validate_node(item)
+        {
+            return RenderResult {
+                html: String::new(),
+                diagnostics: vec![Diagnostic::new(
+                    Phase::Semantic,
+                    item.span,
+                    error.to_string(),
+                )],
+                source_map: Vec::new(),
+                used_components: Vec::new(),
+                sources: self.sources.clone(),
+            };
+        }
         state.node(item);
         RenderResult {
             html: state.output,
             diagnostics: state.diagnostics,
             source_map: state.source_map,
             used_components: state.used_components,
+            sources: self.sources.clone(),
         }
     }
 }
@@ -804,7 +828,17 @@ impl State<'_, '_> {
 
     fn diagnostic(&mut self, item: &Item, message: String) {
         let mut d = Diagnostic::new(Phase::Semantic, item.span, message);
-        d.source = item.origin.as_ref().map(|o| o.source.to_string());
+        if let Some(origin) = &item.origin {
+            match self.renderer.sources.source(origin.source) {
+                Ok(source) => d.source = Some(source.clone()),
+                Err(error) if origin.source != notist_core::source::SourceId::DETACHED => {
+                    d.message
+                        .push_str(&format!(" (source location unavailable: {error})"));
+                    d.span = Default::default();
+                }
+                Err(_) => {}
+            }
+        }
         self.diagnostics.push(d);
     }
 }

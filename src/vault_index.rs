@@ -90,7 +90,12 @@ pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
 }
 
 /// Check bound embed identities against the Vault root, without resource reads.
-pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
+pub(crate) fn check_embed_paths(
+    root: &Path,
+    path: &Path,
+    item: &Item,
+    sources: &crate::Sources,
+) -> Vec<Diagnostic> {
     let source = normalize(&root.join(path)).to_string_lossy().into_owned();
     crate::embed::targets(item)
         .filter_map(|node| {
@@ -109,11 +114,17 @@ pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Di
                 ),
             );
             diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
-            diagnostic.source = node
-                .origin
-                .as_ref()
-                .map(|origin| origin.source.to_string())
-                .or_else(|| Some(source.clone()));
+            if let Some(origin) = &node.origin {
+                diagnostic = diagnostic.at_source(sources, origin.source);
+            } else {
+                match sources.by_name(&source) {
+                    Ok(source) => diagnostic.source = Some(source.clone()),
+                    Err(error) => {
+                        diagnostic.message.push_str(&format!(" ({error})"));
+                        diagnostic.span = Default::default();
+                    }
+                }
+            }
             Some(diagnostic)
         })
         .collect()
@@ -121,7 +132,12 @@ pub(crate) fn check_embed_paths(root: &Path, path: &Path, item: &Item) -> Vec<Di
 
 /// Source-level link checks retain their existing String rules; embeds use their
 /// bound identities. Module dependencies are not content references.
-pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<Diagnostic> {
+pub(crate) fn check_content_paths(
+    root: &Path,
+    path: &Path,
+    item: &Item,
+    sources: &crate::Sources,
+) -> Vec<Diagnostic> {
     let path = normalize(&root.join(path));
     let file_dir = path.parent().unwrap_or(root);
     let source = path.to_string_lossy().into_owned();
@@ -143,19 +159,34 @@ pub(crate) fn check_content_paths(root: &Path, path: &Path, item: &Item) -> Vec<
                         ),
                     );
                     diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
-                    diagnostic.source = Some(source.clone());
+                    if let Some(origin) = &node.origin {
+                        diagnostic = diagnostic.at_source(sources, origin.source);
+                    } else {
+                        match sources.by_name(&source) {
+                            Ok(source) => diagnostic.source = Some(source.clone()),
+                            Err(error) => {
+                                diagnostic.message.push_str(&format!(" ({error})"));
+                                diagnostic.span = Default::default();
+                            }
+                        }
+                    }
                     Some(diagnostic)
                 }
                 _ => None,
             }
         })
         .collect();
-    diagnostics.extend(check_embed_paths(root, &path, item));
+    diagnostics.extend(check_embed_paths(root, &path, item, sources));
     diagnostics
 }
 
 /// Same-document link checks, shared by single-file checks and the vault.
-pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) {
+pub fn check_doc_links(
+    item: &Item,
+    sources: &crate::Sources,
+    index: &Index,
+    diags: &mut Vec<Diagnostic>,
+) {
     for node in item.descendants() {
         if node.ctor() != Ctor::Link {
             continue;
@@ -167,11 +198,15 @@ pub fn check_doc_links(item: &Item, index: &Index, diags: &mut Vec<Diagnostic>) 
             continue;
         };
         if index.by_id(item).is_none() {
-            diags.push(Diagnostic::new(
+            let mut diagnostic = Diagnostic::new(
                 Phase::Semantic,
                 node.span,
                 format!("missing item `#{item}` in this document"),
-            ));
+            );
+            if let Some(origin) = &node.origin {
+                diagnostic = diagnostic.at_source(sources, origin.source);
+            }
+            diags.push(diagnostic);
         }
     }
 }
@@ -196,15 +231,15 @@ impl VaultIndex {
                     .take_while(|parent| parent.starts_with(&root))
                     .map(Path::to_path_buf),
             );
-            let (item, mut diagnostics) = analysis.into_parts();
+            let (item, mut diagnostics, sources) = analysis.into_parts();
             // Pure callers may supply Pipeline results; Vault callers already
             // attached the same checks. Keep one diagnostic per reference.
-            for diagnostic in check_content_paths(&root, &path, &item) {
+            for diagnostic in check_content_paths(&root, &path, &item, &sources) {
                 if !diagnostics.contains(&diagnostic) {
                     diagnostics.push(diagnostic);
                 }
             }
-            let index = Index::build(&item, &mut diagnostics);
+            let index = Index::build(&item, &sources, &mut diagnostics);
             let links = collect_links(&item, path.parent().unwrap_or(Path::new("")));
             docs.insert(
                 normalize(&path),

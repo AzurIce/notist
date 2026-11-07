@@ -27,7 +27,7 @@ fn block_calls_require_source_fragment_boundaries() {
 #[test]
 fn soft_newlines_keep_inline_calls_inside_paragraph() {
     // 行内调用不改变片段边界。
-    let (item, diags) = notist::Pipeline::default()
+    let (item, diags, _sources) = notist::Pipeline::default()
         .analyze(
             "test.not",
             "文字 #note[x] 后续\n",
@@ -43,7 +43,7 @@ fn soft_newlines_keep_inline_calls_inside_paragraph() {
 #[test]
 fn shape_groups_sections_by_heading_level() {
     let src = "序言\n\n= 一\n\n内容\n\n== 一点一\n\n细节\n\n= 二\n";
-    let (item, diags) = notist::Pipeline::default()
+    let (item, diags, _sources) = notist::Pipeline::default()
         .analyze("test.not", src, &notist::Context::default())
         .unwrap()
         .into_parts();
@@ -114,7 +114,7 @@ fn shape_recurses_into_block_mounts() {
 fn shape_transfers_heading_attrs_to_section() {
     // heading 的注解转移到其开启的 section 上（一个 heading 恰开启一个 section）
     let src = "@(id: \"intro\", tags: (\"a\",))\n= 一\n\n内容\n";
-    let (item, diags) = notist::Pipeline::default()
+    let (item, diags, _sources) = notist::Pipeline::default()
         .analyze("test.not", src, &notist::Context::default())
         .unwrap()
         .into_parts();

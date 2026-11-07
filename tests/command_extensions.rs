@@ -93,7 +93,7 @@ fn commands_edit_lowered_content_then_the_output_tree_and_preserve_ranges() {
     setup(
         root.path(),
         "after_evaluate",
-        &json!({"version": 1, "document": tree}).to_string(),
+        &json!({"version": 1, "document": output.evaluation.sources.wire(&tree)}).to_string(),
     );
     let output = Vault::new(FsResources::new(root.path()))
         .render_html("doc.not", source, RenderOptions::default())

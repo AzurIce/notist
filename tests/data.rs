@@ -385,7 +385,9 @@ fn record_body_is_static_private_and_shared_across_pages() {
         assert!(!out.rendered.html.contains("NOT_PUBLIC"));
         assert!(out.rendered.used_components.is_empty());
         assert_eq!(out.evaluation.dependencies.len(), 1);
-        let inspected = notist::json::item(&out.evaluation.root).to_string();
+        let inspected = notist::json::item(&out.evaluation.root, &out.evaluation.sources)
+            .unwrap()
+            .to_string();
         assert!(!inspected.contains("NOT_PUBLIC"));
     }
     assert_eq!(vault.input_session().data_cache_stats().parses, 1);
@@ -407,7 +409,11 @@ fn data_fail_keeps_exact_data_source_path_span_and_expansion() {
     let error = &out.evaluation.diagnostics[0];
     assert_eq!(error.source.as_deref(), Some("/project/private/items.json"));
     assert!(error.message.contains("/42/name"));
-    let attached = &out.evaluation.sources[error.source.as_ref().unwrap()];
+    let attached = out
+        .evaluation
+        .sources
+        .text(error.source.as_ref().unwrap().id())
+        .unwrap();
     assert_eq!(attached.as_ref(), source);
     assert_eq!(
         &attached[usize::from(error.span.start())..usize::from(error.span.end())],
@@ -418,9 +424,13 @@ fn data_fail_keeps_exact_data_source_path_span_and_expansion() {
     assert!(
         expansion
             .iter()
-            .any(|l| l.source == "/project/views/lib.notc")
+            .any(|l| out.evaluation.sources.name(l.source).unwrap() == "/project/views/lib.notc")
     );
-    assert!(expansion.iter().any(|l| l.source == "/project/page.not"));
+    assert!(
+        expansion
+            .iter()
+            .any(|l| out.evaluation.sources.name(l.source).unwrap() == "/project/page.not")
+    );
 }
 
 #[test]
@@ -591,8 +601,8 @@ fn parse_and_projection_errors_rebind_sources_without_poisoning_cached_values() 
     for name in ["/a.json", "/b.json"] {
         let root = root.clone().bind_source(
             name.into(),
-            notist::SourceLocation {
-                source: "view.notc".into(),
+            notist::SourceSpan {
+                source: notist::Source::metadata("view.notc").unwrap(),
                 start: 0,
                 end: 4,
             },
@@ -627,8 +637,8 @@ fn parse_and_projection_errors_rebind_sources_without_poisoning_cached_values() 
         };
         let error = error.bind_source(
             name.into(),
-            notist::SourceLocation {
-                source: "read.notc".into(),
+            notist::SourceSpan {
+                source: notist::Source::metadata("read.notc").unwrap(),
                 start: 0,
                 end: 1,
             },
@@ -846,7 +856,12 @@ fn virtual_source_and_overlay_inputs_bind_data_to_the_same_immutable_text_view()
     let error = &output.evaluation.diagnostics[0];
     assert_eq!(error.source.as_deref(), Some("/project/virtual.not"));
     assert_eq!(
-        output.evaluation.sources[error.source.as_ref().unwrap()].as_ref(),
+        output
+            .evaluation
+            .sources
+            .text(error.source.as_ref().unwrap().id())
+            .unwrap()
+            .as_ref(),
         source
     );
     files.insert("data.json", r#"{"name":"stale disk"}"#);
@@ -871,8 +886,8 @@ fn virtual_source_and_overlay_inputs_bind_data_to_the_same_immutable_text_view()
 fn error_wire_drops_sources_and_special_native_implementations_are_reserved() {
     let d = json(r#"{"name":false,"private":"SECRET"}"#).bind_source(
         "/private/data.json".into(),
-        notist::SourceLocation {
-            source: "private.notc".into(),
+        notist::SourceSpan {
+            source: notist::Source::metadata("private.notc").unwrap(),
             start: 0,
             end: 1,
         },
@@ -981,8 +996,8 @@ fn malformed_unicode_json_diagnostics_use_complete_character_boundaries() {
     };
     let error = error.bind_source(
         "input.json".into(),
-        notist::SourceLocation {
-            source: "read.notc".into(),
+        notist::SourceSpan {
+            source: notist::Source::metadata("read.notc").unwrap(),
             start: 0,
             end: 1,
         },

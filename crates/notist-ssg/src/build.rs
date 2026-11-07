@@ -193,13 +193,10 @@ fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic 
         notist::TextRange::new(o.start.into(), o.end.into())
     });
     let mut d = Diagnostic::new(Phase::Semantic, span, message);
-    d.source = node.origin.as_ref().map(|o| o.source.to_string());
-    diagnostic(
-        &document.page.route.source,
-        &document.source,
-        &document.sources,
-        d,
-    )
+    if let Some(origin) = &node.origin {
+        d = d.at_source(&document.sources, origin.source);
+    }
+    diagnostic(&document.page.route.source, &document.source, d)
 }
 
 struct DocumentTarget {
@@ -289,7 +286,9 @@ fn resolve_link(
     let origin = node
         .origin
         .as_ref()
-        .map(|o| Path::new(o.source.as_str()))
+        .map(|o| document.sources.name(o.source).map(Path::new))
+        .transpose()
+        .map_err(|e| e.to_string())?
         .unwrap_or(&document.page.route.source);
     let source = if path.is_empty() {
         origin.into()
@@ -582,7 +581,7 @@ pub(crate) fn build<R: Resources>(
                 .iter()
                 .filter(|d| d.code != Some(DiagnosticCode::OutsideVault))
                 .cloned()
-                .map(|d| diagnostic(&route.source, &text, analysis.sources(), d)),
+                .map(|d| diagnostic(&route.source, &text, d)),
         );
         analyzed.push((route, text, analysis, handle));
     }
@@ -599,7 +598,7 @@ pub(crate) fn build<R: Resources>(
             evaluation
                 .diagnostics
                 .into_iter()
-                .map(|d| diagnostic(&route.source, &text, &evaluation.sources, d)),
+                .map(|d| diagnostic(&route.source, &text, d)),
         );
         documents.push(Document::new(
             route,
@@ -666,10 +665,7 @@ pub(crate) fn build<R: Resources>(
             match resolve_link(&document, target, node, &content, &by_source, &outputs) {
                 Ok(Some(url)) => {
                     resolved.insert(
-                        (
-                            node.origin.as_ref().map(|o| o.source.clone()),
-                            target.clone(),
-                        ),
+                        (node.origin.as_ref().map(|o| o.source), target.clone()),
                         url,
                     );
                 }
@@ -686,11 +682,12 @@ pub(crate) fn build<R: Resources>(
         }
         let lookup = |node: &Item, url: &str| {
             resolved
-                .get(&(node.origin.as_ref().map(|o| o.source.clone()), url.into()))
+                .get(&(node.origin.as_ref().map(|o| o.source), url.into()))
                 .cloned()
         };
         let (registry, environment) = vault.html_registry_for_document(&handle, &document.root)?;
         let rendered = notist_html::Renderer::from_registry(registry)
+            .with_sources(&document.sources)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(lookup)
             .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
@@ -704,14 +701,12 @@ pub(crate) fn build<R: Resources>(
                 image(node, &url)
             })
             .render_with_diagnostics(&document.root);
-        errors.extend(rendered.diagnostics.into_iter().map(|d| {
-            diagnostic(
-                &document.page.route.source,
-                &document.source,
-                &document.sources,
-                d,
-            )
-        }));
+        errors.extend(
+            rendered
+                .diagnostics
+                .into_iter()
+                .map(|d| diagnostic(&document.page.route.source, &document.source, d)),
+        );
         let component_path = PathBuf::from("_notist/pages")
             .join(&document.page.route.path)
             .with_extension("js");

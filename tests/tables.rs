@@ -135,7 +135,7 @@ fn table_ast_exposes_rows_cells_header_and_all_alignments_losslessly() {
     let (analysis, inspection) = notist::Pipeline::default()
         .inspect("document.not", src, &notist::Context::default())
         .unwrap();
-    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection));
+    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection)).unwrap();
     assert!(json.contains("\"kind\":\"Table\""));
     assert!(json.contains("\"kind\":\"TableDelimiter\""));
     assert_eq!(

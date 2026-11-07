@@ -382,7 +382,7 @@ Visible"#,
     assert!(!output.rendered.diagnostics.is_empty());
     assert!(!output.rendered.html.contains("private.json"));
     assert!(!output.rendered.html.contains("/project"));
-    let json = notist::json::item(output.analysis.root());
+    let json = notist::json::item(output.analysis.root(), output.analysis.sources()).unwrap();
     assert_eq!(
         json["attrs"]["input"]["file"]["$path"]["path"],
         "pages/private.json"

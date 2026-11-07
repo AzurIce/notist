@@ -23,6 +23,31 @@ pub struct SourceDiagnostic {
     pub source: String,
     pub diagnostic: Diagnostic,
 }
+impl SourceDiagnostic {
+    /// Present the diagnostic's pinned revision, never another version found
+    /// by its display name. Missing text is explicit, not a caller-text fallback.
+    pub fn locate(path: &Path, text: &str, mut diagnostic: Diagnostic) -> Self {
+        let (path, source) = match diagnostic.source.as_ref() {
+            Some(origin) => {
+                let source = match origin.text() {
+                    Some(text) => text.to_string(),
+                    None => {
+                        diagnostic.message.push_str(" (source text is unavailable)");
+                        diagnostic.span = Default::default();
+                        String::new()
+                    }
+                };
+                (PathBuf::from(origin.name()), source)
+            }
+            None => (path.to_owned(), text.to_owned()),
+        };
+        Self {
+            path,
+            source,
+            diagnostic,
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ModuleSource {
     pub path: PathBuf,

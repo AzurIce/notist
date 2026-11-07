@@ -83,7 +83,12 @@ fn checked_plans_do_not_collapse_module_identity_or_document_sources() {
         assert!(output.evaluation.diagnostics.is_empty());
         assert_eq!(output.rendered.html.matches(expected).count(), 1);
         assert_eq!(
-            output.analysis.sources()[&format!("/cache-budget/{document}")].as_ref(),
+            output
+                .analysis
+                .sources()
+                .get(&format!("/cache-budget/{document}"))
+                .unwrap()
+                .as_ref(),
             source
         );
     }

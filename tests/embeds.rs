@@ -47,7 +47,7 @@ fn expected(path: &str) -> Value {
     Value::Path(ResourcePath::resolve("/project", "doc.not", &format!("/{path}")).unwrap())
 }
 
-fn evaluate(path: &str, source: &str, context: &Context) -> Item {
+fn evaluate(path: &str, source: &str, context: &Context) -> notist::Located<Item> {
     let pipeline = Pipeline::default();
     let analysis = pipeline.analyze(path, source, context).unwrap();
     assert!(
@@ -61,7 +61,7 @@ fn evaluate(path: &str, source: &str, context: &Context) -> Item {
         "{source}: {:?}",
         evaluation.diagnostics
     );
-    evaluation.root
+    notist::Located::new(evaluation.root, evaluation.sources)
 }
 
 fn embed(root: &Item) -> &Item {
@@ -301,6 +301,7 @@ fn local_paths_require_safe_host_urls_and_never_fall_back_to_url_strings() {
     let source = r#"#embed(p"./private/image.svg", fragment: "part")"#;
     let root = evaluate("/project/pages/page.not", source, &context());
     let output = Renderer::new()
+        .with_sources(&root.sources)
         .with_url_resolver(|_, _| panic!("Path passed to URL resolver"))
         .render_with_diagnostics(&root);
     assert_eq!(output.diagnostics.len(), 1);

@@ -746,14 +746,16 @@ fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads(
         "#self.view()",
     );
     let result = p.evaluate(&a, &c);
-    let encoded = serde_json::to_string(&result.root).unwrap();
-    assert_eq!(serde_json::from_str::<Item>(&encoded).unwrap(), result.root);
+    let encoded = serde_json::to_value(result.sources.wire(&result.root)).unwrap();
+    assert_eq!(result.sources.decode::<Item>(encoded).unwrap(), result.root);
+    let owner = notist::Source::metadata("test.notc").unwrap();
+    let sources = notist::Sources::from(owner.clone());
     let subject = TypedExpr {
         ty: Some(notist::Type::Array(Some(Box::new(notist::Type::Int)))),
         known: None,
         kind: ExprKind::Array(Vec::new()),
         span: Default::default(),
-        source: "test.notc".into(),
+        source: owner.id(),
         shape: Default::default(),
     };
     let expr = TypedExpr {
@@ -765,12 +767,12 @@ fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads(
             body: subject.into(),
         },
         span: Default::default(),
-        source: "test.notc".into(),
+        source: owner.id(),
         shape: Default::default(),
     };
-    let encoded = serde_json::to_string(&Item::expression(expr.clone())).unwrap();
+    let encoded = serde_json::to_value(sources.wire(&Item::expression(expr.clone()))).unwrap();
     assert_eq!(
-        serde_json::from_str::<Item>(&encoded).unwrap(),
+        sources.decode::<Item>(encoded).unwrap(),
         Item::expression(expr)
     );
 }

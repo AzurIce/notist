@@ -19,6 +19,7 @@ pub enum VaultError {
     Environment(Vec<SourceDiagnostic>),
     Unsupported(UnsupportedFormat),
     Resource(ResourceError),
+    Source(crate::SourceError),
     /// Incomplete prepared hosts must load these identities and retry. This is
     /// not a recoverable content error or a publishable partial evaluation.
     NeedResources(Vec<crate::ResourcePath>),
@@ -37,6 +38,7 @@ impl std::fmt::Display for VaultError {
             }
             Self::Unsupported(error) => error.fmt(f),
             Self::Resource(error) => error.fmt(f),
+            Self::Source(error) => error.fmt(f),
             Self::NeedResources(paths) => {
                 write!(f, "{} resource inputs need preparation", paths.len())
             }
@@ -52,6 +54,11 @@ impl From<ResourceError> for VaultError {
 impl From<UnsupportedFormat> for VaultError {
     fn from(error: UnsupportedFormat) -> Self {
         Self::Unsupported(error)
+    }
+}
+impl From<crate::SourceError> for VaultError {
+    fn from(error: crate::SourceError) -> Self {
+        Self::Source(error)
     }
 }
 
@@ -87,7 +94,7 @@ pub struct ItemOutput {
 #[derive(Clone)]
 pub struct DocumentHandle {
     path: PathBuf,
-    source: Arc<str>,
+    source: crate::Source,
     environment: Arc<Environment>,
     owner: Arc<()>,
 }
@@ -354,10 +361,11 @@ impl<R: Resources> Vault<R> {
             self.resources.root(),
             &path,
             analysis.root(),
+            analysis.sources(),
         ));
         let handle = DocumentHandle {
             path,
-            source: text,
+            source: analysis.source().clone(),
             environment,
             owner: self.identity.clone(),
         };
@@ -445,10 +453,12 @@ impl<R: Resources> Vault<R> {
         analysis: &Analysis,
     ) -> Result<Evaluation, VaultError> {
         self.check_handle(handle)?;
-        if !analysis
-            .sources()
-            .get(handle.path.to_string_lossy().as_ref())
-            .is_some_and(|source| Arc::ptr_eq(source, &handle.source))
+        if analysis.source().id() != handle.source.id()
+            || !analysis
+                .source()
+                .text()
+                .zip(handle.source.text())
+                .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
         {
             return Err(ResourceError::Access {
                 path: handle.path.clone(),
@@ -508,8 +518,12 @@ impl<R: Resources> Vault<R> {
             .ok_or_else(|| ResourceError::NotFound(path.clone()))?;
         let (_, environment) = self.environment_snapshot(&path, source)?;
         let mut evaluation = self.evaluate_in(analysis, environment.context())?;
-        let outside =
-            crate::vault_index::check_embed_paths(self.resources.root(), &path, &evaluation.root);
+        let outside = crate::vault_index::check_embed_paths(
+            self.resources.root(),
+            &path,
+            &evaluation.root,
+            &evaluation.sources,
+        );
         for diagnostic in &outside {
             if !analysis.diagnostics().contains(diagnostic)
                 && !evaluation.diagnostics.contains(diagnostic)
@@ -524,12 +538,14 @@ impl<R: Resources> Vault<R> {
             &evaluation.root,
         )
         .map_err(VaultError::Environment)?;
-        let mut renderer = Renderer::from_registry(registry).with_resource_resolver(|_, target| {
-            let target = PathBuf::from(target.logical_path());
-            target
-                .starts_with(self.resources.root())
-                .then(|| crate::publication::url::relative_url(&path, &target, false))
-        });
+        let mut renderer = Renderer::from_registry(registry)
+            .with_sources(&evaluation.sources)
+            .with_resource_resolver(|_, target| {
+                let target = PathBuf::from(target.logical_path());
+                target
+                    .starts_with(self.resources.root())
+                    .then(|| crate::publication::url::relative_url(&path, &target, false))
+            });
         if options.source_map {
             renderer = renderer.with_source_map();
         }

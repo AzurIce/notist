@@ -267,7 +267,7 @@ impl LanguageServer for Backend {
         };
         // `#item`：当前文档内的 id
         if let Some(item_id) = target_text.strip_prefix('#') {
-            let index = notist::index::Index::build(&item, &mut Vec::new());
+            let index = notist::index::Index::build(&item, &item.sources, &mut Vec::new());
             let Some(span) = index.by_id(item_id) else {
                 return Ok(None);
             };
@@ -366,36 +366,28 @@ impl Backend {
         for uri in self.reported.lock().await.iter() {
             published.entry(uri.clone()).or_default();
         }
-        let mut sources: notist::Sources = documents
-            .iter()
-            .filter_map(|(uri, source)| {
-                Some((
-                    uri.to_file_path().ok()?.to_string_lossy().into_owned(),
-                    source.as_str().into(),
-                ))
-            })
-            .collect();
+        let pin = |error: notist::SourceDiagnostic| {
+            let mut diagnostic = error.diagnostic;
+            if diagnostic.source.is_none() {
+                match notist::Source::new(error.path.to_string_lossy().as_ref(), error.source) {
+                    Ok(source) => diagnostic.source = Some(source),
+                    Err(error) => {
+                        diagnostic.message = error.to_string();
+                        diagnostic.span = Default::default();
+                    }
+                }
+            }
+            diagnostic
+        };
         let mut pending = Vec::new();
         for (uri, source) in &documents {
             let path = uri.to_file_path().unwrap_or_else(|_| uri.path().into());
             let diagnostics = if uri.path().ends_with(".notc") {
                 match vault.analyze_code(&path, source) {
-                    Ok(analysis) => {
-                        sources.extend(analysis.sources);
-                        analysis.diagnostics
-                    }
+                    Ok(analysis) => analysis.diagnostics,
                     Err(error) => {
                         let errors = source_errors(uri, error);
-                        errors
-                            .into_iter()
-                            .map(|error| {
-                                let path = error.path.to_string_lossy().into_owned();
-                                sources.insert(path.clone(), error.source.into());
-                                let mut d = error.diagnostic;
-                                d.source.get_or_insert(path);
-                                d
-                            })
-                            .collect()
+                        errors.into_iter().map(&pin).collect()
                     }
                 }
             } else if uri.path().ends_with("Notist.toml") {
@@ -404,17 +396,10 @@ impl Backend {
                     .unwrap_or_default()
             } else {
                 match vault.analyze(&path, source) {
-                    Ok(analysis) => {
-                        sources.extend(analysis.sources().clone());
-                        analysis.into_parts().1
-                    }
+                    Ok(analysis) => analysis.into_parts().1,
                     Err(error) => {
                         for error in source_errors(uri, error) {
-                            let path = error.path.to_string_lossy().into_owned();
-                            sources.insert(path.clone(), error.source.into());
-                            let mut diagnostic = error.diagnostic;
-                            diagnostic.source.get_or_insert(path);
-                            pending.push((uri.clone(), diagnostic));
+                            pending.push((uri.clone(), pin(error)));
                         }
                         vec![notist::Diagnostic::new(
                             notist::Phase::Semantic,
@@ -426,19 +411,26 @@ impl Backend {
             };
             pending.extend(diagnostics.into_iter().map(|d| (uri.clone(), d)));
         }
-        for (fallback, diagnostic) in pending {
+        for (fallback, mut diagnostic) in pending {
             let uri = diagnostic
                 .source
                 .as_deref()
                 .and_then(|path| Url::from_file_path(path).ok())
                 .unwrap_or(fallback.clone());
-            let source = diagnostic
-                .source
-                .as_ref()
-                .and_then(|path| sources.get(path))
-                .map(|source| source.as_ref())
-                .or_else(|| documents.get(&uri).map(String::as_str))
-                .or_else(|| documents.get(&fallback).map(String::as_str));
+            let source = match diagnostic.source.as_ref() {
+                Some(source) => Some(match source.text() {
+                    Some(text) => text.as_ref(),
+                    None => {
+                        diagnostic.message.push_str(" (source text is unavailable)");
+                        diagnostic.span = Default::default();
+                        ""
+                    }
+                }),
+                None => documents
+                    .get(&uri)
+                    .or_else(|| documents.get(&fallback))
+                    .map(String::as_str),
+            };
             if let Some(source) = source {
                 published
                     .entry(uri)
@@ -467,19 +459,19 @@ impl Backend {
         }
     }
 
-    async fn analyzed(&self, uri: &Url) -> Option<(String, Item)> {
+    async fn analyzed(&self, uri: &Url) -> Option<(String, notist::Located<Item>)> {
         let documents = self.documents.lock().await.clone();
         let src = documents.get(uri)?.clone();
         let base = notist::FsResources::default();
         let mut vault = self.vault_from_documents(&base, &documents);
-        let (item, _) = vault
+        let (item, _, sources) = vault
             .analyze(
                 uri.to_file_path().unwrap_or_else(|_| uri.path().into()),
                 &src,
             )
             .ok()?
             .into_parts();
-        Some((src, item))
+        Some((src, notist::Located::new(item, sources)))
     }
 }
 
@@ -641,7 +633,7 @@ mod tests {
 
     #[test]
     fn smallest_at_finds_innermost() {
-        let (item, _) = notist::Pipeline::default()
+        let (item, _, _sources) = notist::Pipeline::default()
             .analyze(
                 "test.not",
                 "内容 *粗体* 文字\n",

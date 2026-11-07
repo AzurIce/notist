@@ -2,7 +2,6 @@ use rowan::TextRange;
 
 use crate::builtins;
 use crate::definitions::FunctionId;
-use crate::shared::Text;
 
 /// A registered call's public contract snapshot, independent of its module files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,45 +368,38 @@ impl std::fmt::Display for Value {
 
 /// Source locations remain meaningful across Code definition expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Origin {
-    /// Immutable path text; cloning an origin does not copy the filename.
-    pub source: Text,
+    /// Interpreted only in the source snapshot owning this tree.
+    pub source: crate::source::SourceId,
     pub start: u32,
     pub end: u32,
     pub expansion: crate::source_chain::SourceChain,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceLocation {
-    pub source: Text,
+    pub source: crate::source::SourceId,
     pub start: u32,
     pub end: u32,
 }
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
     pub content: NodeContent,
     pub attrs: Dict,
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub origin: Option<Origin>,
     /// Resolved content category. Document analysis always stores Block or Inline.
     pub level: builtins::Level,
-    #[cfg_attr(feature = "serde", serde(with = "crate::evaluation::span"))]
     pub span: TextRange,
 }
 
 /// A content tree can contain expressions before evaluation. Complete output
 /// contains only `Item` variants; transparent groups are ordinary content.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum NodeContent {
     Item(ContentItem),
     Expr(crate::shared::Shared<crate::evaluation::TypedExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ContentItem {
     pub ctor: Ctor,
     pub fields: Dict,
@@ -589,7 +581,7 @@ impl Node {
     pub fn expression(expr: crate::evaluation::TypedExpr) -> Self {
         let mut node = Self::new(Ctor::Interpolation, expr.span);
         node.origin = Some(Origin {
-            source: expr.source.as_str().into(),
+            source: expr.source,
             start: expr.span.start().into(),
             end: expr.span.end().into(),
             expansion: Default::default(),
@@ -745,14 +737,15 @@ mod source_tests {
             arguments: vec![ComptimeValue::Type(Type::InlineContent)],
         };
         item.as_item_mut().unwrap().instance = Some(identity.clone().into());
-        let wire = serde_json::to_value(&item).unwrap();
+        let sources = crate::source::Sources::new();
+        let wire = serde_json::to_value(sources.wire(&item)).unwrap();
         assert_eq!(
             wire["content"]["Item"]["instance"],
             serde_json::to_value(&identity).unwrap()
         );
         assert!(wire.get("pending").is_none());
         assert!(wire.get("evaluation").is_none());
-        let restored: Item = serde_json::from_value(wire).unwrap();
+        let restored: Item = sources.decode(wire).unwrap();
         assert_eq!(restored, item);
         assert_eq!(
             format!("{:?}", item.instance().unwrap()),
@@ -761,70 +754,74 @@ mod source_tests {
     }
 
     #[test]
-    fn origin_clones_share_path_text_but_not_expansion_mutations() {
-        let source: Text = "modules/view.notc".into();
+    fn origin_clones_share_identity_but_not_expansion_mutations() {
+        let owner = crate::source::Source::metadata("modules/view.notc").unwrap();
+        let another = crate::source::Source::metadata("another.notc").unwrap();
+        let caller = crate::source::Source::metadata("caller.not").unwrap();
+        let source = owner.id();
         let original = Origin {
-            source: source.clone(),
+            source,
             start: 1,
             end: 7,
             expansion: vec![SourceLocation {
-                source: source.clone(),
+                source,
                 start: 10,
                 end: 20,
             }]
             .into(),
         };
         let mut changed = original.clone();
-        assert!(original.source.shares_storage(&changed.source));
-        assert!(
-            original.expansion[0]
-                .source
-                .shares_storage(&changed.expansion[0].source)
-        );
-        changed.source = "another.notc".into();
-        changed.expansion[0].source = "caller.not".into();
+        assert_eq!(original.source, changed.source);
+        assert_eq!(original.expansion[0].source, changed.expansion[0].source);
+        changed.source = another.id();
+        changed.expansion[0].source = caller.id();
         changed.expansion.push(SourceLocation {
             source,
             start: 30,
             end: 40,
         });
-        assert_eq!(original.source, "modules/view.notc");
-        assert_eq!(original.expansion[0].source, "modules/view.notc");
+        assert_eq!(original.source, owner.id());
+        assert_eq!(original.expansion[0].source, owner.id());
         assert_eq!(original.expansion.len(), 1);
         assert_eq!(changed.expansion.len(), 2);
     }
 
     #[test]
     fn source_location_identity_remains_path_value_and_complete_span() {
+        let owner = crate::source::Source::metadata("view.notc").unwrap();
+        let different = crate::source::Source::metadata("different.notc").unwrap();
         let first = SourceLocation {
-            source: "view.notc".into(),
+            source: owner.id(),
             start: 2,
             end: 8,
         };
         let mut equal = SourceLocation {
-            source: "view.notc".into(),
+            source: owner.id(),
             start: 2,
             end: 8,
         };
-        assert!(!first.source.shares_storage(&equal.source));
         assert_eq!(first, equal);
         equal.end += 1;
         assert_ne!(first, equal);
         equal.end -= 1;
-        equal.source = "different.notc".into();
+        equal.source = different.id();
         assert_ne!(first, equal);
     }
 
     #[cfg(feature = "serde")]
     #[test]
-    fn source_wire_and_debug_remain_plain_path_values() {
+    fn source_wire_remains_plain_path_values() {
         let source = "dir/\"文档\".notc";
+        let owner = crate::source::Source::metadata(source).unwrap();
+        let caller = crate::source::Source::metadata("caller.not").unwrap();
+        let mut sources = crate::source::Sources::from(owner.clone());
+        sources.insert(caller.clone()).unwrap();
         let mut origin = Origin {
-            source: source.into(),
+            source: owner.id(),
             start: 1,
             end: 7,
             expansion: vec![SourceLocation {
-                source: "caller.not".into(),
+                source: caller.id(),
                 start: 10,
                 end: 20,
             }]
@@ -834,13 +831,19 @@ mod source_tests {
             "source": source, "start": 1, "end": 7,
             "expansion": [{"source": "caller.not", "start": 10, "end": 20}],
         });
-        assert_eq!(serde_json::to_value(&origin).unwrap(), expected);
-        let restored: Origin = serde_json::from_value(expected).unwrap();
+        assert_eq!(
+            serde_json::to_value(sources.wire(&origin)).unwrap(),
+            expected
+        );
+        let restored: Origin = sources.decode(expected).unwrap();
         assert_eq!(restored, origin);
         origin.expansion.clear();
         assert_eq!(
             format!("{origin:?}"),
-            format!("Origin {{ source: {source:?}, start: 1, end: 7, expansion: [] }}")
+            format!(
+                "Origin {{ source: {:?}, start: 1, end: 7, expansion: [] }}",
+                owner.id()
+            )
         );
     }
 }

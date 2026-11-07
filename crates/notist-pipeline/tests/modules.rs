@@ -53,7 +53,11 @@ fn compilation_and_linking_keep_independently_shared_artifacts() {
             &dependency.definitions.functions[0],
         ));
         assert!(Arc::ptr_eq(
-            &context.program().sources()[code.source_path()],
+            context
+                .program()
+                .sources()
+                .text(code.source_record().id())
+                .unwrap(),
             code.source()
         ));
     }

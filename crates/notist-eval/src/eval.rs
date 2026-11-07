@@ -74,6 +74,7 @@ pub struct Failure {
     pub message: String,
     pub location: Option<SourceLocation>,
     expansion: Vec<SourceLocation>,
+    sources: notist_core::diag::Sources,
 }
 impl From<String> for Failure {
     fn from(message: String) -> Self {
@@ -81,6 +82,7 @@ impl From<String> for Failure {
             message,
             location: None,
             expansion: Vec::new(),
+            sources: Default::default(),
         }
     }
 }
@@ -95,11 +97,15 @@ impl std::fmt::Display for Failure {
     }
 }
 impl Failure {
+    pub fn sources(&self) -> &notist_core::diag::Sources {
+        &self.sources
+    }
     fn at(message: impl Into<String>, call: &Invocation) -> Self {
         Self {
             message: message.into(),
             location: Some(location(call)),
             expansion: Vec::new(),
+            sources: Default::default(),
         }
     }
 }
@@ -207,6 +213,7 @@ impl<'a, C: EvaluationContext + ?Sized> Evaluator<'a, C> {
     fn new(
         context: &'a C,
         program: &CheckedProgram,
+        sources: &notist_core::diag::Sources,
         limits: Limits,
         inputs: Option<&'a dyn EvaluationInputs>,
         mode: EvaluationMode,
@@ -227,7 +234,7 @@ impl<'a, C: EvaluationContext + ?Sized> Evaluator<'a, C> {
             requests: 0,
             dependencies: Default::default(),
             needed: Default::default(),
-            sources: Default::default(),
+            sources: sources.clone(),
             data_retention: program.data_retention.clone(),
         }
     }
@@ -235,10 +242,11 @@ impl<'a, C: EvaluationContext + ?Sized> Evaluator<'a, C> {
 pub fn evaluate<C: EvaluationContext + ?Sized>(
     root: &Node,
     program: &CheckedProgram,
+    sources: &notist_core::diag::Sources,
     context: &C,
     limits: Limits,
 ) -> Evaluation {
-    match run(root, program, context, limits, None) {
+    match run(root, program, sources, context, limits, None) {
         EvaluationOutcome::Complete(value) => *value,
         EvaluationOutcome::NeedResources(_) => {
             unreachable!("missing capability never requests preparation")
@@ -248,11 +256,32 @@ pub fn evaluate<C: EvaluationContext + ?Sized>(
 pub fn run<C: EvaluationContext + ?Sized>(
     root: &Node,
     program: &CheckedProgram,
+    sources: &notist_core::diag::Sources,
     context: &C,
     limits: Limits,
     inputs: Option<&dyn EvaluationInputs>,
 ) -> EvaluationOutcome {
-    let mut e = Evaluator::new(context, program, limits, inputs, EvaluationMode::Runtime);
+    let mut source_view = sources.clone();
+    if let Err(error) = source_view
+        .merge(&program.sources)
+        .and_then(|()| source_view.validate_node(root))
+        .and_then(|()| source_view.validate_program(program))
+    {
+        return EvaluationOutcome::Complete(Box::new(Evaluation {
+            root: Node::new(Ctor::Error(error.to_string()), root.span),
+            diagnostics: vec![Diagnostic::new(Phase::Type, root.span, error.to_string())],
+            dependencies: Default::default(),
+            sources: source_view,
+        }));
+    }
+    let mut e = Evaluator::new(
+        context,
+        program,
+        &source_view,
+        limits,
+        inputs,
+        EvaluationMode::Runtime,
+    );
     let content = e.bind_content(
         std::slice::from_ref(root),
         &Scope::new(),
@@ -280,16 +309,30 @@ pub fn run<C: EvaluationContext + ?Sized>(
 pub fn constant<C: EvaluationContext + ?Sized>(
     t: &TypedExpr,
     program: &CheckedProgram,
+    sources: &notist_core::diag::Sources,
     context: &C,
 ) -> Result<ComptimeValue, Failure> {
+    let mut source_view = sources.clone();
+    source_view
+        .merge(&program.sources)
+        .map_err(|error| Failure::from(error.to_string()))?;
+    source_view
+        .validate_expression(t)
+        .and_then(|()| source_view.validate_program(program))
+        .map_err(|error| Failure::from(error.to_string()))?;
     let mut e = Evaluator::new(
         context,
         program,
+        &source_view,
         Limits::default(),
         None,
         EvaluationMode::Comptime,
     );
-    match e.expr(t, &Scope::new())? {
+    let value = e.expr(t, &Scope::new()).map_err(|mut failure| {
+        failure.sources = e.sources.clone();
+        failure
+    })?;
+    match value {
         Runtime::Value(value) => Ok(value),
         Runtime::Content(..) => Err("content cannot be a comptime argument".into()),
     }
@@ -890,11 +933,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         for parameter in &mut definition.parameters {
             parameter.ty = parameter.ty.substitute(&bindings);
         }
-        let source = item
-            .origin
-            .as_ref()
-            .map(|o| o.source.to_string())
-            .unwrap_or_default();
+        let source = item.origin.as_ref().map(|o| o.source).unwrap_or_default();
         let arguments = item
             .fields()
             .iter()
@@ -913,7 +952,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         known: Some(ComptimeValue::Data(value.clone())),
                         kind: ExprKind::Constant(ComptimeValue::Data(value.clone())),
                         span: item.span,
-                        source: source.clone(),
+                        source,
                         shape: Default::default(),
                     },
                 )
@@ -936,7 +975,9 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let mut node = error_content(source, message.clone());
         append_expansion(&mut node, expansion);
         let mut diagnostic = Diagnostic::new(Phase::Type, node.span, message);
-        diagnostic.source = node.origin.as_ref().map(|o| o.source.to_string());
+        if let Some(origin) = &node.origin {
+            diagnostic = diagnostic.at_source(&self.sources, origin.source);
+        }
         self.diagnostics.push(diagnostic);
         node
     }
@@ -1159,7 +1200,9 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         call.resource_root
                             .as_deref()
                             .unwrap_or(self.context.resource_root()),
-                        &call.source,
+                        self.sources
+                            .name(call.source)
+                            .map_err(|e| Failure::from(e.to_string()))?,
                     )?;
                 }
                 let source = source.ok_or("missing content source")?;
@@ -1243,6 +1286,9 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 .specialize(instance, std::mem::take(&mut self.program));
             self.data_retention = program.data_retention.clone();
             self.diagnostics.extend(diagnostics);
+            self.sources
+                .merge(&program.sources)
+                .map_err(|e| Failure::from(e.to_string()))?;
             self.program = program;
         }
         let record = self
@@ -1259,7 +1305,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
 }
 fn location(call: &Invocation) -> SourceLocation {
     SourceLocation {
-        source: call.source.as_str().into(),
+        source: call.source,
         start: call.span.start().into(),
         end: call.span.end().into(),
     }
@@ -1325,7 +1371,7 @@ fn failure_content(source: &Node, failure: Failure) -> Node {
         let mut expansion = failure.expansion;
         if let Some(origin) = &source.origin {
             let here = SourceLocation {
-                source: origin.source.clone(),
+                source: origin.source,
                 start: origin.start,
                 end: origin.end,
             };
@@ -1442,7 +1488,7 @@ mod tests {
             known: None,
             kind: ExprKind::Input(name.into()),
             span: Default::default(),
-            source: "definition.notc".into(),
+            source: Default::default(),
             shape: Default::default(),
         }
     }
@@ -1450,6 +1496,7 @@ mod tests {
         Evaluator::new(
             context,
             program,
+            &Default::default(),
             Limits::default(),
             None,
             EvaluationMode::Runtime,
@@ -1474,7 +1521,7 @@ mod tests {
             children: None,
             attrs: Dict::default(),
             span: Default::default(),
-            source: "definition.notc".into(),
+            source: Default::default(),
             site: CallSite::Code,
             resource_root: None,
             invalid: None,
@@ -1485,7 +1532,7 @@ mod tests {
             kind: ExprKind::Call(call.clone()),
             known: None,
             span: Default::default(),
-            source: "definition.notc".into(),
+            source: Default::default(),
             shape: Default::default(),
         };
         let node = Node::expression(expression);
@@ -1528,7 +1575,7 @@ mod tests {
                 subject: input("missing", Type::Array(None)).into(),
                 body: body.clone(),
             },
-            source: "definition.notc".into(),
+            source: Default::default(),
             span: Default::default(),
             shape: Default::default(),
         };
@@ -1589,8 +1636,9 @@ mod tests {
     }
     #[test]
     fn expansion_shares_new_suffixes_without_merging_distinct_source_chains() {
+        let owner = notist_core::source::Source::metadata("outer.not").unwrap();
         let suffix: SourceChain = vec![SourceLocation {
-            source: "outer.not".into(),
+            source: owner.id(),
             start: 5,
             end: 9,
         }]

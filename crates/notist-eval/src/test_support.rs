@@ -8,6 +8,7 @@ pub fn item_shell(item: &Node) -> Node {
 pub fn assert_summaries<C: EvaluationContext + ?Sized>(
     root: &Node,
     program: &CheckedProgram,
+    sources: &notist_core::diag::Sources,
     context: &C,
     limits: Limits,
 ) {
@@ -26,7 +27,14 @@ pub fn assert_summaries<C: EvaluationContext + ?Sized>(
             })
             .sum()
     }
-    let mut evaluator = Evaluator::new(context, program, limits, None, EvaluationMode::Runtime);
+    let mut evaluator = Evaluator::new(
+        context,
+        program,
+        sources,
+        limits,
+        None,
+        EvaluationMode::Runtime,
+    );
     let bound = evaluator.bind_content(
         std::slice::from_ref(root),
         &Scope::new(),

@@ -221,9 +221,9 @@ fn source_overlays_load_changed_import_graphs_and_preserve_diagnostics() {
     let source = "import \"new.notc\" as dep; fn f() -> String { dep.f() }";
     let a = v.analyze_code("lib.notc", source).unwrap();
     assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-    assert!(a.sources.contains_key("/project/new.notc"));
-    assert!(!a.sources.contains_key("/project/old.notc"));
-    assert_eq!(a.sources["/project/lib.notc"].as_ref(), source);
+    assert!(a.sources.by_name("/project/new.notc").is_ok());
+    assert!(a.sources.by_name("/project/old.notc").is_err());
+    assert_eq!(a.sources.get("/project/lib.notc").unwrap().as_ref(), source);
 }
 #[test]
 fn native_components_are_bound_relative_to_the_defining_file() {

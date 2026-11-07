@@ -5,7 +5,7 @@ use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
 use notist_core::item::{Ctor, Item, NodeContent, Origin};
-use notist_core::shared::Text;
+use notist_core::source::{Source, SourceId};
 use rowan::{TextRange, TextSize};
 
 use crate::shape::is_block_element;
@@ -16,18 +16,18 @@ use crate::shape::is_block_element;
 pub fn materialize(
     forest: &mut [RExpr],
     annotations: &[Annotation],
-    source: &str,
+    source: &Source,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Item> {
     attach_annotations(forest, annotations, diagnostics);
-    let source: Text = source.into();
+    let source = source.id();
     forest
         .iter()
         .map(|expr| build_item(expr, &source))
         .collect()
 }
 
-fn build_item(expr: &RExpr, source: &Text) -> Item {
+fn build_item(expr: &RExpr, source: &SourceId) -> Item {
     let mut item = Item::new(expr.ctor.clone(), expr.span);
     let children = expr
         .children
@@ -58,7 +58,7 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
                         shape: notist_core::evaluation::ContentShape::of_items(&children),
                         kind: ExprKind::Content(children.into()),
                         span: expr.span,
-                        source: source.to_string(),
+                        source: *source,
                     }));
                 }
                 let ty = Some(call.definition.returns.clone());
@@ -69,7 +69,7 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
                     known: None,
                     kind,
                     span: expr.span,
-                    source: source.to_string(),
+                    source: *source,
                     shape,
                 }
             }
@@ -89,7 +89,7 @@ fn build_item(expr: &RExpr, source: &Text) -> Item {
         notist_core::builtins::Level::Inline
     };
     item.origin = Some(Origin {
-        source: source.clone(),
+        source: *source,
         start: expr.span.start().into(),
         end: expr.span.end().into(),
         expansion: Default::default(),
@@ -263,13 +263,14 @@ mod source_tests {
             RExpr::new(Ctor::Emph, span),
         ])];
         let mut diagnostics = Vec::new();
-        let items = materialize(&mut forest, &[], "docs/source.not", &mut diagnostics);
+        let source = Source::new("docs/source.not", "abc").unwrap();
+        let items = materialize(&mut forest, &[], &source, &mut diagnostics);
         assert!(diagnostics.is_empty());
         let root = items[0].origin.as_ref().unwrap();
         for child in items[0].children() {
             let origin = child.origin.as_ref().unwrap();
-            assert_eq!(origin.source, "docs/source.not");
-            assert!(root.source.shares_storage(&origin.source));
+            assert_eq!(origin.source, source.id());
+            assert_eq!(root.source, origin.source);
             assert_eq!((origin.start, origin.end), (0, 3));
         }
     }

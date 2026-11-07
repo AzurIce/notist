@@ -15,7 +15,11 @@ pub struct Index {
 impl Index {
     /// Walk the tree and collect `id` / `tags` attrs. A duplicate `id` is
     /// diagnosed; the first occurrence wins.
-    pub fn build(item: &Item, diags: &mut Vec<Diagnostic>) -> Self {
+    pub fn build(
+        item: &Item,
+        sources: &crate::source::Sources,
+        diags: &mut Vec<Diagnostic>,
+    ) -> Self {
         let mut index = Index::default();
         for node in item.descendants() {
             if let Some(Value::Str(id)) = node.attrs.get("id") {
@@ -24,11 +28,17 @@ impl Index {
                     Entry::Vacant(entry) => {
                         entry.insert(node.span);
                     }
-                    Entry::Occupied(_) => diags.push(Diagnostic::new(
-                        Phase::Semantic,
-                        node.span,
-                        format!("duplicate id `{id}`"),
-                    )),
+                    Entry::Occupied(_) => {
+                        let mut diagnostic = Diagnostic::new(
+                            Phase::Semantic,
+                            node.span,
+                            format!("duplicate id `{id}`"),
+                        );
+                        if let Some(origin) = &node.origin {
+                            diagnostic = diagnostic.at_source(sources, origin.source);
+                        }
+                        diags.push(diagnostic);
+                    }
                 }
             }
             if let Some(Value::Array(tags)) = node.attrs.get("tags") {

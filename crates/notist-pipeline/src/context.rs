@@ -93,7 +93,13 @@ impl Context {
         self.registry.register(module.code().definitions.clone())?;
         self.checked = Default::default();
         self.root = Some(module.code().id().to_owned());
-        self.program.install(module);
+        self.program.install(module).map_err(|error| {
+            vec![Diagnostic::new(
+                Phase::Type,
+                Default::default(),
+                error.to_string(),
+            )]
+        })?;
         Ok(self)
     }
     pub fn with_root(mut self, module: impl Into<String>) -> Self {

@@ -1,7 +1,7 @@
 use rowan::TextRange;
 
 /// Immutable source texts shared by module, analysis and host metadata.
-pub type Sources = std::collections::BTreeMap<String, std::sync::Arc<str>>;
+pub use crate::source::Sources;
 
 /// Which pipeline phase produced a diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub struct Diagnostic {
     pub code: Option<DiagnosticCode>,
     /// Source identity when expansion/checking crosses the document boundary.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub source: Option<String>,
+    pub source: Option<crate::source::Source>,
     /// A content boundary contains this failure and preserves independent content.
     /// Hosts may present the recovered tree regardless of the diagnostic phase.
     #[cfg_attr(feature = "serde", serde(default))]
@@ -55,6 +55,21 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Pin provenance or explicitly report its absence. Never reinterpret an
+    /// unresolved ID against the caller's source text.
+    pub fn at_source(mut self, sources: &Sources, id: crate::source::SourceId) -> Self {
+        if id != crate::source::SourceId::DETACHED {
+            match sources.source(id) {
+                Ok(source) => self.source = Some(source.clone()),
+                Err(error) => {
+                    self.message
+                        .push_str(&format!(" (source location unavailable: {error})"));
+                    self.span = Default::default();
+                }
+            }
+        }
+        self
+    }
     pub fn new(phase: Phase, span: TextRange, message: impl Into<String>) -> Self {
         Self {
             span,

@@ -13,8 +13,9 @@ pub use retention::DataRetention;
 
 use crate::{
     definitions::Type,
-    item::{SourceLocation, Value},
+    item::Value,
     shared::{Array, Text},
+    source::SourceSpan,
 };
 use std::{collections::BTreeMap, fmt, ops::Range, sync::Arc};
 
@@ -90,7 +91,7 @@ impl DataErrorKind {
 #[derive(Clone)]
 struct DataSource {
     name: String,
-    read: SourceLocation,
+    read: SourceSpan,
 }
 
 #[derive(Clone)]
@@ -151,12 +152,12 @@ impl DataError {
             .saturating_add(self.text.as_ref().map_or(0, |t| t.len()))
             .saturating_add(128)
     }
-    pub fn bind_source(mut self, name: String, read: SourceLocation) -> Self {
+    pub fn bind_source(mut self, name: String, read: SourceSpan) -> Self {
         self.source = Some(Arc::new(DataSource { name, read }));
         self
     }
     /// Exact parsed text, never reread from a live resource for diagnostics.
-    pub fn diagnostic_source(&self) -> Option<(&str, Arc<str>, Range<usize>, &SourceLocation)> {
+    pub fn diagnostic_source(&self) -> Option<(&str, Arc<str>, Range<usize>, &SourceSpan)> {
         Some((
             &self.source.as_ref()?.name,
             self.text.clone()?,
@@ -299,7 +300,7 @@ impl Data {
     pub fn shares_document(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.document, &other.document)
     }
-    pub fn bind_source(mut self, name: String, read: SourceLocation) -> Self {
+    pub fn bind_source(mut self, name: String, read: SourceSpan) -> Self {
         self.source = Some(Arc::new(DataSource { name, read }));
         self
     }

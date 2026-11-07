@@ -63,8 +63,10 @@ impl CommandExtension {
             path: context.path.into(),
             sources: context
                 .sources
-                .iter()
-                .map(|(path, source)| (path.clone(), source.to_string()))
+                .texts()
+                .map_err(|e| failure(e.to_string()))?
+                .into_iter()
+                .map(|(path, source)| (path.to_owned(), source.to_string()))
                 .collect(),
             functions: context.registry.functions().cloned().collect(),
             document,
@@ -78,7 +80,19 @@ impl CommandExtension {
             )));
         }
         if !response.diagnostics.is_empty() {
-            return Err(response.diagnostics);
+            let mut diagnostics = response.diagnostics;
+            for diagnostic in &mut diagnostics {
+                if let Some(source) = &diagnostic.source {
+                    diagnostic.source = Some(
+                        context
+                            .sources
+                            .by_name(source.name())
+                            .map_err(|e| failure(e.to_string()))?
+                            .clone(),
+                    );
+                }
+            }
+            return Err(diagnostics);
         }
         Ok(response.document)
     }
@@ -122,7 +136,11 @@ impl DocumentExtension for CommandExtension {
     }
     fn after_check(&self, context: &DocumentContext<'_>, document: &Item) -> ExtensionResult {
         if self
-            .run(DocumentStage::AfterCheck, context, document)?
+            .run(
+                DocumentStage::AfterCheck,
+                context,
+                &context.sources.wire(document),
+            )?
             .is_some()
         {
             return Err(failure(
@@ -136,8 +154,14 @@ impl DocumentExtension for CommandExtension {
         context: &DocumentContext<'_>,
         document: &mut Item,
     ) -> ExtensionResult {
-        if let Some(value) = self.run(DocumentStage::AfterEvaluate, context, document)? {
-            *document = serde_json::from_value(value)
+        if let Some(value) = self.run(
+            DocumentStage::AfterEvaluate,
+            context,
+            &context.sources.wire(&*document),
+        )? {
+            *document = context
+                .sources
+                .decode(value)
                 .map_err(|e| failure(format!("invalid output document: {e}")))?;
         }
         Ok(())

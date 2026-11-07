@@ -335,11 +335,17 @@ fn parsed_data_versions_are_not_replaced_and_diagnostics_keep_the_consumed_snaps
         r#"{"name":"new data version"}"#,
     )
     .unwrap();
-    assert_eq!(out.evaluation.sources[&name].as_ref(), data);
+    assert_eq!(
+        out.evaluation.sources.text(name.id()).unwrap().as_ref(),
+        data
+    );
     let cached = vault
         .render_html("two.not", page, Default::default())
         .unwrap();
-    assert_eq!(cached.evaluation.sources[&name].as_ref(), data);
+    assert_eq!(
+        cached.evaluation.sources.text(name.id()).unwrap().as_ref(),
+        data
+    );
     assert_eq!(cached.evaluation.diagnostics.len(), 1);
     assert_eq!(vault.input_session().data_cache_stats().parses, 1);
     let fresh = Vault::new(FsResources::new(directory.path()))
@@ -347,7 +353,10 @@ fn parsed_data_versions_are_not_replaced_and_diagnostics_keep_the_consumed_snaps
         .unwrap();
     assert!(fresh.evaluation.diagnostics.is_empty());
     assert!(fresh.rendered.html.contains("new data version"));
-    assert_eq!(out.evaluation.sources[&name].as_ref(), data);
+    assert_eq!(
+        out.evaluation.sources.text(name.id()).unwrap().as_ref(),
+        data
+    );
 }
 
 #[test]

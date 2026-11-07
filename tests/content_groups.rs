@@ -68,8 +68,14 @@ fn view() -> InlineContent {
             assert_eq!(group.children()[1].ctor(), Ctor::Emph);
             assert!(group.children().iter().all(|child| child.attrs.is_empty()));
             let origin = group.origin.as_ref().unwrap();
-            assert_eq!(origin.source, "widgets/lib.notc");
-            assert_eq!(origin.expansion[0].source, dialect);
+            assert_eq!(
+                evaluation.sources.name(origin.source).unwrap(),
+                "widgets/lib.notc"
+            );
+            assert_eq!(
+                evaluation.sources.name(origin.expansion[0].source).unwrap(),
+                dialect
+            );
         }
         assert_ne!(left.span, right.span);
         assert_eq!(left.children(), right.children());
@@ -86,6 +92,7 @@ fn view() -> InlineContent {
         );
         assert_eq!(evaluation.root, before);
         let mapped = Renderer::new()
+            .with_sources(&evaluation.sources)
             .with_source_map()
             .render_with_diagnostics(&evaluation.root);
         assert!(mapped.diagnostics.is_empty());
@@ -495,8 +502,8 @@ fn retained_group_state_attributes_and_empty_children_round_trip() {
         "doc.not",
         "fn view() -> InlineContent { let value = []; [@(id: \"empty\")#value] }",
     );
-    let encoded = serde_json::to_string(&evaluation.root).unwrap();
-    let decoded: Item = serde_json::from_str(&encoded).unwrap();
+    let encoded = serde_json::to_value(evaluation.sources.wire(&evaluation.root)).unwrap();
+    let decoded: Item = evaluation.sources.decode(encoded).unwrap();
     assert_eq!(decoded, evaluation.root);
     assert!(with_id(&decoded, "empty").is_group());
     assert!(with_id(&decoded, "empty").children().is_empty());

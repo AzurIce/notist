@@ -187,7 +187,7 @@ fn source_errors_return_diagnostics_and_a_recovery_tree() {
     assert_eq!(document.diagnostics().len(), 1);
     assert_eq!(document.diagnostics()[0].phase, Phase::Type);
     assert!(document.root().find(|node| node.is_error()).is_some());
-    let (root, diagnostics) = document.into_parts();
+    let (root, diagnostics, _sources) = document.into_parts();
     assert_eq!(root.ctor(), Ctor::Doc);
     assert_eq!(diagnostics.len(), 1);
 }
@@ -201,10 +201,9 @@ fn inspection_distinguishes_reference_callees_and_bound_content_nodes() {
             &notist::Context::default(),
         )
         .unwrap();
-    let json: serde_json::Value = serde_json::from_str(&notist::cst_json::inspection_json(
-        &analysis,
-        Some(&inspection),
-    ))
+    let json: serde_json::Value = serde_json::from_str(
+        &notist::cst_json::inspection_json(&analysis, Some(&inspection)).unwrap(),
+    )
     .unwrap();
     let fragment = &json["ir1"]["children"][0];
     assert_eq!(fragment["kind"], "Fragment");

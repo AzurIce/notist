@@ -56,28 +56,18 @@ impl fmt::Debug for SourceChain {
         self.as_slice().fmt(f)
     }
 }
-#[cfg(feature = "serde")]
-impl serde::Serialize for SourceChain {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serde::Serialize::serialize(self.as_slice(), serializer)
-    }
-}
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for SourceChain {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        <Vec<SourceLocation> as serde::Deserialize>::deserialize(deserializer).map(Into::into)
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn empty_and_nonempty_chains_detach_without_changing_order_or_spans() {
+        let a = crate::source::Source::metadata("a.not").unwrap();
+        let b = crate::source::Source::metadata("b.not").unwrap();
         let empty = SourceChain::default();
         let mut changed = empty.clone();
         changed.push(SourceLocation {
-            source: "a.not".into(),
+            source: a.id(),
             start: 1,
             end: 2,
         });
@@ -86,18 +76,15 @@ mod tests {
         assert!(original.shares_storage(&changed));
         changed[0].end = 9;
         changed.push(SourceLocation {
-            source: "b.not".into(),
+            source: b.id(),
             start: 3,
             end: 4,
         });
         assert_eq!(original[0].end, 2);
         assert_eq!(original.len(), 1);
         assert_eq!(
-            changed
-                .iter()
-                .map(|x| x.source.as_str())
-                .collect::<Vec<_>>(),
-            ["a.not", "b.not"]
+            changed.iter().map(|x| x.source).collect::<Vec<_>>(),
+            [a.id(), b.id()]
         );
         assert!(!original.shares_storage(&changed));
         changed.clear();

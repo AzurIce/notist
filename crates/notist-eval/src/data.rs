@@ -176,8 +176,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 notist_core::data::parse(format, &bytes, limits)
             }
         };
-        let location = SourceLocation {
-            source: call.source.as_str().into(),
+        let location = notist_core::source::SourceSpan {
+            source: self
+                .sources
+                .source(call.source)
+                .map_err(|error| Failure::from(error.to_string()))?
+                .clone(),
             start: call.span.start().into(),
             end: call.span.end().into(),
         };
@@ -211,13 +215,26 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     fn fail_data(&mut self, error: &DataError, call: &Invocation) -> Failure {
         let mut failure = Failure::at(error.to_string(), call);
         if let Some((name, text, span, read)) = error.diagnostic_source() {
-            self.sources.insert(name.into(), text);
+            let source = match notist_core::source::Source::in_namespace(
+                read.source.namespace().clone(),
+                name,
+                Some(text),
+            ) {
+                Ok(source) => source,
+                Err(error) => return Failure::from(error.to_string()),
+            };
+            if let Err(error) = self.sources.insert(source.clone()) {
+                return Failure::from(error.to_string());
+            }
             failure.location = Some(SourceLocation {
-                source: name.into(),
+                source: source.id(),
                 start: span.start as u32,
                 end: span.end as u32,
             });
-            failure.expansion.push(read.clone());
+            if let Err(error) = self.sources.insert(read.source.clone()) {
+                return Failure::from(error.to_string());
+            }
+            failure.expansion.push(read.location());
         }
         failure
     }

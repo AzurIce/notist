@@ -74,17 +74,12 @@ fn compile_cached(
 pub struct CodeProgram {
     modules: Arc<BTreeMap<String, Arc<LinkedModule>>>,
     scopes: Arc<BTreeMap<String, Arc<ModuleScope>>>,
+    sources: Sources,
 }
 impl CodeProgram {
     /// Collect shared source texts at the output boundary, without copying bodies.
     pub fn sources(&self) -> Sources {
-        self.modules
-            .values()
-            .map(|module| {
-                let code = module.code();
-                (code.source_path().to_owned(), code.source().clone())
-            })
-            .collect()
+        self.sources.clone()
     }
     pub fn source_path(&self, module: &str) -> Option<&str> {
         Some(self.module(module)?.code().source_path())
@@ -100,8 +95,13 @@ impl CodeProgram {
     pub(crate) fn body(&self, function: &FunctionId) -> Option<&CodeBody> {
         self.module(&function.module)?.code().body(&function.name)
     }
-    pub(crate) fn install(&mut self, module: Arc<LinkedModule>) {
+    pub(crate) fn install(
+        &mut self,
+        module: Arc<LinkedModule>,
+    ) -> Result<(), notist_core::source::SourceError> {
+        self.sources.insert(module.code().source_record().clone())?;
         Arc::make_mut(&mut self.modules).insert(module.code().id().to_owned(), module);
+        Ok(())
     }
     pub(crate) fn with_scope(&mut self, module: String, scope: Arc<ModuleScope>) {
         Arc::make_mut(&mut self.scopes).insert(module, scope);
@@ -111,7 +111,7 @@ impl CodeProgram {
 pub(crate) struct CodeBody {
     pub expression: Option<Expr>,
     pub diagnostics: Vec<Diagnostic>,
-    pub source: String,
+    pub source: notist_core::source::Source,
     pub resource_root: String,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -119,8 +119,7 @@ pub struct CodeModule {
     pub definitions: Arc<DefinitionModule>,
     pub imports: Arc<[Import]>,
     bodies: Arc<BTreeMap<String, CodeBody>>,
-    source_path: Arc<str>,
-    source: Arc<str>,
+    source: notist_core::source::Source,
 }
 
 impl CodeModule {
@@ -128,9 +127,14 @@ impl CodeModule {
         &self.definitions.module
     }
     pub fn source_path(&self) -> &str {
-        &self.source_path
+        self.source.name()
     }
     pub fn source(&self) -> &Arc<str> {
+        self.source
+            .text()
+            .expect("compiled modules retain their input text")
+    }
+    pub fn source_record(&self) -> &notist_core::source::Source {
         &self.source
     }
     pub(crate) fn body(&self, name: &str) -> Option<&CodeBody> {
@@ -153,6 +157,18 @@ fn compile_uncached(
 ) -> Result<CodeModule, Vec<Diagnostic>> {
     #[cfg(feature = "profiling")]
     let _timer = crate::profiling::enter(crate::profiling::Stage::CompileWork);
+    let origin = notist_core::source::Source::in_namespace(
+        notist_core::source::SourceNamespace::named(resource_root),
+        path,
+        Some(source.into()),
+    )
+    .map_err(|error| {
+        vec![Diagnostic::new(
+            Phase::Type,
+            Default::default(),
+            error.to_string(),
+        )]
+    })?;
     let parsed = notist_syntax::code::parse_module(source, frontend);
     let ast = Module::cast(parsed.syntax()).unwrap();
     let mut diagnostics = Vec::new();
@@ -170,7 +186,7 @@ fn compile_uncached(
                 continue;
             }
             let mut diagnostic = Diagnostic::new(Phase::Syntax, d.span, &d.message);
-            diagnostic.source = Some(path.into());
+            diagnostic.source = Some(origin.clone());
             if body_range.is_some_and(|r| r.contains_inclusive(d.span.start())) {
                 body_diags.push(diagnostic);
                 assigned[i] = true;
@@ -180,7 +196,7 @@ fn compile_uncached(
             }
         }
         if let Some(definition) =
-            lower_function(module, &function, resource_root, path, &mut diagnostics)
+            lower_function(module, &function, resource_root, &origin, &mut diagnostics)
         {
             let expr = body.and_then(|n| {
                 expression(
@@ -191,7 +207,7 @@ fn compile_uncached(
                 )
             });
             for d in &mut body_diags {
-                d.source = Some(path.into());
+                d.source = Some(origin.clone());
             }
             if definition.implementation.is_code() {
                 bodies.insert(
@@ -199,7 +215,7 @@ fn compile_uncached(
                     CodeBody {
                         expression: expr,
                         diagnostics: body_diags,
-                        source: path.into(),
+                        source: origin.clone(),
                         resource_root: resource_root.into(),
                     },
                 );
@@ -218,10 +234,12 @@ fn compile_uncached(
             definitions: Arc::new(definitions),
             bodies: Arc::new(bodies),
             imports: imports.into(),
-            source_path: path.into(),
-            source: source.into(),
+            source: origin,
         })
     } else {
+        for diagnostic in &mut diagnostics {
+            diagnostic.source.get_or_insert_with(|| origin.clone());
+        }
         Err(diagnostics)
     }
 }
@@ -297,7 +315,7 @@ fn ct_default(
     p: &Parameter,
     ty: &Type,
     root: &str,
-    source: &str,
+    source: &notist_core::source::Source,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ComptimeValue> {
     let el = p.default_value()?.value()?;
@@ -335,7 +353,7 @@ fn ct_default(
 fn default_value(
     el: &rowan::NodeOrToken<notist_syntax::tree::SyntaxNode, notist_syntax::tree::SyntaxToken>,
     root: &str,
-    source: &str,
+    source: &notist_core::source::Source,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<notist_core::item::Value> {
     let expr = literal_expression(el, diags)?;
@@ -351,7 +369,7 @@ fn lower_function(
     module: &str,
     f: &FunctionDecl,
     resource_root: &str,
-    source: &str,
+    source: &notist_core::source::Source,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<FunctionDef> {
     let mut comptime = Vec::new();

@@ -13,6 +13,7 @@ use std::{cell::Cell, sync::Arc};
 
 /// Core-only embedding, without a parser, pipeline or filesystem dependency.
 struct NativeContext {
+    source: notist_core::source::Source,
     registry: Registry,
     specializations: Cell<usize>,
     mappings: Cell<usize>,
@@ -21,6 +22,7 @@ struct NativeContext {
 impl NativeContext {
     fn new() -> Self {
         Self {
+            source: notist_core::source::Source::new("/doc.not", "native input").unwrap(),
             registry: builtins::registry().clone(),
             specializations: Cell::new(0),
             mappings: Cell::new(0),
@@ -50,7 +52,7 @@ impl NativeContext {
             children: None,
             attrs: Default::default(),
             span: Default::default(),
-            source: "/doc.not".into(),
+            source: self.source.id(),
             site: CallSite::Code,
             resource_root: Some("/".into()),
             invalid: None,
@@ -109,7 +111,7 @@ fn value(value: Value) -> TypedExpr {
         known: Some(ComptimeValue::Data(value.clone())),
         kind: ExprKind::Constant(ComptimeValue::Data(value)),
         span: Default::default(),
-        source: "/doc.not".into(),
+        source: Default::default(),
         shape: Default::default(),
     }
 }
@@ -121,7 +123,7 @@ fn document(context: &NativeContext, text: TypedExpr) -> Item {
         known: None,
         kind: ExprKind::Call(call.into()),
         span: Default::default(),
-        source: "native".into(),
+        source: context.source.id(),
         shape: Default::default(),
     });
     Item::new(Ctor::Doc, Default::default()).with_children(vec![item])
@@ -133,7 +135,13 @@ fn checked_ir_evaluates_without_the_compiler_and_does_not_mutate_inputs() {
     let root = document(&context, value(Value::Str("hello".into())));
     let before = root.clone();
     let program = CheckedProgram::default();
-    let result = notist_eval::evaluate(&root, &program, &context, Limits::default());
+    let result = notist_eval::evaluate(
+        &root,
+        &program,
+        &context.source.clone().into(),
+        &context,
+        Limits::default(),
+    );
     assert!(result.diagnostics.is_empty());
     assert_eq!(
         result.root.children()[0].field("text"),
@@ -151,6 +159,34 @@ fn checked_ir_evaluates_without_the_compiler_and_does_not_mutate_inputs() {
 }
 
 #[test]
+fn standalone_evaluation_rejects_missing_owners_and_pins_escaped_results() {
+    let context = NativeContext::new();
+    let root = document(&context, value(Value::Str("hello".into())));
+    let program = CheckedProgram::default();
+    let missing = notist_eval::evaluate(
+        &root,
+        &program,
+        &Default::default(),
+        &context,
+        Limits::default(),
+    );
+    assert_eq!(missing.diagnostics.len(), 1);
+    assert!(missing.root.is_error());
+    let result = notist_eval::evaluate(
+        &root,
+        &program,
+        &context.source.clone().into(),
+        &context,
+        Limits::default(),
+    );
+    let id = context.source.id();
+    drop(context);
+    assert!(result.diagnostics.is_empty());
+    assert_eq!(result.sources.name(id).unwrap(), "/doc.not");
+    assert!(result.sources.validate_node(&result.root).is_ok());
+}
+
+#[test]
 fn comptime_uses_the_same_engine_without_runtime_mapping() {
     let context = NativeContext::new();
     let expr = TypedExpr {
@@ -162,10 +198,16 @@ fn comptime_uses_the_same_engine_without_runtime_mapping() {
                 .into(),
         ),
         span: Default::default(),
-        source: "/doc.not".into(),
+        source: context.source.id(),
         shape: Default::default(),
     };
-    let result = notist_eval::constant(&expr, &CheckedProgram::default(), &context).unwrap();
+    let result = notist_eval::constant(
+        &expr,
+        &CheckedProgram::default(),
+        &context.source.clone().into(),
+        &context,
+    )
+    .unwrap();
     assert_eq!(result, ComptimeValue::Data(Value::Str("42".into())));
     assert_eq!(context.specializations.get(), 1);
     assert_eq!(context.mappings.get(), 0);
@@ -200,7 +242,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
                 .into(),
         ),
         span: Default::default(),
-        source: "/doc.not".into(),
+        source: context.source.id(),
         shape: Default::default(),
     };
     let root = document(&context, expr);
@@ -212,6 +254,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
         notist_eval::run(
             &root,
             &CheckedProgram::default(),
+            &context.source.clone().into(),
             &context,
             Limits::default(),
             Some(&pending)
@@ -226,6 +269,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
     let EvaluationOutcome::Complete(result) = notist_eval::run(
         &root,
         &CheckedProgram::default(),
+        &context.source.clone().into(),
         &context,
         Limits::default(),
         Some(&ready),
@@ -242,6 +286,7 @@ fn explicit_inputs_preserve_pending_complete_and_logical_read_limits() {
     let EvaluationOutcome::Complete(limited) = notist_eval::run(
         &root,
         &CheckedProgram::default(),
+        &context.source.clone().into(),
         &context,
         Limits {
             read_requests: 0,

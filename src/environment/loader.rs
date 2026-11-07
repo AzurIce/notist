@@ -115,12 +115,11 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         match self.context.import_bindings(bindings, None) {
             Ok(bindings) => bindings,
             Err(errors) => {
-                self.errors
-                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: path.into(),
-                        source: source.into(),
-                        diagnostic,
-                    }));
+                self.errors.extend(
+                    errors
+                        .into_iter()
+                        .map(|diagnostic| SourceDiagnostic::locate(path, source, diagnostic)),
+                );
                 BTreeMap::new()
             }
         }
@@ -178,12 +177,11 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         ) {
             Ok(module) => module,
             Err(errors) => {
-                self.errors
-                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: path.into(),
-                        source: source.to_string(),
-                        diagnostic,
-                    }));
+                self.errors.extend(
+                    errors
+                        .into_iter()
+                        .map(|diagnostic| SourceDiagnostic::locate(path, &source, diagnostic)),
+                );
                 self.visiting.remove(path);
                 return;
             }
@@ -199,12 +197,11 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         let linked = match self.context.link_module(module, targets) {
             Ok(linked) => linked,
             Err(errors) => {
-                self.errors
-                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: path.into(),
-                        source: source.to_string(),
-                        diagnostic,
-                    }));
+                self.errors.extend(
+                    errors
+                        .into_iter()
+                        .map(|diagnostic| SourceDiagnostic::locate(path, &source, diagnostic)),
+                );
                 self.visiting.remove(path);
                 return;
             }
@@ -221,14 +218,11 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                     },
                 );
             }
-            Err(errors) => {
-                self.errors
-                    .extend(errors.into_iter().map(|diagnostic| SourceDiagnostic {
-                        path: path.into(),
-                        source: source.to_string(),
-                        diagnostic,
-                    }))
-            }
+            Err(errors) => self.errors.extend(
+                errors
+                    .into_iter()
+                    .map(|diagnostic| SourceDiagnostic::locate(path, &source, diagnostic)),
+            ),
         }
         self.visiting.remove(path);
     }
@@ -305,11 +299,7 @@ pub(super) fn document(
         .map_err(|errors| {
             errors
                 .into_iter()
-                .map(|diagnostic| SourceDiagnostic {
-                    path: config.into(),
-                    source: source.to_string(),
-                    diagnostic,
-                })
+                .map(|diagnostic| SourceDiagnostic::locate(config, &source, diagnostic))
                 .collect::<Vec<_>>()
         })?;
         for binding in parsed.extensions.iter().cloned() {
@@ -399,11 +389,7 @@ pub(super) fn document(
             Err(errors) => {
                 return Err(errors
                     .into_iter()
-                    .map(|diagnostic| SourceDiagnostic {
-                        path: path.clone(),
-                        source: source.into(),
-                        diagnostic,
-                    })
+                    .map(|diagnostic| SourceDiagnostic::locate(&path, source, diagnostic))
                     .collect());
             }
         }
@@ -416,14 +402,10 @@ pub(super) fn document(
                     return Err(errors
                         .into_iter()
                         .map(|mut diagnostic| {
-                            if diagnostic.span.is_empty() {
+                            if diagnostic.source.is_none() && diagnostic.span.is_empty() {
                                 diagnostic.span = span;
                             }
-                            SourceDiagnostic {
-                                path: config.into(),
-                                source: source.to_string(),
-                                diagnostic,
-                            }
+                            SourceDiagnostic::locate(config, &source, diagnostic)
                         })
                         .collect());
                 }

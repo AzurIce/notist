@@ -1,11 +1,14 @@
 //! Output envelope for the query command.
 use notist::{Ctor, Item};
 
-pub fn render_json(sources: &notist::Sources, matches: &[&Item]) -> String {
+pub fn render_json(
+    sources: &notist::Sources,
+    matches: &[&Item],
+) -> Result<String, serde_json::Error> {
     let results = matches
         .iter()
         .map(|item| {
-            let mut data = notist::json::item(item);
+            let mut data = notist::json::item(item, sources)?;
             let ctor = item.ctor();
             let name = ctor.name();
             data["ctor"] = serde_json::json!(if matches!(ctor, Ctor::Extension(_)) {
@@ -17,12 +20,17 @@ pub fn render_json(sources: &notist::Sources, matches: &[&Item]) -> String {
             let source = item
                 .origin
                 .as_ref()
-                .and_then(|o| sources.get(o.source.as_str()));
+                .map(|o| {
+                    sources
+                        .text(o.source)
+                        .map_err(<serde_json::Error as serde::ser::Error>::custom)
+                })
+                .transpose()?;
             data["text"] = serde_json::json!(source.and_then(|s| s.get(range)).unwrap_or(""));
-            data
+            Ok(data)
         })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&results).expect("valid query output")
+        .collect::<Result<Vec<_>, serde_json::Error>>()?;
+    serde_json::to_string(&results)
 }
 
 #[cfg(test)]
@@ -30,17 +38,14 @@ mod tests {
     #[test]
     fn query_output_retains_source_and_metadata() {
         let source = "@(id: \"x\", tags: (\"a\",))#emph[目标]\n\n*粗*\n";
-        let (item, diagnostics) = notist::Pipeline::default()
+        let (item, diagnostics, sources) = notist::Pipeline::default()
             .analyze("test.not", source, &notist::Context::default())
             .unwrap()
             .into_parts();
         assert!(diagnostics.is_empty());
         let matches = notist::query::select(&item, "id:x");
-        let data: serde_json::Value = serde_json::from_str(&super::render_json(
-            &std::collections::BTreeMap::from([("test.not".into(), source.into())]),
-            &matches,
-        ))
-        .unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(&super::render_json(&sources, &matches).unwrap()).unwrap();
         assert_eq!(data[0]["ctor"], "emph");
         assert_eq!(data[0]["attrs"]["tags"], serde_json::json!(["a"]));
         assert!(data[0]["text"].as_str().unwrap().contains("目标"));
@@ -52,7 +57,7 @@ mod tests {
             item =
                 notist::Item::new(notist::Ctor::Node, Default::default()).with_children(vec![item]);
         }
-        let output = super::render_json(&std::collections::BTreeMap::new(), &[&item]);
+        let output = super::render_json(&notist::Sources::new(), &[&item]).unwrap();
         assert_eq!(output.matches("\"children\":").count(), 161);
         assert!(output.contains("\"ctor\":\"node\""));
     }

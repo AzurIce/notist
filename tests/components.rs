@@ -29,10 +29,12 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
         analysis.diagnostics()
     );
     let legacy = Renderer::new()
+        .with_sources(analysis.sources())
         .with_registry(html.clone())
         .with_source_map()
         .render_with_diagnostics(analysis.root());
     let output = Renderer::from_registry(html)
+        .with_sources(analysis.sources())
         .with_source_map()
         .render_with_diagnostics(analysis.root());
     assert_eq!(output.html, legacy.html);

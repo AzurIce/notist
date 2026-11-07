@@ -93,7 +93,7 @@ fn publication_url_resolver_preserves_url_safety_and_source_tree() {
     assert_eq!(output.diagnostics.len(), 1);
 }
 
-fn analyze(extension: &str, src: &str) -> Item {
+fn analyze(extension: &str, src: &str) -> notist::Located<Item> {
     let document = Pipeline::default()
         .analyze(
             format!("test.{extension}"),
@@ -106,9 +106,8 @@ fn analyze(extension: &str, src: &str) -> Item {
         "{src}: {:?}",
         document.diagnostics()
     );
-    Pipeline::default()
-        .evaluate(&document, &notist::Context::default())
-        .root
+    let evaluated = Pipeline::default().evaluate(&document, &notist::Context::default());
+    notist::Located::new(evaluated.root, evaluated.sources)
 }
 
 #[test]
@@ -154,6 +153,7 @@ fn block_math_renders_outside_paragraphs_and_shares_math_hooks() {
             .find(|n| n.ctor() == Ctor::Math && n.level == notist::builtins::Level::Block)
             .unwrap();
         let mapped = Renderer::new()
+            .with_sources(&root.sources)
             .with_source_map()
             .render_with_diagnostics(&root);
         assert!(mapped.source_map.iter().any(|mapping| mapping.range.start
@@ -353,7 +353,9 @@ fn unsafe_urls_are_omitted_with_source_diagnostics() {
             .fields
             .insert("target", Value::Str(target.into()));
         let span = link.span;
-        let result = Renderer::new().render_with_diagnostics(&root);
+        let result = Renderer::new()
+            .with_sources(&root.sources)
+            .render_with_diagnostics(&root);
         assert_eq!(result.html, "<p><a>label</a></p>");
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].span, span);

@@ -103,7 +103,9 @@ pub fn render_prepared(path: &str, src: &str, inputs_json: &str) -> String {
         Ok(output) => {
             let mut data = json!({"diagnostics":output.analysis.diagnostics().iter().map(|error|diagnostic_json(path,"analysis",error)).collect::<Vec<_>>()});
             append_evaluation(&mut data, path, &output.evaluation);
-            append_render(&mut data, path, output.rendered);
+            if let Err(error) = append_render(&mut data, path, output.rendered) {
+                return json!({"error":error.to_string()}).to_string();
+            }
             data.to_string()
         }
         Err(error) => error_json(error).to_string(),
@@ -129,18 +131,24 @@ pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
         Ok(result) => result,
         Err(error) => return error_json(error).to_string(),
     };
-    let mut data: Value = serde_json::from_str(&crate::cst_json::inspection_json(
-        &analysis,
-        Some(&inspection),
-    ))
-    .unwrap();
+    let inspection_json = match crate::cst_json::inspection_json(&analysis, Some(&inspection)) {
+        Ok(value) => value,
+        Err(error) => return json!({"error":error.to_string()}).to_string(),
+    };
+    let mut data: Value = serde_json::from_str(&inspection_json).unwrap();
     annotate_analysis(&mut data, path);
     match vault.render_output(path, &analysis, RenderOptions::default()) {
         Ok(output) => {
             append_evaluation(&mut data, path, &output.evaluation);
             // Debug consumers can compare the original and output identities.
-            data["evaluated"] = crate::json::item(&output.evaluation.root);
-            append_render(&mut data, path, output.rendered);
+            data["evaluated"] =
+                match crate::json::item(&output.evaluation.root, &output.evaluation.sources) {
+                    Ok(value) => value,
+                    Err(error) => return json!({"error":error.to_string()}).to_string(),
+                };
+            if let Err(error) = append_render(&mut data, path, output.rendered) {
+                return json!({"error":error.to_string()}).to_string();
+            }
         }
         Err(error) => return error_json(error).to_string(),
     }
@@ -162,11 +170,10 @@ fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Eva
         .diagnostics
         .iter()
         .filter_map(|d| d.source.as_ref())
-        .filter_map(|name| {
-            output
-                .sources
-                .get(name)
-                .map(|text| (name.clone(), json!(text.as_ref())))
+        .filter_map(|source| {
+            source
+                .text()
+                .map(|text| (source.name().to_owned(), json!(text.as_ref())))
         })
         .collect();
     data["diagnostic_sources"] = Value::Object(sources);
@@ -177,9 +184,16 @@ fn append_evaluation(data: &mut Value, path: &str, output: &notist_pipeline::Eva
             .map(|error| diagnostic_json(path, "evaluate", error)),
     );
 }
-fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult) {
+fn append_render(
+    data: &mut Value,
+    path: &str,
+    result: notist_html::RenderResult,
+) -> Result<(), serde_json::Error> {
     data["html"] = json!(result.html);
-    data["source_map"] = json!(result.source_map.iter().map(|mapping|json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":mapping.origin.as_ref().map(|o|o.source.as_str()),"expansion":mapping.origin.as_ref().map(|o|o.expansion.iter().map(|e|json!({"source":e.source.as_str(),"start":e.start,"end":e.end})).collect::<Vec<_>>())})).collect::<Vec<_>>());
+    data["source_map"] = json!(result.source_map.iter().map(|mapping| {
+        let origin = serde_json::to_value(result.sources.wire(&mapping.origin))?;
+        Ok::<_,serde_json::Error>(json!({"node_id":mapping.node_id,"start":mapping.range.start,"end":mapping.range.end,"kind":format!("{:?}",mapping.kind),"source":origin.get("source"),"expansion":origin.get("expansion")}))
+    }).collect::<Result<Vec<_>,_>>()?);
     data["used_components"] = json!(result.used_components.iter().map(|component| json!({"identity":component.id.to_string(),"name":component.id.name,"tag":component.tag,"module":component.module.url(),"resource":component.module.resource()})).collect::<Vec<_>>());
     data["diagnostics"].as_array_mut().unwrap().extend(
         result
@@ -187,6 +201,7 @@ fn append_render(data: &mut Value, path: &str, result: notist_html::RenderResult
             .iter()
             .map(|error| diagnostic_json(path, "render", error)),
     );
+    Ok(())
 }
 pub(crate) fn error_json(error: VaultError) -> Value {
     match error {

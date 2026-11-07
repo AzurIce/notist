@@ -30,7 +30,7 @@ pub(crate) struct Checker<'a> {
     pub diagnostics: Vec<Diagnostic>,
     pub(super) scope: Scope,
     pub(super) module: String,
-    pub(super) source: String,
+    pub(super) source: notist_core::source::Source,
     resource_root: String,
     pub(super) site: CallSite,
     pub(super) depth: usize,
@@ -41,14 +41,17 @@ pub(crate) struct Checker<'a> {
     pub(super) type_hint: Option<Type>,
 }
 impl<'a> Checker<'a> {
-    pub fn new(context: &'a Context, source: &str) -> Self {
+    pub fn new(context: &'a Context, source: &notist_core::source::Source) -> Self {
         Self {
             context,
-            program: Default::default(),
+            program: CheckedProgram {
+                sources: source.clone().into(),
+                ..Default::default()
+            },
             diagnostics: Vec::new(),
             scope: BTreeMap::new(),
             module: String::new(),
-            source: source.into(),
+            source: source.clone(),
             resource_root: context.resource_root().into(),
             site: CallSite::Markup,
             depth: 0,
@@ -57,7 +60,7 @@ impl<'a> Checker<'a> {
             type_hint: None,
         }
     }
-    pub(crate) fn for_content(context: &'a Context, source: &str) -> Self {
+    pub(crate) fn for_content(context: &'a Context, source: &notist_core::source::Source) -> Self {
         let mut checker = Self::new(context, source);
         checker.module = context.root().unwrap_or("<content>").to_owned();
         checker.site = CallSite::Code;
@@ -81,12 +84,16 @@ impl<'a> Checker<'a> {
         failure: notist_eval::Failure,
     ) -> TypedExpr {
         let message = format!("{label}: {}", failure.message);
-        let (span, source) = failure.location.map_or_else(
+        let (span, source) = failure.location.as_ref().map_or_else(
             || (span, self.source.clone()),
             |location| {
                 (
                     TextRange::new(location.start.into(), location.end.into()),
-                    location.source.to_string(),
+                    failure
+                        .sources()
+                        .source(location.source)
+                        .expect("failures retain their sources")
+                        .clone(),
                 )
             },
         );
@@ -94,7 +101,10 @@ impl<'a> Checker<'a> {
         diagnostic.source = Some(source.clone());
         self.report_diagnostic(diagnostic);
         let mut expr = self.typed(None, ExprKind::Failure(message), None, span);
-        expr.source = source;
+        if let Err(error) = self.program.sources.merge(failure.sources()) {
+            self.report(span, error.to_string());
+        }
+        expr.source = source.id();
         expr
     }
     pub(super) fn typed(
@@ -110,7 +120,7 @@ impl<'a> Checker<'a> {
             kind,
             known,
             span,
-            source: self.source.clone(),
+            source: self.source.id(),
         }
     }
     fn constant(&self, v: ComptimeValue, span: TextRange) -> TypedExpr {
@@ -236,7 +246,7 @@ impl<'a> Checker<'a> {
     }
     fn origin(&self, span: TextRange) -> Origin {
         Origin {
-            source: self.source.as_str().into(),
+            source: self.source.id(),
             start: span.start().into(),
             end: span.end().into(),
             expansion: Default::default(),
@@ -265,7 +275,7 @@ impl<'a> Checker<'a> {
             .collect()
     }
     pub fn with_program(context: &'a Context, program: CheckedProgram) -> Self {
-        let mut s = Self::new(context, "<evaluation>");
+        let mut s = Self::new(context, &notist_core::source::Source::detached());
         s.program = program;
         s
     }
@@ -273,9 +283,9 @@ impl<'a> Checker<'a> {
         let source = self
             .context
             .program()
-            .source_path(&instance.function.module)
-            .unwrap_or(&self.source)
-            .to_owned();
+            .module(&instance.function.module)
+            .map(|module| module.code().source_record().clone())
+            .unwrap_or_else(|| self.source.clone());
         let previous = std::mem::replace(&mut self.source, source);
         self.install_instance(instance);
         self.source = previous;
@@ -341,7 +351,7 @@ impl<'a> Checker<'a> {
         if let Some(v) = self.scope.get(name) {
             let mut value = v.clone();
             value.span = span;
-            value.source = self.source.clone();
+            value.source = self.source.id();
             return value;
         }
         if let Some(t) = Self::type_name(name) {
@@ -744,11 +754,14 @@ impl<'a> Checker<'a> {
             }
             Expr::Comptime { value, .. } => {
                 let t = self.check_with_hint(value, type_hint);
-                let known = t
-                    .known
-                    .clone()
-                    .map(Ok)
-                    .unwrap_or_else(|| notist_eval::constant(&t, &self.program, self.context));
+                let known = t.known.clone().map(Ok).unwrap_or_else(|| {
+                    notist_eval::constant(
+                        &t,
+                        &self.program,
+                        &self.source.clone().into(),
+                        self.context,
+                    )
+                });
                 match known {
                     Ok(v) => {
                         if let ComptimeValue::Data(value) = &v
@@ -1088,7 +1101,12 @@ impl<'a> Checker<'a> {
             let mut failed = false;
             let known = match value.known.clone() {
                 Some(value) => Some(value),
-                None => match notist_eval::constant(&value, &self.program, self.context) {
+                None => match notist_eval::constant(
+                    &value,
+                    &self.program,
+                    &self.source.clone().into(),
+                    self.context,
+                ) {
                     Ok(value) => Some(value),
                     Err(failure) => {
                         failed = true;
@@ -1394,7 +1412,7 @@ impl<'a> Checker<'a> {
             children,
             attrs,
             span,
-            source: self.source.clone(),
+            source: self.source.id(),
             site: self.site,
             resource_root,
             invalid: None,
@@ -1465,7 +1483,11 @@ impl<'a> Checker<'a> {
             && self.program.instances.is_empty()
             && self.program.data_retention.is_empty()
             && def.implementation.is_code();
-        if cacheable && let Some(program) = self.context.checked_program(&key) {
+        if cacheable && let Some(mut program) = self.context.checked_program(&key) {
+            if let Err(error) = program.sources.merge(&self.program.sources) {
+                self.report(def.span, error.to_string());
+                return;
+            }
             self.program = program;
             return;
         }
@@ -1493,6 +1515,10 @@ impl<'a> Checker<'a> {
             self.report(def.span, "missing Code implementation");
             return;
         };
+        if let Err(error) = self.program.sources.insert(body.source.clone()) {
+            self.report(def.span, error.to_string());
+            return;
+        }
         let old_scope = std::mem::take(&mut self.scope);
         let old_module = std::mem::replace(&mut self.module, def.id.module.clone());
         let old_source = std::mem::replace(&mut self.source, body.source.clone());
@@ -1566,7 +1592,11 @@ impl<'a> Checker<'a> {
                 .values()
                 .all(|record| !record.checking && record.diagnostics.is_empty())
         {
-            self.context.remember_checked_program(key, &self.program);
+            // A specialization belongs to the immutable module graph, not to
+            // the document which happened to trigger it first.
+            let mut cached = self.program.clone();
+            cached.sources = self.context.program().sources();
+            self.context.remember_checked_program(key, &cached);
         }
     }
 }

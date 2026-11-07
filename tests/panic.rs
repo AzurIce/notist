@@ -103,7 +103,7 @@ fn show(message: String) -> InlineContent { [#text(text: if forward(message) == 
             .unwrap()
             .expansion
             .iter()
-            .any(|location| location.source == "doc.not")
+            .any(|location| output.sources.name(location.source).unwrap() == "doc.not")
     );
     assert!(
         output

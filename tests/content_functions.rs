@@ -157,7 +157,7 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
             &notist::Context::default(),
         )
         .unwrap();
-    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection));
+    let json = notist::cst_json::inspection_json(&analysis, Some(&inspection)).unwrap();
     assert!(json.contains("\"kind\":\"Divider\",\"start\":7,\"end\":10"));
 }
 

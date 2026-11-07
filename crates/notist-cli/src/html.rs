@@ -10,6 +10,7 @@ use std::{
 
 pub fn assemble(
     root: &notist::Item,
+    sources: &notist::Sources,
     registry: notist_html::HtmlRegistry,
     environment: &Environment,
     resources: &impl Resources,
@@ -49,6 +50,7 @@ pub fn assemble(
         );
     }
     let rendered = notist_html::Renderer::from_registry(registry)
+        .with_sources(sources)
         .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
         .render_with_diagnostics(root);
     if !rendered.diagnostics.is_empty() {

@@ -30,8 +30,11 @@ fn code_tooling_uses_project_identity_dependencies_and_the_supplied_source() {
         analysis.definitions.as_ref().unwrap().module,
         "/project/lib.notc"
     );
-    assert_eq!(analysis.sources["/project/lib.notc"].as_ref(), source);
-    assert!(analysis.sources.contains_key("/project/dep/lib.notc"));
+    assert_eq!(
+        analysis.sources.get("/project/lib.notc").unwrap().as_ref(),
+        source
+    );
+    assert!(analysis.sources.by_name("/project/dep/lib.notc").is_ok());
     let json: serde_json::Value =
         serde_json::from_str(&notist::cst_json::module_json(source, &analysis)).unwrap();
     assert_eq!(json["functions"][1]["function"], "/project/lib.notc.view");
@@ -67,7 +70,10 @@ fn invalid_signatures_keep_the_recovered_module_tree_and_definition_source() {
         .unwrap();
     assert!(analysis.definitions.is_none());
     assert!(!analysis.diagnostics.is_empty());
-    assert_eq!(analysis.sources["/project/lib.notc"].as_ref(), source);
+    assert_eq!(
+        analysis.sources.get("/project/lib.notc").unwrap().as_ref(),
+        source
+    );
     let json: serde_json::Value =
         serde_json::from_str(&notist::cst_json::module_json(source, &analysis)).unwrap();
     assert_eq!(json["tree"]["kind"], "Module");
@@ -97,7 +103,13 @@ fn explicitly_installed_code_preserves_its_path_and_can_be_checked_with_edits() 
     );
     assert_eq!(analysis.definitions.unwrap().module, "/project/custom.notc");
     assert_eq!(
-        environment.context().program().sources()["/project/custom.notc"].as_ref(),
+        environment
+            .context()
+            .program()
+            .sources()
+            .get("/project/custom.notc")
+            .unwrap()
+            .as_ref(),
         old
     );
 }

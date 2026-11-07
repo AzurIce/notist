@@ -826,12 +826,17 @@ fn explicit_code_sources_keep_host_loading_outside_context() {
     assert!(output.evaluation.diagnostics.is_empty());
     assert!(output.rendered.html.contains("<strong"));
     assert!(output.rendered.source_map.iter().any(|m| {
-        m.origin
-            .as_ref()
-            .is_some_and(|o| o.source == "/code/widgets.notc")
+        m.origin.as_ref().is_some_and(|o| {
+            output.rendered.sources.name(o.source).unwrap() == "/code/widgets.notc"
+        })
     }));
     assert_eq!(
-        output.analysis.sources()["/code/widgets.notc"].as_ref(),
+        output
+            .analysis
+            .sources()
+            .get("/code/widgets.notc")
+            .unwrap()
+            .as_ref(),
         source
     );
 }
@@ -846,9 +851,12 @@ fn normalized_document_paths_and_source_snapshots_share_one_environment() {
     let source = "#import \"ui.notc\" as ui;\n#ui.f()";
     let analysis = vault.analyze("sub/../doc.not", source).unwrap();
     assert!(analysis.diagnostics().is_empty());
-    assert!(analysis.sources().contains_key("/notes/doc.not"));
+    assert!(analysis.sources().by_name("/notes/doc.not").is_ok());
     assert_eq!(
-        analysis.root().origin.as_ref().unwrap().source,
+        analysis
+            .sources()
+            .name(analysis.root().origin.as_ref().unwrap().source)
+            .unwrap(),
         "/notes/doc.not"
     );
     let first = vault.environment_for("doc.not", source).unwrap();
@@ -856,11 +864,16 @@ fn normalized_document_paths_and_source_snapshots_share_one_environment() {
     assert!(Arc::ptr_eq(&first, &second));
     assert!(Arc::ptr_eq(
         &first.modules()["/notes/ui.notc"].source,
-        &first.context().program().sources()["/notes/ui.notc"],
+        first
+            .context()
+            .program()
+            .sources()
+            .get("/notes/ui.notc")
+            .unwrap(),
     ));
     assert!(Arc::ptr_eq(
         &first.modules()["/notes/ui.notc"].source,
-        &analysis.sources()["/notes/ui.notc"],
+        analysis.sources().get("/notes/ui.notc").unwrap(),
     ));
     let output = vault
         .render_output("/notes/doc.not", &analysis, RenderOptions::default())

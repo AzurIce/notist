@@ -166,7 +166,7 @@ fn type_json(ty: &crate::Type) -> serde_json::Value {
 pub fn inspection_json(
     analysis: &crate::Analysis,
     inspection: Option<&notist_pipeline::Inspection>,
-) -> String {
+) -> Result<String, serde_json::Error> {
     let mut out = String::from("{");
     if let Some(inspection) = inspection {
         if let Some(syntax) = inspection.syntax.as_deref().and_then(|syntax| {
@@ -199,11 +199,11 @@ pub fn inspection_json(
         out.push(',');
     }
     out.push_str("\"core\":");
-    write_item(&mut out, analysis.root());
+    write_item(&mut out, analysis.root(), analysis.sources())?;
     out.push_str(",\"diagnostics\":");
     write_diagnostics(&mut out, analysis.diagnostics());
     out.push('}');
-    out
+    Ok(out)
 }
 
 fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
@@ -634,7 +634,11 @@ fn write_resolved(out: &mut String, expr: &RExpr) {
     out.push('}');
 }
 
-fn write_item(out: &mut String, item: &Item) {
+fn write_item(
+    out: &mut String,
+    item: &Item,
+    sources: &crate::Sources,
+) -> Result<(), serde_json::Error> {
     out.push_str(&format!(
         "{{\"kind\":\"{}\",\"start\":{},\"end\":{}",
         item.ctor().name(),
@@ -643,7 +647,7 @@ fn write_item(out: &mut String, item: &Item) {
     ));
     out.push(',');
     // Keep the debug tree's typed children, while exposing all semantic fields.
-    crate::json::write_metadata(out, item);
+    crate::json::write_metadata(out, item, sources)?;
     out.push_str(",\"attrs\":");
     crate::json::write_value(out, &crate::Value::Dict(item.attrs.clone()));
     let mut label = String::new();
@@ -662,11 +666,12 @@ fn write_item(out: &mut String, item: &Item) {
             if i > 0 {
                 out.push(',');
             }
-            write_item(out, child);
+            write_item(out, child, sources)?;
         }
         out.push(']');
     }
     out.push('}');
+    Ok(())
 }
 
 fn escape(s: &str) -> String {

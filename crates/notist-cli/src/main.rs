@@ -201,12 +201,20 @@ fn run(cli: Cli) -> ExitCode {
             let mut vault = load_vault(config);
             print_result(&file, |src| match vault.inspect(&file, src) {
                 Ok((analysis, inspection)) => {
-                    let text = notist::cst_json::inspection_json(&analysis, Some(&inspection));
+                    let text = notist::cst_json::inspection_json(&analysis, Some(&inspection))
+                        .map_err(|error| {
+                            eprintln!("{error}");
+                            ExitCode::FAILURE
+                        })?;
                     if evaluate {
                         let mut data: serde_json::Value = serde_json::from_str(&text).unwrap();
                         match vault.evaluate(&file, &analysis) {
                             Ok(e) => {
-                                data["core"] = notist::json::item(&e.root);
+                                data["core"] =
+                                    notist::json::item(&e.root, &e.sources).map_err(|error| {
+                                        eprintln!("{error}");
+                                        ExitCode::FAILURE
+                                    })?;
                                 data["evaluation_diagnostics"] = serde_json::json!(
                                     e.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
                                 );
@@ -241,7 +249,16 @@ fn run(cli: Cli) -> ExitCode {
                 };
                 let root = evaluation.as_ref().map_or(document.root(), |e| &e.root);
                 let matches = notist::query::select(root, &selector);
-                println!("{}", query::render_json(document.sources(), &matches));
+                let sources = evaluation
+                    .as_ref()
+                    .map_or(document.sources(), |e| &e.sources);
+                match query::render_json(sources, &matches) {
+                    Ok(output) => println!("{output}"),
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
                 ExitCode::SUCCESS
             }
             Err(code) => code,
@@ -260,7 +277,7 @@ fn run(cli: Cli) -> ExitCode {
                 }
             };
             if !analysis.diagnostics().is_empty() {
-                emit_source(&file, &src, analysis.diagnostics(), Severity::Error);
+                emit_diagnostics(&file, &src, analysis.diagnostics());
                 return ExitCode::FAILURE;
             }
             let evaluation = match vault.evaluate(&file, &analysis) {
@@ -268,7 +285,7 @@ fn run(cli: Cli) -> ExitCode {
                 Err(error) => return emit_vault_error(error),
             };
             if !evaluation.diagnostics.is_empty() {
-                emit_diagnostics(&file, &src, &evaluation.diagnostics, &evaluation.sources);
+                emit_diagnostics(&file, &src, &evaluation.diagnostics);
                 return ExitCode::FAILURE;
             }
             let (registry, environment) =
@@ -279,6 +296,7 @@ fn run(cli: Cli) -> ExitCode {
             let resources = publication::Files::new(vault.resources().root());
             let publication = html::assemble(
                 &evaluation.root,
+                &evaluation.sources,
                 registry,
                 &environment,
                 &resources,
@@ -357,7 +375,7 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
             Err(error) => return emit_vault_error(error),
         };
         let diagnostics = analysis.diagnostics;
-        emit_diagnostics(file, &src, &diagnostics, &analysis.sources);
+        emit_diagnostics(file, &src, &diagnostics);
         return if diagnostics.is_empty() {
             ExitCode::SUCCESS
         } else {
@@ -369,14 +387,13 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         Ok(document) => document,
         Err(error) => return emit_vault_error(error),
     };
-    let sources = document.sources().clone();
-    let (item, mut diagnostics) = document.into_parts();
+    let (item, mut diagnostics, sources) = document.into_parts();
     // id/tag 约定是 .not 的注解语义，只在该前端下检查
     if file.extension().is_some_and(|ext| ext == "not") {
-        let index = notist::index::Index::build(&item, &mut diagnostics);
-        notist::vault_index::check_doc_links(&item, &index, &mut diagnostics);
+        let index = notist::index::Index::build(&item, &sources, &mut diagnostics);
+        notist::vault_index::check_doc_links(&item, &sources, &index, &mut diagnostics);
     }
-    emit_diagnostics(file, &src, &diagnostics, &sources);
+    emit_diagnostics(file, &src, &diagnostics);
     if diagnostics.is_empty() {
         ExitCode::SUCCESS
     } else {
@@ -517,24 +534,13 @@ fn write_source(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn emit_diagnostics(
-    path: &Path,
-    source: &str,
-    diagnostics: &[notist::Diagnostic],
-    sources: &notist::Sources,
-) {
+fn emit_diagnostics(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
     for diagnostic in diagnostics {
-        let path = diagnostic.source.as_deref().map(Path::new).unwrap_or(path);
-        let source = diagnostic
-            .source
-            .as_ref()
-            .and_then(|s| sources.get(s))
-            .map(|source| source.as_ref())
-            .unwrap_or(source);
+        let located = notist::SourceDiagnostic::locate(path, source, diagnostic.clone());
         emit_source(
-            path,
-            source,
-            std::slice::from_ref(diagnostic),
+            &located.path,
+            &located.source,
+            std::slice::from_ref(&located.diagnostic),
             Severity::Error,
         );
     }

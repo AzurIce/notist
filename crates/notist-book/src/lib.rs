@@ -134,29 +134,10 @@ fn content_diagnostic(
         TextRange::new(origin.start.into(), origin.end.into())
     });
     let mut diagnostic = Diagnostic::new(Phase::Semantic, span, message);
-    diagnostic.source = node.origin.as_ref().map(|origin| origin.source.to_string());
-    locate(&page.route.source, &page.source, diagnostic, &page.sources)
-}
-
-fn locate(
-    path: &Path,
-    source: &str,
-    diagnostic: Diagnostic,
-    sources: &notist::Sources,
-) -> SourceDiagnostic {
-    let origin = diagnostic
-        .source
-        .as_ref()
-        .and_then(|s| sources.get_key_value(s));
-    SourceDiagnostic {
-        path: origin
-            .map(|(p, _)| PathBuf::from(p))
-            .unwrap_or_else(|| path.into()),
-        source: origin
-            .map(|(_, s)| s.to_string())
-            .unwrap_or_else(|| source.into()),
-        diagnostic,
+    if let Some(origin) = &node.origin {
+        diagnostic = diagnostic.at_source(&page.sources, origin.source);
     }
+    SourceDiagnostic::locate(&page.route.source, &page.source, diagnostic)
 }
 
 fn append<'a>(
@@ -164,13 +145,12 @@ fn append<'a>(
     path: &Path,
     source: &str,
     values: impl IntoIterator<Item = &'a Diagnostic>,
-    sources: &notist::Sources,
 ) {
     errors.extend(
         values
             .into_iter()
             .cloned()
-            .map(|d| locate(path, source, d, sources)),
+            .map(|d| SourceDiagnostic::locate(path, source, d)),
     );
 }
 
@@ -323,7 +303,6 @@ fn build_inner<R: Resources>(
                 .diagnostics()
                 .iter()
                 .filter(|diagnostic| diagnostic.code != Some(DiagnosticCode::OutsideVault)),
-            analysis.sources(),
         );
         let entries = summary::interpret(analysis.root()).and_then(|entries| {
             summary::resolve(
@@ -337,13 +316,7 @@ fn build_inner<R: Resources>(
         match entries {
             Ok(entries) => Some(entries),
             Err(diagnostics) => {
-                append(
-                    &mut errors,
-                    &summary_path,
-                    &source,
-                    &diagnostics,
-                    analysis.sources(),
-                );
+                append(&mut errors, &summary_path, &source, &diagnostics);
                 None
             }
         }
@@ -395,25 +368,13 @@ fn build_inner<R: Resources>(
                 .diagnostics()
                 .iter()
                 .filter(|diagnostic| diagnostic.code != Some(DiagnosticCode::OutsideVault)),
-            analysis.sources(),
         );
         let mut index_errors = vec![];
-        let _index = notist::index::Index::build(analysis.root(), &mut index_errors);
-        append(
-            &mut errors,
-            &route.source,
-            &source,
-            &index_errors,
-            analysis.sources(),
-        );
+        let _index =
+            notist::index::Index::build(analysis.root(), analysis.sources(), &mut index_errors);
+        append(&mut errors, &route.source, &source, &index_errors);
         let evaluation = vault.evaluate(&route.source, &analysis)?;
-        append(
-            &mut errors,
-            &route.source,
-            &source,
-            &evaluation.diagnostics,
-            &evaluation.sources,
-        );
+        append(&mut errors, &route.source, &source, &evaluation.diagnostics);
         let mut content = evaluation.root;
         let fallback = if route.url == "/" {
             config.title.as_str()
@@ -423,7 +384,11 @@ fn build_inner<R: Resources>(
         let outline = outline::prepare(&mut content, fallback);
         prepared.push(Prepared {
             route: route.clone(),
-            source: analysis.sources()[&route.source.to_string_lossy().into_owned()].clone(),
+            source: analysis
+                .source()
+                .text()
+                .expect("book sources retain their text")
+                .clone(),
             root: content,
             outline,
             sources: evaluation.sources,
@@ -635,6 +600,7 @@ fn build_inner<R: Resources>(
         let (registry, environment) =
             vault.html_registry_and_environment(&page.route.source, &page.source, &page.root)?;
         let rendered = Renderer::from_registry(registry)
+            .with_sources(&page.sources)
             .with_code_renderer(notist_html::highlight::code)
             .with_url_resolver(|_, url| resolved.get(url).cloned())
             .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
@@ -645,7 +611,6 @@ fn build_inner<R: Resources>(
             &page.route.source,
             &page.source,
             &rendered.diagnostics,
-            &page.sources,
         );
         let component_file = page.route.output.parent().unwrap().join("components.js");
         let registrations = assets.components(

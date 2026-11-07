@@ -31,7 +31,7 @@ badge 是行内内容函数，显示 label 与 count。badge.js 是单文件组�
 fn diagram(source: String, theme: String = "auto") -> BlockContent;
 ```
 
-diagram 声明文档中的块级图形，source 使用两种渲染器共同支持的 Mermaid 语法，theme 为 auto、light 或 dark，其他值按 auto 处理；auto 跟随页面或系统主题。lib.notc 只提供调用契约，不提供 diagram.js 或 diagram/index.js。声明不依赖任何渲染器模块。
+diagram 显示块级图形，source 使用 Mermaid 语法。theme 为 auto、light 或 dark；auto 跟随页面或系统主题。具体渲染器通过配置选择。
 
 docs/Notist.toml 选择具体实现：
 
@@ -45,7 +45,7 @@ to = "pele.diagram"
 
 切换为 Mermaid 时，将该规则的 pele 导入改为 `mermaid = "../modules/mermaid/lib.notc"`，并将 to 改为 `"mermaid.diagram"`。两个目标的参数、默认值与返回类型一致；正文只调用 `#components.diagram(...)`。
 
-Resolve / Shape 按 diagram 的声明检查并建立语义节点；Evaluate 保留其函数身份，记录实际执行目标；HTML 只加载目标组件。没有映射时声明仍可分析，HTML 输出报告缺少实现。规则的 import 仅在该规则内生效，不向文档注入渲染器名称。
+上例使用 Pele 渲染；更换渲染器时，正文中的调用保持不变。
 
 @(id: "内容状态")
 == 内容状态
@@ -70,7 +70,7 @@ Resolve / Shape 按 diagram 的声明检查并建立语义节点；Evaluate 保�
 #import "./lib.notc" as components;
 ```
 
-正文用 `#components.panel[...]` 与 `#components.badge("标签")` 的限定调用，组件资源相对于声明文件目录查找。普通的 `#panel` 不会查找本地组件；未限定名称只使用内置 prelude。
+正文用 `#components.panel[...]` 与 `#components.badge("标签")` 调用，组件资源放在声明文件所在目录。
 
 组合示例使用 components.diagram，并直接导入 [KaTeX](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not)。docs/Notist.toml 的数学映射独立导入 [Typst](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not)，把内置 math 映射为 typst.math；文档中的直接 katex.math 调用仍使用 KaTeX。映射保持公式原文，不转换 Typst 与 LaTeX 方言。
 

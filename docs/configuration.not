@@ -2,7 +2,7 @@
 
 Notist.toml 是 Notist 唯一的项目清单。它声明一个 project，或一个 workspace 及其成员；project 通过 `[[book]]` / `[[site]]` 声明发布 target。target 的 name 同时是输出目录名，所以这份文件同时决定“构建什么”和“发布到哪里”。
 
-命令如何选择 target 见 [Notist CLI](cli.not)；多项目组织、构建顺序与部署边界见 [Workspace 与构建 Target](workspaces.not)；Book 与 Site 的内容规则分别见 [Notist Book](book.not) 与 [Notist SSG](ssg.not)。
+命令如何选择 target 见 [Notist CLI](cli.not)；多项目组织、构建顺序与部署边界见 [Workspace 与构建 Target](workspaces.not)；Book 与 Site 的内容规则分别见 [Notist Book](book.not) 与 [Notist SSG](ssg/README.not)。
 
 == 文件发现
 
@@ -70,7 +70,7 @@ name = "icy-bot"
 | `root` | path | `"."` | target 根，也是 Vault / resource root；相对项目 manifest。必须是现有目录。 |
 | `output` | path | `<dist>/<name>` | 发布目录；相对 target root，也可以是绝对路径。覆盖共享输出根下的默认位置。 |
 
-target 名一旦被 CI 或部署配置引用就应保持稳定。默认名已经包含项目名，单 target 项目通常不需要显式写 `name`；一个项目声明多个同类 target 时才需要区分。
+一个项目声明多个同类 target 时，使用 name 区分。
 
 == Book target
 
@@ -104,7 +104,7 @@ include / exclude 的候选范围、SUMMARY 选择、挂载与路由语义见 [N
 | `title` | string | `"Site"` | 站点标题。 |
 | `base_url` | string | `"/"` | 静态构建的链接前缀：HTTP(S) URL 或根相对路径；不能带 query 或 fragment。 |
 | `content` | path | `"content"` | 内容目录，相对 root。 |
-| `theme` | path | 内置主题 | 含 `templates/`、`static/` 和可选 `sass/` 的主题包。 |
+| `theme` | path | 无 | 含 `templates/`、`static/` 和可选 `sass/` 的主题目录。未指定时使用内置的极简 page 模板。 |
 | `templates` | path | `"templates"` | 覆盖主题模板的目录。 |
 | `static_dir` | path | `"static"` | 复制到输出根的静态资源目录。 |
 | `data` | path | `"data"` | TOML / JSON 数据目录，以 `site.data` 暴露。 |
@@ -112,11 +112,11 @@ include / exclude 的候选范围、SUMMARY 选择、挂载与路由语义见 [N
 | `template` | string | `"page"` | 页面模板名。 |
 | `[[site.extensions]]` | table[] | `[]` | 站点 prepare 扩展，见“扩展”。 |
 
-内容映射、模板上下文、主题资源与站点扩展协议见 [Notist SSG](ssg.not)。
+内容映射、模板上下文与主题资源见 [Notist SSG](ssg/README.not)；站点扩展协议见 [SSG 站点扩展](ssg/extensions.not)。
 
 == 扩展
 
-扩展按输入与阶段分三层，可以同时写在同一份清单里：
+扩展配置表及其作用范围：
 
 | 表 | 作用范围 | 阶段 | 用途 |
 | --- | --- | --- | --- |
@@ -144,9 +144,9 @@ include / exclude 的候选范围、SUMMARY 选择、挂载与路由语义见 [N
 | `command` | string[] | 程序与参数，不经过 shell。 |
 | `watch` | path[] | 相对 site root 的额外输入；命令失败时也会监听。 |
 
-执行顺序、stdio 请求 / 响应与失败处理见 [扩展 Notist](extensions.not)；站点协议见 [Notist SSG](ssg.not#站点扩展-experimental)。
+文档扩展的执行顺序、stdio 请求 / 响应与失败处理见 [扩展 Notist](extensions.not)；站点扩展的完整接口见 [SSG 站点扩展](ssg/extensions.not)。
 
-一个同时使用三层的例子：
+同时配置项目文档扩展、Book 文档扩展和 Site 扩展的例子：
 
 ```toml
 [project]
@@ -202,7 +202,7 @@ workspace 成员:  <workspace manifest>/<dist>/<target>/
 独立项目:        <project manifest>/dist/<target>/
 ```
 
-目录名就是 target 名，dist 下是一层平铺的发布根，不再有 `dist/<project>/` 这一级。`output` 可以覆盖这个位置；`--out-dir` 只对唯一选中的 target 生效，相对当前工作目录，并最终覆盖 `output`。
+`output` 可以覆盖默认位置；`--out-dir` 相对于当前工作目录，对唯一选中的 target 生效，优先于 `output`。
 
 发布是整目录替换：输出目录必须为空，或包含有效的 `_notist/publication.json`（`notist-publication` v1）；重建会删除旧产物中已不再发布的文件。输出目录不能与其他 target 的输出相同或互相包含，也不能覆盖任何成员的输入根或配置文件。构建先校验所有选中的 target，再逐个暂存并发布；某个 target 失败会保留它的旧产物并停止后续构建，已经发布的其他 target 不回滚。
 

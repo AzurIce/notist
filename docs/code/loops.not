@@ -1,6 +1,6 @@
 = 标量显示与有限遍历
 
-外部数据先通过 [Data](data.not) 的显式目标类型解码，再作为普通数据计算；显示和遍历不会把 Data、Path 或任意容器自动导出到正文。
+使用 str 将标量转成文本，使用 for 遍历数组并生成内容。外部数据先通过 [Data](data.not) 解码为所需类型。
 
 == str
 
@@ -12,7 +12,7 @@ fn str<T: Type>(value: T) -> String;
 
 - Unit 输出 ()；Bool 输出 true／false。
 - Int 输出完整 i64 十进制，保留超过 JavaScript 安全整数范围的值，不使用 locale。
-- Float 使用 Rust 的最短往返十进制显示，1.0 显示为 1，负零显示为 -0；非有限值固定为 NaN、Infinity、-Infinity。它是显示文本，不是 bit-exact wire 或 JSON。
+- Float 使用最短往返十进制表示，1.0 显示为 1，负零显示为 -0；非有限值显示为 NaN、Infinity、-Infinity。
 - String 保持原文本并共享存储。HTML 仍在呈现时转义，不把文本当 HTML 或 Markup 执行。
 
 Path、ResourceTarget、Data、DataError、Type、Content、Array、Dict、Option、Result 均不接受；Option／Result 先 match，Data 先 decode。中文布尔标签用普通分支，例如 `if available { "是" } else { "否" }`。
@@ -23,7 +23,7 @@ Path、ResourceTarget、Data、DataError、Type、Content、Array、Dict、Optio
 fn count(xs: Array<Int>) -> Int { xs.len() }
 ```
 
-len 由接收者静态类型解析，接收者只求值一次；也支持 `(1, 2).len()`、`make_array().len()`。擦除的 Array 也能求长度，但不能因此恢复元素类型。方法进入统一 FunctionDef／Invocation／NativeFunction 模型；不提供 arr_len／array_len 自由函数，不把任意同名函数变成方法。
+数组通过 `.len()` 取得长度，也支持 `(1, 2).len()`、`make_array().len()`。接收者只求值一次。
 
 == for 与内容连接
 
@@ -53,10 +53,8 @@ for 的返回值作为森林进入结果树；无属性的挂载溶解，有非�
 
 == 结构与预算
 
-table／row／list 分别只接受 row／cell／item。局部的已检查模板、let、块尾值和分支可保留这些结构证据；BlockContent 本身和普通 helper 的私有实现不能证明角色。循环可以为空，但错误角色不会因此跳过检查。结构组装在内核中完成，after_evaluate 不负责生成未受检正文。
+table／row／list 分别接受 row／cell／item。循环体须生成符合所在位置的结构，空数组也会检查循环体。
 
 默认 Limits.iterations 为 100000，Limits.loop_work 为 1000000；两者跨嵌套循环、内容调用和重复挂载累计，空输出也计费。另保留步骤、调用深度、内容节点、逻辑值、解析、驻留和读取额度；运行期循环嵌套最多 32 层，跨前端的语法／lowering 嵌入共用 16 层防护。输出逐轮追加，不复制已生成的整个前缀。
 
 失败保留定义文件、调用展开链及真实数据来源；for 整体丢弃已组装的前缀，不静默跳过坏记录。未准备输入返回 NeedResources，不提供部分树，也不执行输出 hooks。comptime 不构造或遍历内容。
-
-本版没有 .enumerate()、双变量解构、while、range、break／continue、可变累加器、数据推导式或完整闭包。尤其不将 `for (index, value) in array` 特设为自动索引；成对元素与解构需要单独的静态表示设计。

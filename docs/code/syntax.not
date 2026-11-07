@@ -1,7 +1,7 @@
 #import "../../modules/grammar/lib.notc" as grammar;
 = Code · `.notc`
 
-Code 是固定的纯函数语言；内容字面量的语法由注入的 Markup 前端决定。每份 .notc 是独立模块，由显式源文件入口或 import 加载。类型、实例检查与求值规则见 [Code 函数系统](functions.not)。
+Code 是用于计算数据与生成内容的函数语言。每份 .notc 是独立模块，内容字面量使用所选 Markup 前端的语法。类型与求值规则见 [Code 函数系统](functions.not)。
 
 == 声明
 
@@ -17,7 +17,7 @@ TypeRef      = Path ("<" TypeRef ("," TypeRef)* ">")?
 Block        = "{" ("let" name "=" Expr ";")* Expr? "}"
 ```
 
-列表可不写最后的逗号。`?` 与默认值不能并用，且可选普通参数只用于原生声明。children 是固定槽名。类型构造目前只有 Array，可省略元素类型或指定一个数据元素类型。
+列表允许尾逗号。`?` 声明可选参数，与默认值互斥；children 是固定的内容槽名。泛型类型包括 Array<E>、Option<T> 和 Result<T, E>，详见 [类型](types.not)。
 
 ```notc
 fn math<C: Type = InlineContent>(text: String) -> C;

@@ -30,8 +30,6 @@ target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模
 | `-h, --help` | 打印帮助。 |
 | `-V, --version` | 打印版本。 |
 
-`--config` 只改变配置来源，不会让单文件命令运行 Site prepare；站点 prepare 只属于 Site target 的构建和预览。
-
 == 配置发现
 
 `build` / `serve` 从当前目录向上寻找最近的 Notist.toml。找到的 manifest 若声明 `[workspace]`，再读取成员；当前目录在成员内时，会继续向上寻找所属 workspace。单文件命令从被检查文件（或目录参数）所在目录向上寻找配置。
@@ -91,16 +89,16 @@ notist serve [-p <project> ...] [--target <name>] [--host <host>] [--port <port>
 | `--target <name>` | 全部匹配 | 选择 target。 |
 | `--host <host>` | `127.0.0.1` | HTTP 监听主机名或 IP 地址，IPv6 直接写 `::1`。 |
 | `--port <port>` | 优先 `8000` | 显式指定时严格使用该端口；`0` 表示由系统分配空闲端口。 |
-| `--address <addr>` | 无 | 兼容旧的 `host:port` 写法（IPv6 如 `[::1]:9000`）；不能与 `--host`、`--port` 同用。 |
+| `--address <addr>` | 无 | 完整监听地址，如 `127.0.0.1:9000` 或 `[::1]:9000`；与 `--host`、`--port` 互斥。 |
 | `--no-clear-screen` | 关闭 | 保留每一轮构建的终端输出；重定向、管道和 CI 环境也会自动关闭清屏。 |
 
 选择规则与 `build` 相同，但结果必须恰好是一个 target；否则报 `serve requires exactly one target`。在纯 workspace 根使用 `-p` 或 `--target` 消歧。
 
-未指定端口时优先监听 `8000`，被占用则由系统分配空闲端口。显式指定 `--port` 或使用旧的 `--address` 时，端口不可用就报错，不自动换端口；其他监听错误也直接报错。终端输出实际监听地址。
+未指定端口时优先使用 `8000`，被占用则选择空闲端口；指定端口不可用时则报错。终端输出实际监听地址。
 
 serve 在内存中生成与静态构建相同的产物，监听源文件、模板、样式、数据、配置和实际读取的模块资源。失败时保留上一次成功预览，并明确提示当前展示旧内容；修复后自动重建。预览始终使用根路径 `/`，静态构建使用 Site 的 `base_url`。
 
-使用 `notist serve -v` 或 `notist build --verbose` 查看详细进度。`serve -v` 对初次构建和每轮文件变更重建都生效，并自动保留终端历史，不清屏。进度只写 stderr，不改变 stdout 的路径、摘要或 JSON 数据。单文件分析命令也会展示经过的分析和求值阶段；纯语法树打印和 LSP 不产生构建进度。
+使用 `-v` 查看各阶段进度与耗时；`serve -v` 同时保留每轮终端输出。进度写入 stderr。
 
 ```sh
 cd book && notist serve
@@ -110,7 +108,7 @@ notist serve --config website/Notist.toml --host 127.0.0.1 --port 9000
 
 == 单文件命令
 
-单文件命令不选择 target，也不执行 Site prepare。它们使用最近 Notist.toml 的顶层文档扩展；`--config` 可以改变来源。
+单文件命令分析指定文件，使用最近 Notist.toml 的顶层文档扩展；可通过 `--config` 指定配置。生成页面需通过 `build` / `serve` 运行 [SSG 站点扩展](ssg/extensions.not)。
 
 === check
 
@@ -178,7 +176,7 @@ notist html <file> [--out-dir <dir>]
 
 渲染单个文档为 HTML，并把实际使用的组件资源写入目录；默认输出目录是 `target/notist-html`。命令在 stdout 打印生成的 `index.html` 路径。
 
-单页导出不读取 Book 的 SUMMARY、主题或章节路由，也不执行 Site 的模板与 prepare；它适合检查组件、模块资源与单页呈现。
+适合检查组件和单页呈现。构建完整书籍或站点时使用 `build`。
 
 ```sh
 notist html docs/components/README.not --out-dir target/components-demo

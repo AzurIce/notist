@@ -1,23 +1,21 @@
 = Notist Book
 
-notist-book 将 Vault 中的文档组织为章节，并构建可阅读的 HTML 书籍。它负责阅读结构、章节路由、跨章链接与主题，资源与环境装配由 notist 提供，HTML 内容渲染由 notist-html 提供。.not 与 Markdown 使用相同路由、导航、主题和链接校验。源码分析、函数映射与求值、HTML 渲染的职责分别见 [Markup 管线](designs/pipeline/markup.not)、[函数映射与求值](designs/extensions.not) 与 [HTML Rendering](html.not)。
+Notist Book 将文档目录（Vault）中的 .not 与 Markdown 文档组织为 HTML 书籍，提供章节导航、跨页链接与内置主题。
 
-SUMMARY（SUMMARY.not 或 SUMMARY.md）声明书籍发布的章节、阅读层级与顺序；Book target 的 include / exclude 限制可选的文档范围，源文件路径决定页面 URL。存在 SUMMARY 时，只发布其中显式登记或由目录条目发现的页面，其他文档不参与正文检查、路由或输出；没有 SUMMARY 时发布所有符合过滤条件的文档。调整阅读顺序只需修改 SUMMARY；移动源文件则会改变 URL，也需要更新指向它的链接。
+SUMMARY.not 或 SUMMARY.md 用来选择章节并安排阅读顺序；没有 SUMMARY 时，按目录结构组织符合 include / exclude 条件的文档。页面 URL 由源文件路径决定。
 
 == 命令与配置
 
 Book 是统一项目模型中的一种 target。命令行选择与输出规则见 [Notist CLI](cli.not)；`[[book]]` 的字段、默认值与路径基准见 [Notist.toml 配置](configuration.not#book-target)。本页说明 Book 的阅读结构、内容规则与预览行为。
 
-target 的 root 默认为项目配置目录，作为 Vault 根。build 写入完整站点；serve 在内存中生成相同产物，通过 HTTP 提供页面与资源，并监听输入变化。预览构建失败时保留上一次可用页面，并明确提示当前展示旧预览；首次构建失败时显示诊断和等待页面。修复后自动刷新。
+target 的 root 指定文档目录，默认为项目配置目录。`build` 生成书籍文件；`serve` 提供本地预览，文件变化后自动重建，失败时保留上次可用预览。
 
 ```sh
 notist build
 notist serve --port 8000
 ```
 
-serve 的终端输出按构建轮次显示状态、耗时和错误／警告数量；交互终端默认清除当前屏幕并展示本轮结果，保留终端滚动历史。通过 --no-clear-screen 保留每轮输出；重定向、管道和 CI 环境自动关闭清屏。开始重建时显示 Rebuilding，只有本轮检查完成后才确认错误是否解决；全部错误修复后显示 All errors resolved。
-
-浏览器中的可折叠诊断面板同步本轮结果，包含源码位置与代码片段。普通 warning 不阻止更新，默认折叠；可恢复的内容错误允许生成新预览，但仍标明存在错误；阻止构建的错误保留旧预览。新结果替换旧诊断，错误清零后清除错误面板；连接断开时提示正在重连，避免将上次状态误认为当前状态。
+预览中的错误和警告会显示在终端及浏览器诊断面板中。使用 `--no-clear-screen` 保留每轮终端输出。
 
 项目的 Notist.toml 声明 Book target。完整字段见 [Notist.toml 配置](configuration.not#book-target)，最小形状如下：
 
@@ -55,23 +53,23 @@ path = "art"
 
 source 相对于 Vault 根目录，也可使用绝对路径；path 是书籍内的相对目录。挂载后的 art/models/drill/README.md 对应源文件 ../art/models/drill/README.md，生成 art/models/drill/index.html。include / exclude、目录派生导航和模板中的 page.source 都使用带挂载前缀的书籍路径。
 
-挂载目录与 Vault 内目录共用章节选择规则：没有 SUMMARY 时发布所有符合过滤条件的文档；存在 SUMMARY 时只发布结构选择的章节。SUMMARY 可以用 `[模型](art/models/)` 发现挂载目录，也可用 `[钻头](art/models/drill/README.md)` 单独选择页面；根目录条目 `./` 包含挂载后的章节。挂载目录中的 SUMMARY 文件没有特殊作用，仅 Vault 根目录的 SUMMARY 声明整本书的结构。
+挂载内容使用相同的 include / exclude 和 SUMMARY 规则。例如在 Vault 根目录的 SUMMARY 中写 `[模型](art/models/)` 选择整个目录，或写 `[钻头](art/models/drill/README.md)` 选择单页。
 
-挂载声明不会整目录复制。发布选中的章节，以及这些章节通过 link / embed 引用的现有资源；普通链接不会使未选中的章节重新发布。比如资产说明引用 renders/hero.png 和 model/drill.glb 时复制这两个文件，未引用的 .blend、源码和其他素材不输出。文件使用挂载后的相对路径复制；重复引用只发布一份。
+发布内容包括选中的章节及其引用的资源。例如文档引用 renders/hero.png 和 model/drill.glb 时，这两个文件按挂载后的相对路径复制到输出目录。
 
 正文相对链接与 Code 导入仍按源文件的真实位置解析。例如 ../art/models/drill/README.md 内的 renders/hero.png 指向同一资产目录中的渲染图；它也可以通过真实相对路径链接回 docs/ 中的章节或另一个已挂载目录。Vault 内的正文和 SUMMARY 还可以直接用 art/... 这样的挂载路径引用外部内容。已发布章节链接改写为相对目录 URL，资源链接改写为相对文件 URL，保留 query 与 fragment 并使用统一的 URL 编码。未挂载的外部内容仍遵守下文的 warning / error 规则。
 
 source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同挂载的源目录不能相同或相互包含。path 必须非空，不能是绝对路径、包含上级跳转或占用 _notist；挂载路径之间不能重叠，也不能遮盖 Vault 中已有的文件或目录。输出目录不得与挂载源目录或 Vault 内的挂载路径重叠。文件系统构建仍拒绝符号链接资源。
 
-挂载只扩展书籍发布范围，不改变文档身份或源码 import 的解析基准。统一构建入口对所有页面显式应用选中 target 的文档扩展配置；不会合并挂载目录中的其他项目配置。serve 监听挂载目录中的修改、新增与删除，使用与 build 相同的章节和资源规则。
+挂载页面使用当前 Book target 的扩展配置。serve 同时监听挂载目录的文件变化。
 
-挂载文档的 Path 字面量以该挂载源目录为逻辑资源根：相对 Path 按源文档目录绑定，以 `/` 开头的 Path 从挂载根定位；`..` 仍不能逃出该根。Vault 文档中的 Path 仍使用 Vault 根，宿主发布时可以将其已声明的虚拟挂载路径映射到挂载源文件。路径身份不会绕过挂载或文件检查。
+挂载文档的相对 Path 按源文档目录解析，以 `/` 开头的 Path 从挂载源目录定位。Path 的用法见 [Path 字面量](code/path.not)。
 
 === 输出与配置作用域
 
 Book target 配置章节发现与展示；项目的顶层 extensions 和 book.extensions 通过独立 imports 选择文档输出实现，字段与路径基准见 [Notist.toml 配置](configuration.not#扩展)。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 选择项目或 workspace 配置，不改变文档的导入绑定。
 
-build 完成全部校验和渲染后暂存输出，再替换已发布站点。输出目录必须为空，或包含有效的 _notist/publication.json（format 为 notist-publication，version 为 1）；重建删除旧产物中已不再发布的文件。失败不会替换旧站点，输出不得覆盖 Vault 或其父目录。输出布局与覆盖优先级见 [Notist.toml 配置](configuration.not#输出)。
+构建成功后更新输出目录并清理过期产物；失败时保留原有文件。输出目录的配置与安全限制见 [Notist.toml 配置](configuration.not#输出)。
 
 == 路由与导航
 
@@ -85,13 +83,13 @@ build 完成全部校验和渲染后暂存输出，再替换已发布站点。�
 
 README 的匹配区分大小写。所有已注册文档前端使用相同规则；路径段进行 URL 编码。标题不改变 URL。同一个输出路径出现多个文档时报告冲突，例如 README.not 与 README.md，或 guide.not 与 guide/README.md。
 
-没有 SUMMARY 时，导航按目录层次与文件名自然排序，目录首页先于其子页面；目录均为章节节点，没有 README 时保留无链接的章节标题。页面标题取首个 heading，无 heading 时使用文件名，根首页回退到站点标题。
+没有 SUMMARY 时，导航按目录层次与文件名自然排序，同目录的 README 排在其他页面之前。没有 README 的目录显示为无链接的分组。页面标题取第一个标题，没有标题时使用文件名；根 README 的标题还可回退到书名。
 
-默认主题采用品牌中性的白色／深灰色背景、蓝色链接与系统无衬线字体，提供响应式导航、面包屑、上一篇 / 下一篇、随滚动高亮的页内目录、阅读进度和代码复制；明暗主题在用户明确选择前跟随系统。serve 在缺少根首页时将 / 重定向到第一个实际页面。
+内置主题提供章节导航、面包屑、上一篇 / 下一篇、页内目录、阅读进度和代码复制，支持移动端与明暗模式。serve 在缺少根 README 时将 / 重定向到第一个页面。
 
 == SUMMARY：阅读结构
 
-在 Vault 根目录手工创建 SUMMARY.not 或 SUMMARY.md，即可用显式声明选择发布页面并取代目录派生导航。两种格式共用相同的结构解释逻辑；同时存在时报错，必须保留其中一个，include / exclude 不影响这项检查。build 与 serve 都不会自动创建结构文件；两者均不存在时使用上述默认排序。Notist Book 单独读取结构文件，即使 include / exclude 没有选中它也会生效；它始终从正文页面中排除，不能作为站内页面链接的目标。
+在 Vault 根目录创建 SUMMARY.not 或 SUMMARY.md，列出需要发布的章节及顺序。两种格式选择一种；SUMMARY 专用于导航，即使被 include / exclude 排除也会读取。
 
 结构语义对齐 [mdBook SUMMARY](https://rust-lang.github.io/mdBook/format/summary.html)，使用 .not 的标题、列表、链接与分隔线语法：
 
@@ -145,7 +143,7 @@ SUMMARY.md 使用 Markdown 语法，章节可以混合指向 .not 和 Markdown�
 - [附录 A：参考](reference.not)
 ```
 
-手写编号是标题的一部分，不决定层级、顺序或 URL；增删或移动章节时由用户自行调整。
+编号作为标题文字显示，增删或移动章节时需自行调整。
 
 支持以下结构元素：
 
@@ -161,9 +159,9 @@ SUMMARY.md 使用 Markdown 语法，章节可以混合指向 .not 和 Markdown�
 
 导航与面包屑严格跟随章节列表的缩进，顶层条目互为同级；首页也遵循相同规则。上一篇 / 下一篇按深度优先前序遍历实际页面，跳过分节、分隔线、草稿及无内容的章节。上例的页面顺序为：首页 → 开始使用 → 进阶 → 参考 → 贡献者。进阶页的面包屑为：开始使用 → 进阶，URL 保持 /guide/advanced/。
 
-Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有页面的章节；目录链接如 `[历史记录](_logs/)` 自动发现该目录内符合过滤条件的页面。纯文字条目与带链接的条目遵循相同的缩进层级，例如 `- 玩法设计` 可以包含多个子章节，也可以没有子项。它们使用无页面章节的淡色、常规字重样式。只有顶层标题语法（.not 的 `= 分节` 或 Markdown 的 `# 分节`）声明粗体分节标题。目录自动发现和 collapsed 注解见下文。前后置章节只接受单文档链接。
+纯文字条目（例如 `- 玩法设计`）用于分组，目录链接（例如 `[历史记录](_logs/)`）用于自动收集页面。两者都可嵌套子章节；目录发现和折叠设置见下文。
 
-只有显式登记或由目录条目发现的页面会发布；未列入的文档自动忽略，无需逐个配置 exclude。空目标草稿只声明导航位置，不会按标题寻找同名源文件；源文件是否发布仍由其他页面或目录条目决定。重复页面、重复目录、无效目标、外部 URL、query / fragment、普通段落、不支持的结构或后置章节之后出现章节列表都会使构建失败；serve 执行相同校验。
+SUMMARY 中的章节目标须为本地文档或目录。重复条目、无效目标与不支持的结构会使构建失败。
 
 === 目录自动发现
 
@@ -176,13 +174,13 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 - [历史记录](_logs/)
 ```
 
-目录条目沿用默认导航的目录层级与文件名自然排序，例如 entry2 排在 entry10 前。目录中的已发布 README 合并为该分支首页，其子页面随后排列；没有 README 时保留无链接的章节节点，子章节按目录层级排列。补上 README 后绑定内容与页面 URL，原目录层级保持不变。链接文字覆盖分支标题；文字为空时使用首页标题，没有首页则使用目录名。新增目录内的页面后，无需再修改 SUMMARY。
+目录条目按目录层级与文件名自然排序，例如 entry2 排在 entry10 前。有 README 时，分组标题链接到该页面；否则只显示分组文字。链接文字用作分组标题，省略时取 README 标题或目录名。新增页面后无需再修改 SUMMARY。
 
-目录发现从 Book target 过滤后的候选文档中选择页面，不会重新纳入被 include / exclude 排除的文档，也不会纳入隐藏文件、输出产物或根目录的结构文件。目录外的文档若未由其他条目选中则不发布，也不报漏列错误；发现不会改变页面 URL。
+目录发现同样遵守 include / exclude。
 
 显式页面条目优先：无论出现在目录条目之前、之后还是嵌套在其中，页面都留在显式声明的位置，自动发现时跳过。同一页面显式声明两次仍报错。目录条目附带的手工子条目排在自动子树之前；若其 README 已显式放到别处，该目录条目保留为无链接的章节节点，子章节仍在其下排列。
 
-不同目录条目范围重叠时，更具体的目录优先，例如 `_logs/2026/` 接管其页面，`_logs/` 发现其余页面，与声明先后无关。同一规范目录不能重复声明；需要覆盖 Vault 其余页面时可使用 `./`。目录条目只支持目录路径，不提供 glob 或单独的排序配置。
+目录范围重叠时，更具体的目录优先，例如 `_logs/2026/` 收集其页面，`_logs/` 收集其余页面。使用 `./` 可以收集 Vault 中的其余页面。
 
 === 分支折叠
 
@@ -203,37 +201,25 @@ Notist Book 在章节列表中支持两种扩展：纯文字标签声明没有�
 
 `collapsed` 必须是 Bool，省略或为 false 时默认展开；没有子项时不显示折叠控件。
 
-每次加载页面时，当前页面的祖先分支自动展开，以显示当前条目；当前条目自身及其他分支使用各自的声明默认值。因此，点击默认折叠条目的标题进入该页面时，不会展开它的子项。读者随后可以自由展开或收起，不跨页面记忆操作状态。带链接的标题负责跳转，无链接标题不切换折叠状态；只有右侧箭头负责展开或收起。折叠采用原生 HTML 控件，支持键盘操作，关闭 JavaScript 后仍可使用。
+当前页面所在的祖先分支自动展开；右侧箭头可手动展开或收起。侧栏会保存滚动位置，桌面端还可拖动右侧边缘调整宽度。
 
-有内容页的章节使用正常文字颜色，无页面的章节与草稿使用较淡文字；各状态使用相同的章节排版。当前页面通过强调色与背景突出，鼠标悬停使用浅背景反馈。
-
-侧栏滚动位置按书籍在当前标签页内保存，跳转章节、刷新或重新打开移动端目录时恢复。当前章节已经可见时保持原位置；否则只滚动到可见区域。浏览器存储不可用时仍会定位当前章节。
-
-桌面侧栏默认宽 280px。拖动目录右侧的手柄可调整宽度；聚焦手柄后，左右方向键每次调整 16px，双击或按 Home 恢复主题默认宽度。宽度按书籍保存在浏览器本地，跳转章节、刷新及重新打开书籍时恢复；存储不可用时仍可在当前页面调整。可调范围为 240–420px，窗口较窄时进一步限制上限，为正文保留空间；窗口重新变宽后恢复读者选择的宽度。移动端继续使用抽屉目录，不显示调宽手柄。
-
-桌面页面两侧各留 24px，目录与正文间距为 24px，正文最大宽度默认 750px。在 1320px 以下，页内目录移入正文顶部；没有页内目录时不预留右侧栏。移动端在 760px 及以下切换为单栏，两侧各留 20px。
-
-两种 SUMMARY 都经过对应前端的文档分析，再按结构数据解释，不进入求值、输出转换或 HTML 渲染。因此直接写列表即可，无需 `#toc`、额外函数声明或 Web Component，也不支持用代码求值动态生成目录。当前仓库的 docs/SUMMARY.not 展示了完整的站点阅读结构。
+完整示例见仓库 docs/SUMMARY.not。
 
 == 链接、锚点与资源
 
 Book 将 `![描述](assets/example.png "标题")`（Markdown 与 Markup 均支持）及 `#embed` 引用的图片渲染为 img，description 作为 alt，title 保留在外层 span。按 URL 路径扩展名识别 PNG、JPEG（jpg / jpeg）、GIF、SVG、WebP、AVIF、APNG、BMP 和 ICO，忽略大小写及 query / fragment；本地与远程图片均适用。其他资源仍显示为链接；无图片扩展名的远程 URL 也使用链接。build 与 serve 预览使用相同呈现。
 
-link 的本地 String 目标按既有源文档规则解析。embed 使用已绑定的 [Path](code/path.not) 身份：文档实参相对调用文档，Path 默认值及函数体字面量相对定义模块，转发不会重绑定；Markup／Markdown 图片语法和旧本地字符串在 embed 操作处兼容绑定。Path 文件名内的 `?`、`#`、`%` 不是 URL 后缀，query／fragment 使用独立字段。
+本地链接按源文件位置解析，并指向对应的书籍页面；query 与 fragment 保留。资源也可通过 [Path](code/path.not) 引用。
 
-指向已发布文档的目标改写为页面间的相对目录 URL，保留 query 与 fragment；不会通过替换 HTML 字符串来修改链接。embed 的基础 URL 按 ResourcePath 映射，后缀按每次引用独立附加；文件名与 fragment 由宿主编码，不输出逻辑资源根。远程 URL 保留，URL 安全检查仍由 renderer 执行。求值后的错误节点保留原身份与字段，Notist Book 按错误表示呈现，跳过其资源及标题解释；Expanded 包装的原始 embed 输入不触发资源发布。
+标题自动生成锚点，重复时追加 -2、-3 等序号；也可以用 id 注解指定锚点。
 
-输出树为没有显式 id 的 heading 生成锚点：标题转为小写，字母、数字与下划线保留，其余字符合并为短横线；空结果使用 section，重复时追加 -2、-3 等序号，并避开全文显式 id。heading 所属 section 的显式 id 是该标题的锚点。目录与跨页 fragment 校验使用同一份 outline，原始 Analysis 不变。
+正文与资源的发布范围为 Vault 及显式 mounts。缺失页面、文件或锚点的普通链接产生警告；嵌入资源缺失或超出发布范围会阻止构建。
 
-发布的正文与资源限于 Vault 和显式 mounts 内。普通 link 指向不存在或未发布的文档、缺失文件、不存在的锚点或发布范围外的本地路径时产生 warning，build 与 serve 仍输出完整书籍并保留链接。发布范围内未发布的文档链接沿用其书籍路径对应的章节路由，例如 missing.md 指向 missing/、guide/README.not 指向 guide/；query 与 fragment 保留，不为缺失目标创建页面。发布范围外的链接保留原始 URL，不读取、检查或复制目标文件，也不将其加入发布范围。点击不存在的页面或文件时由服务器返回 404；缺失锚点保留 fragment，但页面无法定位对应位置。链接不会使被 exclude 或 SUMMARY 排除的文档重新发布。
-
-embed 的缺失目标及发布范围外目标仍报错；非法 URL、保留资源路径及 SUMMARY 中的无效章节目标也仍阻止构建。Code 字面量生成节点的诊断使用 origin 对应的定义文件与范围，不将该范围套用到调用文档。引用的现有资源按书籍相对路径复制，目录组件的辅助资源随组件目录复制；组件的参数保持原样，不自动解释其中的路径。
-
-导入的 Code 模块及组件实现可以位于 Vault 外。实际使用的组件资源在站点中共享，存放于 _notist/modules/；各页面只注册自己使用的组件。资源计划与资源 URL 编码由 notist.publication 提供，单文档导出与书籍构建共享这套能力。资源按规范模块身份分目录；不同目录的同名模块可以共存。_notist 是生成资源保留目录，不允许正文路由或本地资源占用。文件系统发布拒绝符号链接资源，避免越界和递归环。
+引用的资源按书籍相对路径复制，使用的组件及辅助文件发布到 _notist/modules/。_notist 是生成资源的保留目录。
 
 == 代码块高亮
 
-Book 在构建和 serve 时为显式标注语言的代码块生成高亮 HTML，.not 与 Markdown 共用实现，无需浏览器高亮脚本。常用语言由 syntect 与 two-face 语法集提供，包括 TypeScript / TSX、TOML、Dockerfile；not / notist 与 notc 使用 Notist 自己的语法树，高亮示例不会执行代码或读取导入。未知语言、无语言和 text / plaintext 等纯文本标记保持转义后的原文，不自动猜测语言。行内代码不高亮。语言标签支持逗号或空白分隔的附加信息，例如 rust,ignore、rust,no_run 与 rust 使用相同高亮，ignore 不会关闭着色。
+代码块标注语言后即可在构建时生成高亮，支持 Rust、TypeScript / TSX、TOML、Dockerfile、Notist 等。未标注或未知语言按纯文本显示。`rust,ignore`、`rust,no_run` 等标签使用对应语言的高亮。
 
 默认的 _notist/theme/highlight.css 提供明暗配色，与页面主题同步；根元素未显式选择主题时跟随系统。可通过附加 CSS 覆盖 --notist-code-* 变量，或在 theme/assets/highlight.css 替换整个配色文件。高亮保留源码空白与末尾换行，语言标签和复制按钮继续显示、复制原始内容。
 
@@ -271,7 +257,7 @@ additional-js = ["scripts/reader.js"]
 
 --navigation-width 设置侧栏默认宽度，--book-width 设置整体布局的最大宽度（默认 1440px）。读者保存的侧栏宽度优先于主题默认值；重置后重新使用 --navigation-width。
 
-默认主题在 head 中提前设置 JavaScript 标记、主题和保存的侧栏宽度，避免先绘制无脚本布局再切换。目录后紧接 assets.navigation 内联脚本，先恢复目录再加载延迟的阅读交互。它以书籍首页 URL 隔离状态，记录普通目录点击项相对侧栏的位置；刷新与历史导航保留滚动位置，无记录时显示当前章。移动端抽屉打开时由同一逻辑恢复。自定义 index.tera 应保留这两个初始化阶段；assets/navigation.js 可以覆盖内联目录脚本。
+自定义 index.tera 时，在 head 中保留默认主题的主题初始化代码，并在目录节点之后内联 assets.navigation，以恢复阅读位置与侧栏设置。
 
 模板引擎使用 Tera 2。自定义主题目录可以覆盖 index.tera、navigation.tera、navigation-label.tera，或添加其他 .tera 模板；模板名是相对路径去掉 .tera。局部模板通过 include 引用，也可使用 extends 与 block 组织布局。navigation.tera 定义 `book_navigation(node)` 模板组件，通过 `{{<book_navigation node={child}/>}}` 递归渲染；navigation-label.tera 以 node 访问当前节点。Tera 不允许循环 include。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
 
@@ -312,7 +298,7 @@ attrs 来自目标文档根节点的模块注解（`@!`），不包含局部标�
 </body></html>
 ```
 
-title.tera 可使用 `{{page.title}}`。普通插值转义 HTML，渲染后的 page.html 使用 safe 过滤器。未定义字段与模板语法错误使构建失败。模板上下文属于 Notist；入口为 index.tera，mdBook 的主题模板与上下文不直接兼容。
+title.tera 可使用 `{{page.title}}`。普通插值转义 HTML，渲染后的 page.html 使用 safe 过滤器。未定义字段与模板语法错误使构建失败。
 
 == Library 接口
 
@@ -326,19 +312,7 @@ let output = notist_book::build(&mut vault, &config)?;
 
 serve 使用与 build 相同的参数和返回类型，在内存中构建并将可恢复的 Code 错误呈现为诊断节点；HTTP 服务与文件监听由 CLI 提供。
 
-notist-book 通过 Resources 读取逻辑输入，生成拥有全部字节的 BuildOutput，不直接写文件或启动服务器。build 的主要步骤为：
-
-1. 根据站点配置发现候选正文，识别根目录的 SUMMARY.not 或 SUMMARY.md，并从正文中移除；两者同时存在时报错。
-2. 若存在 SUMMARY，单独分析并解释其列表，将目标解析到候选页面或目录，选择显式章节与目录范围内的页面；否则选择全部候选页面。只为选中的页面建立路由并检查输出冲突，再展开目录子树，显式条目的位置优先。
-3. 对每篇正文执行一次分析，校验索引与显式 id；按文档环境中的函数映射选择实现，求值得到独立的表示树，再准备页面标题、锚点与页内目录。
-4. 从声明结构或目录结构建立导航树，同时提供面包屑、上一篇 / 下一篇与 BuildOutput.pages 顺序。
-5. 校验跨页链接、fragment 与资源，为求值后的树绑定 HTML 实现并渲染，再用主题模板生成完整页面，收集组件与静态资源。
-
-返回的 BuildOutput.files 包含页面、主题资源、组件资源和 _notist/publication.json 发布清单。BuildOutput.warnings 保存普通超链接的非阻断诊断，CLI 以 warning 输出；BuildOutput.diagnostics 保存 serve 恢复的内容错误。阻断错误不返回部分站点，warning 不影响发布或 serve 的成功刷新。
-
-serve 保留已被内容边界恢复的错误及其诊断，呈现错误节点和其余独立内容；恢复状态不取决于诊断产生阶段。环境、路由、资源及其他未恢复错误仍阻止站点生成。
-
-CLI 负责文件系统暂存与替换、HTTP、文件监听和 SSE 刷新。预览按站点重新构建，监听 Vault 及实际读取的外部模块 / 配置资源；搜索索引、整书打印页等书籍能力可在本层扩展；当前按整书重新构建。
+notist-book 通过 Resources 读取输入，返回包含完整文件字节的 BuildOutput。files 保存页面与资源，warnings 保存链接警告，diagnostics 保存预览中可恢复的内容错误。文件发布、HTTP 服务与文件监听由 CLI 提供。
 
 == GitHub Pages
 

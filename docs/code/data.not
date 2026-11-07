@@ -1,10 +1,8 @@
 = Data：JSON／TOML 与受检访问
 
-Data 是新增的内置静态类型，表示外部数据的共享只读节点视图；DataError 是专用的不可变错误类型。它们不是 Any，也不是普通 Dict。Data 不能隐式用于算术、字符串、Path 或正文，文件内容不会改变表达式的静态类型。
+Data 表示 JSON／TOML 的只读数据视图。读取后，按所需类型解码，再用于计算或生成正文；DataError 保存读取、解析或访问失败的信息。
 
 解码后的标量可用 str 显式显示；Array<E> 可用 for 生成正文、表格行或列表项，见 [标量显示与有限遍历](loops.not)。原始 Data 不直接可遍历或 stringify。
-
-标量及 Option<scalar> 的受检解码不占长期投影缓存条目，字符串和 Data 仍共享；需要遍历／物化的数组保留批次 memo。这个区分不跳过来源、读取授权、批次内固定输入或硬额度，也不是隐式 LRU。大型输入仍需显式的宿主额度或有界分片，不能逐页复制整库。
 
 JSON 和受支持的 TOML 共用 `Null | Bool | Int | Float | String | Array | Object` 节点树。子树访问只复制句柄，保留数据内路径和来源；句柄不携带继续读取资源的能力。对象成员保留输入顺序，数据判等忽略来源，但保留对象与数组顺序。
 
@@ -17,7 +15,7 @@ fn parse_json(text: String) -> Result<Data, DataError>;
 fn parse_toml(text: String) -> Result<Data, DataError>;
 ```
 
-这些是标准库 Rust-native 签名，不是用户声明即可取得的实现。读取仅允许在 notc Code 中求值，复用 [Path 与读取授权](path.not)；独立 Markup 仍只调用内容函数并传入数据字面量。检查、Parse／Lower 与 LSP 不读取数据，comptime 不能读取资源。纯 parse_json／parse_toml 不读取资源，可参与 comptime。
+read_json／read_toml 在 notc Code 执行时读取文件，授权规则见 [Path 与文本读取](path.not)。parse_json／parse_toml 解析已有字符串，也可在 comptime 中使用。
 
 ```notc
 fn title(source: Path) -> String {
@@ -40,7 +38,7 @@ T 必须在调用的 `<>` 中给出。允许 Data、Unit、Bool、Int、Float、
 - Array<E> 递归验证每个元素；Array<Data> 可以保存异构原始数组的节点句柄，不复制整棵子树。
 - Dict、擦除的 Array、Never、Result、DataError、Path、ResourceTarget、Type、Content 均不是解码目标，嵌套使用也不允许。空数组或 null 不会放宽限制。
 
-解码结果保留调用指定的完整静态类型，不从缺少载荷的 none／ok／err 重新猜类型。Data 解码器不负责从普通 Code Dict 中恢复已擦除的任意名义类型。
+解码结果保留调用时指定的完整静态类型。
 
 == 对象与数组
 
@@ -55,7 +53,7 @@ fn data_len(array: Data) -> Result<Int, DataError>;
 fn data_kind(data: Data) -> String;
 ```
 
-require 表示字段／索引必须存在，不表示自动 panic。get／index 只有缺失／越界返回 ok(none)，存在但类型错误仍返回 err；节点不是所需的 Object／Array 也返回 err。has 不解码值，但验证 Object 形状；keys 保持成员顺序。索引从 0 开始，负数是无效查询，不当作缺席。data_len 只接收数组；data_kind 返回节点种类名称，不产生类型流收窄。
+require 要求字段／索引存在，缺失时返回 err；get／index 在缺失／越界时返回 ok(none)。节点种类或值类型不符时均返回 err。has 检查对象是否有指定键，keys 按原顺序返回键；数组索引从 0 开始，负数报错。data_len 返回数组长度，data_kind 返回节点种类名称。
 
 原始 Null、字段缺失、语言 Unit 和 Option 的 none 不混用：
 
@@ -93,24 +91,21 @@ data_fail 保留实际数据文件范围、同版本源码和读取／调用展�
 
 文件缺失、拒绝访问、非文件、普通 IO、UTF-8／格式和受检访问错误返回 err。Pending 仍是宿主 NeedResources，不能提前发布 fallback；缺少读取能力及文件／请求／缓存／解析／解码／求值的硬预算失败仍走宿主或求值失败通道，Result 不能捕获它们。
 
-== 格式政策
+== 支持的格式
 
 - JSON 支持所有根种类；拒绝重复键和 UTF-8 BOM。整数语法必须在 i64 范围内，不能溢出后改作 Float；小数／指数语法按有限 f64 解码，不根据数值是否恰为整数改变类型。非有限或溢出结果拒绝。
 - TOML 根是 Object。支持 table、inline table、array、array of tables、string、bool、i64 和有限 f64。日期／时间／时区值及非有限浮点明确拒绝，不自动字符串化。TOML 解析库可能将某些格式／数字问题报告为 syntax。
-- 字符串不再解释为 Markup，也不构造 Path、Type 或 Content。
 
-== 缓存、预算与公开边界
+== 输入与限额
 
-同一 Vault／ResourceSession 输入批次共享字节、成功／失败的解析结果，以及按不可变节点和完整目标类型缓存的投影。首次读取固定输入字节或错误，命中缓存仍执行读取授权、请求额度与依赖登记，不重新检查磁盘。文件修改或缺失文件后来出现由下一轮的新批次接收；PreparedInputs 重试同样创建新视图。独立 EvaluationInputs 由宿主提供本轮稳定的输入。
+同一轮构建共享已读取的数据，文件变化在下一轮构建生效。读取权限与输入接口见 [资源输入与求值](../designs/resource-inputs.not)。
 
-默认单数据输入和单逻辑值上限为 16 MiB，原始树／投影最多 250,000 个逻辑节点，数据深度 64；共享句柄按所代表的逻辑数据计费，不能按指针大小绕过限额。解析工作集默认 128 MiB；JSON 在分配前保守估算字符串／节点／索引空间，TOML 临时格式树按输入长度 64 倍估算，另计共享树，较大输入可能先触及工作集限额。批次数据缓存默认 128 MiB／4096 条目，命中不会取消调用自身预算。
+默认单数据输入和单逻辑值上限为 16 MiB，原始树／解码结果最多 250,000 个逻辑节点，数据深度为 64。解析工作集与批次数据缓存各限 128 MiB，缓存最多 4096 条目。
 
-Rust 宿主可通过 Limits.value_bytes／Limits.data、Vault.with_evaluation_limits、with_input_limits 和 with_data_cache_limits 显式调整限额；这不是取消默认边界或增量引擎。缓存不进入文档引用环，来源绑定不保存在共享语义树中。
-
-逻辑子树大小与背后驻留的整份文档分开计费：求值／comptime 检查还在工作集额度内保留并核算所引用的解析文档和错误源码，不能通过收集许多小子树隐藏大文档。物化容器缓存计入字符串、容器及有界类型验证摘要的保守驻留额度，不把逻辑字节数当成真实内存大小。
+Rust 宿主可通过 Limits.value_bytes／Limits.data、Vault.with_evaluation_limits、with_input_limits 和 with_data_cache_limits 调整限额。
 
 原始 Data／DataError 及包含它们的集合不能作为 `<>` 的值实参；它们的 Type 值可以作为类型实参。可在 comptime 解析／投影后传递普通标量或集合。
 
-Data／DataError 及其容器不能自动导出成 HTML 属性、组件参数或模板数据，须先显式选择并解码普通值。inspection 只展示有界摘要，不输出原始整库或私有来源。可信 IR wire 新增 Data／DataError 标签，Data 只序列化选中子树的有界前缀快照；不序列化内部节点编号、来源、授权或会话，反序列化后不会重读磁盘补来源。旧 Value 的 string／array／有序 Dict 和浮点协议不变。
+向 HTML 属性、组件参数或模板输出数据时，先选择所需字段并解码为普通值。inspection 对 Data／DataError 只展示摘要。
 
-完整的单条记录例子见仓库 examples/structured-data 与 `cargo run --example structured_data`。这一切片不包含通用 for／内容序列生成、用户 record／schema、自动 site.data 迁移或整站页面枚举；既有 Shape、row／cell／item 角色和内容错误边界保持不变。
+完整例子见仓库 examples/structured-data 与 `cargo run --example structured_data`。

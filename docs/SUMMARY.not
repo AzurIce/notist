@@ -13,7 +13,8 @@
 - [Notist.toml 配置](configuration.not)
 - [Workspace 与构建 Target](workspaces.not)
 - [Notist Book](book.not)
-- [Notist SSG](ssg.not)
+- [Notist SSG](ssg/README.not)
+  - [Extension（Experimental）](ssg/extensions.not)
 - [扩展 Notist（Experimental）](extensions.not)
 
 = Markup

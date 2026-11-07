@@ -1,0 +1,119 @@
+= Notist SSG
+
+Notist SSG 将源文档渲染为正文，再套用模板，在输出目录的对应位置生成 HTML。源文件决定内容与路径，模板决定页面布局；data 可以向模板补充额外信息。
+
+== 构建与预览
+
+在 Notist.toml 中添加一个 Site target：
+
+```toml
+[project]
+name = "example"
+
+[[site]]
+title = "My Site"
+```
+
+默认从 content 读取文档，使用 templates 中的模板。没有自定义模板时，使用内置的极简 page 模板，可以直接构建，但没有导航、侧栏等站点布局。
+
+```sh
+notist build
+notist serve --port 8000
+```
+
+`build` 默认输出到 `dist/<target>/`，上例为 `dist/example-site/`。`serve` 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
+
+目录与其他配置见 [Notist.toml 配置](../configuration.not#site-target)，命令行选项见 [Notist CLI](../cli.not)。
+
+== 源文件与输出
+
+文档保留相对于 content 的目录结构，只将扩展名替换为 .html；图片等资源原样复制：
+
+```text
+content/index.not          → index.html
+content/about.md           → about.html
+content/guide/start.not    → guide/start.html
+content/guide/image.svg    → guide/image.svg
+```
+
+文档间的本地链接会指向对应的 HTML 页面。
+
+== 模板
+
+模板使用 Tera，放在 templates 下，文件扩展名为 .tera。默认使用 page，创建 `templates/page.tera` 即可覆盖内置模板：
+
+```tera
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>{{page.title}} · {{site.title}}</title>
+    <link rel="stylesheet" href="{{assets.highlight}}">
+  </head>
+  <body>
+    <main>{{page.html | safe}}</main>
+    {% if assets.components %}
+      <script type="module" src="{{assets.components}}"></script>
+    {% endif %}
+  </body>
+</html>
+```
+
+模板可以访问当前页面与整站信息：
+
+| 名称 | 用途 |
+| --- | --- |
+| `page.title` / `page.html` | 当前页面的标题与已渲染正文。正文使用 safe 输出，避免再次转义。 |
+| `page.attrs` | 文档自定义属性。 |
+| `page.route` / `page.headings` | 页面路径、URL 与标题列表，可用于链接和目录。 |
+| `site.title` / `site.base_url` | 站点标题与链接前缀。 |
+| `site.pages` / `site.directories` | 整站页面与目录，可用于组织导航。 |
+| `site.data` | data 目录加载的额外信息。 |
+| `assets.highlight` / `assets.components` | 代码高亮样式与组件脚本的地址；自定义模板按上例加载。 |
+
+模板可以使用 include 和 extends 拆分、复用布局；引用模板名时不带 .tera。`url(path='index.html')` 可以生成带 base_url 的站点链接。
+
+=== 页面属性
+
+文档可以指定标题、模板及其他信息：
+
+```not
+@!(title: "About", template: "article", description: "About this project")
+= About
+
+Page content.
+```
+
+这里使用 `templates/article.tera`，模板中通过 `page.attrs.description` 访问描述。未指定时，标题取第一个标题或文件名，模板使用站点配置中的 template（默认为 page）。
+
+== 额外数据
+
+data 目录中的 TOML / JSON 会加载到 `site.data`，让模板可以访问文档以外的信息，例如项目资料、导航配置或外部数据。
+
+例如 `data/project.toml`：
+
+```toml
+repository = "https://github.com/example/project"
+```
+
+模板中即可使用：
+
+```tera
+<a href="{{site.data.project.repository}}">源码</a>
+```
+
+数据键是去掉扩展名的相对路径，例如 `data/folder/example.json` 通过 `site.data["folder/example"]` 访问。
+
+== 样式与主题
+
+- static 下的文件复制到输出目录，可放 CSS、图片等资源。
+- sass 下的 .scss / .sass 编译为对应路径的 .css；以 _ 开头的文件仅用于导入。
+- theme 可以指定一个包含 templates、static、sass 的主题目录；站点中的同名文件优先于主题。
+
+例如 `static/site.css` 输出为 `site.css`，模板中用 `{{url(path='site.css')}}` 引用。
+
+== 站点扩展（Experimental）
+
+扩展可以在构建前增删改文档源码和模板数据，例如读取 Cargo.toml，自动生成 examples 页面。生成内容不写回源目录，仍按相同路径规则构建。
+
+配置与协议见 [SSG 站点扩展](extensions.not)，完整示例见 [从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。

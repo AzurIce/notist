@@ -4,7 +4,7 @@
 
 DocumentExtension 定义单份文档的阶段扩展。它可以修改检查前的表达式、校验语义树、选择执行实现或编辑求值后的输出树；notist-core 保存共同契约，notist-pipeline 调度阶段，Environment / Vault 装配扩展及其依赖。站点页面集合、路由与发布结构属于站点宿主。
 
-如何选择层级、在同一配置中组合两套扩展，以及各 CLI 命令调用哪些阶段，见 [扩展总览](../extensions.not)。生成页面集合或从 Cargo.toml 构建 example 目录时，使用 [SSG 站点扩展](../ssg.not)；完整用例见 [Cargo examples 教程](../cookbook/ssg-extensions.not)。
+如何选择层级、在同一配置中组合两套扩展，以及各 CLI 命令调用哪些阶段，见 [扩展 Notist](../extensions.not) 与 [SSG 站点扩展](../ssg/extensions.not)。生成页面集合或从 Cargo.toml 构建 example 目录时，使用 [SSG 站点扩展](../ssg/extensions.not)；完整用例见 [Cargo examples 教程](../cookbook/ssg-extensions.not)。
 
 == 阶段与表示
 
@@ -125,7 +125,7 @@ Rust 编写的外部命令可以使用 notist.command_extension 的 Request / Re
 cargo run -p notist-cli -- html examples/extensions/README.not --out-dir target/extension-example
 ```
 
-脚本需要 Python 3.11 或更新版本。整站页面集合及模板数据的增删改已由 [SSG 的 prepare 扩展](../ssg.not) 提供；它接收源码字符串，协议与本文的 Expr / Item 表示分别定义。
+脚本需要 Python 3.11 或更新版本。整站页面集合及模板数据的增删改已由 [SSG 的 prepare 扩展](../ssg/README.not) 提供；它接收源码字符串，协议与本文的 Expr / Item 表示分别定义。
 
 == Replace 配置与作用域
 

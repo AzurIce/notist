@@ -47,15 +47,15 @@ fn show(value: Int) -> InlineContent {
 ```
 
 - 必须覆盖 `ok(name)` 与 `err(name)`，或者以 `_` 臂覆盖剩余情况；此规则也适用于编译期已知的 subject。
-- `ok(_)`／`err(_)` 丢弃载荷。首版不支持嵌套构造器、字面量载荷或 guard 模式；需要嵌套分解时再写 match。
+- `ok(_)`／`err(_)` 丢弃载荷；嵌套值使用嵌套 match 分解。
 - 臂绑定只在自己的分支体内有效，可以遮蔽外层名字，不改变原 subject 的静态类型。
 - 重复变体臂或 `_` 之后的臂产生不可达诊断。
 - subject 只求值一次，只有选中的分支在运行期执行。subject 编译期已知时，仅检查选中的分支体；模式与覆盖仍需合法。
 - Result 支持 `==`／`!=`：相同变体按载荷比较，不同变体不等；两个操作数的完整类型必须相同。不支持排序与算术。
 
-传播不需要新语法：在 err 臂中返回 `err(message)` 即可，声明返回类型为它提供 T。不增加 `?` 传播运算符、throw／catch 或通用的内建 expect／unwrap；结构化数据另提供专用 [DataError 与诊断升级](data.not)。
+传播错误时，在 err 臂中返回 `err(message)`，声明返回类型为它提供 T。结构化数据的辅助函数见 [DataError 与诊断升级](data.not)。
 
-需要放弃当前计算时，可以在 err 臂调用 `panic(message)`；它返回 Never，因此可以与正常 T 分支合并。普通 Code 可据此定义 expect，而不需要内建异常捕获，见 [Never 与 panic](panic.not)。
+需要中止当前计算时，可以在 err 臂调用 `panic(message)`；它返回 Never，可以与正常 T 分支合并，见 [Never 与 panic](panic.not)。
 
 == 嵌套、求值与输出
 
@@ -63,6 +63,6 @@ Result 可以嵌入 Array、Dict、Option 或另一个 Result。例如 `Result<O
 
 纯 Result 构造与匹配可以在 comptime 执行，完整静态类型在折叠后保留。它不把内部求值器的失败变成可捕获值：`ok(read_text(source))` 若读取失败，仍走原有诊断；输入未准备仍返回宿主 NeedResources。资源授权、输入一致性、预算与 Code-only 限制不变。
 
-原生内容函数与 Code 函数共用相同参数契约，Result 仍是普通数据，不产生新函数类别。组件的带标签编码递归保留变体：`["ok", payload]`／`["err", payload]`；浏览器解码为 `{ kind: "ok", value: ... }`／`{ kind: "err", value: ... }`。调试与模板展示 JSON 使用 `{ "ok": ... }`／`{ "err": ... }`，不丢弃标签。既有 Serde IR 协议使用新增的 Ok／Err 变体，旧值编码不变。
+组件参数使用带标签的编码：`["ok", payload]`／`["err", payload]`；浏览器解码为 `{ kind: "ok", value: ... }`／`{ kind: "err", value: ... }`。调试与模板展示 JSON 使用 `{ "ok": ... }`／`{ "err": ... }`。
 
 独立 Markup 的实参、注解和声明默认值仍遵守数据字面量限制，不为 Result 开放任意调用。需要构造或处理 Result 时放在 notc Code 中；JSON／TOML 接口见 [Data](data.not)，read_text 的返回类型保持 String。

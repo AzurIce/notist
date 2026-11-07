@@ -5,7 +5,7 @@
 #import "../modules/shader/lib.notc" as shader;
 = 本地模块
 
-Code 模块是一份 .notc 源文件。模块通过相对路径 import 其他模块，公开顶层函数与所有显式导入的绑定；不需要包名、版本或依赖清单。内容字面量由所选 Markup 前端处理，函数类型与求值规则见 [Code 函数系统](code/functions.not)。
+Code 模块是一份 .notc 源文件，通过相对路径 import 其他模块，公开顶层函数与导入的绑定。函数类型与求值规则见 [Code 函数系统](code/functions.not)。
 
 == 导入与名称解析
 
@@ -39,9 +39,9 @@ import "issue.notc": *;                 // 导入所有公开绑定
 
 普通调用名称先查当前函数的局部绑定，再查当前文件的函数与静态导入，未绑定的裸名回落到内置 prelude。局部值遮蔽同名函数和命名空间；命名空间本身不可调用。`self.name` 显式查询当前文件的公开绑定，`notist.name` 显式查询内置定义；限定路径不回落 prelude。Markup 语法糖显式使用 notist，因此同名导入不改变普通文本、强调等语法糖的含义。
 
-`diagrams.diagram` 逐级访问静态模块公开的绑定，不按名称搜索文件系统。Markup 使用当前文件的导入作用域；Code 函数体始终使用定义所在模块的作用域。两侧调用分别写作 `#ticket(...)` / `ticket(...)` 或 `#diagrams.diagram(...)` / `diagrams.diagram(...)`。模块和函数绑定均不能作为运行期值传递；加载导入只安装定义，不执行函数体。
+`diagrams.diagram` 访问导入模块的公开成员。Markup 使用当前文件的导入作用域；Code 函数体使用定义模块的作用域。调用分别写作 `#diagrams.diagram(...)` 与 `diagrams.diagram(...)`。
 
-模块身份由宿主规范化后的逻辑源路径确定；函数身份是该模块身份与函数名的组合。模块别名和成员重命名不进入身份或实例缓存键；直接导入保留原始 FunctionId，不复制 FunctionDef 或函数体。同一规范路径只加载一次；不同目录的同名文件与函数保持独立。循环导入、缺失文件与无效声明产生带来源文件和范围的诊断，加载失败不返回部分正式环境。
+模块由规范路径标识，函数由模块与函数名标识。别名和成员重命名保留原函数身份。循环导入、缺失文件与无效声明会报告源码位置并阻止加载。
 
 == 文件入口与作用域
 
@@ -55,35 +55,9 @@ import "issue.notc": *;                 // 导入所有公开绑定
 
 `#import` 独占一行，允许出现在文件顶层任意位置，绑定对整个文件有效。它产生静态模块声明，不产生 Item、内容调用边界或空段落。字符串、注释、转义与代码块中的相同文字保持普通内容。内容函数的 children、列表、表格等嵌套位置以及 Code 内容字面量不能声明 import；字面量使用定义模块的词法作用域。
 
-Code 使用同一份 import 语法与 lowering，省略 Markup 的 `#`；原生 Notist Markup 与 Markdown 扩展都支持上述六种形式。每份源文件是独立入口，宿主沿声明递归取得模块；相邻的 lib.notc 没有特殊加载行为。引用其他文件的定义必须显式导入；未限定的 Markup 调用先查文件绑定，再回落内置 prelude。
+Code 使用同一份 import 语法，省略 Markup 的 `#`。引用其他文件的定义需显式导入；未限定的调用先查当前文件的绑定，再查内置 prelude。
 
-前端输出独立的 import 列表和内容 Expr 森林。宿主在 Parse / Lower 之后加载模块图，再建立内部 Context 并运行 Resolve → Shape → Materialize → Evaluate。Context 是签名、模块绑定、Code 实现和执行映射的分析状态，不由用户指定入口。
-
-== 模块产物与绑定
-
-模块处理分为两个独立阶段：
-
-```text
-Resources 读取源码
-    → compile_module → CodeModule
-    → 提取名称与 import 声明，宿主递归加载依赖
-    → BindingSpec + 依赖导出查询 → ModuleScope
-    → LinkedModule → Context
-```
-
-CodeModule 保存单文件的共享声明、函数体 IR、源码和未解析的 import 声明；编译不读取依赖，不执行函数体。BindingSpec 只保存本地声明名称、导入选择、宿主解析的目标身份及诊断位置，不包含函数体和签名。纯绑定器通过 ModuleExports 查询显式成员或完整公开表，产生 ModuleScope；命名空间导入不枚举目标成员，宿主仍验证整个依赖图。
-
-ModuleScope 只保存名称到模块／函数身份的绑定及公开表，不持有依赖实现。LinkedModule 共享引用本文件的 CodeModule 和 ModuleScope；Context 的 CodeProgram 按模块持有这些产物，Registry 与模块产物共享同一份定义。访问调用时先沿作用域与公开绑定取得 FunctionId，再从当前 Context 获取签名和函数体。函数体变化不改变导入身份；签名变化仍由具体实例检查处理。
-
-Rust 宿主可用 Context.with_module 安装无 import 的模块。带 import 的模块先调用 Context.link_module，按声明顺序提供每个已加载目标的规范身份，再用 with_linked_module 安装。CodeModule 不提供修改导入绑定的接口；宿主构造原生元数据时可在安装前通过 Arc 的写时复制修改独立定义。CodeProgram.sources() 汇集共享源码引用，不复制函数体。
-
-== 进程内复用
-
-单文件编译和导入绑定使用 comemo 复用成功及错误结果。编译键包含完整源码、模块身份、来源路径、逻辑根及实际前端的缓存身份；不会把整个 Context 或依赖源码加入该键。绑定键是 BindingSpec；ModuleExports.lookup 跟踪选中的公开成员，all 跟踪通配导入使用的完整公开表。导出身份不变时可以复用绑定，签名与函数体仍从当前 Context 取得。没有任何名称或导入的空作用域直接共享，不进入查询缓存。
-
-内置前端提供确定性身份；自定义前端默认不缓存，可通过 Frontend.cache_key 显式声明实现版本和完整配置。前端身份契约也涵盖 Code 内容字面量的解析与 lowering，不能用显示名称、对象地址或隐藏可变状态代替。文档前端本身的 Parse / Lower、实例检查、求值、扩展 hooks 和发布结果不在这两个缓存内。
-
-宿主仍为每轮建立输入视图并加载、校验依赖图；新 Vault 不要求清空计算缓存。evict_caches(max_age) 按轮次老化进程内 comemo 缓存，0 清空条目，不影响仍被产物持有的 Arc。CLI 在 Book／Site 装配和 LSP 输入批次间使用年龄 10；其他长期宿主自行选择时机。该操作影响进程内所有 comemo 使用者，不是每项目字节预算，也不提供跨进程、跨 Worker 持久化或增量调度。
+模块加载、绑定与 Context 的 Rust 接口见 [Code 管线](designs/pipeline/code.not) 与 [文档管线](designs/pipeline.not)。
 
 == 输出配置
 
@@ -104,7 +78,7 @@ title = "My Notes"
 output = "public"
 ```
 
-每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析并校验。文档无须导入输出目标；文档、不同规则之间的同名别名相互独立，同一规范模块只加载一次。规则不读取导入模块目录的配置。源码 import 只提供定义，不自动启用 replace 扩展。执行契约见 [函数映射](designs/extensions.not)。Code 文件检查只加载自身的 import 图。
+每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析。上例让文档中的 math 使用 Typst 渲染；文档中仍可直接写 `$...$` 或 `#math(...)`。完整契约见 [函数映射](designs/extensions.not)。
 
 项目可以只声明内容函数，由输出规则选择实现，无须为原声明提供 Web Component。本仓库的 [components.diagram](components/README.not#diagram) 使用同签名规则选择 Pele 或 Mermaid；正文保留项目函数身份，HTML 绑定选中的渲染器。下方模块示例直接调用各自实现，以展示模块本身。
 
@@ -125,9 +99,9 @@ widgets/
 
 组件标签和发布资源路径从规范模块身份生成；模块别名、成员重命名及通配导入都保留定义文件对应的资源根。输出映射继续按原始函数身份选择实现，同一函数的不同导入写法共享组件注册和发布资源。同名函数来自不同目录时可以共存；目录组件的辅助资源保持相对路径。具体映射与参数协议见 [Content Function Extensions](designs/content-functions.not)。
 
-Vault 根限定正文与本地内容引用；Code 模块和组件资源可以位于根外。加载外部模块不会把其 README 或其他文档纳入正文索引，也不授予相邻数据文件的读取权限。宿主通过 Resources 与共享 ResourceSession 读取源码、递归加载 import 并装配 Environment / Context；Pipeline 显式接收源码、Context 及求值所需的 EvaluationInputs。内存宿主使用 MemoryResources，PreparedInputs 将输入快照及准备状态传给 Worker；两者复用同一加载路径。数据授权和发布映射相互独立，见 [资源输入与求值](designs/resource-inputs.not)。
+Code 模块和组件资源可以位于文档目录之外。资源读取与发布的 Rust 接口见 [资源输入与求值](designs/resource-inputs.not)。
 
-仓库的 modules/ 存放普通本地模块及实现资源。模块可另带 Rust crate 或构建脚本，它们不构成 Notist 的包机制；包注册表、版本与分发留待单独设计。
+仓库的 modules/ 提供以下可复用模块及其实现资源。
 
 == 实现与示例
 

@@ -47,9 +47,7 @@ ResourceTarget 是接受 Path 或 String 的输入类型，用于 embed 及转�
 
 == 外部结构化数据
 
-Data 表示 JSON／受支持 TOML 的共享只读节点视图，DataError 表示受检读取／访问错误。它们是新的内置静态类型，不是普通 Dict 或 Any；没有直接的源码值字面量。显式目标类型解码、nullable、Result 与保留来源的诊断见 [Data 与 JSON／TOML](data.not)。
-
-String／Array／Dict 的运行期存储同样共享不可变内容；克隆不改变既有有序语义、结构判等与逻辑大小预算。
+Data 表示 JSON／TOML 的只读数据视图，DataError 表示读取或访问错误。读取、解码与错误处理见 [Data 与 JSON／TOML](data.not)。
 
 == 内容
 
@@ -95,7 +93,7 @@ syntax Dict -> value:Collection @{ classification(value) == Dict };
 
 classification 按上面的局部判别执行。Grouping 必须恰有一个值；Dict 中的游离值产生 semantic 诊断。Trivia 与 Args 使用 Syntax 中的规则；当前 parser 对缺失 / 重复逗号的容错也适用于集合。
 
-当前 core 的 Dict 与 `.not` 字面量都只支持字符串 key；源码 key 仅解析 IDENT / STR，裸 `true` 作 key 也是字符串。其他 key 类型及其源码写法见 [Draft](../draft.not)。
+Dict 的 key 为字符串，可以写成标识符或字符串字面量。
 
 BlockContent 不属于可传入普通参数的 Value。`#f([body])` 与 `#f(children: [body])` 目前不支持；内容用 `#f(args)[body]` 挂载。parser 可保留非法位置的内容语法供诊断和恢复。裸标识符值除 true / false 外产生 semantic 诊断。
 

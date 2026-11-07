@@ -1,8 +1,6 @@
 = Workspace、项目与构建 Target
 
-Notist 可以用根目录的 Notist.toml 组织多个项目，每个成员目录保留自己的 Notist.toml。项目通过 `[[book]]` / `[[site]]` 声明任意命名的发布 target；workspace 只负责成员组织与统一构建，不合并配置，不自动建立页面或发布依赖。字段参考见 [Notist.toml 配置](configuration.not)，命令与选择见 [Notist CLI](cli.not)。
-
-结构上可以类比 Cargo：workspace 组织多个 package，package 声明 lib / bin target。这里 project 对应 package，`[[book]]` / `[[site]]` 对应实际产物 target；区别是 Notist target 直接发布整棵 HTML 目录，而不是单个二进制。
+Workspace 用根目录的 Notist.toml 组织多个项目。每个成员有自己的 Notist.toml，通过 `[[book]]` / `[[site]]` 声明构建目标（target）；在根目录可以统一构建到共享的 dist 目录。字段参考见 [Notist.toml 配置](configuration.not)，命令见 [Notist CLI](cli.not)。
 
 == 以 Ranim 为例
 
@@ -75,7 +73,7 @@ watch = ["../Cargo.toml", "../examples", "../assets",
          "../shadow.toml", "render-state.json"]
 ```
 
-站点扩展仍从 website/ 运行，可以读取 examples/ 等外部输入，在内存中生成页面，不要求把整个仓库作为正文目录。Notist 构建不会自动编译 Ranim WASM、渲染动画或上传媒体，这些步骤仍由 Ranim 自己的工具管理。
+站点扩展在 website/ 中运行，读取 Cargo.toml、examples/ 等输入并生成页面。配置和 watch 用法见 [SSG 站点扩展](ssg/extensions.not)。
 
 == 选择与输出
 
@@ -90,19 +88,18 @@ target 名在 workspace 内全局唯一，默认 `<project>-<kind>`；默认输�
 
 == 路径与配置作用域
 
-workspace 只改变成员发现与共享输出根，不改变成员内部的路径基准：target root、内容路径、源码 import、正文相对链接和文档扩展都按成员自己的 manifest 解析。完整路径表见 [Notist.toml 配置](configuration.not#路径基准)。
+各成员使用自己的配置和路径基准，完整路径表见 [Notist.toml 配置](configuration.not#路径基准)。
 
 - workspace 与成员之间不继承扩展或其它配置；顶层 `[[extensions]]` 属于声明它的项目。
 - 统一 build / serve 显式使用选中 target 的文档输出配置，适用于该 target 的全部页面；单文件 check / html 仍使用最近配置，只读取顶层文档扩展。
-- 选中的配置以项目配置目录下的 .notist-target-<name>.toml 虚拟身份提供给管线，只存在内存中。配置规则的诊断引用这份投影后的内容，不会把生成位置错误地标到原始 manifest 的行号上。
 
 serve 监听项目与 workspace 配置以及实际读取的外部依赖，重建时重新读取 target 配置。配置错误保留旧预览，修复后恢复；修改已选 target 的 root、类型或身份需要重启 serve。
 
 == 发布边界
 
-workspace 成员关系不扩大页面发现范围，也不允许普通链接自动带入其他项目的文档。Book 仍通过 SUMMARY、过滤和显式 mounts 选择发布内容；Site 仍通过 content 与 prepare 扩展准备页面。Code 模块和显式外部依赖可以位于 target root 外。
+各 target 独立选择页面并构建：Book 使用 SUMMARY、过滤和 mounts；Site 使用 content 与 prepare 扩展。
 
-dist 中的相邻目录不意味着部署后的 URL 相邻。Ranim 的 Book 与 Website 可以继续分别部署到各自地址；跨项目链接仍使用显式发布 URL。当前不提供自动跨 target 路由映射或组合部署。
+各 target 可以分别部署到不同地址，跨项目链接使用部署后的 URL。
 
 == 从旧配置迁移
 

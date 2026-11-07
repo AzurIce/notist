@@ -2,7 +2,7 @@
 
 本例让 Notist SSG 在构建时读取 Cargo.toml 的 `[[example]]` 和 Rust 源文件，为每个 example 生成一个页面及模板数据。增减 Cargo targets 后重新构建即可，无须为每项维护独立的文档与 data 目录中的 TOML 文件。
 
-该用例使用实验性的 SSG prepare 扩展。脚本操作文档源码字符串和普通 JSON 数据，生成页面继续使用正常文档编译与站点模板。层级选择与执行顺序见 [扩展总览](../extensions.not)，完整协议见 [SSG 站点扩展](../ssg.not#站点扩展-experimental)。
+本例使用 SSG 的 prepare 扩展，接收文档源码与 JSON 数据，返回生成结果。协议见 [SSG 站点扩展](../ssg/extensions.not#json-i-o-协议)。
 
 == 文件布局
 
@@ -38,8 +38,6 @@ fn main() {
     println!("Hello from an example!");
 }
 ```
-
-本例只读取这些文件，不编译或运行 Rust 程序。
 
 == 配置扩展
 
@@ -120,11 +118,11 @@ except Exception as error:
 json.dump(response, sys.stdout)
 ```
 
-input.documents 的键相对于 content 目录，所以 examples/hello.md 的绝对源身份是 website/content/examples/hello.md，输出为 examples/hello.html；即使源文件没有写到磁盘，也会参与站点目录、链接与文档检查。根注解把 example 名称放入 page.attrs.example，供模板查找数据。
+input.documents 的键相对于 content：examples/hello.md 生成 examples/hello.html。根注解将 example 名称提供给模板中的 page.attrs.example。
 
-脚本修改请求中的完整输入并原样返回其他内容。examples/ 下的页面与 site.data.examples 由本扩展管理，先清空这两个范围再重建，删除 Cargo target 后不会留下旧页面或数据。其他页面和数据保持当前输入值。这一策略适用于扩展拥有明确命名空间的项目；有手写 example 页面时，应先确定需要保留哪些路径。
+本扩展重新生成 examples/ 下的页面与 site.data.examples，保留其他内容。请将手写页面放在 examples/ 以外，避免被覆盖。
 
-== 模板消费数据
+== 页面模板
 
 website/templates/page.tera：
 
@@ -148,7 +146,7 @@ website/templates/page.tera：
 </html>
 ```
 
-Rust 源码由扩展作为带语言标记的代码块写入文档源码，经过正常正文编译获得语法高亮；模板只放置 page.html，不再生成正文。site.data 是扩展生成的 JSON，仍可供页面外壳与呈现使用，模板不负责读取 Cargo.toml 或 Rust 文件，见 [站点模板](../ssg.not#站点模板)。
+模板通过 page.html 放置生成的正文，包括 Rust 代码高亮。还可以通过 site.data.examples 访问脚本生成的数据，见 [模板](../ssg/README.not#模板)。
 
 == 构建与检查
 
@@ -159,7 +157,7 @@ notist build --config website/Notist.toml
 notist serve --config website/Notist.toml --port 8000
 ```
 
-默认输出结构为：
+输出结构为：
 
 ```text
 website/public/
@@ -181,4 +179,4 @@ content 中仍只有手写的 index.not，data 目录不需要创建。添加新
 cargo run -p notist-cli -- build -p ssg-extensions
 ```
 
-该示例匹配 ranim 的 example 布局，负责生成文档与数据，不负责构建 WASM、渲染动画或上传媒体。
+该示例使用 ranim 的 example 目录布局。

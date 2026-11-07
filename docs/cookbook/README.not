@@ -4,7 +4,7 @@
 
 需要从清单或源文件自动生成页面时，可阅读 [从 Cargo examples 生成站点](ssg-extensions.not)。该教程给出完整的 Notist.toml、Python stdio 扩展和模板，用正常 CLI 构建站点，不逐项维护生成的文档和数据文件。
 
-站点层与文档层的选择、执行顺序及实验性接口边界见 [扩展 Notist](../extensions.not)。现有接口参考分别位于 [Notist SSG](../ssg.not) 与 [文档扩展](../designs/extensions.not)。
+配置与协议见 [文档扩展](../extensions.not) 和 [SSG 站点扩展](../ssg/extensions.not)。
 
 == 基础 Markup 语法
 
@@ -115,7 +115,7 @@ Let's say *Hello* _World_!
         - Text("!")
 ```
 
-其中对 Heading 的属性标注比较特殊，按 [section 规则](../markup/builtin.not)，每个 Heading 都会产生一个对应的 Section 节点，并将身上的属性转移上去。
+标题开启一个 Section，标题前的块注解挂在该 Section 上，见 [section 规则](../markup/builtin.not)。
 
 == 类型系统
 
@@ -155,11 +155,11 @@ Callout 没有专用 Markup 语法，直接调用：
 ## 提示
 
 - 正文继续按 **Markdown** 解析
-- 也可以调用 #math("x^2") 或已安装包的内容函数
+- 也可以调用 #math("x^2") 或导入模块的内容函数
 ]
 ```
 
-`#emph[行内调用]` 的正文按 Markdown 行内规则解析；`#callout[ ... ]` 两端内侧留有换行，因此按 Markdown 块规则解析。换成 .not 时，调用名称与参数保持一致，正文改用 .not 语法。内容通过调用后的 `[]` 挂载，`#emph([正文])` 这样的 BlockContent 参数目前不支持。
+`#emph[行内调用]` 使用 Markdown 行内正文；`#callout[ ... ]` 两端内侧留有换行，使用块级正文。换成 .not 时，调用名称与参数相同，正文改用 .not 语法。
 
 == 按前端处理源码
 
@@ -177,4 +177,4 @@ let document = pipeline.analyze(
 
 只安装原生前端时使用 `Pipeline.new().with_frontend(notist.NotistFrontend)`；只安装 Markdown 时使用 `Pipeline.new().with_frontend(notist.MarkdownFrontend)`。自定义前端实现 Frontend 与 ContentLowering，注册后按同一规则参与选择；接口见 [文档前端](../designs/frontends.not)。
 
-需要查看解析树和中间 IR 时使用 `pipeline.inspect(path, source, &context)`。它复用本次前端处理的解析产物；普通 analyze 仍会解析源码，只是不把解析树保留在返回结果里。Context.default 提供内置函数和空转换计划；需要项目声明与转换规则时，由宿主加载 Environment 并传入 environment.context()。
+使用 `pipeline.inspect(path, source, &context)` 查看解析树和中间 IR。Context.default 提供内置函数；项目模块与扩展由宿主加载，见 [文档管线](../designs/pipeline.not)。

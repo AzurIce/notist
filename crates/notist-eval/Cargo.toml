@@ -1,0 +1,12 @@
+[package]
+name = "notist-eval"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Internal regression oracles used by the pipeline's compiler/evaluator tests.
+test-support = []
+
+[dependencies]
+notist-core = { path = "../notist-core" }
+rowan = "0.17.0"

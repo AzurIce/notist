@@ -284,3 +284,30 @@ impl Default for Context {
         Self::new(builtins::registry().clone())
     }
 }
+
+impl notist_eval::EvaluationContext for Context {
+    fn registry(&self) -> &Registry {
+        self.registry()
+    }
+
+    fn resource_root(&self) -> &str {
+        self.resource_root()
+    }
+
+    fn target(
+        &self,
+        id: &notist_core::definitions::FunctionId,
+    ) -> notist_core::definitions::FunctionId {
+        self.extensions().target(id)
+    }
+
+    fn specialize(
+        &self,
+        instance: &notist_core::definitions::FunctionInstance,
+        program: crate::code::CheckedProgram,
+    ) -> (crate::code::CheckedProgram, Vec<Diagnostic>) {
+        let mut checker = crate::code::Checker::with_program(self, program);
+        checker.install(instance);
+        (checker.program, checker.diagnostics)
+    }
+}

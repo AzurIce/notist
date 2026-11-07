@@ -129,10 +129,14 @@ def instrument(root, detailed):
         ('materialize.rs', [('materialize', 'check.materialize')]),
         ('definitions.rs', [('compile_uncached', 'module.compile')]),
         ('modules.rs', [('bind_imports', 'module.bind'), ('bind_cached', 'module.bind_actual')]),
-        ('code/data.rs', [('data_native', 'data.native'), ('read_data', 'data.read')]),
-        ('code/eval.rs', [('run', 'eval.run'), ('constant', 'eval.comptime'), ('bind_content', 'eval.bind_content'), ('present', 'eval.present'), ('execute', 'eval.execute'), ('implementation', 'eval.implementation'), ('synthetic_call', 'eval.synthetic_call')]),
     ]:
         entries('crates/notist-pipeline/src/' + relative, methods)
+    # Older frozen snapshots keep evaluation inside pipeline; new snapshots
+    # supply it from the independent crate. Instrument the actual implementation.
+    evaluator = ('crates/notist-eval/src/' if (root / 'crates/notist-eval/src/eval.rs').exists()
+                 else 'crates/notist-pipeline/src/code/')
+    entries(evaluator + 'data.rs', [('data_native', 'data.native'), ('read_data', 'data.read')])
+    entries(evaluator + 'eval.rs', [('run', 'eval.run'), ('constant', 'eval.comptime'), ('bind_content', 'eval.bind_content'), ('present', 'eval.present'), ('execute', 'eval.execute'), ('implementation', 'eval.implementation'), ('synthetic_call', 'eval.synthetic_call')])
     entries('crates/notist-core/src/data/parse.rs', [('parse', 'data.parse')], 'crate::current_profile')
     entries('crates/notist-core/src/data/mod.rs', [('decode', 'data.decode')], 'crate::current_profile')
     edit('crates/notist-core/src/data/cache.rs', lambda t: once(t,

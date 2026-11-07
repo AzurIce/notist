@@ -1043,6 +1043,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-eval"
+version = "0.1.0"
+dependencies = [
+ "notist-core",
+ "rowan",
+]
+
+[[package]]
 name = "notist-grammar"
 version = "0.1.0"
 dependencies = [
@@ -1067,6 +1075,7 @@ version = "0.1.0"
 dependencies = [
  "comemo",
  "notist-core",
+ "notist-eval",
  "notist-syntax",
  "rowan",
  "rushdown",

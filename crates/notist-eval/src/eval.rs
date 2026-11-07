@@ -1,20 +1,25 @@
-use super::*;
-use std::sync::Arc;
+use crate::{EvaluationContext, instance_cache::InstanceCache};
 #[path = "data.rs"]
 mod data;
-#[path = "instance_cache.rs"]
-mod instance_cache;
-use crate::Context;
-use instance_cache::InstanceCache;
+#[cfg(feature = "test-support")]
+#[path = "test_support.rs"]
+#[doc(hidden)]
+pub mod test_support;
 use notist_core::{
     builtins::Level,
-    definitions::{FunctionImpl, NativeFunction, ParameterMode},
-    diag::Phase,
-    evaluation::{CallSite, ResultArm, ResultPattern},
+    definitions::{
+        ComptimeValue, FunctionImpl, FunctionInstance, NativeFunction, ParameterMode, Type,
+    },
+    diag::{Diagnostic, Phase},
+    evaluation::{
+        CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, PendingEvaluation,
+        ResultArm, ResultPattern, TypedExpr,
+    },
     inputs::{EvaluationInputs, InputError, InputRead},
-    item::{Ctor, EvaluationState, SourceLocation, Value},
+    item::{Ctor, Dict, EvaluationState, Item, SourceLocation, Value},
     resource::ResourcePath,
 };
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -69,9 +74,9 @@ enum EvaluationMode {
 }
 
 #[derive(Debug)]
-pub(super) struct Failure {
-    pub(super) message: String,
-    pub(super) location: Option<SourceLocation>,
+pub struct Failure {
+    pub message: String,
+    pub location: Option<SourceLocation>,
     expansion: Vec<SourceLocation>,
 }
 impl From<String> for Failure {
@@ -163,7 +168,7 @@ impl PresentCheckpoint {
     }
     fn restore(self, mut item: Item) -> Item {
         if let Some(original) = self.call_fields {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             CHECKPOINT_RESTORES.set(CHECKPOINT_RESTORES.get() + 1);
             item.fields = original.fields;
             item.target = original.target;
@@ -172,14 +177,14 @@ impl PresentCheckpoint {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
     static REFERENCE_PRESENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static CHECKPOINT_RESTORES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-struct Evaluator<'a> {
-    context: &'a Context,
+struct Evaluator<'a, C: EvaluationContext + ?Sized> {
+    context: &'a C,
     program: CheckedProgram,
     implementations: InstanceCache,
     diagnostics: Vec<Diagnostic>,
@@ -198,10 +203,10 @@ struct Evaluator<'a> {
     data_retention: notist_core::data::DataRetention,
 }
 
-pub(crate) fn evaluate(
+pub fn evaluate<C: EvaluationContext + ?Sized>(
     root: &Item,
     program: &CheckedProgram,
-    context: &Context,
+    context: &C,
     limits: Limits,
 ) -> Evaluation {
     match run(root, program, context, limits, None) {
@@ -211,10 +216,10 @@ pub(crate) fn evaluate(
         }
     }
 }
-pub(crate) fn run(
+pub fn run<C: EvaluationContext + ?Sized>(
     root: &Item,
     program: &CheckedProgram,
-    context: &Context,
+    context: &C,
     limits: Limits,
     inputs: Option<&dyn EvaluationInputs>,
 ) -> EvaluationOutcome {
@@ -256,10 +261,10 @@ pub(crate) fn run(
         sources: e.sources,
     }))
 }
-pub(super) fn constant(
+pub fn constant<C: EvaluationContext + ?Sized>(
     t: &TypedExpr,
     program: &CheckedProgram,
-    context: &Context,
+    context: &C,
 ) -> Result<ComptimeValue, Failure> {
     let mut e = Evaluator {
         context,
@@ -285,13 +290,13 @@ pub(super) fn constant(
         Runtime::Content(..) => Err("content cannot be a comptime argument".into()),
     }
 }
-impl Evaluator<'_> {
+impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     fn target(
         &self,
         id: &notist_core::definitions::FunctionId,
     ) -> notist_core::definitions::FunctionId {
         if self.mode == EvaluationMode::Runtime {
-            self.context.extensions().target(id)
+            self.context.target(id)
         } else {
             id.clone()
         }
@@ -528,7 +533,7 @@ impl Evaluator<'_> {
         (result, count)
     }
     fn present(&mut self, forest: Vec<Item>, limit: usize) -> (Vec<Item>, ContentSummary) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if REFERENCE_PRESENT.get() {
             return self.present_reference(forest, limit);
         }
@@ -552,7 +557,7 @@ impl Evaluator<'_> {
         }
         (result, summary)
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn present_reference(
         &mut self,
         forest: Vec<Item>,
@@ -1182,14 +1187,12 @@ impl Evaluator<'_> {
             // Runtime specializations share the same retained backing-store
             // budget, including comptime views in currently unselected arms.
             self.program.data_retention = self.data_retention.clone();
-            let mut checker = super::check::Checker::with_program(
-                self.context,
-                std::mem::take(&mut self.program),
-            );
-            checker.install(instance);
-            self.data_retention = checker.program.data_retention.clone();
-            self.diagnostics.extend(checker.diagnostics);
-            self.program = checker.program;
+            let (program, diagnostics) = self
+                .context
+                .specialize(instance, std::mem::take(&mut self.program));
+            self.data_retention = program.data_retention.clone();
+            self.diagnostics.extend(diagnostics);
+            self.program = program;
         }
         let record = self
             .program
@@ -1457,7 +1460,7 @@ fn data(v: Runtime) -> Result<Value, String> {
     }
 }
 
-pub(super) fn unary(op: &str, v: &ComptimeValue) -> Result<ComptimeValue, String> {
+pub fn unary(op: &str, v: &ComptimeValue) -> Result<ComptimeValue, String> {
     let v = match (op, v) {
         ("!", ComptimeValue::Data(Value::Bool(v))) => Value::Bool(!v),
         ("-", ComptimeValue::Data(Value::Int(v))) => {
@@ -1468,11 +1471,7 @@ pub(super) fn unary(op: &str, v: &ComptimeValue) -> Result<ComptimeValue, String
     };
     Ok(ComptimeValue::Data(v))
 }
-pub(super) fn binary(
-    op: &str,
-    a: &ComptimeValue,
-    b: &ComptimeValue,
-) -> Result<ComptimeValue, String> {
+pub fn binary(op: &str, a: &ComptimeValue, b: &ComptimeValue) -> Result<ComptimeValue, String> {
     use ComptimeValue::{Data as D, Type as T};
     let boolean = |v| Ok(D(Value::Bool(v)));
     if let (T(a), T(b)) = (a, b) {
@@ -1594,7 +1593,6 @@ fn check_value_size(value: &ComptimeValue, limit: usize) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Pipeline;
 
     #[test]
     fn expansion_append_shares_storage_without_merging_origins_or_reordering() {
@@ -1639,166 +1637,6 @@ mod tests {
         assert_eq!(root.children[1].origin.as_ref().unwrap().expansion.len(), 2);
     }
 
-    fn reference_present<T>(operation: impl FnOnce() -> T) -> T {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                REFERENCE_PRESENT.set(false);
-            }
-        }
-        assert!(!REFERENCE_PRESENT.replace(true));
-        let _reset = Reset;
-        operation()
-    }
-
-    #[test]
-    fn present_checkpoints_match_full_backups_across_budgets_and_replacements() {
-        use notist_core::{
-            definitions::FunctionId,
-            extensions::{Replace, Replacement},
-        };
-        fn decorate(item: &mut Item) {
-            item.fields
-                .insert("checkpoint_sentinel", Value::Str("original".into()));
-            item.attrs
-                .insert("checkpoint_attr", Value::Str("kept".into()));
-            if let Some(origin) = &mut item.origin {
-                origin.expansion.push(SourceLocation {
-                    source: "outer.notc".into(),
-                    start: 2,
-                    end: 8,
-                });
-            }
-            if matches!(item.pending.as_deref(), Some(PendingEvaluation::Call(_)))
-                || item.ctor == Ctor::Strong
-            {
-                // The authoritative host tree need not contain an instance.
-                // Recovery must then retain an old target instead of using the
-                // newly executed one, since error() cannot reconstruct it.
-                item.instance = None;
-                item.target = Some(
-                    FunctionInstance {
-                        function: FunctionId::new("host", "original"),
-                        arguments: vec![],
-                    }
-                    .into(),
-                );
-            }
-            for child in &mut item.children {
-                decorate(child);
-            }
-        }
-        let fixtures = [
-            (
-                "fn leaf() -> InlineContent { [#strong[A]#emph[B]#text(text: \"C\")] }",
-                "#self.leaf()#self.leaf()#self.leaf()",
-                false,
-            ),
-            (
-                "fn pass()[children: InlineContent] -> InlineContent { [#children#children] }",
-                "#self.pass[one]#self.pass[two]",
-                false,
-            ),
-            (
-                "fn looped() -> InlineContent { for n in (1,2,3) [#text(text: str(n))#emph[X]] }",
-                "#self.looped()#self.looped()",
-                false,
-            ),
-            (
-                "fn leaf() -> InlineContent { [#text(text: panic(\"inner failure\")) kept] }",
-                "#text(text: \"prefix\")#self.leaf()#self.leaf()",
-                false,
-            ),
-            (
-                "fn view() -> InlineContent { let v = [#strong[A]#emph[B]]; [#v#v] }",
-                "#self.view()#self.view()",
-                false,
-            ),
-            (
-                "fn rows() -> BlockContent { [\n#table()[#row[#cell[A]#cell[B]]#row[#cell[C]]]\n] }",
-                "#self.rows()\n\n#self.rows()",
-                false,
-            ),
-            (
-                "fn strong()[children: InlineContent] -> InlineContent { [#emph[#children]#emph[X]] }",
-                "**a** **b** **c**",
-                true,
-            ),
-        ];
-        let pipeline = Pipeline::default();
-        CHECKPOINT_RESTORES.set(0);
-        for dialect in ["doc.not", "doc.md"] {
-            for (source, document, replacement) in fixtures {
-                let mut context = Context::default()
-                    .with_module(
-                        pipeline
-                            .compile_module(dialect, "demo", "demo/lib.notc", source)
-                            .unwrap(),
-                    )
-                    .unwrap();
-                if replacement {
-                    context = context
-                        .with_extension(Replace::new([Replacement {
-                            from: FunctionId::new("notist", "strong"),
-                            to: FunctionId::new("demo", "strong"),
-                            span: Default::default(),
-                        }]))
-                        .unwrap();
-                }
-                let analysis = pipeline.analyze(dialect, document, &context).unwrap();
-                assert!(
-                    analysis.diagnostics().is_empty(),
-                    "{:?}: {source}",
-                    analysis.diagnostics()
-                );
-                let mut root = analysis.root().clone();
-                decorate(&mut root);
-                if replacement {
-                    fn make_synthetic(item: &mut Item) {
-                        if item.ctor == Ctor::Strong {
-                            item.pending = None;
-                        }
-                        for child in &mut item.children {
-                            make_synthetic(child);
-                        }
-                    }
-                    make_synthetic(&mut root);
-                }
-                for content_nodes in 0..64 {
-                    for constrained in [false, true] {
-                        let limits = Limits {
-                            content_nodes,
-                            iterations: if constrained {
-                                content_nodes % 5
-                            } else {
-                                100_000
-                            },
-                            call_depth: if constrained { content_nodes % 4 } else { 32 },
-                            steps: if constrained {
-                                content_nodes % 8
-                            } else {
-                                100_000
-                            },
-                            ..Limits::default()
-                        };
-                        let actual = evaluate(&root, &analysis.program, &context, limits);
-                        let expected = reference_present(|| {
-                            evaluate(&root, &analysis.program, &context, limits)
-                        });
-                        assert_eq!(
-                            actual, expected,
-                            "{dialect}, {content_nodes}, constrained={constrained}, {source}"
-                        );
-                    }
-                }
-            }
-        }
-        assert!(
-            CHECKPOINT_RESTORES.get() > 0,
-            "must exercise rollback after a successful call"
-        );
-    }
-
     #[test]
     fn first_node_and_unchanged_boundaries_need_no_call_backup() {
         let original = Item::text("before".into(), Default::default());
@@ -1814,175 +1652,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
-        let pipeline = Pipeline::default();
-        let context = Context::default()
-            .with_module(
-                pipeline
-                    .compile_module(
-                        "doc.not",
-                        "demo",
-                        "demo/lib.notc",
-                        "fn wrap(name: String)[children: InlineContent] -> InlineContent { [#text(text: name)#children] }",
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-        for dialect in ["doc.not", "doc.md"] {
-            let analysis = pipeline
-                .analyze(dialect, "#self.wrap(\"input\")[#emph[child]]", &context)
-                .unwrap();
-            assert!(
-                analysis.diagnostics().is_empty(),
-                "{:?}",
-                analysis.diagnostics()
-            );
-            for failure in 0..4 {
-                let mut root = analysis.root().clone();
-                let boundary = &mut root.children[0].children[0];
-                boundary
-                    .fields
-                    .insert("sentinel", Value::Str("original".into()));
-                boundary.attrs.insert("id", Value::Str("recovery".into()));
-                boundary
-                    .origin
-                    .as_mut()
-                    .unwrap()
-                    .expansion
-                    .push(SourceLocation {
-                        source: "outer.notc".into(),
-                        start: 3,
-                        end: 7,
-                    });
-                let before = item_shell(boundary);
-                let Some(PendingEvaluation::Call(call)) = boundary.pending.as_deref_mut() else {
-                    panic!("expected a content call")
-                };
-                match failure {
-                    0 => call.invalid = Some("deliberate failure".into()),
-                    1 => {
-                        call.arguments[0].1.known = None;
-                        call.arguments[0].1.kind = ExprKind::Failure("argument failed".into());
-                    }
-                    2 => call.definition.returns = Type::BlockContent,
-                    _ => call.definition.returns = Type::String,
-                }
-                let evaluated = evaluate(&root, &analysis.program, &context, Limits::default());
-                assert!(!evaluated.diagnostics.is_empty());
-                let recovered = &evaluated.root.children[0].children[0];
-                assert!(matches!(
-                    recovered.evaluation,
-                    Some(EvaluationState::Error(_))
-                ));
-                assert_eq!(recovered.ctor, before.ctor);
-                assert_eq!(recovered.instance, before.instance);
-                assert_eq!(recovered.fields, before.fields);
-                assert_eq!(recovered.attrs, before.attrs);
-                assert_eq!(recovered.origin, before.origin);
-                assert_eq!(recovered.span, before.span);
-                assert_eq!(recovered.level, before.level);
-                assert!(recovered.children.is_empty());
-                assert!(recovered.pending.is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn returned_summaries_match_trees_across_mounts_failures_and_limits() {
-        let pipeline = Pipeline::default();
-        for dialect in ["doc.not", "doc.md"] {
-            for source in [
-                "fn view() -> InlineContent { let empty = []; let value = [#strong[A]#emph[B]]; [#value#empty#value] }",
-                "fn pass()[children: InlineContent] -> InlineContent { [#children#children] } fn view() -> InlineContent { [#pass[ok]] }",
-                "fn view() -> InlineContent { for n in (1,2,3) [#text(text: str(n))] }",
-                "fn leaf(n: Int) -> InlineContent { [#text(text: if n == 2 { panic(\"bad\") } else { str(n) })] } fn view() -> InlineContent { for n in (1,2,3) [#leaf(n)] }",
-                "fn view() -> BlockContent { [\n#table()[#row[#cell[A]#cell[B]]#row[#cell[C]]]\n] }",
-            ] {
-                let context = Context::default()
-                    .with_module(
-                        pipeline
-                            .compile_module(dialect, "demo", "demo/lib.notc", source)
-                            .unwrap(),
-                    )
-                    .unwrap();
-                let analysis = pipeline.analyze(dialect, "#self.view()", &context).unwrap();
-                assert!(
-                    analysis.diagnostics().is_empty(),
-                    "{:?}",
-                    analysis.diagnostics()
-                );
-                let before = analysis.clone();
-                for limit in 0..64 {
-                    let mut evaluator = Evaluator {
-                        context: &context,
-                        program: analysis.program.clone(),
-                        implementations: InstanceCache::default(),
-                        diagnostics: Vec::new(),
-                        limits: Limits {
-                            content_nodes: limit,
-                            iterations: limit % 5,
-                            call_depth: limit % 4,
-                            ..Limits::default()
-                        },
-                        steps: 0,
-                        iterations: 0,
-                        loop_work: 0,
-                        active_loops: 0,
-                        depth: 0,
-                        mode: EvaluationMode::Runtime,
-                        inputs: None,
-                        requests: 0,
-                        dependencies: Default::default(),
-                        needed: Default::default(),
-                        sources: Default::default(),
-                        data_retention: analysis.program.data_retention.clone(),
-                    };
-                    let mut root = analysis.root().clone();
-                    if limit % 7 == 0 {
-                        // Even a supplied recovery node with retained children
-                        // must count those children during binding, before
-                        // presentation replaces it with an empty placeholder.
-                        let mut recovery = Item::text("discarded".into(), Default::default());
-                        recovery.evaluation = Some(EvaluationState::Error("recovery".into()));
-                        recovery
-                            .children
-                            .push(Item::text("child".into(), Default::default()));
-                        root.children.push(recovery);
-                    }
-                    let (bound, count) = evaluator.bind_content(&[root], &Scope::new(), limit);
-                    assert_eq!(
-                        count,
-                        content_count(&bound),
-                        "binding: {dialect}, {limit}, {source}"
-                    );
-                    let (presented, summary) = evaluator.present(bound, limit);
-                    assert_eq!(presented.len(), 1);
-                    assert_eq!(
-                        summary.nodes,
-                        content_count(&presented),
-                        "presentation: {dialect}, {limit}, {source}"
-                    );
-                    assert!(summary.nodes <= limit);
-                    assert_eq!(
-                        summary.failed,
-                        presented
-                            .iter()
-                            .flat_map(Item::descendants)
-                            .any(|item| matches!(item.evaluation, Some(EvaluationState::Error(_))))
-                    );
-                    assert!(
-                        presented
-                            .iter()
-                            .flat_map(Item::descendants)
-                            .all(|item| item.pending.is_none())
-                    );
-                }
-                assert_eq!(analysis, before);
-            }
-        }
-    }
-
-    #[test]
     fn both_result_payloads_count_towards_the_value_size_limit() {
         for value in [
             Value::Ok(Box::new(Value::Str("x".repeat(16 * 1024 * 1024).into()))),
@@ -1993,164 +1662,5 @@ mod tests {
                 "value size limit exceeded",
             );
         }
-    }
-
-    #[test]
-    fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
-        let context = Context::default()
-            .with_module(
-                Pipeline::default()
-                    .compile_module(
-                        "content.not",
-                        "demo",
-                        "demo/lib.notc",
-                        "fn greet(name: String) -> InlineContent { [#text(text: name)] }",
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-        let pipeline = Pipeline::default();
-        let analysis = pipeline
-            .analyze("doc.not", "#self.greet(\"before\")", &context)
-            .unwrap();
-        let mut root = analysis.root().clone();
-        let call = root.children[0].children[0].pending.as_deref_mut().unwrap();
-        let PendingEvaluation::Call(call) = call else {
-            panic!("expected a pending call")
-        };
-        let argument = &mut call.arguments[0].1;
-        argument.known = Some(ComptimeValue::Data(Value::Str("after".into())));
-        argument.kind = ExprKind::Constant(argument.known.clone().unwrap());
-        // Only the Item and reusable Context are needed; instances can be checked on demand.
-        let result = evaluate(
-            &root,
-            &CheckedProgram::default(),
-            &context,
-            Limits::default(),
-        );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(
-            result
-                .root
-                .descendants()
-                .any(|i| i.fields.get("text") == Some(&Value::Str("after".into())))
-        );
-        assert!(result.root.descendants().all(|i| i.pending.is_none()));
-        assert_eq!(
-            analysis.root().children[0].children[0].fields.get("name"),
-            Some(&Value::Str("before".into()))
-        );
-    }
-
-    #[test]
-    fn editing_a_captured_signature_detaches_and_remains_authoritative() {
-        let pipeline = Pipeline::default();
-        let context = Context::default()
-            .with_module(
-                pipeline
-                    .compile_module(
-                        "content.not",
-                        "demo",
-                        "demo/lib.notc",
-                        "fn show(value: Int) -> InlineContent { [#text(text: str(value))] }",
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-        let analysis = pipeline
-            .analyze("doc.not", "#self.show(-1)", &context)
-            .unwrap();
-        assert!(analysis.diagnostics().is_empty());
-        let original = analysis.root().children[0].children[0]
-            .pending
-            .as_deref()
-            .unwrap();
-        let PendingEvaluation::Call(original) = original else {
-            panic!("expected a call")
-        };
-        let mut root = analysis.root().clone();
-        let changed = root.children[0].children[0].pending.as_deref_mut().unwrap();
-        let PendingEvaluation::Call(changed) = changed else {
-            panic!("expected a call")
-        };
-        assert!(changed.definition.shares_storage(&original.definition));
-        changed.definition.parameters[0].constraint =
-            notist_core::definitions::ValueConstraint::PositiveInt;
-        assert!(!changed.definition.shares_storage(&original.definition));
-        assert_eq!(
-            original.definition.parameters[0].constraint,
-            notist_core::definitions::ValueConstraint::Any
-        );
-        let changed = evaluate(&root, &analysis.program, &context, Limits::default());
-        assert!(
-            changed
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains("invalid value"))
-        );
-        let original = pipeline.evaluate(&analysis, &context);
-        assert!(original.diagnostics.is_empty());
-        assert!(
-            original
-                .root
-                .descendants()
-                .any(|item| { item.fields.get("text") == Some(&Value::Str("-1".into())) })
-        );
-    }
-
-    #[test]
-    fn checked_function_bodies_contain_typed_item_interpolations() {
-        let context = Context::default()
-            .with_module(
-                Pipeline::default()
-                    .compile_module(
-                        "content.not",
-                        "demo",
-                        "demo/lib.notc",
-                        "fn pass()[children: InlineContent] -> InlineContent { [#children] }",
-                    )
-                    .unwrap(),
-            )
-            .unwrap();
-        let pipeline = Pipeline::default();
-        let analysis = pipeline
-            .analyze("doc.not", "#self.pass[one]", &context)
-            .unwrap();
-        let body = analysis
-            .program
-            .instances
-            .values()
-            .find(|r| r.definition.id.module == "demo")
-            .unwrap()
-            .body
-            .as_ref()
-            .unwrap();
-        let ExprKind::Block(_, value) = &body.kind else {
-            panic!("expected function body")
-        };
-        let ExprKind::Content(forest) = &value.kind else {
-            panic!("expected Item forest")
-        };
-        assert_eq!(forest[0].ctor, notist_core::item::Ctor::Interpolation);
-        let Some(PendingEvaluation::Splice(expr)) = forest[0].pending.as_deref() else {
-            panic!("expected interpolation")
-        };
-        assert_eq!(expr.ty, Some(Type::InlineContent));
-        assert!(matches!(&expr.kind, ExprKind::Input(name) if name == "children"));
-        let evaluation = pipeline.evaluate(&analysis, &context);
-        assert!(evaluation.diagnostics.is_empty());
-        let pass = evaluation
-            .root
-            .find(|i| {
-                i.function_id() == Some(notist_core::definitions::FunctionId::new("demo", "pass"))
-            })
-            .unwrap();
-        assert_eq!(pass.children.len(), 1);
-        assert!(pass.children[0].is_evaluated_interpolation());
-        assert_eq!(
-            pass.children[0].children[0].fields.get("text"),
-            Some(&Value::Str("one".into()))
-        );
-        assert!(evaluation.root.descendants().all(|i| i.pending.is_none()));
     }
 }

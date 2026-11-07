@@ -1,11 +1,10 @@
-//! Concrete-instance checking and a bounded pure interpreter over Item trees.
+//! Concrete-instance checking and integration with the standalone evaluator.
 mod check;
 mod content;
-pub(crate) mod eval;
 pub(crate) mod literal;
 mod result;
 pub(crate) use check::Checker;
-pub use eval::{Evaluation, EvaluationOutcome, Limits};
+pub(crate) use notist_core::evaluation::{CheckedProgram, InstanceRecord};
 use notist_core::{
     definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
     diag::Diagnostic,
@@ -13,25 +12,11 @@ use notist_core::{
     expr::RExpr,
     item::{Dict, Item},
 };
-use std::{collections::BTreeMap, sync::Arc};
+pub use notist_eval::{Evaluation, EvaluationOutcome, Limits};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct InstanceRecord {
-    pub definition: FunctionDef,
-    pub body: Option<TypedExpr>,
-    pub diagnostics: Vec<Diagnostic>,
-    pub checking: bool,
-}
-#[derive(Debug, Clone, Default)]
-pub(crate) struct CheckedProgram {
-    pub instances: Arc<BTreeMap<String, Arc<InstanceRecord>>>,
-    pub data_retention: notist_core::data::DataRetention,
-}
-impl PartialEq for CheckedProgram {
-    fn eq(&self, other: &Self) -> bool {
-        self.instances == other.instances
-    }
-}
+#[cfg(test)]
+mod eval_tests;
 
 #[cfg(test)]
 mod tests {

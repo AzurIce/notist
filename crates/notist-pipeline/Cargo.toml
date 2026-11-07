@@ -9,6 +9,10 @@ profiling = []
 [dependencies]
 comemo = "0.5.1"
 notist-core = { path = "../notist-core" }
+notist-eval = { path = "../notist-eval" }
 notist-syntax = { path = "../notist-syntax" }
 rowan = "0.17.0"
 rushdown = "0.18"
+
+[dev-dependencies]
+notist-eval = { path = "../notist-eval", features = ["test-support"] }

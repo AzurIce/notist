@@ -30,6 +30,10 @@ class RefreshTests(unittest.TestCase):
                 self.assertIn('measure("pipeline.evaluate", ||', body)
                 for name in ['ssg.rs', 'publication.rs']:
                     self.assertNotIn('notist_core::', (root / 'crates/notist-cli/src' / name).read_text())
+                evaluator = root / 'crates/notist-eval/src/eval.rs'
+                if detailed and evaluator.exists():
+                    self.assertIn('span("eval.execute")', evaluator.read_text())
+                    self.assertIn('span("data.read")', (evaluator.parent / 'data.rs').read_text())
 
     def test_inventory_includes_hidden_data(self):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:

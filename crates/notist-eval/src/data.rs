@@ -1,8 +1,9 @@
 //! Structured-data implementations use the same native call/result machinery.
-use super::*;
+use crate::EvaluationContext;
+use crate::eval::*;
 use notist_core::data::{Data, DataError, DataErrorKind, DataFailure, DataFormat, DataFunction};
 
-impl Evaluator<'_> {
+impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     pub(super) fn data_native(
         &mut self,
         kind: DataFunction,

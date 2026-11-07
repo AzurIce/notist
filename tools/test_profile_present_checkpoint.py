@@ -28,7 +28,7 @@ class PresentCheckpointProbeTests(unittest.TestCase):
                 probe = (source / "crates/notist-core/src/boundary_probe.rs").read_text()
                 self.assertIn('"checkpoint"', probe)
                 self.assertNotIn('"call_recovery"', probe)
-                self.assertIn("#[cfg(test)]\n    fn present_reference(", observed)
+                self.assertIn('#[cfg(any(test, feature = "test-support"))]\n    fn present_reference(', observed)
 
 
 if __name__ == "__main__":

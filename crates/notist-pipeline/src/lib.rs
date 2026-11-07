@@ -233,7 +233,7 @@ impl Pipeline {
         limits: Limits,
     ) -> Evaluation {
         let mut evaluation =
-            code::eval::evaluate(&analysis.root, &analysis.program, context, limits);
+            notist_eval::evaluate(&analysis.root, &analysis.program, context, limits);
         let mut sources = analysis.sources.clone();
         sources.append(&mut evaluation.sources);
         evaluation.sources = sources;
@@ -269,7 +269,7 @@ impl Pipeline {
         inputs: &dyn notist_core::inputs::EvaluationInputs,
         limits: Limits,
     ) -> EvaluationOutcome {
-        let outcome = code::eval::run(
+        let outcome = notist_eval::run(
             &analysis.root,
             &analysis.program,
             context,

@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from profile_boundaries import EVAL, REPO, instrument, once
+from profile_boundaries import EVAL, REPO, evaluator_path, instrument, once
 
 
 class BoundaryProfileTests(unittest.TestCase):
@@ -35,6 +35,15 @@ class BoundaryProfileTests(unittest.TestCase):
             once("a a", "a", "b")
         with self.assertRaises(AssertionError):
             once("a", "missing", "b")
+
+    def test_snapshot_layout_not_live_checkout_selects_the_evaluator(self):
+        for relative in ["crates/notist-pipeline/src/code/eval.rs", "crates/notist-eval/src/eval.rs"]:
+            with tempfile.TemporaryDirectory(dir="/tmp/opencode") as directory:
+                source = Path(directory)
+                path = source / relative
+                path.parent.mkdir(parents=True)
+                path.write_text("// frozen evaluator\n")
+                self.assertEqual(evaluator_path(source), relative)
 
 
 if __name__ == "__main__":

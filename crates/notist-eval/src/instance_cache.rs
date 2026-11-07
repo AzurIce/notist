@@ -1,7 +1,9 @@
 //! Small, evaluation-local accelerator for already checked implementations.
 //! Data comptime values retain CheckedProgram's bit-exact canonical-key path.
-use super::{ComptimeValue, FunctionInstance, InstanceRecord, Type};
-use notist_core::definitions::FunctionId;
+use notist_core::{
+    definitions::{ComptimeValue, FunctionId, FunctionInstance, Type},
+    evaluation::InstanceRecord,
+};
 use std::{collections::BTreeMap, sync::Arc};
 
 const MAX_ENTRIES: usize = 256;

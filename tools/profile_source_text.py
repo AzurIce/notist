@@ -32,7 +32,7 @@ def instrument(source):
     checkpoint.instrument(source)
     path = source / "crates/notist-core/src/boundary_probe.rs"
     path.write_text(boundary.once(path.read_text(), '"present_recovery"', '"expand"'))
-    path = source / boundary.EVAL
+    path = source / boundary.evaluator_path(source)
     text = path.read_text()
     operation = "origin.expansion.extend_from_slice(locations)"
     text = boundary.once(text, operation, f"notist_core::boundary_probe::site(1, || notist_core::boundary_probe::field(4, || {operation}))")

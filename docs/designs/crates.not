@@ -24,13 +24,16 @@ flowchart TB
     host --> syntax["notist-syntax"]
     pipeline --> core
     pipeline --> syntax
+    pipeline --> eval["notist-eval"]
+    eval --> core
     html --> core
     grammar["notist-grammar · 铁路图"]
 """#)
 
-- `notist-core`：提供 Expr、RExpr、Item、Value、已检查表达式与待求值信息、函数定义、Registry、前端接口、DocumentExtension 阶段契约与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
+- `notist-core`：提供 Expr、RExpr、Item、Value、CheckedProgram、InstanceRecord、已检查表达式与待求值信息、函数定义、Registry、前端接口、DocumentExtension 阶段契约与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
 - `notist-syntax`：提供原生 Markup 与 Code 的词法、解析和 AST，共享 Rowan 基础，并定义内容字面量的 ContentParser 委托接口；不生成 IR，不依赖语义模型或具体前端。
-- `notist-pipeline`：依赖 core 与 syntax，提供 Context（Registry、CodeProgram 与 ExtensionPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
+- `notist-pipeline`：依赖 core、syntax 与 eval，提供 Context（Registry、CodeProgram 与 ExtensionPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate 编排。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
+- `notist-eval`：依赖 core，解释已检查的 Item / TypedExpr，负责内容绑定、挂载、原生与 Data 调用、编译期求值、逻辑预算及局部实例缓存。EvaluationContext 提供定义、执行映射和缺失实例的检查回调，由 pipeline 的 Context 实现；eval 不依赖检查器、语法、文件系统或输出后端。Pipeline 保留来源合并、文档扩展调度及原有 evaluate 入口。
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口，并通过 command_extension 将 stdio 外部命令适配为文档扩展。
 - `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
@@ -70,7 +73,6 @@ src/
    modules.rs           BindingSpec、纯导入绑定、ModuleScope 与 LinkedModule
   code/check.rs        Code Expr 到 TypedExpr 的具体实例检查
   code/content.rs      共享内容后端：IR₁ 到 Item、children 契约与注解
-  code/eval.rs         Item 参数绑定与子树替换求值器
   materialize.rs       挂载节点注解、生成 Item 森林与来源信息
   frontend.rs          前端注册与选择
   frontend/markup/     原生文档与内容 lowering、NotistFrontend
@@ -82,7 +84,7 @@ src/
 
 === 模型与算法
 
-Expr、Item、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。core.evaluation 定义 TypedExpr、Invocation 与 PendingEvaluation，Item 与 RExpr 直接携带待求值信息；这些类型只描述 IR，检查与执行算法位于 pipeline。Expr.Content 保存 Markup IR₁、注解 side list 和 body flavor，不依赖前端语法树。syntax 提供 Markup 与 Code 的解析和 AST 视图；pipeline 在第一阶段完成 Parse / Lower，第二阶段在具体实例环境中将 IR₁ 经共享内容后端转换为 Item 森林。
+Expr、Item、Value、定义模型、Registry、Frontend Trait 与诊断从 notist-core 的对应模块导入。core.evaluation 定义 CheckedProgram、InstanceRecord、TypedExpr、Invocation 与 PendingEvaluation，Item 与 RExpr 直接携带待求值信息；这些类型只描述 IR，检查算法位于 pipeline，执行算法位于 eval。Expr.Content 保存 Markup IR₁、注解 side list 和 body flavor，不依赖前端语法树。syntax 提供 Markup 与 Code 的解析和 AST 视图；pipeline 在第一阶段完成 Parse / Lower，第二阶段在具体实例环境中将 IR₁ 经共享内容后端转换为 Item 森林。
 
 crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在 crate 引用模块与算法。Context 从 notist-pipeline 导出；顶层 notist 公开供宿主使用的 Context、Pipeline、NotistFrontend、MarkdownFrontend、Frontend、syntax 模块和共享模型，同时组织查询、调试输出、资源与后端处理。
 
@@ -96,7 +98,7 @@ CodeModule 共享保存单文件声明、函数体与源码，只包含未解析
 
 实例检查直接借用 Context 中的只读 CodeBody，不复制未检查的表达式树；诊断按输出归属复制。CheckedProgram 以共享的不可变实例记录保存具体签名、已检查函数体和诊断，新增特化通过写时复制分离。Context 可复用从空程序开始、无诊断且不持有 Data 的完整成功检查计划，同一基础 Context 内最多保留 32 个计划、8192 个记录；安装模块或改写 Code 模块作用域时分离缓存。计划复用不缓存求值结果，也不合并额外实例绕过单次检查限制。
 
-Evaluate 保持 Analysis 不变，参数绑定生成独立输出树；内部呈现消费已经拥有的节点，重建边界时只复制节点自身字段，不先复制马上替换的 children 或 pending。共享 Content 在唯一持有时直接取得所有权，重复挂载时才复制。调用共享已检查函数体，按实际执行目标为 Code 构造词法输入；原生调用仍执行参数、能力与结果检查。
+Evaluate 由 pipeline 调用 notist-eval，保持 Analysis 不变，参数绑定生成独立输出树；内部呈现消费已经拥有的节点，重建边界时只复制节点自身字段，不先复制马上替换的 children 或 pending。共享 Content 在唯一持有时直接取得所有权，重复挂载时才复制。调用共享已检查函数体，按实际执行目标为 Code 构造词法输入；原生调用仍执行参数、能力与结果检查。编译期求值复用同一引擎，缺失实例经 EvaluationContext 回到检查器；来源合并与 after_evaluate 文档 hooks 在 pipeline 完成。
 
 单节点呈现直接返回 Item，森林处理逐项收集。绑定递归返回正常节点数，呈现递归同时返回正常节点数与失败标记，父层合并结果而不重新扫描已构造的子树；这些信息只属于当前返回值，不写入 Item 或缓存。错误占位不消耗正常节点额度，兄弟节点与重复展开继续累计计费；共享内容的显式插值在挂载处计数。绑定与呈现保持分阶段，保留延迟内容、读取顺序和错误恢复边界。
 
@@ -108,7 +110,7 @@ Resources 表达宿主的资源输入视图。Environment 在 Parse / Lower 之�
 
 同一输入批次内，Vault 最多保留 128 个成功模块装配和 128 个配置解析结果。模块装配复用要求前端提供明确的缓存身份；命中仍按依赖遍历顺序读取源码并消耗请求预算，不跳过授权或输入失败。文档词法作用域与扩展校验仍逐文档建立。模块文本与分析来源使用共享的 Sources 存储。PreparedInputs 将宿主准备的输入传给内存 / Worker 环境，本地和浏览器宿主共用管线与内容模型。
 
-core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；pipeline 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端和批次内固定的字节／错误缓存；Vault、Book 和 SSG 共用会话，输入更新通过新批次接收。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
+core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；eval 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端和批次内固定的字节／错误缓存；Vault、Book 和 SSG 共用会话，输入更新通过新批次接收。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
 
 notist-book 接收 Vault 与书籍配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 

@@ -11,8 +11,16 @@ import sys
 
 import profile_runtime_cow as common
 
-EVAL = "crates/notist-pipeline/src/code/eval.rs"
 REPO = Path(__file__).resolve().parents[1]
+
+
+def evaluator_path(source):
+    """Support both archived pipeline-local and extracted evaluator snapshots."""
+    extracted = "crates/notist-eval/src/eval.rs"
+    return extracted if (source / extracted).is_file() else "crates/notist-pipeline/src/code/eval.rs"
+
+
+EVAL = evaluator_path(REPO)
 
 
 def once(text, old, new):
@@ -22,7 +30,7 @@ def once(text, old, new):
 
 def instrument(source):
     probe = "notist_core::boundary_probe"
-    path = source / EVAL
+    path = source / evaluator_path(source)
     text = path.read_text()
     text = once(text, "let boundary = item_shell(&node);", f"let boundary = {probe}::site(1, || item_shell(&node));")
     if "let boundary = item_shell(&item);" in text:

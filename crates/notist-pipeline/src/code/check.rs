@@ -78,7 +78,7 @@ impl<'a> Checker<'a> {
         &mut self,
         span: TextRange,
         label: &str,
-        failure: super::eval::Failure,
+        failure: notist_eval::Failure,
     ) -> TypedExpr {
         let message = format!("{label}: {}", failure.message);
         let (span, source) = failure.location.map_or_else(
@@ -734,7 +734,7 @@ impl<'a> Checker<'a> {
                 let known = v
                     .known
                     .as_ref()
-                    .and_then(|v| super::eval::unary(op, v).ok());
+                    .and_then(|v| notist_eval::unary(op, v).ok());
                 self.typed(
                     Some(ty),
                     ExprKind::Unary(op.clone(), Box::new(v)),
@@ -748,7 +748,7 @@ impl<'a> Checker<'a> {
                     .known
                     .clone()
                     .map(Ok)
-                    .unwrap_or_else(|| super::eval::constant(&t, &self.program, self.context));
+                    .unwrap_or_else(|| notist_eval::constant(&t, &self.program, self.context));
                 match known {
                     Ok(v) => {
                         if let ComptimeValue::Data(value) = &v
@@ -956,7 +956,7 @@ impl<'a> Checker<'a> {
             .known
             .as_ref()
             .zip(r.known.as_ref())
-            .and_then(|(a, b)| super::eval::binary(op, a, b).ok());
+            .and_then(|(a, b)| notist_eval::binary(op, a, b).ok());
         self.typed(
             if left_never || right_never && !matches!(op, "&&" | "||") {
                 Some(Type::Never)
@@ -1088,7 +1088,7 @@ impl<'a> Checker<'a> {
             let mut failed = false;
             let known = match value.known.clone() {
                 Some(value) => Some(value),
-                None => match super::eval::constant(&value, &self.program, self.context) {
+                None => match notist_eval::constant(&value, &self.program, self.context) {
                     Ok(value) => Some(value),
                     Err(failure) => {
                         failed = true;

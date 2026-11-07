@@ -6,11 +6,13 @@ from pathlib import Path
 
 from profile_optimizations import REPO, extract, git, instrument
 from profile_residuals import allocator_events, checker_probe, evaluator_probe, io_probe
+from profile_boundaries import evaluator_path
 
 
 class ResidualProbeTests(unittest.TestCase):
     def test_separate_disposable_probes_preserve_production_and_parse(self):
-        original = (REPO / 'crates/notist-pipeline/src/code/eval.rs').read_bytes()
+        live_evaluator = REPO / evaluator_path(REPO)
+        original = live_evaluator.read_bytes()
         with tempfile.TemporaryDirectory(dir='/tmp/opencode', prefix='residual-probe-test-') as directory:
             directory = Path(directory)
             template = directory / 'template'
@@ -36,7 +38,7 @@ class ResidualProbeTests(unittest.TestCase):
                 publication = (source / 'crates/notist-cli/src/publication.rs').read_text()
                 self.assertEqual('eval.execute.runtime' in evaluation, mode == 'evaluator')
                 self.assertEqual('ownership.directory_open' in publication, mode == 'io')
-        self.assertEqual((REPO / 'crates/notist-pipeline/src/code/eval.rs').read_bytes(), original)
+        self.assertEqual(live_evaluator.read_bytes(), original)
         if shutil.which('cc'):
             subprocess.run(['cc', '-fsyntax-only', '-Wall', '-Wextra',
                             str(REPO / 'tools/residual_opendir_probe.c')], check=True)

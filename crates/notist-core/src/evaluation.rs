@@ -6,6 +6,30 @@ use crate::{
     item::{Dict, Item},
 };
 use rowan::TextRange;
+use std::{collections::BTreeMap, sync::Arc};
+
+/// One checked specialization shared by analysis and evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstanceRecord {
+    pub definition: FunctionDef,
+    pub body: Option<TypedExpr>,
+    pub diagnostics: Vec<crate::diag::Diagnostic>,
+    pub checking: bool,
+}
+
+/// Checked instances and retained data backing evidence, independent of the
+/// compiler and evaluator implementations. Inserting instances uses COW.
+#[derive(Debug, Clone, Default)]
+pub struct CheckedProgram {
+    pub instances: Arc<BTreeMap<String, Arc<InstanceRecord>>>,
+    pub data_retention: crate::data::DataRetention,
+}
+
+impl PartialEq for CheckedProgram {
+    fn eq(&self, other: &Self) -> bool {
+        self.instances == other.instances
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

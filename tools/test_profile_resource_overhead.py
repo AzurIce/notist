@@ -30,7 +30,12 @@ class ResourceProfileTests(unittest.TestCase):
                  "crates/notist-pipeline/src/code/data.rs", "crates/notist-cli/src/main.rs"]
         with tempfile.TemporaryDirectory(dir="/tmp/opencode", prefix="resource-profile-unit-") as directory:
             root = Path(directory)
-            before = {rel: (REPO / rel).read_bytes() for rel in paths}
+            live_paths = {
+                rel: (REPO / rel if (REPO / rel).is_file()
+                      else REPO / "crates/notist-eval/src" / Path(rel).name)
+                for rel in paths
+            }
+            before = {rel: path.read_bytes() for rel, path in live_paths.items()}
             # This probe targets the archived pre-snapshot implementation, not
             # whichever resource model the working checkout currently uses.
             for rel in paths:
@@ -42,7 +47,7 @@ class ResourceProfileTests(unittest.TestCase):
             self.assertIn("let (root, relative) = match self.grant(&absolute)", session)
             self.assertIn("state.changed\n                || (files", session)
             self.assertLess(session.index("self.request().and_then(|_| self.validate())"), session.index("Metric::SourceHit"))
-            self.assertEqual({rel: (REPO / rel).read_bytes() for rel in paths}, before)
+            self.assertEqual({rel: path.read_bytes() for rel, path in live_paths.items()}, before)
 
     def test_fingerprints_exclude_generated_outputs_only_when_requested(self):
         with tempfile.TemporaryDirectory(dir="/tmp/opencode", prefix="resource-profile-unit-") as directory:

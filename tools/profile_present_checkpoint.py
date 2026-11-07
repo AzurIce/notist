@@ -15,7 +15,7 @@ def instrument(source):
     original_instrument(source)
     path = source / "crates/notist-core/src/boundary_probe.rs"
     path.write_text(boundary.once(path.read_text(), '"call_recovery"', '"checkpoint"'))
-    path = source / boundary.EVAL
+    path = source / boundary.evaluator_path(source)
     text = path.read_text()
     if "fn before_call(" in text:
         head, body = text.split("fn before_call(", 1)

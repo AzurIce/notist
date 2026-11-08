@@ -49,6 +49,7 @@ struct Identity {
     id: SourceId,
     key: Key,
     named: bool,
+    bindings: Arc<Mutex<crate::binding::BindingRegistry>>,
 }
 static NEXT: IdAllocator<SourceTag> = IdAllocator::new(2);
 static IDENTITIES: LazyLock<Mutex<HashMap<Key, Weak<Identity>>>> =
@@ -83,9 +84,13 @@ struct Revision {
 #[derive(Clone)]
 pub struct Source(Arc<Revision>);
 impl Source {
+    pub(crate) fn binding_registry(&self) -> Arc<Mutex<crate::binding::BindingRegistry>> {
+        self.0.identity.bindings.clone()
+    }
     pub fn detached() -> Self {
         Self(Arc::new(Revision {
             identity: Arc::new(Identity {
+                bindings: Default::default(),
                 id: SourceId::DETACHED,
                 key: Key {
                     namespace: SourceNamespace::default(),
@@ -122,6 +127,7 @@ impl Source {
                 existing
             } else {
                 let identity = Arc::new(Identity {
+                    bindings: Default::default(),
                     id: allocate()?,
                     key: key.clone(),
                     named: true,
@@ -143,6 +149,7 @@ impl Source {
         }
         Ok(Self(Arc::new(Revision {
             identity: Arc::new(Identity {
+                bindings: Default::default(),
                 id: allocate()?,
                 key: Key { namespace, name },
                 named: false,
@@ -221,6 +228,7 @@ pub enum SourceError {
     Unknown { name: String },
     Definition(crate::definition_identity::DefinitionError),
     InvalidDefinition(String),
+    Binding(String),
 }
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -239,6 +247,7 @@ impl fmt::Display for SourceError {
             Self::Unknown { name } => write!(f, "unknown source name `{name}`"),
             Self::Definition(error) => error.fmt(f),
             Self::InvalidDefinition(error) => f.write_str(error),
+            Self::Binding(error) => f.write_str(error),
         }
     }
 }
@@ -249,8 +258,15 @@ impl std::error::Error for SourceError {}
 pub struct Sources(
     Arc<BTreeMap<SourceId, Source>>,
     crate::definition_identity::Definitions,
+    crate::binding::Bindings,
 );
 impl Sources {
+    pub fn bindings(&self) -> &crate::binding::Bindings {
+        &self.2
+    }
+    pub fn bindings_mut(&mut self) -> &mut crate::binding::Bindings {
+        &mut self.2
+    }
     pub fn definitions(&self) -> &crate::definition_identity::Definitions {
         &self.1
     }
@@ -279,9 +295,36 @@ impl Sources {
         program: &crate::evaluation::CheckedProgram,
     ) -> Result<(), SourceError> {
         for record in program.instances.values() {
+            for (name, id) in &record.inputs {
+                self.validate_binding(*id)?;
+                if self
+                    .2
+                    .get(*id)
+                    .map_err(|message| SourceError::Binding(message.into()))?
+                    .name
+                    != *name
+                {
+                    return Err(SourceError::Binding(
+                        "checked parameter name and binding identity differ".into(),
+                    ));
+                }
+            }
             if let Some(body) = &record.body {
                 self.validate_expression(body)?;
             }
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_binding(
+        &self,
+        id: crate::binding::BindingId,
+    ) -> Result<(), SourceError> {
+        let info = self
+            .2
+            .get(id)
+            .map_err(|message| SourceError::Binding(message.into()))?;
+        if info.source != SourceId::DETACHED {
+            self.source(info.source)?;
         }
         Ok(())
     }
@@ -349,6 +392,9 @@ impl Sources {
                             pending.push(Reference::Expression(b));
                         }
                         ExprKind::Block(values, value) => {
+                            for (id, _) in values {
+                                self.validate_binding(*id)?;
+                            }
                             pending.extend(
                                 values.iter().map(|(_, value)| Reference::Expression(value)),
                             );
@@ -360,6 +406,13 @@ impl Sources {
                             pending.push(Reference::Expression(c));
                         }
                         ExprKind::MatchResult { subject, arms } => {
+                            for arm in arms {
+                                if let crate::evaluation::ResultPattern::Ok(id)
+                                | crate::evaluation::ResultPattern::Err(id) = arm.pattern
+                                {
+                                    self.validate_binding(id)?;
+                                }
+                            }
                             pending.push(Reference::Expression(subject));
                             pending.extend(arms.iter().map(|arm| Reference::Expression(&arm.body)));
                         }
@@ -385,11 +438,19 @@ impl Sources {
                         ExprKind::Content(nodes) => {
                             pending.extend(nodes.iter().map(Reference::Node))
                         }
-                        ExprKind::For { subject, body, .. } => {
+                        ExprKind::For {
+                            binding,
+                            subject,
+                            body,
+                        } => {
+                            self.validate_binding(*binding)?;
                             pending.push(Reference::Expression(subject));
                             pending.push(Reference::Expression(body));
                         }
-                        ExprKind::Constant(_) | ExprKind::Input(_) | ExprKind::Failure(_) => {}
+                        ExprKind::Input(id) => {
+                            self.validate_binding(*id)?;
+                        }
+                        ExprKind::Constant(_) | ExprKind::Failure(_) => {}
                     }
                 }
             }
@@ -464,6 +525,7 @@ impl Sources {
         // only after all conflicts have been checked below.
         if Arc::ptr_eq(&self.0, &other.0) || other.is_empty() {
             self.1.merge(&other.1);
+            self.2.merge(&other.2);
             return Ok(());
         }
         for (id, source) in other.0.iter() {
@@ -481,6 +543,7 @@ impl Sources {
             self.insert(source.clone())?;
         }
         self.1.merge(&other.1);
+        self.2.merge(&other.2);
         Ok(())
     }
     pub fn len(&self) -> usize {
@@ -515,6 +578,7 @@ impl From<Source> for Sources {
     fn from(source: Source) -> Self {
         Self(
             Arc::new(BTreeMap::from([(source.id(), source)])),
+            Default::default(),
             Default::default(),
         )
     }
@@ -715,12 +779,16 @@ mod tests {
     fn exclusive_traversal_still_checks_non_content_expression_branches() {
         let owner = Source::metadata("walk-branches-owner.not").unwrap();
         let missing = Source::metadata("walk-branches-missing.not").unwrap();
-        let sources =
+        let mut sources =
             Sources::from(owner.clone()).with_definitions(crate::builtins::registry().identities());
+        let binding = sources
+            .bindings_mut()
+            .declare("value", &owner, Default::default())
+            .unwrap();
         for position in 0..5 {
             let input = |index| {
                 expression(
-                    ExprKind::Input("value".into()),
+                    ExprKind::Input(binding),
                     if position == index {
                         missing.id()
                     } else {
@@ -734,7 +802,7 @@ mod tests {
             );
             let body = expression(
                 ExprKind::For {
-                    binding: "value".into(),
+                    binding,
                     subject: input(3).into(),
                     body: input(4).into(),
                 },

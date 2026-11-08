@@ -59,11 +59,14 @@ def build_kind(a, kind):
     m = verify(a)
     if kind in m['binaries']:
         raise ValueError('never replace a recorded executable: ' + kind)
-    env = dict(os.environ, **BUILD_ENV, CARGO_TARGET_DIR=str(a.target))
+    # Copied source mtimes can be older than a previous build in a shared target.
+    # Binding-identity acceptance isolates every frozen revision (including probes).
+    target = a.target / kind if getattr(a, 'isolated_targets', False) else a.target
+    env = dict(os.environ, **BUILD_ENV, CARGO_TARGET_DIR=str(target))
     with (a.out / 'logs' / f'build-{kind}.log').open('wb') as log:
         subprocess.run(['cargo', 'build', '--release', '--locked', '--offline', '-p', 'notist-cli', '--bin', 'notist'],
                        cwd=a.out / 'sources' / kind, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-    shutil.copy2(a.target / 'release/notist', a.out / 'bin' / kind)
+    shutil.copy2(target / 'release/notist', a.out / 'bin' / kind)
     m['binaries'][kind] = digest(a.out / 'bin' / kind)
     save(a.out / 'manifest.json', m)
 

@@ -94,6 +94,7 @@ mod tests {
     }
     fn record() -> Arc<InstanceRecord> {
         Arc::new(InstanceRecord {
+            inputs: Default::default(),
             definition: FunctionDef::new(
                 FunctionId::new("demo", "view"),
                 Accepts::Nothing,

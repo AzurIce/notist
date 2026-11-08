@@ -749,7 +749,11 @@ fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads(
     let encoded = serde_json::to_value(result.sources.wire(&result.root)).unwrap();
     assert_eq!(result.sources.decode::<Item>(encoded).unwrap(), result.root);
     let owner = notist::Source::metadata("test.notc").unwrap();
-    let sources = notist::Sources::from(owner.clone());
+    let mut sources = notist::Sources::from(owner.clone());
+    let binding = sources
+        .bindings_mut()
+        .declare("x", &owner, Default::default())
+        .unwrap();
     let subject = TypedExpr {
         ty: Some(notist::Type::Array(Some(Box::new(notist::Type::Int)))),
         known: None,
@@ -762,7 +766,7 @@ fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads(
         ty: Some(notist::Type::InlineContent),
         known: None,
         kind: ExprKind::For {
-            binding: "x".into(),
+            binding,
             subject: subject.clone().into(),
             body: subject.into(),
         },

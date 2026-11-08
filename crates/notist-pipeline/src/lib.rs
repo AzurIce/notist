@@ -475,6 +475,12 @@ impl Pipeline {
             document.attrs,
         );
         diagnostics.extend(errors);
+        sources.bindings_mut().merge(program.sources.bindings());
+        let extension_context = DocumentContext {
+            path: &path,
+            sources: &sources,
+            registry: context.registry(),
+        };
         if extensions_valid {
             extensions_valid =
                 context

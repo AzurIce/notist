@@ -425,7 +425,9 @@ fn checked_function_bodies_contain_typed_item_interpolations() {
     };
     let expr = forest[0].as_expr().expect("interpolation expression");
     assert_eq!(expr.ty, Some(Type::InlineContent));
-    assert!(matches!(&expr.kind, ExprKind::Input(name) if name == "children"));
+    assert!(
+        matches!(&expr.kind, ExprKind::Input(id) if analysis.sources().bindings().get(*id).unwrap().name == "children")
+    );
     let evaluation = pipeline.evaluate(&analysis, &context);
     assert!(evaluation.diagnostics.is_empty());
     assert!(evaluation.root.find(|i| i.ctor() == Ctor::Group).is_none());

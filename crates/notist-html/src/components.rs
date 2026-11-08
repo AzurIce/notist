@@ -99,11 +99,12 @@ pub struct BindingError {
 
 #[derive(Debug, Clone)]
 pub struct Component {
+    pub(crate) signature: Arc<notist_core::signature::ResolvedSignature>,
     pub id: FunctionId,
     pub tag: String,
     /// Browser module locator interpreted by the host, not the renderer.
     pub module: ModuleLocator,
-    pub definition: Box<FunctionDef>,
+    pub definition: Arc<FunctionDef>,
 }
 #[derive(Debug, Clone)]
 pub enum Target {
@@ -183,13 +184,18 @@ impl HtmlRegistry {
         definition: &FunctionDef,
         module: impl Into<ModuleLocator>,
     ) -> Result<(), String> {
+        let owned = Arc::new(definition.clone());
         self.register(
-            definition,
+            &owned,
             Target::Component(Component {
+                signature: Arc::new(
+                    notist_core::signature::ResolvedSignature::from_shared(owned.clone())
+                        .map_err(str::to_owned)?,
+                ),
                 id: definition.id.clone(),
                 tag: component_tag(&definition.id),
                 module: module.into(),
-                definition: Box::new(definition.clone()),
+                definition: owned.clone(),
             }),
         )
     }
@@ -261,7 +267,16 @@ impl HtmlRegistry {
             Target::Component(mut component) => {
                 // The supplied semantic definition is authoritative; target records
                 // never introduce their own signature, including NaN defaults.
-                component.definition = Box::new(definition.clone());
+                if !std::ptr::eq(component.signature.declaration(), definition)
+                    || !std::ptr::eq(component.definition.as_ref(), definition)
+                {
+                    let owned = Arc::new(definition.clone());
+                    component.signature = Arc::new(
+                        notist_core::signature::ResolvedSignature::from_shared(owned.clone())
+                            .map_err(str::to_owned)?,
+                    );
+                    component.definition = owned;
+                }
                 Target::Component(component)
             }
             target => target,

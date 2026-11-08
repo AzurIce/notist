@@ -6,6 +6,8 @@ SourceId、ModuleId 与 DefId 在私有底层共享 Id<Tag> 数字表示和 IdAl
 
 身份不是源码修订、函数签名、实现版本或资源授权。不同 Context 可以为同一逻辑身份提供不同的不可变定义快照；实现与特化结果只能在相应 Context 和 CheckedProgram 的边界内复用。
 
+词法变量与类型参数使用独立的 [局部绑定身份](binding-identity.not)，不借用 DefId，也不把所有名字统一登记成一种 Symbol。
+
 == 声明、选择器与已解析引用
 
 FunctionId 是拥有规范模块名与函数名的共享选择器，供声明、配置、显示和输入边界使用；它不是存放在已解析引用位置的数字 ID。FunctionDef 保存具有名称与签名的声明快照，FunctionInstance 表达外部指定的函数和编译期实参。

@@ -640,8 +640,12 @@ pub(crate) fn bind_html(
             .filter(|definition| {
                 definition.id.module != "notist"
                     && !definition.implementation.is_code()
-                    && (definition.returns.level().is_some()
-                        || matches!(definition.returns, crate::Type::Parameter(_)))
+                    && environment
+                        .context()
+                        .registry()
+                        .signature(definition.id.def_id())
+                        .expect("registered declarations have resolved signatures")
+                        .may_return_content()
             })
     {
         let module = &environment.modules()[&definition.id.module_id()];

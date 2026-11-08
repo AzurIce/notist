@@ -2,6 +2,7 @@
 //! These are pure IR data; checking and interpretation belong to the pipeline.
 
 use crate::{
+    binding::BindingId,
     definitions::{ComptimeValue, FunctionDef, ResolvedInstance, Type},
     item::{Dict, Item},
 };
@@ -12,6 +13,8 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstanceRecord {
     pub definition: FunctionDef,
+    /// Names are only the call-boundary projection; body references use IDs.
+    pub inputs: BTreeMap<String, BindingId>,
     pub body: Option<TypedExpr>,
     pub diagnostics: Vec<crate::diag::Diagnostic>,
     pub checking: bool,
@@ -119,12 +122,12 @@ impl ContentShape {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Constant(ComptimeValue),
-    Input(String),
+    Input(BindingId),
     Array(Vec<TypedExpr>),
     Dict(Vec<(String, TypedExpr)>),
     Unary(String, Box<TypedExpr>),
     Binary(String, Box<TypedExpr>, Box<TypedExpr>),
-    Block(Vec<(String, TypedExpr)>, Box<TypedExpr>),
+    Block(Vec<(BindingId, TypedExpr)>, Box<TypedExpr>),
     If(Box<TypedExpr>, Box<TypedExpr>, Box<TypedExpr>),
     /// The `some` constructor: wraps its data payload as Value::Some.
     Some(Box<TypedExpr>),
@@ -141,7 +144,7 @@ pub enum ExprKind {
     Call(crate::shared::Shared<Invocation>),
     Content(crate::shared::Shared<Vec<Item>>),
     For {
-        binding: String,
+        binding: BindingId,
         subject: crate::shared::Shared<TypedExpr>,
         body: crate::shared::Shared<TypedExpr>,
     },
@@ -155,10 +158,9 @@ pub struct ResultArm {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ResultPattern {
-    Ok(String),
-    Err(String),
+    Ok(BindingId),
+    Err(BindingId),
     Wildcard,
 }
 

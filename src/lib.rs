@@ -24,6 +24,7 @@ pub use notist_core::shared::{Array, Text};
 pub use rowan::{TextRange, TextSize};
 
 pub use notist_core::annotation::{Annotation, AnnotationKind, LiteralDict};
+pub use notist_core::binding::{BindingId, BindingInfo, Bindings, TypeParamId};
 pub use notist_core::definition_identity::{DefinitionError, Definitions};
 pub use notist_core::definitions::{
     ComptimeParameter, ComptimeValue, DefId, DefinitionModule, FunctionDef, FunctionId,

@@ -363,21 +363,6 @@ impl Type {
             _ => true,
         }
     }
-    pub fn substitute(&self, bindings: &std::collections::BTreeMap<String, ComptimeValue>) -> Self {
-        match self {
-            Self::Parameter(name) => match bindings.get(name) {
-                Some(ComptimeValue::Type(ty)) => ty.clone(),
-                _ => self.clone(),
-            },
-            Self::Array(t) => Self::Array(t.as_ref().map(|t| Box::new(t.substitute(bindings)))),
-            Self::Option(t) => Self::Option(Box::new(t.substitute(bindings))),
-            Self::Result(ok, err) => Self::Result(
-                Box::new(ok.substitute(bindings)),
-                Box::new(err.substitute(bindings)),
-            ),
-            _ => self.clone(),
-        }
-    }
 }
 
 /// Implementation origin is independent of the function's result type.
@@ -661,7 +646,7 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
             }
             if let Some(default) = &parameter.default
                 && match default {
-                    ComptimeValue::Type(_) => parameter.ty != Type::Type,
+                    ComptimeValue::Type(ty) => parameter.ty != Type::Type || !ty.concrete(),
                     ComptimeValue::Data(v) => {
                         v.contains_data_views()
                             || parameter.ty.concrete() && !parameter.ty.accepts(v)

@@ -114,19 +114,19 @@ impl Failure {
 /// Immutable lexical snapshots. Saving content shares the environment, never
 /// substitutes values into checked code. A subsequent binding detaches the map.
 #[derive(Debug, Clone, Default)]
-struct Scope(Shared<BTreeMap<String, Runtime>>);
+struct Scope(Shared<BTreeMap<notist_core::binding::BindingId, Runtime>>);
 impl Scope {
     fn new() -> Self {
         Self::default()
     }
-    fn get(&self, name: &str) -> Option<&Runtime> {
-        self.0.get(name)
+    fn get(&self, id: &notist_core::binding::BindingId) -> Option<&Runtime> {
+        self.0.get(id)
     }
-    fn insert(&mut self, name: String, value: Runtime) {
-        self.0.insert(name, value);
+    fn insert(&mut self, id: notist_core::binding::BindingId, value: Runtime) {
+        self.0.insert(id, value);
     }
-    fn contains_key(&self, name: &str) -> bool {
-        self.0.contains_key(name)
+    fn contains_key(&self, id: &notist_core::binding::BindingId) -> bool {
+        self.0.contains_key(id)
     }
 }
 #[derive(Debug, Clone)]
@@ -375,130 +375,142 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             }
             return Ok(Runtime::Value(value.clone()));
         }
-        let result = match &t.kind {
-            ExprKind::Constant(value) => Runtime::Value(value.clone()),
-            ExprKind::Input(name) => scope.get(name).cloned().ok_or_else(|| {
-                Failure::from(format!(
-                    "runtime input `{name}` is unavailable at compile time"
-                ))
-            })?,
-            ExprKind::Failure(message) => return Err(message.clone().into()),
-            ExprKind::Content(nodes) => {
-                self.require_runtime()?;
-                Runtime::Content(
-                    t.ty.clone().ok_or("missing content type")?,
-                    self.bind_content(nodes, scope, self.limits.content_nodes),
-                )
-            }
-            ExprKind::For { .. } => {
-                self.require_runtime()?;
-                let node = Node::expression(t.clone());
-                Runtime::Content(
-                    t.ty.clone().ok_or("missing checked for result category")?,
-                    Content::one(
-                        Piece {
-                            source: node,
-                            kind: Construction::Repeat {
-                                expression: t.clone().into(),
-                                environment: scope.clone(),
+        let result =
+            match &t.kind {
+                ExprKind::Constant(value) => Runtime::Value(value.clone()),
+                ExprKind::Input(id) => scope.get(id).cloned().ok_or_else(|| {
+                    match self.sources.bindings().get(*id) {
+                        Ok(info) => Failure::from(format!(
+                            "runtime input `{}` is unavailable at compile time",
+                            info.name
+                        )),
+                        Err(message) => Failure::from(message),
+                    }
+                })?,
+                ExprKind::Failure(message) => return Err(message.clone().into()),
+                ExprKind::Content(nodes) => {
+                    self.require_runtime()?;
+                    Runtime::Content(
+                        t.ty.clone().ok_or("missing content type")?,
+                        self.bind_content(nodes, scope, self.limits.content_nodes),
+                    )
+                }
+                ExprKind::For { .. } => {
+                    self.require_runtime()?;
+                    let node = Node::expression(t.clone());
+                    Runtime::Content(
+                        t.ty.clone().ok_or("missing checked for result category")?,
+                        Content::one(
+                            Piece {
+                                source: node,
+                                kind: Construction::Repeat {
+                                    expression: t.clone().into(),
+                                    environment: scope.clone(),
+                                },
                             },
-                        },
-                        1,
-                    ),
-                )
-            }
-            ExprKind::Call(call) if call.definition.returns.level().is_some() => {
-                self.require_runtime()?;
-                let node = Node::expression(t.clone());
-                let content = self.bind_content(
-                    std::slice::from_ref(&node),
-                    scope,
-                    self.limits.content_nodes,
-                );
-                Runtime::Content(call.definition.returns.clone(), content)
-            }
-            ExprKind::Call(call) => {
-                let children = self.call_children(call, scope, self.limits.content_nodes);
-                self.execute(call, scope, children, None)?
-            }
-            ExprKind::Block(bindings, tail) => {
-                let mut local = scope.clone();
-                for (name, value) in bindings {
-                    let value = self.expr(value, &local)?;
-                    local.insert(name.clone(), value);
+                            1,
+                        ),
+                    )
                 }
-                self.expr(tail, &local)?
-            }
-            ExprKind::If(condition, yes, no) => match data(self.expr(condition, scope)?)? {
-                Value::Bool(value) => self.expr(if value { yes } else { no }, scope)?,
-                _ => return Err("condition must be Bool".into()),
-            },
-            ExprKind::Unary(op, value) => {
-                Runtime::Value(unary(op, &value_of(self.expr(value, scope)?)?)?)
-            }
-            ExprKind::Binary(op, left, right) => {
-                let left = value_of(self.expr(left, scope)?)?;
-                if op == "&&" && left == ComptimeValue::Data(Value::Bool(false))
-                    || op == "||" && left == ComptimeValue::Data(Value::Bool(true))
-                {
-                    return Ok(Runtime::Value(left));
+                ExprKind::Call(call) if call.definition.returns.level().is_some() => {
+                    self.require_runtime()?;
+                    let node = Node::expression(t.clone());
+                    let content = self.bind_content(
+                        std::slice::from_ref(&node),
+                        scope,
+                        self.limits.content_nodes,
+                    );
+                    Runtime::Content(call.definition.returns.clone(), content)
                 }
-                Runtime::Value(binary(op, &left, &value_of(self.expr(right, scope)?)?)?)
-            }
-            ExprKind::Array(values) => {
-                let values = values
-                    .iter()
-                    .map(|v| {
-                        self.expr(v, scope)
-                            .and_then(|v| data(v).map_err(Into::into))
-                    })
-                    .collect::<Result<_, _>>()?;
-                Runtime::Value(ComptimeValue::Data(Value::Array(values)))
-            }
-            ExprKind::Dict(values) => {
-                let values = values
-                    .iter()
-                    .map(|(k, v)| Ok((k.clone(), data(self.expr(v, scope)?)?)))
-                    .collect::<Result<_, Failure>>()?;
-                Runtime::Value(ComptimeValue::Data(Value::Dict(values)))
-            }
-            ExprKind::Some(value) => Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(
-                data(self.expr(value, scope)?)?,
-            )))),
-            ExprKind::Unwrap(value) => match data(self.expr(value, scope)?)? {
-                Value::Some(value) => Runtime::Value(ComptimeValue::Data(*value)),
-                _ => return Err("match arm requires `some`".into()),
-            },
-            ExprKind::Ok(value) | ExprKind::Err(value) => {
-                let value = Box::new(data(self.expr(value, scope)?)?);
-                Runtime::Value(ComptimeValue::Data(if matches!(t.kind, ExprKind::Ok(_)) {
-                    Value::Ok(value)
-                } else {
-                    Value::Err(value)
-                }))
-            }
-            ExprKind::MatchResult { subject, arms } => {
-                let (ok, value) = match data(self.expr(subject, scope)?)? {
-                    Value::Ok(value) => (true, value),
-                    Value::Err(value) => (false, value),
-                    _ => return Err("Result match requires a Result value".into()),
-                };
-                let arm = arms.iter().find(|a| matches!(&a.pattern,
+                ExprKind::Call(call) => {
+                    let children = self.call_children(call, scope, self.limits.content_nodes);
+                    self.execute(call, scope, children, None)?
+                }
+                ExprKind::Block(bindings, tail) => {
+                    let mut local = scope.clone();
+                    for (id, value) in bindings {
+                        let value = self.expr(value, &local)?;
+                        local.insert(*id, value);
+                    }
+                    self.expr(tail, &local)?
+                }
+                ExprKind::If(condition, yes, no) => match data(self.expr(condition, scope)?)? {
+                    Value::Bool(value) => self.expr(if value { yes } else { no }, scope)?,
+                    _ => return Err("condition must be Bool".into()),
+                },
+                ExprKind::Unary(op, value) => {
+                    Runtime::Value(unary(op, &value_of(self.expr(value, scope)?)?)?)
+                }
+                ExprKind::Binary(op, left, right) => {
+                    let left = value_of(self.expr(left, scope)?)?;
+                    if op == "&&" && left == ComptimeValue::Data(Value::Bool(false))
+                        || op == "||" && left == ComptimeValue::Data(Value::Bool(true))
+                    {
+                        return Ok(Runtime::Value(left));
+                    }
+                    Runtime::Value(binary(op, &left, &value_of(self.expr(right, scope)?)?)?)
+                }
+                ExprKind::Array(values) => {
+                    let values = values
+                        .iter()
+                        .map(|v| {
+                            self.expr(v, scope)
+                                .and_then(|v| data(v).map_err(Into::into))
+                        })
+                        .collect::<Result<_, _>>()?;
+                    Runtime::Value(ComptimeValue::Data(Value::Array(values)))
+                }
+                ExprKind::Dict(values) => {
+                    let values = values
+                        .iter()
+                        .map(|(k, v)| Ok((k.clone(), data(self.expr(v, scope)?)?)))
+                        .collect::<Result<_, Failure>>()?;
+                    Runtime::Value(ComptimeValue::Data(Value::Dict(values)))
+                }
+                ExprKind::Some(value) => Runtime::Value(ComptimeValue::Data(Value::Some(
+                    Box::new(data(self.expr(value, scope)?)?),
+                ))),
+                ExprKind::Unwrap(value) => match data(self.expr(value, scope)?)? {
+                    Value::Some(value) => Runtime::Value(ComptimeValue::Data(*value)),
+                    _ => return Err("match arm requires `some`".into()),
+                },
+                ExprKind::Ok(value) | ExprKind::Err(value) => {
+                    let value = Box::new(data(self.expr(value, scope)?)?);
+                    Runtime::Value(ComptimeValue::Data(if matches!(t.kind, ExprKind::Ok(_)) {
+                        Value::Ok(value)
+                    } else {
+                        Value::Err(value)
+                    }))
+                }
+                ExprKind::MatchResult { subject, arms } => {
+                    let (ok, value) = match data(self.expr(subject, scope)?)? {
+                        Value::Ok(value) => (true, value),
+                        Value::Err(value) => (false, value),
+                        _ => return Err("Result match requires a Result value".into()),
+                    };
+                    let arm = arms.iter().find(|a| matches!(&a.pattern,
                     notist_core::evaluation::ResultPattern::Ok(_) if ok)
                     || matches!(&a.pattern, notist_core::evaluation::ResultPattern::Err(_) if !ok)
                     || matches!(&a.pattern, notist_core::evaluation::ResultPattern::Wildcard))
                     .ok_or("non-exhaustive Result match")?;
-                let mut local = scope.clone();
-                if let notist_core::evaluation::ResultPattern::Ok(name)
-                | notist_core::evaluation::ResultPattern::Err(name) = &arm.pattern
-                {
-                    if name != "_" {
-                        local.insert(name.clone(), Runtime::Value(ComptimeValue::Data(*value)));
+                    let mut local = scope.clone();
+                    if let notist_core::evaluation::ResultPattern::Ok(name)
+                    | notist_core::evaluation::ResultPattern::Err(name) = &arm.pattern
+                    {
+                        if self
+                            .sources
+                            .bindings()
+                            .get(*name)
+                            .map_err(Failure::from)?
+                            .name
+                            != "_"
+                        {
+                            local.insert(*name, Runtime::Value(ComptimeValue::Data(*value)));
+                        }
                     }
+                    self.expr(&arm.body, &local)?
                 }
-                self.expr(&arm.body, &local)?
-            }
-        };
+            };
         if let Runtime::Value(value) = &result {
             check_value_size(value, self.limits.value_bytes)?;
         }
@@ -546,10 +558,20 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     let children =
                         self.bind_content(&item.children, scope, limit.saturating_sub(1));
                     let added = 1 + children.nodes;
-                    let call = node
-                        .function_id()
-                        .filter(|id| self.target(id) != *id)
-                        .and_then(|_| self.synthetic_call(node));
+                    let call = if node.function_id().is_some_and(|id| self.target(&id) != id) {
+                        match self.synthetic_call(node) {
+                            Ok(call) => call,
+                            Err(failure) => {
+                                pieces.push(Piece {
+                                    source: failure_content(node, failure),
+                                    kind: Construction::Error,
+                                });
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     (
                         match call {
                             Some(call) => Construction::Call {
@@ -799,10 +821,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 }
                 self.tick()?;
                 let mut local = environment.clone();
-                local.insert(
-                    binding.clone(),
-                    Runtime::Value(ComptimeValue::Data(value.clone())),
-                );
+                local.insert(*binding, Runtime::Value(ComptimeValue::Data(value.clone())));
                 let value = self.expr(body, &local).map_err(|mut failure| {
                     failure.message = format!("for iteration {index}: {}", failure.message);
                     failure
@@ -897,9 +916,16 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         self.steps = previous_steps;
         summary
     }
-    fn synthetic_call(&self, item: &Node) -> Option<Invocation> {
-        let id = item.function_id()?;
-        let mut definition = self.context.registry().definition(id)?.clone();
+    fn synthetic_call(&self, item: &Node) -> Result<Option<Invocation>, Failure> {
+        let Some(id) = item.function_id() else {
+            return Ok(None);
+        };
+        let definition = self
+            .context
+            .registry()
+            .definition(id)
+            .ok_or("missing synthetic call declaration")?
+            .clone();
         let instance = item
             .instance()
             .cloned()
@@ -921,20 +947,24 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     })
                     .collect(),
             });
-        let bindings = definition
-            .comptime
-            .iter()
-            .zip(&instance.arguments)
-            .map(|(p, v)| (p.name.clone(), v.clone()))
-            .collect();
-        definition.returns = definition.returns.substitute(&bindings);
-        definition.children_type = definition
-            .children_type
-            .as_ref()
-            .map(|t| t.substitute(&bindings));
-        for parameter in &mut definition.parameters {
-            parameter.ty = parameter.ty.substitute(&bindings);
+        let signature = self
+            .context
+            .registry()
+            .signature(id)
+            .ok_or("missing synthetic call signature")?
+            .clone();
+        if signature.comptime().len() != instance.arguments.len() {
+            return Err("synthetic call comptime arity mismatch".into());
         }
+        let mut bindings = notist_core::signature::ComptimeBindings::new(signature.clone());
+        for (p, v) in signature.comptime().iter().zip(&instance.arguments) {
+            bindings
+                .insert(p.id, v.clone())
+                .map_err(|error| Failure::from(error.to_string()))?;
+        }
+        let definition = bindings
+            .instantiate()
+            .map_err(|error| Failure::from(error.to_string()))?;
         let source = item.origin.as_ref().map(|o| o.source).unwrap_or_default();
         let arguments = item
             .fields()
@@ -960,7 +990,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 )
             })
             .collect();
-        Some(Invocation {
+        Ok(Some(Invocation {
             instance,
             definition: definition.into(),
             arguments,
@@ -971,7 +1001,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             site: CallSite::Markup,
             resource_root: Some(self.context.resource_root().into()),
             invalid: None,
-        })
+        }))
     }
     fn error(&mut self, source: &Node, message: String, expansion: &SourceChain) -> Node {
         let mut node = error_content(source, message.clone());
@@ -1059,7 +1089,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .registry()
             .definition(target.function)
             .is_some_and(|d| d.implementation.is_code());
-        let mut inputs = Scope::new();
+        let mut pending_inputs = Vec::new();
         let mut fields = Dict::default();
         for (name, expression) in &call.arguments {
             let value = self.expr(expression, scope)?;
@@ -1101,30 +1131,37 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 } else {
                     value
                 };
-                inputs.insert(name.clone(), input);
-            }
-        }
-        if code {
-            for p in &call.definition.parameters {
-                if p.mode == ParameterMode::Optional && !inputs.contains_key(&p.name) {
-                    inputs.insert(
-                        p.name.clone(),
-                        Runtime::Value(ComptimeValue::Data(Value::None)),
-                    );
-                }
-            }
-            if let Some(ty) = &call.definition.children_type {
-                inputs.insert(
-                    "children".into(),
-                    Runtime::Content(ty.clone(), children.clone()),
-                );
+                pending_inputs.push((name.as_str(), input));
             }
         }
         let implementation = self.implementation(&target)?;
         let definition = &implementation.definition;
+        let mut inputs = Scope::new();
         if code {
-            for (parameter, value) in definition.comptime.iter().zip(&target.arguments) {
-                inputs.insert(parameter.name.clone(), Runtime::Value(value.clone()));
+            for (name, value) in pending_inputs {
+                let id = implementation
+                    .inputs
+                    .get(name)
+                    .ok_or("missing checked parameter binding")?;
+                inputs.insert(*id, value);
+            }
+            for p in &call.definition.parameters {
+                let id = implementation
+                    .inputs
+                    .get(&p.name)
+                    .ok_or("missing checked parameter binding")?;
+                if p.mode == ParameterMode::Optional && !inputs.contains_key(id) {
+                    inputs.insert(*id, Runtime::Value(ComptimeValue::Data(Value::None)));
+                }
+            }
+            if let Some(ty) = &call.definition.children_type {
+                inputs.insert(
+                    *implementation
+                        .inputs
+                        .get("children")
+                        .ok_or("missing checked children binding")?,
+                    Runtime::Content(ty.clone(), children.clone()),
+                );
             }
         }
         if call.definition.id.module == "notist"
@@ -1485,11 +1522,11 @@ mod tests {
             panic!("constructing a closure must not execute or specialize it")
         }
     }
-    fn input(name: &str, ty: Type) -> TypedExpr {
+    fn input(id: notist_core::binding::BindingId, ty: Type) -> TypedExpr {
         TypedExpr {
             ty: Some(ty),
             known: None,
-            kind: ExprKind::Input(name.into()),
+            kind: ExprKind::Input(id),
             span: Default::default(),
             source: Default::default(),
             shape: Default::default(),
@@ -1509,6 +1546,15 @@ mod tests {
     fn call_closures_share_code_and_capture_lexical_snapshots_without_substitution() {
         let context = Context;
         let mut e = evaluator(&context, &CheckedProgram::default());
+        let x = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "x",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
         let definition = context
             .registry()
             .function("notist", "text")
@@ -1520,7 +1566,7 @@ mod tests {
                 arguments: Vec::new(),
             },
             definition: definition.into(),
-            arguments: vec![("text".into(), input("x", Type::String))],
+            arguments: vec![("text".into(), input(x, Type::String))],
             children: None,
             attrs: Dict::default(),
             span: Default::default(),
@@ -1541,12 +1587,12 @@ mod tests {
         let node = Node::expression(expression);
         let mut scope = Scope::new();
         scope.insert(
-            "x".into(),
+            x,
             Runtime::Value(ComptimeValue::Data(Value::Str("first".into()))),
         );
         let content = e.bind_content(&[node], &scope, 100);
         scope.insert(
-            "x".into(),
+            x,
             Runtime::Value(ComptimeValue::Data(Value::Str("second".into()))),
         );
         let Construction::Call {
@@ -1558,9 +1604,9 @@ mod tests {
             panic!()
         };
         assert!(saved.shares_storage(&call));
-        assert!(matches!(&saved.arguments[0].1.kind, ExprKind::Input(name) if name == "x"));
+        assert!(matches!(&saved.arguments[0].1.kind, ExprKind::Input(id) if *id == x));
         assert!(
-            matches!(environment.get("x"), Some(Runtime::Value(ComptimeValue::Data(Value::Str(v)))) if v.as_str() == "first")
+            matches!(environment.get(&x), Some(Runtime::Value(ComptimeValue::Data(Value::Str(v)))) if v.as_str() == "first")
         );
         assert!(content.pieces.shares_storage(&content.clone().pieces));
         assert_eq!(e.requests, 0);
@@ -1569,13 +1615,40 @@ mod tests {
     fn loop_closures_share_templates_and_do_not_evaluate_the_subject_when_saved() {
         let context = Context;
         let mut e = evaluator(&context, &CheckedProgram::default());
-        let body: Shared<TypedExpr> = input("content", Type::InlineContent).into();
+        let content_id = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "content",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
+        let x = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "x",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
+        let missing = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "missing",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
+        let body: Shared<TypedExpr> = input(content_id, Type::InlineContent).into();
         let expression = TypedExpr {
             ty: Some(Type::InlineContent),
             known: None,
             kind: ExprKind::For {
-                binding: "x".into(),
-                subject: input("missing", Type::Array(None)).into(),
+                binding: x,
+                subject: input(missing, Type::Array(None)).into(),
                 body: body.clone(),
             },
             source: Default::default(),
@@ -1625,10 +1698,17 @@ mod tests {
     fn recovered_source_children_are_never_bound_or_executed() {
         let context = Context;
         let mut e = evaluator(&context, &CheckedProgram::default());
-        let source =
-            Node::new(Ctor::Error("broken".into()), Default::default()).with_children(vec![
-                Node::expression(input("missing", Type::InlineContent)),
-            ]);
+        let missing = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "missing",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
+        let source = Node::new(Ctor::Error("broken".into()), Default::default())
+            .with_children(vec![Node::expression(input(missing, Type::InlineContent))]);
         let content = e.bind_content(&[source], &Scope::new(), 100);
         assert_eq!(e.steps, 0);
         let (nodes, summary) = e.present(&content, 100, &SourceChain::default());
@@ -1646,7 +1726,9 @@ mod tests {
             end: 9,
         }]
         .into();
-        let mut first = Node::expression(input("x", Type::InlineContent));
+        let mut bindings = notist_core::binding::Bindings::default();
+        let x = bindings.declare("x", &owner, Default::default()).unwrap();
+        let mut first = Node::expression(input(x, Type::InlineContent));
         let mut second = first.clone();
         append_expansion(&mut first, &suffix);
         append_expansion(&mut second, &suffix);

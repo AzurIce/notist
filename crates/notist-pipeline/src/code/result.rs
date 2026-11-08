@@ -144,15 +144,31 @@ impl Checker<'_> {
             ResultPattern::Err(name) => Some((name, err)),
             ResultPattern::Wildcard => None,
         }
-        .filter(|(name, _)| name.as_str() != "_");
-        let previous = binding.map(|(name, ty)| {
+        .filter(|(id, _)| {
+            self.program
+                .sources
+                .bindings()
+                .get(**id)
+                .expect("checked pattern binding")
+                .name
+                != "_"
+        });
+        let previous = binding.map(|(id, ty)| {
+            let name = self
+                .program
+                .sources
+                .bindings()
+                .get(*id)
+                .expect("checked pattern binding")
+                .name
+                .clone();
             let known = known_payload.map(ComptimeValue::Data);
             let kind = known
                 .clone()
                 .map(ExprKind::Constant)
-                .unwrap_or_else(|| ExprKind::Input(name.clone()));
+                .unwrap_or_else(|| ExprKind::Input(*id));
             let input = self.typed(Some((**ty).clone()), kind, known, body.span());
-            (name, self.scope.insert(name.clone(), input))
+            (name.clone(), self.scope.insert(name, input))
         });
         let checked = self.check_with_hint(body, hint);
         if let Some((name, previous)) = previous {
@@ -161,7 +177,7 @@ impl Checker<'_> {
                     self.scope.insert(name.clone(), value);
                 }
                 None => {
-                    self.scope.remove(name);
+                    self.scope.remove(&name);
                 }
             }
         }
@@ -180,7 +196,7 @@ impl Checker<'_> {
         let mut covered_ok = false;
         let mut covered_err = false;
         let mut wildcard = false;
-        for (pattern, _) in arms {
+        for (pattern, body) in arms {
             let Some(parsed) = result_pattern(pattern) else {
                 return self.failed(
                     pattern.span(),
@@ -189,14 +205,27 @@ impl Checker<'_> {
             };
             let duplicate = wildcard
                 || match &parsed {
-                    ResultPattern::Ok(_) => std::mem::replace(&mut covered_ok, true),
-                    ResultPattern::Err(_) => std::mem::replace(&mut covered_err, true),
-                    ResultPattern::Wildcard => std::mem::replace(&mut wildcard, true),
+                    NamePattern::Ok(_) => std::mem::replace(&mut covered_ok, true),
+                    NamePattern::Err(_) => std::mem::replace(&mut covered_err, true),
+                    NamePattern::Wildcard => std::mem::replace(&mut wildcard, true),
                 };
             if duplicate {
                 self.report(pattern.span(), "unreachable Result match arm");
             }
-            patterns.push(parsed);
+            let resolved = match parsed {
+                NamePattern::Ok(name) | NamePattern::Err(name) => {
+                    let Some(id) = self.declare_in(&name, body.span(), body.span()) else {
+                        return self.failed(span, "cannot allocate match binding");
+                    };
+                    if matches!(result_pattern(pattern), Some(NamePattern::Ok(_))) {
+                        ResultPattern::Ok(id)
+                    } else {
+                        ResultPattern::Err(id)
+                    }
+                }
+                NamePattern::Wildcard => ResultPattern::Wildcard,
+            };
+            patterns.push(resolved);
         }
         if arms.is_empty() {
             return self.failed(span, "empty match");
@@ -280,9 +309,14 @@ impl Checker<'_> {
     }
 }
 
-fn result_pattern(e: &Expr) -> Option<ResultPattern> {
+enum NamePattern {
+    Ok(String),
+    Err(String),
+    Wildcard,
+}
+fn result_pattern(e: &Expr) -> Option<NamePattern> {
     if matches!(e, Expr::Ref { name, .. } if name == "_") {
-        return Some(ResultPattern::Wildcard);
+        return Some(NamePattern::Wildcard);
     }
     let Expr::Call {
         callee,
@@ -302,8 +336,8 @@ fn result_pattern(e: &Expr) -> Option<ResultPattern> {
         return None;
     };
     match callee.name_path().as_deref()? {
-        "ok" => Some(ResultPattern::Ok(name.clone())),
-        "err" => Some(ResultPattern::Err(name.clone())),
+        "ok" => Some(NamePattern::Ok(name.clone())),
+        "err" => Some(NamePattern::Err(name.clone())),
         _ => None,
     }
 }

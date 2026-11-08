@@ -1,5 +1,55 @@
 use notist::{Dict, Environment, FunctionId, Value};
 use notist_html::{HtmlRegistry, Renderer};
+#[test]
+fn component_registration_rebuilds_resolved_types_from_the_authoritative_declaration() {
+    let pipeline = notist::Pipeline::default();
+    let old = pipeline
+        .compile_module(
+            "doc.not",
+            "component-authority",
+            "old-component.notc",
+            "fn leaf<T: Type>(value: T) -> InlineContent;",
+        )
+        .unwrap();
+    let new = pipeline
+        .compile_module(
+            "doc.not",
+            "component-authority",
+            "new-component.notc",
+            "fn leaf<U: Type>(value: U) -> InlineContent;",
+        )
+        .unwrap();
+    let mut prior = HtmlRegistry::default();
+    prior
+        .bind_component(&old.definitions.functions[0], "leaf.js")
+        .unwrap();
+    let definition = &new.definitions.functions[0];
+    let target = prior.get(&definition.id).unwrap().clone();
+    let mut html = HtmlRegistry::default();
+    html.register(definition, target).unwrap();
+    let mut node = notist::Node::new(
+        notist::Ctor::Extension(notist_core::item::ExtensionCtor {
+            id: definition.id.def_id(),
+            accepts: definition.children,
+            level: notist::builtins::Level::Inline,
+        }),
+        Default::default(),
+    );
+    let item = node.as_item_mut().unwrap();
+    item.instance = Some(
+        notist::ResolvedInstance {
+            function: definition.id.def_id(),
+            arguments: vec![notist::ComptimeValue::Type(notist::Type::String)],
+        }
+        .into(),
+    );
+    item.fields
+        .insert("value", Value::Str("authoritative".into()));
+    let result = Renderer::from_registry(html).render_with_diagnostics(&node);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.html.contains("notist-comptime-u"));
+    assert!(!result.html.contains("notist-comptime-t"));
+}
 fn definitions() -> std::sync::Arc<notist::DefinitionModule> {
     notist_pipeline::Pipeline::default().compile_module("content.not", "widgets", "widgets/lib.notc", "fn panel(title: String = \"\", open: Bool = false, count: Int = 9223372036854775807, ratio: Float = 1.5, optional?: String, data: Array = (false,))[children: BlockContent] -> BlockContent; fn badge(label: String) -> InlineContent;").unwrap().definitions
 }

@@ -46,6 +46,28 @@ impl Sources {
         &self,
         value: serde_json::Value,
     ) -> Result<T, serde_json::Error> {
+        self.decode_with_bindings(value, &Default::default())
+    }
+    /// Decode an extracted body with its explicit free lexical environment.
+    /// Enclosing let/loop/match declarations still shadow this environment.
+    pub fn decode_with_bindings<T: DeserializeWithSources>(
+        &self,
+        value: serde_json::Value,
+        bindings: &std::collections::BTreeMap<String, crate::binding::BindingId>,
+    ) -> Result<T, serde_json::Error> {
+        for (name, id) in bindings {
+            self.validate_binding(*id)
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            let info = self
+                .bindings()
+                .get(*id)
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            if &info.name != name {
+                return Err(serde::de::Error::custom(
+                    "lexical input name does not match its retained declaration",
+                ));
+            }
+        }
         let wire = serde_json::from_value::<T::Input>(value)?;
         T::decode(
             wire,
@@ -53,11 +75,12 @@ impl Sources {
                 sources: self.clone(),
                 namespace: SourceNamespace::default(),
                 allow_unknown: false,
+                locals: bindings.clone(),
             },
         )
         .map_err(serde::de::Error::custom)
     }
-    /// Import legacy wire names with explicit domain and retained ownership.
+    /// Import explicit wire names and declaration addresses with retained ownership.
     /// Wire without source text creates metadata-only records, never fake text.
     pub fn import<T: DeserializeWithSources>(
         value: serde_json::Value,
@@ -68,6 +91,7 @@ impl Sources {
             sources: Sources::new(),
             namespace,
             allow_unknown: true,
+            locals: Default::default(),
         };
         let value = T::decode(wire, &mut input).map_err(serde::de::Error::custom)?;
         Ok(Located::new(value, input.sources))
@@ -133,6 +157,32 @@ impl SerializeWithSources for SourceId {
         serializer.serialize_str(name)
     }
 }
+impl SerializeWithSources for crate::binding::BindingId {
+    fn serialize_with<S: Serializer>(
+        &self,
+        sources: &Sources,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct BindingOut<'a> {
+            name: &'a str,
+            source: Wire<'a, SourceId>,
+            span: (u32, u32),
+            scope: (u32, u32),
+            #[serde(skip_serializing_if = "Option::is_none")]
+            owner: Option<&'a crate::definitions::FunctionId>,
+        }
+        let info = sources.bindings().get(*self).map_err(S::Error::custom)?;
+        BindingOut {
+            owner: info.owner.as_ref(),
+            name: &info.name,
+            source: sources.wire(&info.source),
+            span: range(info.span),
+            scope: range(info.scope),
+        }
+        .serialize(serializer)
+    }
+}
 impl SerializeWithSources for ResolvedInstance {
     fn serialize_with<S: Serializer>(
         &self,
@@ -185,6 +235,16 @@ impl SerializeWithSources for Ctor {
 }
 
 struct Arguments<'a>(&'a [(String, TypedExpr)], &'a Sources);
+struct LexicalArguments<'a>(&'a [(crate::binding::BindingId, TypedExpr)], &'a Sources);
+impl Serialize for LexicalArguments<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for (id, value) in self.0 {
+            seq.serialize_element(&(self.1.wire(id), self.1.wire(value)))?;
+        }
+        seq.end()
+    }
+}
 impl Serialize for Arguments<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
@@ -343,12 +403,12 @@ impl SerializeWithSources for TypedExpr {
 #[derive(Serialize)]
 enum KindOut<'a> {
     Constant(&'a ComptimeValue),
-    Input(&'a str),
+    Input(Wire<'a, crate::binding::BindingId>),
     Array(Wire<'a, [TypedExpr]>),
     Dict(Arguments<'a>),
     Unary(&'a str, Wire<'a, TypedExpr>),
     Binary(&'a str, Wire<'a, TypedExpr>, Wire<'a, TypedExpr>),
-    Block(Arguments<'a>, Wire<'a, TypedExpr>),
+    Block(LexicalArguments<'a>, Wire<'a, TypedExpr>),
     If(
         Wire<'a, TypedExpr>,
         Wire<'a, TypedExpr>,
@@ -365,7 +425,7 @@ enum KindOut<'a> {
     Call(Wire<'a, Invocation>),
     Content(Wire<'a, [Node]>),
     For {
-        binding: &'a str,
+        binding: Wire<'a, crate::binding::BindingId>,
         subject: Wire<'a, TypedExpr>,
         body: Wire<'a, TypedExpr>,
     },
@@ -375,13 +435,13 @@ impl SerializeWithSources for ExprKind {
     fn serialize_with<S: Serializer>(&self, s: &Sources, serializer: S) -> Result<S::Ok, S::Error> {
         let out = match self {
             Self::Constant(v) => KindOut::Constant(v),
-            Self::Input(v) => KindOut::Input(v),
+            Self::Input(v) => KindOut::Input(s.wire(v)),
             Self::Array(v) => KindOut::Array(s.wire(v.as_slice())),
             Self::Dict(v) => KindOut::Dict(Arguments(v, s)),
             Self::Unary(op, v) => KindOut::Unary(op, s.wire(&**v)),
             Self::Binary(op, a, b) => KindOut::Binary(op, s.wire(&**a), s.wire(&**b)),
             Self::Block(bindings, value) => {
-                KindOut::Block(Arguments(bindings, s), s.wire(&**value))
+                KindOut::Block(LexicalArguments(bindings, s), s.wire(&**value))
             }
             Self::If(a, b, c) => KindOut::If(s.wire(&**a), s.wire(&**b), s.wire(&**c)),
             Self::Some(v) => KindOut::Some(s.wire(&**v)),
@@ -399,7 +459,7 @@ impl SerializeWithSources for ExprKind {
                 subject,
                 body,
             } => KindOut::For {
-                binding,
+                binding: s.wire(binding),
                 subject: s.wire(&**subject),
                 body: s.wire(&**body),
             },
@@ -410,7 +470,7 @@ impl SerializeWithSources for ExprKind {
 }
 #[derive(Serialize)]
 struct ArmOut<'a> {
-    pattern: &'a ResultPattern,
+    pattern: PatternWire<Wire<'a, crate::binding::BindingId>>,
     body: Wire<'a, TypedExpr>,
 }
 impl SerializeWithSources for ResultArm {
@@ -420,7 +480,11 @@ impl SerializeWithSources for ResultArm {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         ArmOut {
-            pattern: &self.pattern,
+            pattern: match &self.pattern {
+                ResultPattern::Ok(id) => PatternWire::Ok(sources.wire(id)),
+                ResultPattern::Err(id) => PatternWire::Err(sources.wire(id)),
+                ResultPattern::Wildcard => PatternWire::Wildcard,
+            },
             body: sources.wire(&self.body),
         }
         .serialize(serializer)
@@ -469,11 +533,97 @@ impl SerializeWithSources for Invocation {
 }
 
 pub struct Input {
+    locals: std::collections::BTreeMap<String, crate::binding::BindingId>,
     sources: Sources,
     namespace: SourceNamespace,
     allow_unknown: bool,
 }
 impl Input {
+    fn declaration(
+        &mut self,
+        binding: &BindingIn,
+        source: SourceId,
+        extent: Option<TextRange>,
+    ) -> Result<crate::binding::BindingId, SourceError> {
+        if self.sources.name(source)? != binding.source
+            || extent.is_some_and(|span| !binding.scope.contains_range(span))
+        {
+            return Err(SourceError::Binding(
+                "lexical declaration does not match its structural source and scope".into(),
+            ));
+        }
+        self.binding(binding, true)
+    }
+    fn binding(
+        &mut self,
+        binding: &BindingIn,
+        declare: bool,
+    ) -> Result<crate::binding::BindingId, SourceError> {
+        if !binding.scope.contains_range(binding.span) {
+            return Err(SourceError::Binding(
+                "binding declaration lies outside its scope".into(),
+            ));
+        }
+        let source = self.source(&binding.source)?;
+        if let Some(id) = self.sources.bindings().find(
+            &binding.name,
+            source,
+            binding.span,
+            binding.scope,
+            binding.owner.as_ref(),
+        ) {
+            return Ok(id);
+        }
+        if !self.allow_unknown || !declare {
+            return Err(SourceError::Binding("unknown lexical declaration".into()));
+        }
+        let function = binding
+            .owner
+            .as_ref()
+            .map(|name| {
+                self.identity(crate::definition_identity::FunctionName {
+                    module: name.module.clone(),
+                    name: name.name.clone(),
+                })
+            })
+            .transpose()?;
+        let owner = if source == SourceId::DETACHED {
+            Source::detached()
+        } else {
+            self.sources.source(source)?.clone()
+        };
+        self.sources
+            .bindings_mut()
+            .declare_with_owner(
+                &binding.name,
+                &owner,
+                binding.span,
+                binding.scope,
+                function.as_ref(),
+            )
+            .map_err(|message| SourceError::Binding(message.into()))
+    }
+    fn reference(
+        &mut self,
+        binding: &BindingIn,
+        source: SourceId,
+        span: TextRange,
+        known: bool,
+    ) -> Result<crate::binding::BindingId, SourceError> {
+        if self.sources.name(source)? != binding.source || !binding.scope.contains_range(span) {
+            return Err(SourceError::Binding(
+                "binding reference lies outside its source or scope".into(),
+            ));
+        }
+        let id = self.binding(binding, known)?;
+        match self.locals.get(&binding.name) {
+            Some(visible) if *visible == id => Ok(id),
+            None if known => Ok(id),
+            _ => Err(SourceError::Binding(
+                "dynamic free binding requires its explicit lexical environment".into(),
+            )),
+        }
+    }
     fn identity(
         &mut self,
         name: crate::definition_identity::FunctionName,
@@ -608,14 +758,26 @@ pub struct ExpressionIn {
     shape: ContentShape,
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingIn {
+    #[serde(default)]
+    owner: Option<crate::definition_identity::FunctionName>,
+    name: String,
+    source: String,
+    #[serde(with = "crate::evaluation::span")]
+    span: TextRange,
+    #[serde(with = "crate::evaluation::span")]
+    scope: TextRange,
+}
+#[derive(Deserialize)]
 enum KindIn {
     Constant(ComptimeValue),
-    Input(String),
+    Input(BindingIn),
     Array(Vec<ExpressionIn>),
     Dict(Vec<(String, ExpressionIn)>),
     Unary(String, Box<ExpressionIn>),
     Binary(String, Box<ExpressionIn>, Box<ExpressionIn>),
-    Block(Vec<(String, ExpressionIn)>, Box<ExpressionIn>),
+    Block(Vec<(BindingIn, ExpressionIn)>, Box<ExpressionIn>),
     If(Box<ExpressionIn>, Box<ExpressionIn>, Box<ExpressionIn>),
     Some(Box<ExpressionIn>),
     Unwrap(Box<ExpressionIn>),
@@ -628,7 +790,7 @@ enum KindIn {
     Call(InvocationIn),
     Content(Vec<NodeIn>),
     For {
-        binding: String,
+        binding: BindingIn,
         subject: Box<ExpressionIn>,
         body: Box<ExpressionIn>,
     },
@@ -636,8 +798,14 @@ enum KindIn {
 }
 #[derive(Deserialize)]
 struct ArmIn {
-    pattern: ResultPattern,
+    pattern: PatternWire<BindingIn>,
     body: ExpressionIn,
+}
+#[derive(Serialize, Deserialize)]
+enum PatternWire<T> {
+    Ok(T),
+    Err(T),
+    Wildcard,
 }
 #[derive(Deserialize)]
 pub struct InvocationIn {
@@ -753,16 +921,33 @@ impl DeserializeWithSources for Origin {
 impl DeserializeWithSources for TypedExpr {
     type Input = ExpressionIn;
     fn decode(v: ExpressionIn, s: &mut Input) -> Result<Self, SourceError> {
+        let source = s.source(&v.source)?;
         let kind = match v.kind {
             KindIn::Constant(v) => ExprKind::Constant(v),
-            KindIn::Input(v) => ExprKind::Input(v),
+            KindIn::Input(binding) => {
+                ExprKind::Input(s.reference(&binding, source, v.span, v.known.is_some())?)
+            }
             KindIn::Array(v) => ExprKind::Array(expressions(v, s)?),
             KindIn::Dict(v) => ExprKind::Dict(arguments(v, s)?),
             KindIn::Unary(op, v) => ExprKind::Unary(op, expression(*v, s)?),
             KindIn::Binary(op, a, b) => {
                 ExprKind::Binary(op, expression(*a, s)?, expression(*b, s)?)
             }
-            KindIn::Block(v, e) => ExprKind::Block(arguments(v, s)?, expression(*e, s)?),
+            KindIn::Block(bindings, tail) => {
+                let previous = s.locals.clone();
+                let result = (|| {
+                    let mut values = Vec::new();
+                    for (binding, value) in bindings {
+                        let value = TypedExpr::decode(value, s)?;
+                        let id = s.declaration(&binding, source, Some(v.span))?;
+                        s.locals.insert(binding.name, id);
+                        values.push((id, value));
+                    }
+                    Ok(ExprKind::Block(values, expression(*tail, s)?))
+                })();
+                s.locals = previous;
+                result?
+            }
             KindIn::If(a, b, c) => {
                 ExprKind::If(expression(*a, s)?, expression(*b, s)?, expression(*c, s)?)
             }
@@ -775,10 +960,35 @@ impl DeserializeWithSources for TypedExpr {
                 arms: arms
                     .into_iter()
                     .map(|v| {
-                        Ok(ResultArm {
-                            pattern: v.pattern,
-                            body: TypedExpr::decode(v.body, s)?,
-                        })
+                        let previous = s.locals.clone();
+                        let result = (|| {
+                            let is_ok = matches!(&v.pattern, PatternWire::Ok(_));
+                            let pattern = match v.pattern {
+                                PatternWire::Ok(binding) | PatternWire::Err(binding) => {
+                                    let extent =
+                                        (v.body.source == binding.source).then_some(v.body.span);
+                                    let id = s.declaration(&binding, source, extent)?;
+                                    s.locals.insert(binding.name, id);
+                                    id
+                                }
+                                PatternWire::Wildcard => {
+                                    return Ok(ResultArm {
+                                        pattern: ResultPattern::Wildcard,
+                                        body: TypedExpr::decode(v.body, s)?,
+                                    });
+                                }
+                            };
+                            Ok(ResultArm {
+                                pattern: if is_ok {
+                                    ResultPattern::Ok(pattern)
+                                } else {
+                                    ResultPattern::Err(pattern)
+                                },
+                                body: TypedExpr::decode(v.body, s)?,
+                            })
+                        })();
+                        s.locals = previous;
+                        result
                     })
                     .collect::<Result<_, SourceError>>()?,
             },
@@ -793,11 +1003,25 @@ impl DeserializeWithSources for TypedExpr {
                 binding,
                 subject,
                 body,
-            } => ExprKind::For {
-                binding,
-                subject: TypedExpr::decode(*subject, s)?.into(),
-                body: TypedExpr::decode(*body, s)?.into(),
-            },
+            } => {
+                let subject = TypedExpr::decode(*subject, s)?.into();
+                let id = s.declaration(&binding, source, Some(v.span))?;
+                let previous = s.locals.insert(binding.name.clone(), id);
+                let result = TypedExpr::decode(*body, s);
+                match previous {
+                    Some(id) => {
+                        s.locals.insert(binding.name, id);
+                    }
+                    None => {
+                        s.locals.remove(&binding.name);
+                    }
+                }
+                ExprKind::For {
+                    binding: id,
+                    subject,
+                    body: result?.into(),
+                }
+            }
             KindIn::Failure(v) => ExprKind::Failure(v),
         };
         Ok(Self {
@@ -805,7 +1029,7 @@ impl DeserializeWithSources for TypedExpr {
             known: v.known,
             kind,
             span: v.span,
-            source: s.source(&v.source)?,
+            source,
             shape: v.shape,
         })
     }

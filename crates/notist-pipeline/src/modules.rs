@@ -9,8 +9,8 @@ use notist_core::{
 };
 use rowan::TextRange;
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, LazyLock},
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, LazyLock, Mutex, Weak},
 };
 
 pub type ExportTable = BTreeMap<String, ImportBinding>;
@@ -73,32 +73,82 @@ impl BindingSpec {
 }
 
 /// Resolved names only: no signatures, function bodies, or dependency handles.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ModuleScope {
+    data: ScopeData,
+    pooled: bool,
+}
+impl PartialEq for ModuleScope {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+struct ScopeData {
     identities: notist_core::definition_identity::Definitions,
     imports: ExportTable,
     exports: Arc<ExportTable>,
 }
+// comemo may compute the same successful result concurrently. Canonicalize
+// live results, not dependency implementations; retired scopes remove the key.
+static SCOPES: LazyLock<Mutex<HashMap<ScopeData, Weak<ModuleScope>>>> =
+    LazyLock::new(Default::default);
+impl Drop for ModuleScope {
+    fn drop(&mut self) {
+        if !self.pooled {
+            return;
+        }
+        let mut scopes = SCOPES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if scopes
+            .get(&self.data)
+            .is_some_and(|entry| std::ptr::eq(entry.as_ptr(), self))
+        {
+            scopes.remove(&self.data);
+        }
+    }
+}
 
 impl ModuleScope {
     pub fn imports(&self) -> &ExportTable {
-        &self.imports
+        &self.data.imports
     }
     pub fn exports(&self) -> &Arc<ExportTable> {
-        &self.exports
+        &self.data.exports
     }
     pub fn identities(&self) -> &notist_core::definition_identity::Definitions {
-        &self.identities
+        &self.data.identities
     }
     pub(crate) fn from_bindings(
         imports: ExportTable,
         identities: notist_core::definition_identity::Definitions,
     ) -> Self {
         Self {
-            identities,
-            exports: Arc::new(imports.clone()),
-            imports,
+            data: ScopeData {
+                identities,
+                exports: Arc::new(imports.clone()),
+                imports,
+            },
+            pooled: false,
         }
+    }
+    fn shared(data: ScopeData) -> Arc<Self> {
+        if !cache_enabled() {
+            return Arc::new(Self {
+                data,
+                pooled: false,
+            });
+        }
+        let mut scopes = SCOPES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(scope) = scopes.get(&data).and_then(Weak::upgrade) {
+            return scope;
+        }
+        let scope = Arc::new(Self { data, pooled: true });
+        scopes.insert(scope.data.clone(), Arc::downgrade(&scope));
+        scope
     }
 }
 
@@ -265,9 +315,49 @@ fn bind_cached(
             ImportBinding::Function(local.id.def_id()),
         )
     }));
-    Ok(Arc::new(ModuleScope {
+    Ok(ModuleScope::shared(ScopeData {
         identities,
         imports: bindings,
         exports: Arc::new(public),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn concurrent_equal_scopes_share_one_live_result_and_reclaim_the_key() {
+        let mut identities = notist_core::definition_identity::Definitions::default();
+        let id = identities.insert(FunctionId::new("scope-concurrent-canonical", "value"));
+        let data = ScopeData {
+            identities,
+            imports: Default::default(),
+            exports: Arc::new(BTreeMap::from([(
+                "value".into(),
+                ImportBinding::Function(id),
+            )])),
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let data = data.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ModuleScope::shared(data)
+                })
+            })
+            .collect();
+        let scopes: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        for scope in &scopes {
+            assert!(Arc::ptr_eq(&scopes[0], scope));
+        }
+        let weak = Arc::downgrade(&scopes[0]);
+        drop(scopes);
+        assert!(weak.upgrade().is_none());
+        assert!(!SCOPES.lock().unwrap().contains_key(&data));
+    }
 }

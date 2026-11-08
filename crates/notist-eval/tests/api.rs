@@ -81,21 +81,21 @@ impl EvaluationContext for NativeContext {
         mut program: CheckedProgram,
     ) -> (CheckedProgram, Vec<Diagnostic>) {
         self.specializations.set(self.specializations.get() + 1);
-        let mut definition = self.registry.get(&instance.function).unwrap().clone();
-        let bindings = definition
-            .comptime
-            .iter()
-            .zip(&instance.arguments)
-            .map(|(parameter, value)| (parameter.name.clone(), value.clone()))
-            .collect();
-        definition.returns = definition.returns.substitute(&bindings);
-        for parameter in &mut definition.parameters {
-            parameter.ty = parameter.ty.substitute(&bindings);
+        let signature = self
+            .registry
+            .signature(instance.function.def_id())
+            .unwrap()
+            .clone();
+        let mut bindings = notist_core::signature::ComptimeBindings::new(signature.clone());
+        for (parameter, value) in signature.comptime().iter().zip(&instance.arguments) {
+            bindings.insert(parameter.id, value.clone()).unwrap();
         }
+        let definition = bindings.instantiate().unwrap();
         assert!(!definition.implementation.is_code());
         Arc::make_mut(&mut program.instances).insert(
             instance.key(),
             Arc::new(InstanceRecord {
+                inputs: Default::default(),
                 definition,
                 body: None,
                 diagnostics: vec![],

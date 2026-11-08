@@ -1,5 +1,6 @@
 //! Shared document IR, declaration contracts and diagnostics. No source or resource IO.
 pub mod annotation;
+pub mod binding;
 pub mod builtins;
 pub mod data;
 pub mod definition_identity;
@@ -18,6 +19,7 @@ pub mod item;
 pub mod registry;
 pub mod resource;
 pub mod shared;
+pub mod signature;
 pub mod source;
 pub mod source_chain;
 #[cfg(feature = "serde")]

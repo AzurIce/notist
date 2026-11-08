@@ -8,6 +8,7 @@ use notist_core::{
     evaluation::CallSite,
     expr::{BodyFlavor, CallArg, Expr},
     item::{Ctor, Origin, Value},
+    signature::{ComptimeBindings, ResolvedType},
 };
 use rowan::TextRange;
 
@@ -29,6 +30,8 @@ pub(crate) struct Checker<'a> {
     pub program: CheckedProgram,
     pub diagnostics: Vec<Diagnostic>,
     pub(super) scope: Scope,
+    binding_scope: TextRange,
+    binding_owner: Option<notist_core::definitions::FunctionId>,
     pub(super) module: Option<notist_core::definitions::ModuleId>,
     pub(super) source: notist_core::source::Source,
     resource_root: String,
@@ -41,6 +44,33 @@ pub(crate) struct Checker<'a> {
     pub(super) type_hint: Option<Type>,
 }
 impl<'a> Checker<'a> {
+    pub(super) fn declare(
+        &mut self,
+        name: &str,
+        span: TextRange,
+    ) -> Option<notist_core::binding::BindingId> {
+        self.declare_in(name, span, self.binding_scope)
+    }
+    pub(super) fn declare_in(
+        &mut self,
+        name: &str,
+        span: TextRange,
+        scope: TextRange,
+    ) -> Option<notist_core::binding::BindingId> {
+        match self.program.sources.bindings_mut().declare_with_owner(
+            name,
+            &self.source,
+            span,
+            scope,
+            self.binding_owner.as_ref(),
+        ) {
+            Ok(id) => Some(id),
+            Err(message) => {
+                self.report(span, message);
+                None
+            }
+        }
+    }
     pub fn new(context: &'a Context, source: &notist_core::source::Source) -> Self {
         Self {
             context,
@@ -51,6 +81,8 @@ impl<'a> Checker<'a> {
             },
             diagnostics: Vec::new(),
             scope: BTreeMap::new(),
+            binding_scope: TextRange::new(0.into(), u32::MAX.into()),
+            binding_owner: None,
             module: None,
             source: source.clone(),
             resource_root: context.resource_root().into(),
@@ -311,20 +343,29 @@ impl<'a> Checker<'a> {
             self.report(def.span, "transform comptime arity mismatch");
             return;
         }
-        let ct: BTreeMap<_, _> = def
-            .comptime
-            .iter()
-            .zip(&instance.arguments)
-            .map(|(p, v)| (p.name.clone(), v.clone()))
-            .collect();
+        let signature = self
+            .context
+            .registry()
+            .signature(instance.function)
+            .expect("registered signature")
+            .clone();
+        let mut ct = ComptimeBindings::new(signature.clone());
+        for (p, v) in signature.comptime().iter().zip(&instance.arguments) {
+            if let Err(error) = ct.insert(p.id, v.clone()) {
+                self.report(def.span, error.to_string());
+                return;
+            }
+        }
         if !self.check_comptime(&def, &ct, def.span) {
             return;
         }
-        def.returns = def.returns.substitute(&ct);
-        def.children_type = def.children_type.as_ref().map(|t| t.substitute(&ct));
-        for p in &mut def.parameters {
-            p.ty = p.ty.substitute(&ct);
-        }
+        def = match ct.instantiate() {
+            Ok(def) => def,
+            Err(error) => {
+                self.report(def.span, error.to_string());
+                return;
+            }
+        };
         if !def.returns.runtime()
             || def.parameters.iter().any(|p| !p.ty.data())
             || def
@@ -419,26 +460,29 @@ impl<'a> Checker<'a> {
                 bindings, value, ..
             } => {
                 let old = self.scope.clone();
+                let previous_scope = std::mem::replace(&mut self.binding_scope, span);
                 let mut checked = Vec::new();
                 for (name, e) in bindings {
                     let t = self.check(e);
+                    let Some(id) = self.declare(name, e.span()) else {
+                        self.scope = old;
+                        self.binding_scope = previous_scope;
+                        return self.failed(span, "cannot allocate lexical binding");
+                    };
                     if self.scope.contains_key(name) {
                         self.report(e.span(), format!("duplicate binding `{name}`"));
                     }
-                    let mut binding = self.typed(
-                        t.ty.clone(),
-                        ExprKind::Input(name.clone()),
-                        t.known.clone(),
-                        e.span(),
-                    );
+                    let mut binding =
+                        self.typed(t.ty.clone(), ExprKind::Input(id), t.known.clone(), e.span());
                     binding.shape = t.shape;
                     self.scope.insert(name.clone(), binding);
                     if t.ty != Some(Type::Type) {
-                        checked.push((name.clone(), t));
+                        checked.push((id, t));
                     }
                 }
                 let val = self.check_with_hint(value, type_hint);
                 self.scope = old;
+                self.binding_scope = previous_scope;
                 let ty = if checked.iter().any(|(_, v)| v.ty == Some(Type::Never)) {
                     Some(Type::Never)
                 } else {
@@ -694,9 +738,12 @@ impl<'a> Checker<'a> {
                         None
                     }
                 };
+                let Some(id) = self.declare_in(binding, span, span) else {
+                    return self.failed(span, "cannot allocate loop binding");
+                };
                 let previous = self.scope.insert(
                     binding.clone(),
-                    self.typed(element, ExprKind::Input(binding.clone()), None, span),
+                    self.typed(element, ExprKind::Input(id), None, span),
                 );
                 let body = self.check_with_hint(body, type_hint.clone());
                 match previous {
@@ -720,7 +767,7 @@ impl<'a> Checker<'a> {
                 self.typed(
                     ty,
                     ExprKind::For {
-                        binding: binding.clone(),
+                        binding: id,
                         subject: subject.into(),
                         body: body.into(),
                     },
@@ -1065,6 +1112,21 @@ impl<'a> Checker<'a> {
             call
         })
     }
+    fn signature_failure(
+        &mut self,
+        def: &FunctionDef,
+        span: TextRange,
+        error: impl std::fmt::Display,
+    ) -> Box<CallFailure> {
+        let message = error.to_string();
+        self.report(span, &message);
+        Box::new(CallFailure {
+            definition: Some(def.clone()),
+            fields: Dict::default(),
+            instance: None,
+            message,
+        })
+    }
     fn bind_invocation(
         &mut self,
         target: CallTarget,
@@ -1088,20 +1150,29 @@ impl<'a> Checker<'a> {
                 message: format!("unknown constructor or function `{name}`"),
             }));
         };
-        let mut bindings = BTreeMap::new();
+        let signature = self
+            .context
+            .registry()
+            .signature(def.id.def_id())
+            .expect("resolved call signature")
+            .clone();
+        let mut bindings = ComptimeBindings::new(signature.clone());
         let mut pos = 0;
         for arg in ct {
             let param = match arg {
                 CallArg::Positional(_) => {
-                    let p = def.comptime.get(pos);
+                    let p = signature.comptime().get(pos);
                     pos += 1;
                     p
                 }
-                CallArg::Named { name, .. } => def.comptime.iter().find(|p| p.name == *name),
+                CallArg::Named { name, .. } => signature.comptime_named(name),
             };
-            let hint = param
-                .map(|p| p.ty.substitute(&bindings))
-                .filter(Type::concrete);
+            let hint = match param {
+                Some(p) => bindings
+                    .concrete(&p.ty)
+                    .map_err(|error| self.signature_failure(&def, span, error))?,
+                None => None,
+            };
             let value = self.check_with_hint(arg.value(), hint.clone());
             if let Some(hint) = &hint {
                 self.expect(&value, hint);
@@ -1134,7 +1205,11 @@ impl<'a> Checker<'a> {
                             message: "Data views are not comptime value arguments".into(),
                         }));
                     }
-                    if bindings.insert(p.name.clone(), v).is_some() {
+                    if bindings
+                        .insert(p.id, v)
+                        .map_err(|error| self.signature_failure(&def, span, error))?
+                        .is_some()
+                    {
                         self.report(span, "duplicate comptime argument");
                     }
                 }
@@ -1158,12 +1233,17 @@ impl<'a> Checker<'a> {
                     let p = def
                         .parameters
                         .iter()
-                        .filter(|p| p.positional && !(has_receiver && p.name == "self"))
+                        .enumerate()
+                        .filter(|(_, p)| p.positional && !(has_receiver && p.name == "self"))
                         .nth(pos);
                     pos += 1;
                     p
                 }
-                CallArg::Named { name, .. } => def.parameters.iter().find(|p| p.name == *name),
+                CallArg::Named { name, .. } => def
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .find(|(_, p)| p.name == *name),
             };
             if self.site == CallSite::Markup && !markup_literal(arg.value()) {
                 self.report(
@@ -1173,19 +1253,22 @@ impl<'a> Checker<'a> {
             }
             // Optional arguments also accept an already wrapped Option<T>.
             let value = match param {
-                Some(p) => {
-                    let ty = p.ty.substitute(&bindings);
-                    let hint = if p.mode == ParameterMode::Optional && !result_literal(arg.value())
-                    {
-                        Type::Option(Box::new(ty))
-                    } else {
-                        ty
-                    };
-                    self.check_with_hint(arg.value(), hint.concrete().then_some(hint))
+                Some((index, p)) => {
+                    let hint = bindings
+                        .concrete(&signature.parameters()[index])
+                        .map_err(|error| self.signature_failure(&def, span, error))?;
+                    let hint = hint.map(|ty| {
+                        if p.mode == ParameterMode::Optional && !result_literal(arg.value()) {
+                            Type::Option(Box::new(ty))
+                        } else {
+                            ty
+                        }
+                    });
+                    self.check_with_hint(arg.value(), hint)
                 }
                 _ => self.check(arg.value()),
             };
-            if let Some(p) = param {
+            if let Some((_, p)) = param {
                 if arguments.insert(p.name.clone(), value).is_some() {
                     self.report(
                         arg.value().span(),
@@ -1207,14 +1290,14 @@ impl<'a> Checker<'a> {
             }
         }
         let mut inference_errors = Vec::new();
-        for p in &def.parameters {
+        for (p, template) in def.parameters.iter().zip(signature.parameters()) {
             if let Some(v) = arguments.get(&p.name)
                 && let Some(t) = &v.ty
             {
-                infer(&p.ty, t, &mut bindings, span, &mut inference_errors);
+                infer(template, t, &mut bindings, span, &mut inference_errors);
             }
         }
-        if let (Some(t), Some(v)) = (&def.children_type, &children)
+        if let (Some(t), Some(v)) = (signature.children_type(), &children)
             && let Some(actual) = &v.ty
         {
             infer(t, actual, &mut bindings, span, &mut inference_errors);
@@ -1222,19 +1305,26 @@ impl<'a> Checker<'a> {
         for error in inference_errors {
             self.report(error.span, error.message);
         }
-        for p in &def.comptime {
-            if !bindings.contains_key(&p.name) {
+        for (p, resolved) in def.comptime.iter().zip(signature.comptime()) {
+            if bindings.get(resolved.id).is_none() {
                 if let Some(v) = &p.default {
-                    bindings.insert(p.name.clone(), v.clone());
+                    bindings
+                        .insert(resolved.id, v.clone())
+                        .map_err(|error| self.signature_failure(&def, span, error))?;
                 } else {
                     self.report(
                         span,
                         format!("cannot infer comptime `{}`; supply it in <> ", p.name),
                     );
                     let mut definition = def.clone();
-                    definition.returns = def.returns.substitute(&bindings);
-                    definition.children_type =
-                        def.children_type.as_ref().map(|t| t.substitute(&bindings));
+                    definition.returns = bindings
+                        .display_type(signature.returns())
+                        .map_err(|error| self.signature_failure(&def, span, error))?;
+                    definition.children_type = signature
+                        .children_type()
+                        .map(|t| bindings.display_type(t))
+                        .transpose()
+                        .map_err(|error| self.signature_failure(&def, span, error))?;
                     return Err(Box::new(CallFailure {
                         fields: known_fields(
                             &definition,
@@ -1250,7 +1340,10 @@ impl<'a> Checker<'a> {
         self.check_comptime(&def, &bindings, span);
         if def.implementation == FunctionImpl::Native(NativeFunction::Str)
             && !matches!(
-                bindings.get("T"),
+                signature
+                    .comptime()
+                    .first()
+                    .and_then(|p| bindings.get(p.id)),
                 Some(ComptimeValue::Type(
                     Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String
                 ))
@@ -1264,7 +1357,10 @@ impl<'a> Checker<'a> {
             if ct.is_empty() {
                 self.report(span, "data decoding requires an explicit target type in <>");
             }
-            if let Some(ComptimeValue::Type(t)) = bindings.get("T")
+            if let Some(ComptimeValue::Type(t)) = signature
+                .comptime()
+                .first()
+                .and_then(|p| bindings.get(p.id))
                 && !notist_core::data::decode_target(t)
             {
                 self.report(span, format!("unsupported Data decode target: {t}"));
@@ -1272,18 +1368,19 @@ impl<'a> Checker<'a> {
         }
         let instance = FunctionInstance {
             function: def.id.def_id(),
-            arguments: def
-                .comptime
+            arguments: signature
+                .comptime()
                 .iter()
-                .map(|p| bindings[&p.name].clone())
-                .collect(),
+                .map(|p| {
+                    bindings.get(p.id).cloned().ok_or_else(|| {
+                        self.signature_failure(&def, span, "missing comptime argument")
+                    })
+                })
+                .collect::<Result<_, _>>()?,
         };
-        let mut concrete = def.clone();
-        concrete.returns = def.returns.substitute(&bindings);
-        concrete.children_type = def.children_type.as_ref().map(|t| t.substitute(&bindings));
-        for p in &mut concrete.parameters {
-            p.ty = p.ty.substitute(&bindings);
-        }
+        let concrete = bindings
+            .instantiate()
+            .map_err(|error| self.signature_failure(&def, span, error))?;
         if !concrete.returns.runtime()
             || concrete.parameters.iter().any(|p| !p.ty.data())
             || concrete
@@ -1430,27 +1527,37 @@ impl<'a> Checker<'a> {
     fn check_comptime(
         &mut self,
         def: &FunctionDef,
-        bindings: &BTreeMap<String, ComptimeValue>,
+        bindings: &ComptimeBindings,
         span: TextRange,
     ) -> bool {
         let start = self.diagnostics.len();
-        for p in &def.comptime {
-            if matches!(&bindings[&p.name], ComptimeValue::Data(v) if v.contains_data_views()) {
+        for (p, resolved) in def.comptime.iter().zip(bindings.signature().comptime()) {
+            let Some(value) = bindings.get(resolved.id) else {
+                self.report(span, format!("missing comptime argument `{}`", p.name));
+                continue;
+            };
+            if matches!(value, ComptimeValue::Data(v) if v.contains_data_views()) {
                 self.report(
                     span,
                     "Data and DataError views cannot be comptime value arguments",
                 );
                 continue;
             }
-            let expected = p.ty.substitute(bindings);
-            let matches = match &bindings[&p.name] {
+            let expected = match bindings.require(&resolved.ty) {
+                Ok(expected) => expected,
+                Err(error) => {
+                    self.report(span, error.to_string());
+                    continue;
+                }
+            };
+            let matches = match value {
                 ComptimeValue::Data(value) => expected.accepts(value),
                 ComptimeValue::Type(_) => expected == Type::Type,
             };
             if !matches {
                 self.report(span, format!("comptime `{}` requires {expected}", p.name));
             }
-            if let ComptimeValue::Data(v) = &bindings[&p.name]
+            if let ComptimeValue::Data(v) = value
                 && !p.constraint.accepts(v)
             {
                 self.report(
@@ -1474,7 +1581,7 @@ impl<'a> Checker<'a> {
         &mut self,
         instance: &FunctionInstance,
         def: &FunctionDef,
-        ct: &BTreeMap<String, ComptimeValue>,
+        ct: &ComptimeBindings,
     ) {
         let key = match instance.key(self.context.registry().identities()) {
             Ok(key) => key,
@@ -1510,6 +1617,7 @@ impl<'a> Checker<'a> {
             key.clone(),
             std::sync::Arc::new(InstanceRecord {
                 definition: def.clone(),
+                inputs: BTreeMap::new(),
                 body: None,
                 diagnostics: Vec::new(),
                 checking: true,
@@ -1533,20 +1641,62 @@ impl<'a> Checker<'a> {
             self.report(def.span, error.to_string());
             return;
         }
+        let mut inputs = BTreeMap::new();
+        for (name, span) in def
+            .parameters
+            .iter()
+            .map(|p| (p.name.as_str(), p.span))
+            .chain(def.children_type.iter().map(|_| ("children", def.span)))
+        {
+            match self.program.sources.bindings_mut().declare_with_owner(
+                name,
+                &body.source,
+                span,
+                def.span,
+                Some(&def.id),
+            ) {
+                Ok(id) => {
+                    inputs.insert(name.to_owned(), id);
+                }
+                Err(message) => {
+                    self.report(span, message);
+                    return;
+                }
+            }
+        }
+        let mut comptime_locals = Vec::new();
+        for parameter in ct.signature().comptime() {
+            let Some(value) = ct.get(parameter.id) else {
+                self.report(def.span, "missing checked comptime binding");
+                return;
+            };
+            let ty = if matches!(value, ComptimeValue::Data(_)) {
+                match ct.require(&parameter.ty) {
+                    Ok(ty) => Some(ty),
+                    Err(error) => {
+                        self.report(def.span, error.to_string());
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            comptime_locals.push((parameter.name.clone(), value.clone(), ty));
+        }
         let old_scope = std::mem::take(&mut self.scope);
+        let old_binding_scope = std::mem::replace(&mut self.binding_scope, def.span);
+        let old_binding_owner = self.binding_owner.replace(def.id.clone());
         let old_module = std::mem::replace(&mut self.module, Some(def.id.module_id()));
         let old_source = std::mem::replace(&mut self.source, body.source.clone());
         let old_site = std::mem::replace(&mut self.site, CallSite::Code);
         let old_resource_root =
             std::mem::replace(&mut self.resource_root, body.resource_root.clone());
-        for (name, v) in ct {
-            let mut value = self.constant(v.clone(), def.span);
-            if let Some(p) = def.comptime.iter().find(|p| p.name == *name)
-                && matches!(v, ComptimeValue::Data(_))
-            {
-                value.ty = Some(p.ty.substitute(ct));
+        for (name, v, ty) in comptime_locals {
+            let mut value = self.constant(v, def.span);
+            if let Some(ty) = ty {
+                value.ty = Some(ty);
             }
-            self.scope.insert(name.clone(), value);
+            self.scope.insert(name, value);
         }
         for p in &def.parameters {
             // Inside the body a `?: T` parameter is an Option<T> input.
@@ -1554,16 +1704,13 @@ impl<'a> Checker<'a> {
                 ParameterMode::Optional => Type::Option(Box::new(p.ty.clone())),
                 _ => p.ty.clone(),
             };
-            let value = self.typed(Some(ty), ExprKind::Input(p.name.clone()), None, p.span);
+            let id = inputs[&p.name];
+            let value = self.typed(Some(ty), ExprKind::Input(id), None, p.span);
             self.scope.insert(p.name.clone(), value);
         }
         if let Some(ty) = &def.children_type {
-            let value = self.typed(
-                Some(ty.clone()),
-                ExprKind::Input("children".into()),
-                None,
-                def.span,
-            );
+            let id = inputs["children"];
+            let value = self.typed(Some(ty.clone()), ExprKind::Input(id), None, def.span);
             self.scope.insert("children".into(), value);
         }
         let start = self.diagnostics.len();
@@ -1590,9 +1737,12 @@ impl<'a> Checker<'a> {
                 .unwrap(),
         );
         record.body = checked;
+        record.inputs = inputs;
         record.diagnostics = diagnostics;
         record.checking = false;
         self.scope = old_scope;
+        self.binding_scope = old_binding_scope;
+        self.binding_owner = old_binding_owner;
         self.module = old_module;
         self.source = old_source;
         self.site = old_site;
@@ -1610,7 +1760,12 @@ impl<'a> Checker<'a> {
             // the document which happened to trigger it first.
             let mut cached = self.program.clone();
             cached.sources = self.context.program().sources();
-            self.context.remember_checked_program(key, &cached);
+            let mut bindings = self.program.sources.bindings().clone();
+            bindings.retain_sources(&cached.sources);
+            *cached.sources.bindings_mut() = bindings;
+            if cached.sources.validate_program(&cached).is_ok() {
+                self.context.remember_checked_program(key, &cached);
+            }
         }
     }
 }
@@ -1662,39 +1817,19 @@ pub(super) fn content_type(body: BodyFlavor) -> Type {
     }
 }
 fn infer(
-    pattern: &Type,
+    pattern: &ResolvedType,
     actual: &Type,
-    bindings: &mut BTreeMap<String, ComptimeValue>,
+    bindings: &mut ComptimeBindings,
     span: TextRange,
     diags: &mut Vec<Diagnostic>,
 ) {
-    // A non-returning argument supplies no normal-value evidence for a type
-    // parameter. Other arguments or explicit <> must determine it.
-    if *actual == Type::Never {
-        return;
-    }
-    match (pattern, actual) {
-        (Type::Parameter(name), t) => {
-            let v = ComptimeValue::Type(t.clone());
-            if let Some(prev) = bindings.get(name) {
-                if prev != &v {
-                    diags.push(Diagnostic::new(
-                        Phase::Type,
-                        span,
-                        format!("conflicting inference for `{name}`"),
-                    ));
-                }
-            } else {
-                bindings.insert(name.clone(), v);
-            }
-        }
-        (Type::Array(Some(p)), Type::Array(Some(a))) => infer(p, a, bindings, span, diags),
-        (Type::Option(p), Type::Option(a)) => infer(p, a, bindings, span, diags),
-        (Type::Result(p_ok, p_err), Type::Result(a_ok, a_err)) => {
-            infer(p_ok, a_ok, bindings, span, diags);
-            infer(p_err, a_err, bindings, span, diags);
-        }
-        _ => {}
+    match bindings.infer(pattern, actual) {
+        Ok(errors) => diags.extend(
+            errors
+                .into_iter()
+                .map(|message| Diagnostic::new(Phase::Type, span, message)),
+        ),
+        Err(error) => diags.push(Diagnostic::new(Phase::Type, span, error.to_string())),
     }
 }
 

@@ -318,9 +318,12 @@ impl State<'_, '_> {
             if is_block(item) { "block" } else { "inline" },
         );
         if let Some(instance) = item.instance() {
+            if component.signature.comptime().len() != instance.arguments.len() {
+                self.diagnostic(item, "component comptime arity mismatch".into());
+            }
             for (parameter, value) in component
-                .definition
-                .comptime
+                .signature
+                .comptime()
                 .iter()
                 .zip(&instance.arguments)
             {
@@ -345,21 +348,35 @@ impl State<'_, '_> {
                 );
             }
         }
-        let bindings = item
-            .instance()
-            .map(|instance| {
-                component
-                    .definition
-                    .comptime
-                    .iter()
-                    .zip(&instance.arguments)
-                    .map(|(p, v)| (p.name.clone(), v.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for parameter in &component.definition.parameters {
+        let mut bindings =
+            notist_core::signature::ComptimeBindings::new(component.signature.clone());
+        if let Some(instance) = item.instance() {
+            for (parameter, value) in component
+                .signature
+                .comptime()
+                .iter()
+                .zip(&instance.arguments)
+            {
+                if let Err(error) = bindings.insert(parameter.id, value.clone()) {
+                    self.diagnostic(item, error.to_string());
+                }
+            }
+        }
+        for (parameter, template) in component
+            .definition
+            .parameters
+            .iter()
+            .zip(component.signature.parameters())
+        {
             if let Some(value) = item.field(&parameter.name) {
-                if parameter.ty.substitute(&bindings).accepts(value) {
+                let valid = match bindings.require(template) {
+                    Ok(ty) => ty.accepts(value),
+                    Err(error) => {
+                        self.diagnostic(item, error.to_string());
+                        false
+                    }
+                };
+                if valid {
                     match components::encode_parameter(value) {
                         Ok(encoded) => {
                             self.attr(&components::parameter_attribute(&parameter.name), &encoded)

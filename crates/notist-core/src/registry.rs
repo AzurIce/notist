@@ -9,6 +9,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 struct ModuleFunctions {
     definitions: Arc<DefinitionModule>,
+    signatures: Vec<Arc<crate::signature::ResolvedSignature>>,
     names: BTreeMap<String, usize>,
 }
 
@@ -84,6 +85,18 @@ impl Registry {
             return Err(errors);
         }
         let functions = Arc::new(ModuleFunctions {
+            signatures: module
+                .functions
+                .iter()
+                .enumerate()
+                .map(|(index, definition)| {
+                    crate::signature::ResolvedSignature::from_module(module.clone(), index)
+                        .map(Arc::new)
+                        .map_err(|message| {
+                            vec![Diagnostic::new(Phase::Type, definition.span, message)]
+                        })
+                })
+                .collect::<Result<_, _>>()?,
             names: module
                 .functions
                 .iter()
@@ -113,6 +126,10 @@ impl Registry {
     pub fn definition(&self, id: DefId) -> Option<&FunctionDef> {
         let (module, index) = self.definitions.get(&id)?;
         module.definitions.functions.get(*index)
+    }
+    pub fn signature(&self, id: DefId) -> Option<&Arc<crate::signature::ResolvedSignature>> {
+        let (module, index) = self.definitions.get(&id)?;
+        module.signatures.get(*index)
     }
     pub fn identities(&self) -> &crate::definition_identity::Definitions {
         &self.identities

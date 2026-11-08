@@ -504,13 +504,16 @@ fn ir_counts(root: Option<&Item>, program: &CheckedProgram) -> Json {
                     expression(value, counts);
                 }
             }
-            ExprKind::Dict(values) | ExprKind::Block(values, _) => {
+            ExprKind::Dict(values) => {
                 for (_, value) in values {
                     expression(value, counts);
                 }
-                if let ExprKind::Block(_, result) = &expr.kind {
-                    expression(result, counts);
+            }
+            ExprKind::Block(values, result) => {
+                for (_, value) in values {
+                    expression(value, counts);
                 }
+                expression(result, counts);
             }
             ExprKind::Unary(_, value)
             | ExprKind::Some(value)

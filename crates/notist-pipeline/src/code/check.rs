@@ -29,7 +29,7 @@ pub(crate) struct Checker<'a> {
     pub program: CheckedProgram,
     pub diagnostics: Vec<Diagnostic>,
     pub(super) scope: Scope,
-    pub(super) module: String,
+    pub(super) module: Option<notist_core::definitions::ModuleId>,
     pub(super) source: notist_core::source::Source,
     resource_root: String,
     pub(super) site: CallSite,
@@ -45,12 +45,13 @@ impl<'a> Checker<'a> {
         Self {
             context,
             program: CheckedProgram {
-                sources: source.clone().into(),
+                sources: notist_core::source::Sources::from(source.clone())
+                    .with_definitions(context.registry().identities()),
                 ..Default::default()
             },
             diagnostics: Vec::new(),
             scope: BTreeMap::new(),
-            module: String::new(),
+            module: None,
             source: source.clone(),
             resource_root: context.resource_root().into(),
             site: CallSite::Markup,
@@ -62,7 +63,7 @@ impl<'a> Checker<'a> {
     }
     pub(crate) fn for_content(context: &'a Context, source: &notist_core::source::Source) -> Self {
         let mut checker = Self::new(context, source);
-        checker.module = context.root().unwrap_or("<content>").to_owned();
+        checker.module = context.root_id();
         checker.site = CallSite::Code;
         checker
     }
@@ -238,7 +239,7 @@ impl<'a> Checker<'a> {
                 .collect::<Option<Vec<_>>>();
             if let Some(arguments) = args {
                 self.install(&FunctionInstance {
-                    function: def.id,
+                    function: def.id.def_id(),
                     arguments,
                 });
             }
@@ -277,13 +278,20 @@ impl<'a> Checker<'a> {
     pub fn with_program(context: &'a Context, program: CheckedProgram) -> Self {
         let mut s = Self::new(context, &notist_core::source::Source::detached());
         s.program = program;
+        s.program
+            .sources
+            .definitions_mut()
+            .merge(context.registry().identities());
         s
     }
     pub fn install(&mut self, instance: &FunctionInstance) {
         let source = self
             .context
-            .program()
-            .module(&instance.function.module)
+            .registry()
+            .identities()
+            .function(instance.function)
+            .ok()
+            .and_then(|function| self.context.program().module_by_id(function.module_id()))
             .map(|module| module.code().source_record().clone())
             .unwrap_or_else(|| self.source.clone());
         let previous = std::mem::replace(&mut self.source, source);
@@ -291,7 +299,12 @@ impl<'a> Checker<'a> {
         self.source = previous;
     }
     fn install_instance(&mut self, instance: &FunctionInstance) {
-        let Some(mut def) = self.context.registry().get(&instance.function).cloned() else {
+        let Some(mut def) = self
+            .context
+            .registry()
+            .definition(instance.function)
+            .cloned()
+        else {
             return;
         };
         if def.comptime.len() != instance.arguments.len() {
@@ -990,12 +1003,7 @@ impl<'a> Checker<'a> {
         if !reserved_namespace && self.scope.contains_key(root) {
             return None;
         }
-        self.context
-            .resolve_in(
-                (!self.module.is_empty()).then_some(self.module.as_str()),
-                name,
-            )
-            .cloned()
+        self.context.resolve_in_id(self.module, name).cloned()
     }
     pub(super) fn call_target(&mut self, callee: &Expr) -> CallTarget {
         let name = callee.name_path().unwrap_or_else(|| "<method>".into());
@@ -1263,7 +1271,7 @@ impl<'a> Checker<'a> {
             }
         }
         let instance = FunctionInstance {
-            function: def.id.clone(),
+            function: def.id.def_id(),
             arguments: def
                 .comptime
                 .iter()
@@ -1468,7 +1476,13 @@ impl<'a> Checker<'a> {
         def: &FunctionDef,
         ct: &BTreeMap<String, ComptimeValue>,
     ) {
-        let key = instance.key();
+        let key = match instance.key(self.context.registry().identities()) {
+            Ok(key) => key,
+            Err(error) => {
+                self.report(def.span, error.to_string());
+                return;
+            }
+        };
         if self.program.instances.contains_key(&key) {
             return;
         }
@@ -1510,7 +1524,7 @@ impl<'a> Checker<'a> {
             .checking = false;
             return;
         }
-        let body = self.context.program().body(&def.id);
+        let body = self.context.program().body_by_id(def.id.def_id());
         let Some(body) = body else {
             self.report(def.span, "missing Code implementation");
             return;
@@ -1520,7 +1534,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let old_scope = std::mem::take(&mut self.scope);
-        let old_module = std::mem::replace(&mut self.module, def.id.module.clone());
+        let old_module = std::mem::replace(&mut self.module, Some(def.id.module_id()));
         let old_source = std::mem::replace(&mut self.source, body.source.clone());
         let old_site = std::mem::replace(&mut self.site, CallSite::Code);
         let old_resource_root =

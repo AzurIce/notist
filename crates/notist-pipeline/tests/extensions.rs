@@ -49,7 +49,7 @@ fn both_frontends_preserve_identity_and_select_native_targets() {
         let after: Vec<_> = e
             .root
             .descendants()
-            .filter(|i| i.function_id() == Some(FunctionId::new("maths", "first")))
+            .filter(|i| i.function_id() == Some(FunctionId::new("maths", "first").def_id()))
             .collect();
         assert_eq!(after.len(), 2);
         for (a, b) in before.into_iter().zip(after) {
@@ -112,7 +112,10 @@ fn replace_extension_preserves_checked_call_but_dissolves_its_output_boundary() 
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     let emph = a.root().find(|i| i.ctor() == Ctor::Emph).unwrap();
-    assert_eq!(emph.function_id(), Some(FunctionId::new("notist", "emph")));
+    assert_eq!(
+        emph.function_id(),
+        Some(FunctionId::new("notist", "emph").def_id())
+    );
     assert!(
         e.root
             .descendants()
@@ -167,7 +170,7 @@ fn generated_paragraphs_participate_in_function_mapping() {
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert_eq!(
         e.root.children()[0].function_id(),
-        Some(FunctionId::new("notist", "divider"))
+        Some(FunctionId::new("notist", "divider").def_id())
     );
     assert_eq!(
         e.root.children()[0].instance().unwrap().function,

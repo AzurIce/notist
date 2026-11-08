@@ -1,7 +1,7 @@
 //! Small, evaluation-local accelerator for already checked implementations.
 //! Data comptime values retain CheckedProgram's bit-exact canonical-key path.
 use notist_core::{
-    definitions::{ComptimeValue, FunctionId, FunctionInstance, Type},
+    definitions::{ComptimeValue, DefId, ResolvedInstance as FunctionInstance, Type},
     evaluation::InstanceRecord,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -28,7 +28,7 @@ impl Entry {
 /// table always falls back to the authoritative CheckedProgram.
 #[derive(Default)]
 pub(super) struct InstanceCache {
-    functions: BTreeMap<FunctionId, Vec<Entry>>,
+    functions: BTreeMap<DefId, Vec<Entry>>,
     entries: usize,
 }
 impl InstanceCache {
@@ -55,7 +55,7 @@ impl InstanceCache {
         {
             return;
         }
-        let entries = self.functions.entry(instance.function.clone()).or_default();
+        let entries = self.functions.entry(instance.function).or_default();
         if entries.iter().any(|entry| entry.matches(instance)) {
             return;
         }
@@ -78,11 +78,17 @@ impl InstanceCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notist_core::{builtins::Accepts, definitions::FunctionDef};
+    use notist_core::{
+        builtins::Accepts,
+        definitions::{FunctionDef, FunctionId},
+    };
+    // In production these names belong to Evaluator.sources. Standalone cache
+    // tests retain an equivalent fixture snapshot until the test thread exits.
+    thread_local! { static NAMES: std::cell::RefCell<notist_core::definition_identity::Definitions> = Default::default(); }
 
     fn instance(name: &str, arguments: Vec<ComptimeValue>) -> FunctionInstance {
         FunctionInstance {
-            function: FunctionId::new("demo", name),
+            function: NAMES.with(|names| names.borrow_mut().insert(FunctionId::new("demo", name))),
             arguments,
         }
     }
@@ -117,7 +123,11 @@ mod tests {
                 .is_none()
         );
         let mut other_module = key.clone();
-        other_module.function.module = "replacement".into();
+        other_module.function = NAMES.with(|names| {
+            names
+                .borrow_mut()
+                .insert(FunctionId::new("replacement", "view"))
+        });
         assert!(cache.get(&other_module).is_none());
         cache.insert(&key, &record);
         assert_eq!(cache.entries, 1);

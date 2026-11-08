@@ -10,7 +10,9 @@ pub fn render_json(
         .map(|item| {
             let mut data = notist::json::item(item, sources)?;
             let ctor = item.ctor();
-            let name = ctor.name();
+            let name = ctor
+                .name(sources.definitions())
+                .map_err(<serde_json::Error as serde::ser::Error>::custom)?;
             data["ctor"] = serde_json::json!(if matches!(ctor, Ctor::Extension(_)) {
                 name.into_owned()
             } else {
@@ -43,7 +45,7 @@ mod tests {
             .unwrap()
             .into_parts();
         assert!(diagnostics.is_empty());
-        let matches = notist::query::select(&item, "id:x");
+        let matches = notist::query::select(&item, "id:x", &sources).unwrap();
         let data: serde_json::Value =
             serde_json::from_str(&super::render_json(&sources, &matches).unwrap()).unwrap();
         assert_eq!(data[0]["ctor"], "emph");

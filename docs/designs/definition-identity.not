@@ -1,0 +1,43 @@
+= 定义身份与名称拥有关系
+
+DefId 标识规范模块中的逻辑声明，ModuleId 标识规范模块。两者都是不可伪造构造的 32 位非零数字；编号只在当前进程内解释，不写入稳定产物。相同拼写但来自不同模块的函数具有不同身份，导入别名与成员重命名不改变已经解析的身份。
+
+SourceId、ModuleId 与 DefId 在私有底层共享 Id<Tag> 数字表示和 IdAllocator<Tag> 单调分配器，公共领域类型仍各自封装，不能互换或从任意整数构造。每个领域显式持有独立计数器；SourceId 的 DETACHED 保留值、耗尽错误、弱登记表与源码修订规则不由泛型底层接管。该层不实现 serde，也不提供全局名称解析。
+
+身份不是源码修订、函数签名、实现版本或资源授权。不同 Context 可以为同一逻辑身份提供不同的不可变定义快照；实现与特化结果只能在相应 Context 和 CheckedProgram 的边界内复用。
+
+== 声明、选择器与已解析引用
+
+FunctionId 是拥有规范模块名与函数名的共享选择器，供声明、配置、显示和输入边界使用；它不是存放在已解析引用位置的数字 ID。FunctionDef 保存具有名称与签名的声明快照，FunctionInstance 表达外部指定的函数和编译期实参。
+
+DefinitionModule 拥有 ModuleRef 名称记录，CodeModule.module_id 从该声明派生，不另存一份可能与公开 COW 元数据脱节的模块编号。代码体保留原声明的名称元数据；模块重定位在链接边界重建数字索引，旧编译产物不受影响，诊断仍按源码声明名称排序。
+
+检查后的调用使用 ResolvedInstance，其 function 字段是 DefId。Invocation、RExpr、具体内容的实例信息，以及 ExtensionCtor 都使用数字引用。已解析 ImportBinding 分别保存 ModuleId 或 DefId；局部导入名仍是文字，因为它们是词法解析的输入。
+
+== 名称快照
+
+Definitions 持有数字身份对应的名称拥有者，不持有实现、源码正文或宿主资源。Sources 同时伴随源码修订与 Definitions 名称快照，使 Analysis、CheckedProgram、Evaluation、Located 和扩展上下文能够独立解释其保留的 IR。
+
+裸 ID 不从进程全局表反向查名字。Definitions.function 和 Definitions.module 只读取调用者显式提供的快照，未知或未拥有的引用返回错误。创建手工 IR 时，使用 Definitions.resolve 保留选择器后取得 ResolvedInstance，并让名称快照与 IR 一同逃逸。
+
+Context.with_scope 验证导入 ID 的拥有关系，Context.with_root 只选择当前视图已有的模块；这两个装配入口返回 Result。编译、文档作用域装配和 wire 导入中的动态身份分配使用可失败入口，编号耗尽时报告诊断而不是回绕。
+
+登记表只持有弱引用。最后一个拥有者释放后，函数键、空的函数子表和模块键被删除；退休编号不再复用。活着的 builtin 声明保留其固定名称，不构成任意用户文字的永久池。编号耗尽明确失败，不回绕到其它身份。
+
+== 内部数字通路
+
+- Registry 的定义和模块索引使用 DefId 与 ModuleId；名字索引只负责解析边界。
+- CodeProgram 的模块和作用域表使用 ModuleId，CodeModule 的函数体表使用 DefId。检查器的定义模块、Context 的根模块及已解析的链接目标均使用 ModuleId。
+- 模块绑定结果保留所需名称快照。绑定缓存只跟踪被查询的导出及其名称拥有关系，不因为无关导出变化而失效，也不缓存依赖实现。
+- 求值的实际目标映射、调用与局部实现缓存使用 DefId；缓存仍检查编译期实参，并遵守原有失败回退规则。
+- HtmlRegistry 和宿主 Environment 的已解析索引使用数字身份；浏览器组件标签和资源路径仍从规范名称生成。
+
+对外列表、诊断顺序和发布行为不使用编号分配顺序。名称遍历与稳定排序保留单独的文字投影，不把内部 BTreeMap 的数字顺序直接暴露给用户。
+
+== Wire、查询和输出
+
+数字 ID 不实现 serde。含有动态定义引用的 IR 使用 Sources.wire 生成显式名称投影；Sources.decode 只接受当前快照已有的名字，Sources.import 则在显式导入操作中创建并返回名称拥有关系。输入 DTO 在验证之前只保存文字，不因未知名字而隐式登记进程身份。
+
+函数仍序列化为 module 与 name，实例仍保存原有的编译期实参表示。定义的签名、构造类别、字段、来源和展开链不因数字化而丢失。缺少名称拥有关系时，序列化、查询、调试输出和验证会失败，不借用另一个 Context 或全局表补齐。
+
+查询 select、内容 dump 和 JSON 输出接收伴随的 Sources。Renderer.with_sources 接收完整输出快照，HtmlRegistry 也保留绑定声明的名称；固定 builtin 构造的名称由其枚举语义直接确定。输出中的规范名字、组件协议和确定性排序不依赖进程编号。

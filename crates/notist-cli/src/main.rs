@@ -180,12 +180,18 @@ fn run(cli: Cli) -> ExitCode {
                             for d in e.diagnostics {
                                 out.push_str(&format!("error[{}]: {}\n", d.phase, d.message));
                             }
-                            out.push_str(&notist::dump::dump(&e.root));
+                            out.push_str(
+                                &notist::dump::dump(&e.root, &e.sources)
+                                    .unwrap_or_else(|error| error.to_string()),
+                            );
                         }
                         Err(e) => out.push_str(&e.to_string()),
                     }
                 } else {
-                    out.push_str(&notist::dump::dump(document.root()));
+                    out.push_str(
+                        &notist::dump::dump(document.root(), document.sources())
+                            .unwrap_or_else(|error| error.to_string()),
+                    );
                 }
                 Ok(out)
             })
@@ -248,10 +254,16 @@ fn run(cli: Cli) -> ExitCode {
                     None
                 };
                 let root = evaluation.as_ref().map_or(document.root(), |e| &e.root);
-                let matches = notist::query::select(root, &selector);
                 let sources = evaluation
                     .as_ref()
                     .map_or(document.sources(), |e| &e.sources);
+                let matches = match notist::query::select(root, &selector, sources) {
+                    Ok(matches) => matches,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::FAILURE;
+                    }
+                };
                 match query::render_json(sources, &matches) {
                     Ok(output) => println!("{output}"),
                     Err(error) => {

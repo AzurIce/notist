@@ -14,7 +14,7 @@ struct GraphKey {
 }
 #[derive(Clone)]
 struct LoadedGraph {
-    modules: Arc<BTreeMap<String, ModuleSource>>,
+    modules: Arc<BTreeMap<crate::ModuleId, ModuleSource>>,
     context: Context,
 }
 /// Batch-local successful graph/config reuse, never document lexical scopes.
@@ -28,8 +28,8 @@ struct Graph<'a, R: Resources + ?Sized> {
     resources: &'a R,
     pipeline: &'a Pipeline,
     visiting: BTreeSet<PathBuf>,
-    verified: BTreeSet<String>,
-    modules: Arc<BTreeMap<String, ModuleSource>>,
+    verified: BTreeSet<crate::ModuleId>,
+    modules: Arc<BTreeMap<crate::ModuleId, ModuleSource>>,
     context: Context,
     errors: Vec<SourceDiagnostic>,
 }
@@ -50,7 +50,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         path: &Path,
         source: &str,
         imports: &'b [Import],
-    ) -> Vec<(&'b Import, String)> {
+    ) -> Vec<(&'b Import, crate::ModuleId)> {
         let mut bindings = Vec::new();
         for import in imports {
             if Path::new(&import.path).is_absolute()
@@ -101,7 +101,20 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 ));
                 continue;
             }
-            bindings.push((import, target.to_string_lossy().into_owned()));
+            if let Some(id) = self
+                .context
+                .identities()
+                .module_id(&target.to_string_lossy())
+            {
+                bindings.push((import, id));
+            } else {
+                self.errors.push(issue(
+                    path,
+                    source,
+                    import.span,
+                    "resolved import target was not installed".into(),
+                ));
+            }
         }
         bindings
     }
@@ -112,7 +125,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         imports: &[Import],
     ) -> BTreeMap<String, crate::ImportBinding> {
         let bindings = self.resolve_imports(path, source, imports);
-        match self.context.import_bindings(bindings, None) {
+        match self.context.import_bindings_resolved(bindings, None) {
             Ok(bindings) => bindings,
             Err(errors) => {
                 self.errors.extend(
@@ -126,7 +139,12 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
     }
     fn visit(&mut self, path: &Path) {
         let id = path.to_string_lossy().into_owned();
-        if self.verified.contains(&id) {
+        if self
+            .context
+            .identities()
+            .module_id(&id)
+            .is_some_and(|id| self.verified.contains(&id))
+        {
             return;
         }
         if !path.extension().is_some_and(|ext| ext == "notc") {
@@ -163,7 +181,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
             let before = self.errors.len();
             self.resolve_imports(path, &source, &linked.code().imports);
             if self.errors.len() == before {
-                self.verified.insert(id);
+                self.verified.insert(linked.code().module_id());
             }
             self.visiting.remove(path);
             return;
@@ -194,7 +212,7 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
         }
         let targets: Vec<_> = targets.into_iter().map(|(_, target)| target).collect();
         let text = module.source().clone();
-        let linked = match self.context.link_module(module, targets) {
+        let linked = match self.context.link_module_resolved(module, targets) {
             Ok(linked) => linked,
             Err(errors) => {
                 self.errors.extend(
@@ -206,12 +224,13 @@ impl<'a, R: Resources + ?Sized> Graph<'a, R> {
                 return;
             }
         };
+        let module_id = linked.code().module_id();
         match std::mem::take(&mut self.context).with_linked_module(linked) {
             Ok(context) => {
                 self.context = context;
-                self.verified.insert(id.clone());
+                self.verified.insert(module_id);
                 Arc::make_mut(&mut self.modules).insert(
-                    id,
+                    module_id,
                     ModuleSource {
                         path: path.into(),
                         source: text,
@@ -247,9 +266,17 @@ pub(super) fn load(
     let mut graph = Graph::new(resources, &pipeline);
     let input = resources.resolve(input);
     graph.visit(&input);
-    graph.context = graph
-        .context
-        .with_root(input.to_string_lossy().into_owned());
+    if graph.errors.is_empty() {
+        graph.context = graph
+            .context
+            .with_root(input.to_string_lossy().into_owned())
+            .map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|diagnostic| SourceDiagnostic::locate(&input, "", diagnostic))
+                    .collect::<Vec<_>>()
+            })?;
+    }
     graph.finish(None)
 }
 
@@ -414,6 +441,12 @@ pub(super) fn document(
     }
     graph.context = graph
         .context
-        .with_scope(path.to_string_lossy().into_owned(), bindings);
+        .with_scope(path.to_string_lossy().into_owned(), bindings)
+        .map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|diagnostic| SourceDiagnostic::locate(&path, source, diagnostic))
+                .collect::<Vec<_>>()
+        })?;
     graph.finish(config.map(Path::to_path_buf))
 }

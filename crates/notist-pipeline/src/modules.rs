@@ -2,7 +2,9 @@
 use crate::CodeModule;
 use comemo::{Track, Tracked};
 use notist_core::{
-    definitions::{DefinitionModule, FunctionId, Import, ImportBinding, ImportKind},
+    definitions::{
+        DefinitionModule, FunctionId, Import, ImportBinding, ImportKind, ModuleId, ModuleRef,
+    },
     diag::{Diagnostic, Phase},
 };
 use rowan::TextRange;
@@ -16,8 +18,10 @@ pub type ExportTable = BTreeMap<String, ImportBinding>;
 /// The narrow dependency surface needed by import binding. Queries perform no IO.
 #[comemo::track]
 pub trait ModuleExports {
-    fn lookup(&self, module: &str, name: &str) -> Option<ImportBinding>;
-    fn all(&self, module: &str) -> Arc<ExportTable>;
+    fn lookup(&self, module: ModuleId, name: &str) -> Option<ImportBinding>;
+    fn all(&self, module: ModuleId) -> Arc<ExportTable>;
+    fn function_identity(&self, id: notist_core::definitions::DefId) -> Option<FunctionId>;
+    fn module_identity(&self, id: ModuleId) -> Option<ModuleRef>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -31,13 +35,24 @@ struct LocalName {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct BindingSpec {
     locals: Vec<LocalName>,
-    imports: Vec<(Import, String)>,
+    imports: Vec<(Import, ModuleRef)>,
 }
 
 impl BindingSpec {
     /// Targets must already have been resolved and loaded by the host.
     pub fn new<'a>(
         imports: impl IntoIterator<Item = (&'a Import, String)>,
+        local: Option<&DefinitionModule>,
+    ) -> Self {
+        Self::resolved(
+            imports
+                .into_iter()
+                .map(|(import, name)| (import, ModuleRef::new(name))),
+            local,
+        )
+    }
+    pub fn resolved<'a>(
+        imports: impl IntoIterator<Item = (&'a Import, ModuleRef)>,
         local: Option<&DefinitionModule>,
     ) -> Self {
         Self {
@@ -60,6 +75,7 @@ impl BindingSpec {
 /// Resolved names only: no signatures, function bodies, or dependency handles.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModuleScope {
+    identities: notist_core::definition_identity::Definitions,
     imports: ExportTable,
     exports: Arc<ExportTable>,
 }
@@ -71,8 +87,15 @@ impl ModuleScope {
     pub fn exports(&self) -> &Arc<ExportTable> {
         &self.exports
     }
-    pub(crate) fn from_bindings(imports: ExportTable) -> Self {
+    pub fn identities(&self) -> &notist_core::definition_identity::Definitions {
+        &self.identities
+    }
+    pub(crate) fn from_bindings(
+        imports: ExportTable,
+        identities: notist_core::definition_identity::Definitions,
+    ) -> Self {
         Self {
+            identities,
             exports: Arc::new(imports.clone()),
             imports,
         }
@@ -134,22 +157,25 @@ fn bind_cached(
     let mut bindings = BTreeMap::new();
     let mut origins = BTreeMap::new();
     let mut diagnostics = Vec::new();
+    let mut identities = notist_core::definition_identity::Definitions::default();
     for local in &spec.locals {
+        identities.insert(local.id.clone());
         origins.insert(
             local.id.name.clone(),
             format!("local function `{}` at {:?}", local.id, local.span),
         );
     }
     for (import, module) in &spec.imports {
+        identities.insert_module(module.clone());
         let selected = match &import.kind {
             ImportKind::Module { alias } => vec![(
                 alias.clone(),
-                ImportBinding::Module(module.clone()),
+                ImportBinding::Module(module.id()),
                 import.span,
                 "module".to_owned(),
             )],
             ImportKind::Wildcard => exports
-                .all(module)
+                .all(module.id())
                 .iter()
                 .map(|(name, binding)| {
                     (
@@ -162,7 +188,7 @@ fn bind_cached(
                 .collect(),
             ImportKind::Members(members) => members
                 .iter()
-                .filter_map(|member| match exports.lookup(module, &member.name) {
+                .filter_map(|member| match exports.lookup(module.id(), &member.name) {
                     Some(binding) => Some((
                         member.alias.clone(),
                         binding,
@@ -175,7 +201,9 @@ fn bind_cached(
                             member.span,
                             format!(
                                 "module `{}` ({module}) has no public member `{}`",
-                                import.path, member.name
+                                import.path,
+                                member.name,
+                                module = module.name()
                             ),
                         ));
                         None
@@ -184,7 +212,11 @@ fn bind_cached(
                 .collect(),
         };
         for (name, binding, span, selected) in selected {
-            let origin = format!("{selected} from `{}` ({module}) at {span:?}", import.path);
+            let origin = format!(
+                "{selected} from `{}` ({}) at {span:?}",
+                import.path,
+                module.name()
+            );
             if !crate::lowering::imports::valid_import_alias(&name) {
                 diagnostics.push(Diagnostic::new(
                     Phase::Type,
@@ -208,14 +240,33 @@ fn bind_cached(
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
+    for binding in bindings.values() {
+        let owned = match binding {
+            ImportBinding::Function(id) => exports.function_identity(*id).map(|owner| {
+                identities.insert(owner);
+            }),
+            ImportBinding::Module(id) if identities.module(*id).is_ok() => Some(()),
+            ImportBinding::Module(id) => exports.module_identity(*id).map(|owner| {
+                identities.insert_module(owner);
+            }),
+        };
+        if owned.is_none() {
+            return Err(vec![Diagnostic::new(
+                Phase::Type,
+                Default::default(),
+                "resolved import has no retained definition identity",
+            )]);
+        }
+    }
     let mut public = bindings.clone();
     public.extend(spec.locals.iter().map(|local| {
         (
             local.id.name.clone(),
-            ImportBinding::Function(local.id.clone()),
+            ImportBinding::Function(local.id.def_id()),
         )
     }));
     Ok(Arc::new(ModuleScope {
+        identities,
         imports: bindings,
         exports: Arc::new(public),
     }))

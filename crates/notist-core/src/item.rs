@@ -5,9 +5,8 @@ use crate::definitions::FunctionId;
 
 /// A registered call's public contract snapshot, independent of its module files.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExtensionCtor {
-    pub id: FunctionId,
+    pub id: crate::definitions::DefId,
     pub accepts: builtins::Accepts,
     pub level: builtins::Level,
 }
@@ -60,6 +59,7 @@ pub enum Ctor {
     /// A recovered content failure. The message is result data, not evaluator state.
     Error(String),
     /// A legitimate registered function, distinct from unknown-name recovery.
+    #[cfg_attr(feature = "serde", serde(skip))]
     Extension(ExtensionCtor),
     /// Recovery representation of an unresolved name or unsupported
     /// expression, accompanied by a type diagnostic. Not a registered
@@ -149,11 +149,14 @@ impl Ctor {
             .map(|s| s.accepts)
     }
 
-    pub fn name(&self) -> std::borrow::Cow<'_, str> {
+    pub fn name(
+        &self,
+        definitions: &crate::definition_identity::Definitions,
+    ) -> Result<std::borrow::Cow<'_, str>, crate::definition_identity::DefinitionError> {
         if let Self::Extension(function) = self {
-            return function.id.to_string().into();
+            return Ok(definitions.function(function.id)?.to_string().into());
         }
-        std::borrow::Cow::Borrowed(match self {
+        Ok(std::borrow::Cow::Borrowed(match self {
             Ctor::Doc => "Doc",
             Ctor::Paragraph => "Paragraph",
             Ctor::Heading => "Heading",
@@ -180,23 +183,32 @@ impl Ctor {
             Ctor::Error(_) => "Error",
             Ctor::Custom(name) => name,
             Ctor::Extension(_) => unreachable!(),
-        })
+        }))
     }
 
     /// Canonical identity for both builtin and registered external calls.
-    pub fn function_id(&self) -> Option<FunctionId> {
+    pub fn function_id(&self) -> Option<crate::definitions::DefId> {
         match self {
-            Self::Extension(function) => Some(function.id.clone()),
+            Self::Extension(function) => Some(function.id),
             _ => self
                 .source_name()
-                .map(|name| FunctionId::new("notist", name)),
+                .and_then(|name| builtins::registry().function("notist", name))
+                .map(|definition| definition.id.def_id()),
         }
     }
-}
-
-impl std::fmt::Display for Ctor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.name())
+    /// A builtin constructor carries its fixed symbolic identity intrinsically.
+    /// Dynamically resolved extension IDs always require the supplied owners.
+    pub fn function_name<'a>(
+        &self,
+        definitions: &'a crate::definition_identity::Definitions,
+    ) -> Result<Option<&'a FunctionId>, crate::definition_identity::DefinitionError> {
+        match self {
+            Self::Extension(extension) => definitions.function(extension.id).map(Some),
+            _ => Ok(self
+                .source_name()
+                .and_then(|name| builtins::registry().function("notist", name))
+                .map(|definition| &definition.id)),
+        }
     }
 }
 
@@ -405,7 +417,7 @@ pub struct ContentItem {
     pub fields: Dict,
     pub children: crate::shared::Shared<Vec<Node>>,
     /// Concrete native/component parameters, not a source call or execution state.
-    pub instance: Option<crate::shared::Shared<crate::definitions::FunctionInstance>>,
+    pub instance: Option<crate::shared::Shared<crate::definitions::ResolvedInstance>>,
 }
 
 /// Transitional spelling for public content-tree callers.
@@ -426,7 +438,7 @@ impl Node {
                     Ctor::from_name(&def.id.name).unwrap_or(Ctor::Interpolation)
                 } else {
                     Ctor::Extension(ExtensionCtor {
-                        id: def.id.clone(),
+                        id: def.id.def_id(),
                         accepts: def.children,
                         level: self.level,
                     })
@@ -443,7 +455,10 @@ impl Node {
         let crate::evaluation::ExprKind::Call(call) = &self.as_expr()?.kind else {
             return None;
         };
-        if name == "level" && call.instance.function == FunctionId::new("notist", "heading") {
+        if name == "level"
+            && call.definition.id.module == "notist"
+            && call.definition.id.name == "heading"
+        {
             if let Some(crate::definitions::ComptimeValue::Data(value)) =
                 call.instance.arguments.first()
             {
@@ -524,7 +539,7 @@ impl Node {
             NodeContent::Expr(expr) => content(expr),
         }
     }
-    pub fn instance(&self) -> Option<&crate::definitions::FunctionInstance> {
+    pub fn instance(&self) -> Option<&crate::definitions::ResolvedInstance> {
         match &self.content {
             NodeContent::Item(item) => item.instance.as_deref(),
             NodeContent::Expr(expr) => match &expr.kind {
@@ -601,7 +616,7 @@ impl Node {
 
     /// Checked source-call identity before evaluation, actual constructor
     /// identity afterwards; absent on documents, groups and recovery nodes.
-    pub fn function_id(&self) -> Option<FunctionId> {
+    pub fn function_id(&self) -> Option<crate::definitions::DefId> {
         self.ctor().function_id()
     }
     pub fn new(ctor: Ctor, span: TextRange) -> Self {
@@ -694,12 +709,14 @@ mod source_tests {
     fn item_instance_sharing_preserves_independent_identity_and_mounts() {
         use crate::definitions::{ComptimeValue, FunctionInstance, Type};
         let mut original = Item::new(Ctor::Node, TextRange::empty(0.into()));
+        let mut definitions = crate::definition_identity::Definitions::default();
         original.as_item_mut().unwrap().instance = Some(
-            FunctionInstance {
-                function: FunctionId::new("module", "view"),
-                arguments: vec![ComptimeValue::Type(Type::InlineContent)],
-            }
-            .into(),
+            definitions
+                .resolve(FunctionInstance {
+                    function: FunctionId::new("module", "view"),
+                    arguments: vec![ComptimeValue::Type(Type::InlineContent)],
+                })
+                .into(),
         );
         let span = original.span;
         original
@@ -718,10 +735,17 @@ mod source_tests {
                 .shares_storage(changed.as_item().unwrap().instance.as_ref().unwrap())
         );
         let data = changed.as_item_mut().unwrap();
-        data.instance.as_mut().unwrap().function.name = "different".into();
+        data.instance.as_mut().unwrap().function =
+            definitions.insert(FunctionId::new("module", "different"));
         data.instance.as_mut().unwrap().arguments.clear();
         data.children.clear();
-        assert_eq!(original.instance().unwrap().function.name, "view");
+        assert_eq!(
+            definitions
+                .function(original.instance().unwrap().function)
+                .unwrap()
+                .name,
+            "view"
+        );
         assert_eq!(original.instance().unwrap().arguments.len(), 1);
         assert_eq!(original.children().len(), 1);
         assert_ne!(original, changed);
@@ -737,7 +761,8 @@ mod source_tests {
             arguments: vec![ComptimeValue::Type(Type::InlineContent)],
         };
         item.as_item_mut().unwrap().instance = Some(identity.clone().into());
-        let sources = crate::source::Sources::new();
+        let mut sources = crate::source::Sources::new();
+        sources.definitions_mut().insert(identity.function.clone());
         let wire = serde_json::to_value(sources.wire(&item)).unwrap();
         assert_eq!(
             wire["content"]["Item"]["instance"],
@@ -748,7 +773,13 @@ mod source_tests {
         let restored: Item = sources.decode(wire).unwrap();
         assert_eq!(restored, item);
         assert_eq!(
-            format!("{:?}", item.instance().unwrap()),
+            format!(
+                "{:?}",
+                sources
+                    .definitions()
+                    .selector(item.instance().unwrap())
+                    .unwrap()
+            ),
             format!("{identity:?}")
         );
     }

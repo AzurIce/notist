@@ -10,16 +10,14 @@ use std::sync::{Arc, OnceLock};
 
 /// External function identities actually visited by rendering an evaluated tree.
 /// Errors hide their children; expanded Code boundaries render only their result.
-pub fn component_ids(root: &Item) -> BTreeSet<FunctionId> {
+pub fn component_ids(root: &Item) -> BTreeSet<notist_core::definitions::DefId> {
     let mut ids = BTreeSet::new();
     let mut stack = vec![root];
     while let Some(item) = stack.pop() {
         if item.is_error() {
             continue;
         }
-        if let Some(id) = item.function_id()
-            && id.module != "notist"
-        {
+        if let Some(id) = item.function_id() {
             ids.insert(id);
         }
         stack.extend(item.children().iter());
@@ -95,7 +93,7 @@ pub fn select_component_entry(name: &str, available: [bool; 2]) -> Result<Option
 
 #[derive(Debug, Clone)]
 pub struct BindingError {
-    pub id: FunctionId,
+    pub id: notist_core::definitions::DefId,
     pub message: String,
 }
 
@@ -115,14 +113,16 @@ pub enum Target {
 
 #[derive(Debug, Clone)]
 pub struct HtmlRegistry {
-    targets: Arc<BTreeMap<FunctionId, Target>>,
+    targets: Arc<BTreeMap<notist_core::definitions::DefId, Target>>,
+    identities: notist_core::definition_identity::Definitions,
 }
 impl Default for HtmlRegistry {
     fn default() -> Self {
-        static NATIVE: OnceLock<Arc<BTreeMap<FunctionId, Target>>> = OnceLock::new();
+        static NATIVE: OnceLock<HtmlRegistry> = OnceLock::new();
         let targets = NATIVE.get_or_init(|| {
             let mut registry = Self {
                 targets: Arc::new(BTreeMap::new()),
+                identities: Default::default(),
             };
             for definition in builtins::registry().functions() {
                 let Some(ctor) = Ctor::from_name(&definition.id.name) else {
@@ -132,11 +132,9 @@ impl Default for HtmlRegistry {
                     .register(definition, Target::Native(ctor))
                     .expect("valid native HTML target");
             }
-            registry.targets
+            registry
         });
-        Self {
-            targets: targets.clone(),
-        }
+        targets.clone()
     }
 }
 impl HtmlRegistry {
@@ -144,20 +142,25 @@ impl HtmlRegistry {
     /// not return a partially installed HTML environment; declarations remain valid.
     pub fn from_bindings(
         registry: &notist_core::registry::Registry,
-        bindings: &BTreeMap<FunctionId, ModuleLocator>,
+        bindings: &BTreeMap<notist_core::definitions::DefId, ModuleLocator>,
     ) -> Result<Self, Vec<BindingError>> {
         let mut html = Self::default();
         let mut errors = Vec::new();
-        for (id, module) in bindings {
+        let mut ordered: Vec<_> = bindings.iter().collect();
+        ordered.sort_by(|(a, _), (b, _)| {
+            registry
+                .identities()
+                .function(**a)
+                .ok()
+                .cmp(&registry.identities().function(**b).ok())
+        });
+        for (id, module) in ordered {
             let result = registry
-                .get(id)
-                .ok_or_else(|| format!("unknown component function `{id}`"))
+                .definition(*id)
+                .ok_or_else(|| "unknown component definition identity".to_string())
                 .and_then(|definition| html.bind_component(definition, module.clone()));
             if let Err(message) = result {
-                errors.push(BindingError {
-                    id: id.clone(),
-                    message,
-                });
+                errors.push(BindingError { id: *id, message });
             }
         }
         if errors.is_empty() {
@@ -167,7 +170,13 @@ impl HtmlRegistry {
         }
     }
     pub fn get(&self, id: &FunctionId) -> Option<&Target> {
-        self.targets.get(id)
+        self.target(id.def_id())
+    }
+    pub fn target(&self, id: notist_core::definitions::DefId) -> Option<&Target> {
+        self.targets.get(&id)
+    }
+    pub fn identities(&self) -> &notist_core::definition_identity::Definitions {
+        &self.identities
     }
     pub fn bind_component(
         &mut self,
@@ -196,7 +205,7 @@ impl HtmlRegistry {
                 .collect::<Vec<_>>()
                 .join("; "));
         }
-        if self.targets.contains_key(&definition.id) {
+        if self.targets.contains_key(&definition.id.def_id()) {
             return Err(format!(
                 "HTML target already registered for `{}`",
                 definition.id
@@ -259,9 +268,22 @@ impl HtmlRegistry {
         };
         // Native-only pages share the validated table. A page's first custom
         // binding detaches it without changing any other page or the defaults.
-        Arc::make_mut(&mut self.targets).insert(definition.id.clone(), target);
+        self.identities.insert(definition.id.clone());
+        Arc::make_mut(&mut self.targets).insert(definition.id.def_id(), target);
         Ok(())
     }
+}
+/// Stable external presentation order, independent of numeric allocation order.
+pub fn component_definitions<'a>(
+    root: &Item,
+    registry: &'a notist_core::registry::Registry,
+) -> Vec<&'a FunctionDef> {
+    let mut definitions: Vec<_> = component_ids(root)
+        .into_iter()
+        .filter_map(|id| registry.definition(id))
+        .collect();
+    definitions.sort_by(|a, b| a.id.cmp(&b.id));
+    definitions
 }
 
 // Lowercase ASCII names stay readable. Escapes are

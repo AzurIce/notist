@@ -28,7 +28,7 @@ fn underline_is_available_to_code_content_functions() {
         .unwrap();
     assert_eq!(
         underline.function_id(),
-        Some(FunctionId::new("notist", "underline"))
+        Some(FunctionId::new("notist", "underline").def_id())
     );
     assert!(
         underline
@@ -45,14 +45,14 @@ fn code_bodies_are_opaque_until_evaluation() {
     assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
     let original = a
         .root()
-        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
+        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet").def_id()))
         .unwrap();
     assert!(original.children().is_empty());
     let e = p.evaluate(&a, &c);
     assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
     assert!(
         e.root
-            .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
+            .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet").def_id()))
             .is_none()
     );
     assert!(
@@ -865,7 +865,7 @@ fn markup_sugar_keeps_builtin_identity_inside_a_shadowing_module() {
         for name in ["text", "paragraph", "heading", "strong"] {
             assert!(
                 e.root
-                    .find(|i| i.function_id() == Some(FunctionId::new("notist", name)))
+                    .find(|i| i.function_id() == Some(FunctionId::new("notist", name).def_id()))
                     .is_some(),
                 "{dialect}: {name}"
             );

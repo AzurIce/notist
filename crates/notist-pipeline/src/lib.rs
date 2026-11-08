@@ -413,7 +413,10 @@ impl Pipeline {
                 );
             }
         };
-        let mut sources = context.program().sources();
+        let mut sources = context
+            .program()
+            .sources()
+            .with_definitions(context.registry().identities());
         if let Err(error) = sources.insert(origin.clone()) {
             let mut diagnostic = Diagnostic::new(
                 notist_core::diag::Phase::Type,

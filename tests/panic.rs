@@ -105,12 +105,9 @@ fn show(message: String) -> InlineContent { [#text(text: if forward(message) == 
             .iter()
             .any(|location| output.sources.name(location.source).unwrap() == "doc.not")
     );
-    assert!(
-        output
-            .root
-            .descendants()
-            .all(|item| item.function_id() != Some(notist::FunctionId::new("notist", "panic")))
-    );
+    assert!(output.root.descendants().all(
+        |item| item.function_id() != Some(notist::FunctionId::new("notist", "panic").def_id())
+    ));
 }
 
 #[test]
@@ -314,10 +311,8 @@ fn never_interpolation_is_a_computation_not_a_content_constructor() {
             analysis.diagnostics()
         );
         assert!(
-            analysis
-                .root()
-                .descendants()
-                .all(|item| item.function_id() != Some(notist::FunctionId::new("notist", "panic")))
+            analysis.root().descendants().all(|item| item.function_id()
+                != Some(notist::FunctionId::new("notist", "panic").def_id()))
         );
         let output = pipeline.evaluate(&analysis, &context);
         assert_eq!(

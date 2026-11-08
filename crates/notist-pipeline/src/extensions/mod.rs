@@ -4,9 +4,7 @@ use notist_core::{
     builtins::Level,
     definitions::FunctionId,
     diag::{Diagnostic, Phase},
-    extensions::{
-        DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument, Replacement,
-    },
+    extensions::{DocumentContext, DocumentExtension, ExtensionResult, LoweredDocument},
     item::{Ctor, Item},
     registry::Registry,
 };
@@ -15,7 +13,13 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct ExtensionPlan {
     entries: Vec<Arc<dyn DocumentExtension>>,
-    replacements: Vec<Replacement>,
+    replacements: Vec<ResolvedReplacement>,
+    identities: notist_core::definition_identity::Definitions,
+}
+#[derive(Debug, Clone, Copy)]
+struct ResolvedReplacement {
+    from: notist_core::definitions::DefId,
+    to: notist_core::definitions::DefId,
 }
 impl ExtensionPlan {
     pub fn with_extension(
@@ -27,8 +31,14 @@ impl ExtensionPlan {
             .validate(registry)
             .and_then(|()| replacements::validate(extension.replacements(), registry))
             .map_err(|errors| describe(errors, extension.as_ref(), "registration"))?;
-        self.replacements
-            .extend_from_slice(extension.replacements());
+        for rule in extension.replacements() {
+            self.identities.insert(rule.from.clone());
+            self.identities.insert(rule.to.clone());
+            self.replacements.push(ResolvedReplacement {
+                from: rule.from.def_id(),
+                to: rule.to.def_id(),
+            });
+        }
         self.entries.push(extension);
         Ok(self)
     }
@@ -41,10 +51,24 @@ impl ExtensionPlan {
 
     /// Each rule selects its target once. Mappings never affect comptime checks.
     pub fn target(&self, source: &FunctionId) -> FunctionId {
-        let mut id = source.clone();
+        let id = self.target_id(source.def_id());
+        if id == source.def_id() {
+            source.clone()
+        } else {
+            self.identities
+                .function(id)
+                .expect("validated replacement names are retained")
+                .clone()
+        }
+    }
+    pub fn target_id(
+        &self,
+        source: notist_core::definitions::DefId,
+    ) -> notist_core::definitions::DefId {
+        let mut id = source;
         for rule in &self.replacements {
             if id == rule.from {
-                id = rule.to.clone();
+                id = rule.to;
             }
         }
         id

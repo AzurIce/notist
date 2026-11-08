@@ -20,7 +20,9 @@ fn component_fields_escape_keep_scalar_semantics_and_record_nested_dependencies(
         .analyze(
             "test.not",
             "#self.panel(title: \"<&\\\"\")[ #self.badge(\"one\") #self.badge(\"two\") ]",
-            &notist::Context::new(registry.clone()).with_root("widgets"),
+            &notist::Context::new(registry.clone())
+                .with_root("widgets")
+                .unwrap(),
         )
         .unwrap();
     assert!(
@@ -107,7 +109,7 @@ fn html_registry_shares_native_targets_but_isolates_custom_bindings() {
             .is_err()
     );
     let mut invalid = definition.clone();
-    invalid.id.name = "invalid".into();
+    invalid.id = FunctionId::new(&definition.id.module, "invalid");
     assert!(first.bind_component(&invalid, "").is_err());
     assert!(first.get(&invalid.id).is_none());
 }
@@ -210,7 +212,9 @@ fn missing_html_targets_and_filesystem_entry_conflicts() {
     let missing = notist::Pipeline::default()
         .analyze("test.not", "#self.badge(\"test\")", project.context())
         .unwrap();
-    let rendered = Renderer::new().render_with_diagnostics(missing.root());
+    let rendered = Renderer::new()
+        .with_sources(missing.sources())
+        .render_with_diagnostics(missing.root());
     assert!(
         rendered
             .diagnostics
@@ -374,7 +378,9 @@ fn native_nonfinite_defaults_use_the_same_component_binding_path() {
         .analyze(
             "test.not",
             "#self.meter()",
-            &notist::Context::new(semantics.clone()).with_root("native"),
+            &notist::Context::new(semantics.clone())
+                .with_root("native")
+                .unwrap(),
         )
         .unwrap();
     let result = Renderer::new()
@@ -403,7 +409,9 @@ fn inline_component_accepting_block_children_keeps_a_parseable_html_tree() {
         .analyze(
             "test.not",
             "before #self.popup()[ inside ] after",
-            &notist::Context::new(semantics).with_root("widgets"),
+            &notist::Context::new(semantics)
+                .with_root("widgets")
+                .unwrap(),
         )
         .unwrap();
     assert!(result.diagnostics().is_empty());

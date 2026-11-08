@@ -1,11 +1,42 @@
 use crate::item::{Item, Value};
 
 /// Select descendants of `item` by an `id:` / `tag:` / `ctor:` selector.
-pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
+pub fn select<'a>(
+    item: &'a Item,
+    selector: &str,
+    sources: &crate::Sources,
+) -> Result<Vec<&'a Item>, notist_core::definition_identity::DefinitionError> {
     let Some((kind, needle)) = selector.split_once(':') else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    item.descendants()
+    if kind == "function" {
+        let mut result = Vec::new();
+        for item in item.descendants() {
+            if let Some(name) = item.ctor().function_name(sources.definitions())? {
+                if name.to_string() == needle {
+                    result.push(item);
+                }
+            }
+        }
+        return Ok(result);
+    }
+    if kind == "ctor" {
+        let mut result = Vec::new();
+        for item in item.descendants() {
+            let ctor = item.ctor();
+            let name = ctor.name(sources.definitions())?;
+            if if matches!(ctor, crate::Ctor::Extension(_)) {
+                name == needle
+            } else {
+                name.eq_ignore_ascii_case(needle)
+            } {
+                result.push(item);
+            }
+        }
+        return Ok(result);
+    }
+    Ok(item
+        .descendants()
         .filter(|item| match kind {
             "id" => matches!(item.attrs.get("id"), Some(Value::Str(id)) if id == needle),
             "tag" => item.attrs.get("tags").is_some_and(|tags| match tags {
@@ -14,14 +45,6 @@ pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
                     .any(|t| matches!(t, Value::Str(t) if t == needle)),
                 _ => false,
             }),
-            "ctor" if matches!(item.ctor(), crate::Ctor::Extension(_)) => {
-                item.ctor().name() == needle
-            }
-            "ctor" => item.ctor().name().eq_ignore_ascii_case(needle),
-            "function" => item
-                .ctor()
-                .function_id()
-                .is_some_and(|id| id.to_string() == needle),
             "level" => match item.level {
                 crate::builtins::Level::Block => needle == "block",
                 crate::builtins::Level::Inline => needle == "inline",
@@ -29,5 +52,5 @@ pub fn select<'a>(item: &'a Item, selector: &str) -> Vec<&'a Item> {
             },
             _ => false,
         })
-        .collect()
+        .collect())
 }

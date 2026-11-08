@@ -87,7 +87,7 @@
   node(point(400, 690), align(top + left, text(size: 12pt)[CheckedProgram · 实例缓存]),
     name: <checked-program>, width: 220pt, height: 104pt, inset: 8pt,
     shape: rect, corner-radius: 18pt, fill: data-fill, layer: -1, snap: false),
-  caption(400, 671, [FunctionInstance → InstanceRecord], size: 10.5, fill: data-fill),
+  caption(400, 671, [ResolvedInstance → InstanceRecord], size: 10.5, fill: data-fill),
   data(<typed-ir>, 400, 706, [body: TypedExpr\ #text("Content(Vec<Item>)")], w: 196, h: 46),
   process(<document-root>, 100, 767, [文档入口\ 附加 Doc 根 / 挂载模块属性], h: 52),
   frame(<analysis>, 250, 882, 520, 122, [Analysis]),
@@ -196,7 +196,7 @@ Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：�
 | Context | Registry、CodeProgram、模块作用域、ExtensionPlan | 装配完成后只读 |
 | Checker | 当前模块、编译期实参、局部绑定、诊断、CheckedProgram | 每次会话创建 |
 | TypedExpr | 实例的已检查表达式树，内容分支是 Item 森林 | 存于 InstanceRecord.body |
-| CheckedProgram | FunctionInstance → 签名、TypedExpr、诊断、状态 | 随 Analysis 保留；独立检查只导出报告 |
+| CheckedProgram | ResolvedInstance → 签名、TypedExpr、诊断、状态；伴随源码与定义名称快照 | 随 Analysis 保留；独立检查只导出报告 |
 
 Context 保存模块作用域；Checker.scope 保存局部绑定与当前实例的编译期实参。
 

@@ -37,7 +37,7 @@ fn relative_imports_work_without_manifests_and_retain_definition_identity() {
         assert!(
             a.root()
                 .find(|i| i.function_id()
-                    == Some(FunctionId::new("/project/nested/views.notc", "view")))
+                    == Some(FunctionId::new("/project/nested/views.notc", "view").def_id()))
                 .is_some()
         );
     }
@@ -63,7 +63,7 @@ fn aliases_share_instances_and_normalized_paths_load_once() {
     let calls: Vec<_> = a
         .root()
         .descendants()
-        .filter(|i| i.function_id() == Some(FunctionId::new("/project/view.notc", "f")))
+        .filter(|i| i.function_id() == Some(FunctionId::new("/project/view.notc", "f").def_id()))
         .collect();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].instance(), calls[1].instance());

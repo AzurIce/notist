@@ -17,6 +17,7 @@ impl Pipeline {
         offset: usize,
     ) -> Option<&'a FunctionDef> {
         let scope = context.root();
+        let scope_id = context.root_id();
         if path.ends_with(".notc") {
             let module = self
                 .compile_module("content.not", scope.unwrap_or(path), path, source)
@@ -25,7 +26,7 @@ impl Pipeline {
                 return Some(definition);
             }
             for definition in &module.definitions.functions {
-                let Some(body) = module.body(&definition.id.name) else {
+                let Some(body) = module.body_by_id(definition.id.def_id()) else {
                     continue;
                 };
                 let bound = definition
@@ -43,7 +44,7 @@ impl Pipeline {
                 if let Some(expression) = &body.expression
                     && let Some(name) = called_at(expression, source, offset, &bound)
                 {
-                    return context.resolve_in(scope, &name);
+                    return context.resolve_in_id(scope_id, &name);
                 }
             }
         } else {
@@ -53,7 +54,7 @@ impl Pipeline {
             }
             for expression in &lowered.forest {
                 if let Some(name) = called_at(expression, source, offset, &BTreeSet::new()) {
-                    return context.resolve_in(scope, &name);
+                    return context.resolve_in_id(scope_id, &name);
                 }
             }
         }

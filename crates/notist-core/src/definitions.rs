@@ -7,27 +7,7 @@ use crate::builtins::{Accepts, Level};
 use crate::diag::{Diagnostic, Phase};
 use crate::item::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct FunctionId {
-    pub module: String,
-    pub name: String,
-}
-
-impl FunctionId {
-    pub fn new(module: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            module: module.into(),
-            name: name.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for FunctionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.module, self.name)
-    }
-}
+pub use crate::definition_identity::{DefId, FunctionId, ModuleId, ModuleRef};
 
 /// A static file-level module dependency produced by either source frontend.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,8 +34,8 @@ pub struct ImportMember {
 /// Static name binding. Functions always retain their defining identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportBinding {
-    Module(String),
-    Function(FunctionId),
+    Module(ModuleId),
+    Function(DefId),
 }
 
 /// Type descriptions. `Parameter` occurs only in signature templates.
@@ -275,6 +255,41 @@ pub struct FunctionInstance {
     pub function: FunctionId,
     pub arguments: Vec<ComptimeValue>,
 }
+/// A resolved invocation carries only its numeric declaration identity. Names
+/// are owned by the enclosing Sources/Definitions snapshot, not each use site.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedInstance {
+    pub function: DefId,
+    pub arguments: Vec<ComptimeValue>,
+}
+impl ResolvedInstance {
+    pub fn key(
+        &self,
+        names: &crate::definition_identity::Definitions,
+    ) -> Result<String, crate::definition_identity::DefinitionError> {
+        Ok(format!(
+            "{}:{:?}",
+            names.function(self.function)?,
+            self.arguments
+                .iter()
+                .map(ComptimeValue::key)
+                .collect::<Vec<_>>()
+        ))
+    }
+}
+impl From<FunctionInstance> for ResolvedInstance {
+    fn from(instance: FunctionInstance) -> Self {
+        Self {
+            function: instance.function.def_id(),
+            arguments: instance.arguments,
+        }
+    }
+}
+impl From<FunctionInstance> for crate::shared::Shared<ResolvedInstance> {
+    fn from(instance: FunctionInstance) -> Self {
+        crate::shared::Shared::new(instance.into())
+    }
+}
 impl FunctionInstance {
     pub fn key(&self) -> String {
         format!(
@@ -444,19 +459,19 @@ impl FunctionDef {
 // `code` is a compatibility projection, never a second internal source of truth.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
-struct FunctionDefWire {
-    id: FunctionId,
-    parameters: Vec<ParameterDef>,
-    children: Accepts,
-    returns: Type,
-    comptime: Vec<ComptimeParameter>,
-    children_type: Option<Type>,
+pub(crate) struct FunctionDefWire<I = FunctionId> {
+    pub(crate) id: I,
+    pub(crate) parameters: Vec<ParameterDef>,
+    pub(crate) children: Accepts,
+    pub(crate) returns: Type,
+    pub(crate) comptime: Vec<ComptimeParameter>,
+    pub(crate) children_type: Option<Type>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    code: Option<bool>,
+    pub(crate) code: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    implementation: Option<FunctionImpl>,
+    pub(crate) implementation: Option<FunctionImpl>,
     #[serde(with = "crate::evaluation::span")]
-    span: TextRange,
+    pub(crate) span: TextRange,
 }
 
 #[cfg(feature = "serde")]
@@ -515,7 +530,7 @@ impl TryFrom<FunctionDefWire> for FunctionDef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefinitionModule {
-    pub module: String,
+    pub module: ModuleRef,
     pub functions: Vec<FunctionDef>,
     pub span: TextRange,
 }
@@ -523,7 +538,7 @@ pub struct DefinitionModule {
 impl DefinitionModule {
     pub fn new(module: impl Into<String>) -> Self {
         Self {
-            module: module.into(),
+            module: ModuleRef::new(module.into()),
             functions: Vec::new(),
             span: TextRange::empty(0.into()),
         }
@@ -540,20 +555,20 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
     let mut names = BTreeSet::new();
     for function in &module.functions {
         let reserved = match function.implementation {
-            FunctionImpl::Native(NativeFunction::Str) => Some(FunctionId::new("notist", "str")),
-            FunctionImpl::Native(NativeFunction::ArrayLen) => {
-                Some(FunctionId::new("notist.array", "len"))
-            }
+            FunctionImpl::Native(NativeFunction::Str) => Some(("notist", "str")),
+            FunctionImpl::Native(NativeFunction::ArrayLen) => Some(("notist.array", "len")),
             _ => None,
         };
-        if reserved.is_some_and(|id| function.id != id) {
+        if reserved
+            .is_some_and(|(module, name)| function.id.module != module || function.id.name != name)
+        {
             report(
                 function.span,
                 "scalar and array implementations are reserved for the standard library".into(),
             );
         }
         if let FunctionImpl::Native(NativeFunction::Data(kind)) = function.implementation
-            && function.id != FunctionId::new("notist", kind.name())
+            && (function.id.module != "notist" || function.id.name != kind.name())
         {
             report(
                 function.span,
@@ -561,7 +576,7 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
             );
         }
         if function.implementation == FunctionImpl::Native(NativeFunction::ReadText)
-            && function.id != FunctionId::new("notist", "read_text")
+            && (function.id.module != "notist" || function.id.name != "read_text")
         {
             report(
                 function.span,
@@ -569,14 +584,14 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
             );
         }
         if function.implementation == FunctionImpl::Native(NativeFunction::Panic)
-            && function.id != FunctionId::new("notist", "panic")
+            && (function.id.module != "notist" || function.id.name != "panic")
         {
             report(
                 function.span,
                 "panic implementation is reserved for the standard library".into(),
             );
         }
-        if function.id.module != module.module {
+        if function.id.module_id() != module.module.id() {
             report(
                 function.span,
                 format!("`{}` belongs to a different module", function.id),

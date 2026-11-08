@@ -6,7 +6,7 @@ mod result;
 pub(crate) use check::Checker;
 pub(crate) use notist_core::evaluation::{CheckedProgram, InstanceRecord};
 use notist_core::{
-    definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
+    definitions::{ComptimeValue, FunctionDef, ResolvedInstance as FunctionInstance, Type},
     diag::Diagnostic,
     evaluation::{ExprKind, Invocation, TypedExpr},
     expr::RExpr,
@@ -47,7 +47,7 @@ mod tests {
             &first.program.instances,
             &second.program.instances
         ));
-        let changed = context.with_scope("demo", std::iter::empty());
+        let changed = context.with_scope("demo", std::iter::empty()).unwrap();
         let third = pipeline
             .analyze("third.not", "#self.show()", &changed)
             .unwrap();

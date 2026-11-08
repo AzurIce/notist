@@ -682,7 +682,10 @@ fn show(source:Path)->InlineContent {
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let bag = output
             .root
-            .find(|n| n.function_id() == Some(notist::FunctionId::new("/project/view.notc", "bag")))
+            .find(|n| {
+                n.function_id()
+                    == Some(notist::FunctionId::new("/project/view.notc", "bag").def_id())
+            })
             .unwrap();
         let Some(Value::Array(values)) = bag.field("values") else {
             panic!()

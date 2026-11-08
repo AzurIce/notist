@@ -101,8 +101,20 @@ fn value(value: &Value) -> serde_json::Value {
     }
 }
 
-fn instance_json(i: Option<&notist_core::definitions::FunctionInstance>) -> serde_json::Value {
-    i.map(|i|serde_json::json!({"function":i.function.to_string(),"comptime":i.arguments.iter().map(|v|match v{notist_core::definitions::ComptimeValue::Type(t)=>serde_json::json!({"type":t.to_string()}),notist_core::definitions::ComptimeValue::Data(v)=>notist_html::components::value_json(v)}).collect::<Vec<_>>()})).unwrap_or_default()
+fn instance_json(
+    i: Option<&notist_core::definitions::ResolvedInstance>,
+    sources: &crate::Sources,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let Some(i) = i else {
+        return Ok(serde_json::Value::Null);
+    };
+    let name = sources
+        .definitions()
+        .function(i.function)
+        .map_err(<serde_json::Error as serde::ser::Error>::custom)?;
+    Ok(
+        serde_json::json!({"function":name.to_string(),"comptime":i.arguments.iter().map(|v|match v{notist_core::definitions::ComptimeValue::Type(t)=>serde_json::json!({"type":t.to_string()}),notist_core::definitions::ComptimeValue::Data(v)=>notist_html::components::value_json(v)}).collect::<Vec<_>>()}),
+    )
 }
 
 fn metadata(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, serde_json::Error> {
@@ -110,8 +122,8 @@ fn metadata(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, 
     let origin = serde_json::to_value(sources.wire(&item.origin))?;
     Ok(serde_json::json!({
         "expression": expression,
-        "function": item.function_id().map(|id| id.to_string()),
-        "instance":instance_json(item.instance()),
+        "function": item.ctor().function_name(sources.definitions()).map_err(<serde_json::Error as serde::ser::Error>::custom)?.map(ToString::to_string),
+        "instance":instance_json(item.instance(), sources)?,
         "error": match item.ctor() { crate::Ctor::Error(message) => Some(message), _ => None },
         "origin":origin,
         "level": if item.level == crate::builtins::Level::Block { "block" } else { "inline" },
@@ -135,7 +147,12 @@ pub(crate) fn write_metadata(
 /// descendants. Typed values preserve numeric bits and dictionary order.
 pub fn item(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, serde_json::Error> {
     let mut object = metadata(item, sources)?;
-    object["ctor"] = item.ctor().name().as_ref().into();
+    object["ctor"] = item
+        .ctor()
+        .name(sources.definitions())
+        .map_err(<serde_json::Error as serde::ser::Error>::custom)?
+        .as_ref()
+        .into();
     object["start"] = u32::from(item.span.start()).into();
     object["end"] = u32::from(item.span.end()).into();
     object["attrs"] = value(&Value::Dict(item.attrs.clone()));

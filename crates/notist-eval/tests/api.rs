@@ -43,7 +43,8 @@ impl NativeContext {
             instance: FunctionInstance {
                 function: definition.id.clone(),
                 arguments: comptime,
-            },
+            }
+            .into(),
             definition: definition.into(),
             arguments: arguments
                 .into_iter()

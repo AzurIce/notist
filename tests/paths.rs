@@ -47,7 +47,7 @@ fn expected(path: &str) -> Value {
     Value::Path(ResourcePath::resolve("/project", "/project/doc.not", &format!("/{path}")).unwrap())
 }
 
-fn evaluated(path: &str, source: &str) -> Item {
+fn evaluated(path: &str, source: &str) -> notist::Located<Item> {
     let context = context();
     let pipeline = Pipeline::default();
     let analysis = pipeline.analyze(path, source, &context).unwrap();
@@ -62,14 +62,14 @@ fn evaluated(path: &str, source: &str) -> Item {
         "{source}: {:?}",
         evaluation.diagnostics
     );
-    evaluation.root
+    notist::Located::new(evaluation.root, evaluation.sources)
 }
 
-fn captured(root: &Item) -> &Item {
+fn captured<'a>(root: &'a Item, sources: &notist::Sources) -> &'a Item {
     root.find(|node| {
         node.ctor()
             .function_id()
-            .is_some_and(|id| id.name == "capture")
+            .is_some_and(|id| sources.definitions().function(id).unwrap().name == "capture")
     })
     .expect("capture output")
 }
@@ -134,18 +134,18 @@ fn caller_paths_defaults_module_literals_and_forwarding_keep_their_origins() {
         ] {
             let root = evaluated(&path, source);
             assert_eq!(
-                captured(&root).field("source"),
+                captured(&root, &root.sources).field("source"),
                 Some(&expected(target)),
                 "{source}"
             );
         }
         let root = evaluated(&path, r#"#self.optional(p"./extra.json")"#);
         assert_eq!(
-            captured(&root).field("extra"),
+            captured(&root, &root.sources).field("extra"),
             Some(&expected("pages/extra.json"))
         );
         let root = evaluated(&path, "#self.optional()");
-        assert_eq!(captured(&root).field("extra"), None);
+        assert_eq!(captured(&root, &root.sources).field("extra"), None);
     }
 }
 
@@ -185,7 +185,7 @@ fn nested_defaults_collections_and_annotations_resolve_in_their_own_files() {
             Some(&expected("views/annotation.json"))
         );
         let bag = root
-            .find(|node| node.ctor().function_id() == Some(FunctionId::new("view", "bag")))
+            .find(|node| node.ctor().function_id() == Some(FunctionId::new("view", "bag").def_id()))
             .unwrap();
         assert_eq!(
             bag.field("paths"),
@@ -358,7 +358,7 @@ fn real_imports_use_defining_paths_but_never_read_path_literal_targets() {
         evaluation.diagnostics
     );
     assert_eq!(
-        captured(&evaluation.root).field("source"),
+        captured(&evaluation.root, &evaluation.sources).field("source"),
         Some(&expected("pages/does-not-exist.json"))
     );
     assert_eq!(
@@ -461,7 +461,7 @@ fn before_check_can_edit_path_literals_and_metadata_stays_literal_only() {
         evaluation.diagnostics
     );
     assert_eq!(
-        captured(&evaluation.root).field("source"),
+        captured(&evaluation.root, &evaluation.sources).field("source"),
         Some(&expected("pages/edited.json"))
     );
 }
@@ -531,7 +531,10 @@ fn filesystem_and_memory_hosts_bind_identical_logical_paths_without_target_files
     let analysis = memory.analyze("pages/page.not", source).unwrap();
     let b = memory.evaluate("pages/page.not", &analysis).unwrap();
     assert!(a.diagnostics.is_empty() && b.diagnostics.is_empty());
-    assert_eq!(captured(&a.root).fields(), captured(&b.root).fields());
+    assert_eq!(
+        captured(&a.root, &a.sources).fields(),
+        captured(&b.root, &b.sources).fields()
+    );
     assert!(!directory.path().join("views/default.json").exists());
 }
 
@@ -634,13 +637,21 @@ fn show() -> BlockContent { [ #capture(p"/value.json") ] }"#;
             )
             .unwrap();
     }
-    context = context.with_scope(
-        "doc",
-        [
-            ("one".into(), notist::ImportBinding::Module("one".into())),
-            ("two".into(), notist::ImportBinding::Module("two".into())),
-        ],
-    );
+    context = context
+        .with_scope(
+            "doc",
+            [
+                (
+                    "one".into(),
+                    notist::ImportBinding::Module(notist::ModuleRef::new("one").id()),
+                ),
+                (
+                    "two".into(),
+                    notist::ImportBinding::Module(notist::ModuleRef::new("two").id()),
+                ),
+            ],
+        )
+        .unwrap();
     let analysis = pipeline
         .analyze("/document/page.not", "#one.show()\n\n#two.show()", &context)
         .unwrap();
@@ -658,7 +669,9 @@ fn show() -> BlockContent { [ #capture(p"/value.json") ] }"#;
     for (module, root) in [("one", "/virtual"), ("two", "/")] {
         let item = evaluation
             .root
-            .find(|node| node.ctor().function_id() == Some(FunctionId::new(module, "capture")))
+            .find(|node| {
+                node.ctor().function_id() == Some(FunctionId::new(module, "capture").def_id())
+            })
             .unwrap();
         assert_eq!(
             item.field("source"),

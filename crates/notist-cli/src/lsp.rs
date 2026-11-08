@@ -150,7 +150,7 @@ impl LanguageServer for Backend {
                     kind: MarkupKind::PlainText,
                     value: project
                         .modules()
-                        .get(&definition.id.module)
+                        .get(&definition.id.module_id())
                         .and_then(|module| {
                             module.source.get(
                                 usize::from(definition.span.start())
@@ -207,7 +207,7 @@ impl LanguageServer for Backend {
         Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: hover_text(target),
+                value: hover_text(target, &item.sources),
             }),
             range: Some(lines.range(&src, target.span)),
         }))
@@ -232,7 +232,7 @@ impl LanguageServer for Backend {
                 offset,
             )
         {
-            let Some(module) = project.modules().get(&definition.id.module) else {
+            let Some(module) = project.modules().get(&definition.id.module_id()) else {
                 return Ok(None);
             };
             let Ok(uri) = Url::from_file_path(
@@ -500,13 +500,21 @@ fn smallest_at(item: &Item, offset: usize) -> Option<&Item> {
     None
 }
 
-fn hover_text(item: &Item) -> String {
+fn hover_text(item: &Item, sources: &notist::Sources) -> String {
     let mut out = format!(
         "`{}` ({:?})",
         item.ctor()
             .function_id()
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| item.ctor().name().into_owned()),
+            .map(|id| sources
+                .definitions()
+                .function(id)
+                .map(ToString::to_string)
+                .unwrap_or_else(|error| error.to_string()))
+            .unwrap_or_else(|| item
+                .ctor()
+                .name(sources.definitions())
+                .map(|name| name.into_owned())
+                .unwrap_or_else(|error| error.to_string())),
         item.level
     );
     for (k, v) in item.fields().iter() {
@@ -643,10 +651,10 @@ mod tests {
             .into_parts();
         // 体 at byte 11，粗 at 8
         let found = smallest_at(&item, 11).unwrap();
-        assert_eq!(found.ctor().name(), "Text");
+        assert_eq!(found.ctor().name(&Default::default()).unwrap(), "Text");
         assert_eq!(found.field("text").unwrap().to_string(), "\"粗体\"");
         let found = smallest_at(&item, 8).unwrap();
-        assert_eq!(found.ctor().name(), "Text");
+        assert_eq!(found.ctor().name(&Default::default()).unwrap(), "Text");
         // byte 2 (容) → 内容
         let found = smallest_at(&item, 2).unwrap();
         assert_eq!(found.field("text").unwrap().to_string(), "\"内容 \"");

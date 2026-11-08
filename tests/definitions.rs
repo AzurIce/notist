@@ -208,7 +208,7 @@ fn native_and_source_comptime_signatures_select_content_category() {
         assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
         let i = a
             .root()
-            .find(|i| i.function_id() == Some(FunctionId::new("maths", "math")))
+            .find(|i| i.function_id() == Some(FunctionId::new("maths", "math").def_id()))
             .unwrap();
         assert_eq!(i.level, level);
         assert!(i.field("block").is_none());

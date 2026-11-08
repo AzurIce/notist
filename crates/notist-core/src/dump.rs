@@ -2,20 +2,28 @@ use std::fmt::Write;
 
 use crate::item::Item;
 
-pub fn dump(item: &Item) -> String {
+pub fn dump(
+    item: &Item,
+    sources: &crate::source::Sources,
+) -> Result<String, crate::definition_identity::DefinitionError> {
     let mut out = String::new();
-    write_item(&mut out, item, 0);
-    out
+    write_item(&mut out, item, 0, sources)?;
+    Ok(out)
 }
 
-fn write_item(out: &mut String, item: &Item, indent: usize) {
+fn write_item(
+    out: &mut String,
+    item: &Item,
+    indent: usize,
+    sources: &crate::source::Sources,
+) -> Result<(), crate::definition_identity::DefinitionError> {
     let pad = "  ".repeat(indent);
     let mut line = format!(
         "{pad}({} @{}..{}",
         if matches!(item.ctor(), crate::item::Ctor::Extension(_)) {
-            item.ctor().name().into_owned()
+            item.ctor().name(sources.definitions())?.into_owned()
         } else {
-            item.ctor().name().to_lowercase()
+            item.ctor().name(sources.definitions())?.to_lowercase()
         },
         u32::from(item.span.start()),
         u32::from(item.span.end()),
@@ -46,9 +54,10 @@ fn write_item(out: &mut String, item: &Item, indent: usize) {
         out.push_str(&line);
         out.push('\n');
         for child in item.children() {
-            write_item(out, child, indent + 1);
+            write_item(out, child, indent + 1, sources)?;
         }
         out.push_str(&pad);
         out.push_str(")\n");
     }
+    Ok(())
 }

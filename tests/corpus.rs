@@ -29,7 +29,7 @@ fn corpus() {
                 diagnostic.message
             ));
         }
-        core.push_str(&notist::dump::dump(analysis.root()));
+        core.push_str(&notist::dump::dump(analysis.root(), analysis.sources()).unwrap());
         insta::assert_snapshot!(name, format!("{cst}\n=== core ===\n{core}"));
     }
 }

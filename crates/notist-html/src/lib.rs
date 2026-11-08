@@ -86,7 +86,6 @@ fn code_language(info: &str) -> Option<&str> {
 }
 
 /// Configurable rendering of final IR. Hooks may borrow application state.
-#[derive(Default)]
 pub struct Renderer<'a> {
     embed: Option<Hook<'a>>,
     math: Option<Hook<'a>>,
@@ -97,10 +96,15 @@ pub struct Renderer<'a> {
     resource_resolver: Option<ResourceResolver<'a>>,
     sources: notist_core::diag::Sources,
 }
+impl Default for Renderer<'_> {
+    fn default() -> Self {
+        Self::from_registry(HtmlRegistry::default())
+    }
+}
 
 impl<'a> Renderer<'a> {
     pub fn with_sources(mut self, sources: &notist_core::diag::Sources) -> Self {
-        self.sources = sources.clone();
+        self.sources = sources.clone().with_definitions(self.registry.identities());
         self
     }
     /// Resolve link and URL-string embed targets using host data, without IO. `None`
@@ -123,6 +127,7 @@ impl<'a> Renderer<'a> {
         self
     }
     pub fn with_registry(mut self, registry: HtmlRegistry) -> Self {
+        self.sources.definitions_mut().merge(registry.identities());
         self.registry = registry;
         self
     }
@@ -133,6 +138,7 @@ impl<'a> Renderer<'a> {
     /// Render with an already bound registry without constructing and discarding
     /// the default native registry first.
     pub fn from_registry(registry: HtmlRegistry) -> Self {
+        let sources = notist_core::diag::Sources::new().with_definitions(registry.identities());
         Self {
             embed: None,
             math: None,
@@ -141,7 +147,7 @@ impl<'a> Renderer<'a> {
             registry,
             url_resolver: None,
             resource_resolver: None,
-            sources: Default::default(),
+            sources,
         }
     }
 
@@ -256,7 +262,7 @@ impl State<'_, '_> {
         }
 
         if let Some(id) = item.function_id()
-            && let Some(target) = self.renderer.registry.get(&id)
+            && let Some(target) = self.renderer.registry.target(id)
         {
             match target {
                 Target::Component(component) => {
@@ -269,13 +275,27 @@ impl State<'_, '_> {
                 }
             }
         }
-        if let Some(target) = item.instance()
-            && target.function.module != "notist"
-        {
-            self.diagnostic(
-                item,
-                format!("no HTML implementation for `{}`", target.function),
-            );
+        if let Some(target) = item.instance() {
+            let name = self
+                .renderer
+                .sources
+                .definitions()
+                .function(target.function)
+                .or_else(|_| {
+                    self.renderer
+                        .registry
+                        .identities()
+                        .function(target.function)
+                });
+            let message = match name {
+                Ok(name) if name.module == "notist" => {
+                    self.native(item, &item.ctor());
+                    return;
+                }
+                Ok(name) => format!("no HTML implementation for `{name}`"),
+                Err(error) => error.to_string(),
+            };
+            self.diagnostic(item, message);
             self.transparent(item, if is_block(item) { "div" } else { "span" });
             return;
         }
@@ -524,7 +544,12 @@ impl State<'_, '_> {
             Ctor::Extension(function) => {
                 self.diagnostic(
                     item,
-                    format!("no HTML implementation for `{}`", function.id),
+                    self.renderer
+                        .sources
+                        .definitions()
+                        .function(function.id)
+                        .map(|name| format!("no HTML implementation for `{name}`"))
+                        .unwrap_or_else(|error| error.to_string()),
                 );
                 self.container(
                     if is_block(item) { "div" } else { "span" },
@@ -816,7 +841,11 @@ impl State<'_, '_> {
                         child,
                         format!(
                             "unexpected `{}` inside `{parent}`; rendered in a recovery container",
-                            child.ctor().name()
+                            child
+                                .ctor()
+                                .name(self.renderer.sources.definitions())
+                                .map(|name| name.into_owned())
+                                .unwrap_or_else(|error| error.to_string())
                         ),
                     );
                 }

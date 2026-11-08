@@ -145,7 +145,8 @@ fn host_copy_on_write_metadata_changes_do_not_poison_cached_compilations() {
     let mut edited = p
         .compile_module("content.not", "cache-cow", "cow.notc", source)
         .unwrap();
-    Arc::make_mut(&mut edited.definitions).functions[0].id.name = "changed".into();
+    Arc::make_mut(&mut edited.definitions).functions[0].id =
+        FunctionId::new("cache-cow", "changed");
     Arc::make_mut(&mut edited.imports)[0].path = "changed.notc".into();
     let fresh = p
         .compile_module("content.not", "cache-cow", "cow.notc", source)
@@ -154,28 +155,42 @@ fn host_copy_on_write_metadata_changes_do_not_poison_cached_compilations() {
     assert_eq!(fresh.imports[0].path, "original.notc");
 }
 
-struct Exports(Arc<ExportTable>);
+struct Exports(
+    Arc<ExportTable>,
+    notist_core::definition_identity::Definitions,
+);
 impl ModuleExports for Exports {
-    fn lookup(&self, _: &str, name: &str) -> Option<ImportBinding> {
+    fn function_identity(&self, id: notist_core::definitions::DefId) -> Option<FunctionId> {
+        self.1.function(id).ok().cloned()
+    }
+    fn module_identity(
+        &self,
+        id: notist_core::definitions::ModuleId,
+    ) -> Option<notist_core::definitions::ModuleRef> {
+        self.1.module(id).ok().cloned()
+    }
+    fn lookup(&self, _: notist_core::definitions::ModuleId, name: &str) -> Option<ImportBinding> {
         self.0.get(name).cloned()
     }
-    fn all(&self, _: &str) -> Arc<ExportTable> {
+    fn all(&self, _: notist_core::definitions::ModuleId) -> Arc<ExportTable> {
         self.0.clone()
     }
 }
 
 fn exports(names: &[(&str, &str)]) -> Exports {
-    Exports(Arc::new(
+    let mut identities = notist_core::definition_identity::Definitions::default();
+    let table = Arc::new(
         names
             .iter()
             .map(|(name, owner)| {
                 (
                     (*name).into(),
-                    ImportBinding::Function(FunctionId::new(*owner, *name)),
+                    ImportBinding::Function(identities.insert(FunctionId::new(*owner, *name))),
                 )
             })
             .collect(),
-    ))
+    );
+    Exports(table, identities)
 }
 
 fn binding_spec(id: &str, source: &str) -> BindingSpec {
@@ -205,7 +220,7 @@ fn member_binding_reuses_results_across_unrelated_exports_but_not_reexports() {
     assert!(!Arc::ptr_eq(&a, &c));
     assert_eq!(
         c.imports()["selected"],
-        ImportBinding::Function(FunctionId::new("second", "value"))
+        ImportBinding::Function(FunctionId::new("second", "value").def_id())
     );
     assert!(bind_imports(&spec, &exports(&[])).is_err());
     let restored = bind_imports(&spec, &exports(&[("value", "first")])).unwrap();

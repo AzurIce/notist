@@ -2,7 +2,8 @@ use crate::{EvaluationContext, instance_cache::InstanceCache};
 use notist_core::{
     builtins::Level,
     definitions::{
-        ComptimeValue, FunctionImpl, FunctionInstance, NativeFunction, ParameterMode, Type,
+        ComptimeValue, FunctionImpl, NativeFunction, ParameterMode,
+        ResolvedInstance as FunctionInstance, Type,
     },
     diag::{Diagnostic, Phase},
     evaluation::{CallSite, CheckedProgram, ExprKind, InstanceRecord, Invocation, TypedExpr},
@@ -261,7 +262,9 @@ pub fn run<C: EvaluationContext + ?Sized>(
     limits: Limits,
     inputs: Option<&dyn EvaluationInputs>,
 ) -> EvaluationOutcome {
-    let mut source_view = sources.clone();
+    let mut source_view = sources
+        .clone()
+        .with_definitions(context.registry().identities());
     if let Err(error) = source_view
         .merge(&program.sources)
         .and_then(|()| source_view.validate_node(root))
@@ -312,7 +315,9 @@ pub fn constant<C: EvaluationContext + ?Sized>(
     sources: &notist_core::diag::Sources,
     context: &C,
 ) -> Result<ComptimeValue, Failure> {
-    let mut source_view = sources.clone();
+    let mut source_view = sources
+        .clone()
+        .with_definitions(context.registry().identities());
     source_view
         .merge(&program.sources)
         .map_err(|error| Failure::from(error.to_string()))?;
@@ -338,14 +343,11 @@ pub fn constant<C: EvaluationContext + ?Sized>(
     }
 }
 impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
-    fn target(
-        &self,
-        id: &notist_core::definitions::FunctionId,
-    ) -> notist_core::definitions::FunctionId {
+    fn target(&self, id: &notist_core::definitions::DefId) -> notist_core::definitions::DefId {
         if self.mode == EvaluationMode::Runtime {
-            self.context.target(id)
+            self.context.target_resolved(*id)
         } else {
-            id.clone()
+            *id
         }
     }
     fn tick(&mut self) -> Result<(), Failure> {
@@ -841,7 +843,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let code = self
             .context
             .registry()
-            .get(&target)
+            .definition(target)
             .is_some_and(|d| d.implementation.is_code());
         if code && self.depth >= self.limits.call_depth.min(32) {
             out.push(self.error(
@@ -897,7 +899,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     }
     fn synthetic_call(&self, item: &Node) -> Option<Invocation> {
         let id = item.function_id()?;
-        let mut definition = self.context.registry().get(&id)?.clone();
+        let mut definition = self.context.registry().definition(id)?.clone();
         let instance = item
             .instance()
             .cloned()
@@ -1055,7 +1057,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let code = self
             .context
             .registry()
-            .get(&target.function)
+            .definition(target.function)
             .is_some_and(|d| d.implementation.is_code());
         let mut inputs = Scope::new();
         let mut fields = Dict::default();
@@ -1071,11 +1073,9 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     }
                     Runtime::Value(ComptimeValue::Data(Value::None)) => continue,
                     _ => {
-                        return Err(format!(
-                            "invalid option for `{}.{name}`",
-                            call.instance.function
-                        )
-                        .into());
+                        return Err(
+                            format!("invalid option for `{}.{name}`", call.definition.id).into(),
+                        );
                     }
                 }
             } else {
@@ -1085,9 +1085,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 && let Runtime::Value(ComptimeValue::Data(value)) = &value
                 && !parameter.accepts(value)
             {
-                return Err(
-                    format!("invalid value for `{}.{name}`", call.instance.function).into(),
-                );
+                return Err(format!("invalid value for `{}.{name}`", call.definition.id).into());
             }
             if let Runtime::Value(ComptimeValue::Data(value)) = &value {
                 fields.insert(name, value.clone());
@@ -1206,11 +1204,11 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     )?;
                 }
                 let source = source.ok_or("missing content source")?;
-                let ctor = if target.function.module == "notist" {
-                    Ctor::from_name(&target.function.name).unwrap_or_else(|| source.ctor())
+                let ctor = if definition.id.module == "notist" {
+                    Ctor::from_name(&definition.id.name).unwrap_or_else(|| source.ctor())
                 } else {
                     Ctor::Extension(notist_core::item::ExtensionCtor {
-                        id: target.function.clone(),
+                        id: definition.id.def_id(),
                         accepts: definition.children,
                         level: source.level,
                     })
@@ -1278,12 +1276,14 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         if let Some(record) = self.implementations.get(instance) {
             return Ok(record.clone());
         }
-        let key = instance.key();
+        let key = instance
+            .key(self.sources.definitions())
+            .map_err(|e| Failure::from(e.to_string()))?;
         if !self.program.instances.contains_key(&key) {
             self.program.data_retention = self.data_retention.clone();
             let (program, diagnostics) = self
                 .context
-                .specialize(instance, std::mem::take(&mut self.program));
+                .specialize_resolved(instance, std::mem::take(&mut self.program));
             self.data_retention = program.data_retention.clone();
             self.diagnostics.extend(diagnostics);
             self.sources
@@ -1296,8 +1296,11 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .instances
             .get(&key)
             .ok_or("missing function instance")?;
+        if record.definition.id.def_id() != instance.function {
+            return Err("function instance identity mismatch".into());
+        }
         if let Some(diagnostic) = record.diagnostics.first() {
-            return Err(format!("{}: {}", instance.function, diagnostic.message).into());
+            return Err(format!("{}: {}", record.definition.id, diagnostic.message).into());
         }
         self.implementations.insert(instance, record);
         Ok(record.clone())
@@ -1476,7 +1479,7 @@ mod tests {
         }
         fn specialize(
             &self,
-            _: &FunctionInstance,
+            _: &notist_core::definitions::FunctionInstance,
             _: CheckedProgram,
         ) -> (CheckedProgram, Vec<Diagnostic>) {
             panic!("constructing a closure must not execute or specialize it")
@@ -1513,7 +1516,7 @@ mod tests {
             .clone();
         let call: Shared<Invocation> = Invocation {
             instance: FunctionInstance {
-                function: definition.id.clone(),
+                function: definition.id.def_id(),
                 arguments: Vec::new(),
             },
             definition: definition.into(),

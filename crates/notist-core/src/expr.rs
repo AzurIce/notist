@@ -418,7 +418,7 @@ impl Expr {
 pub struct RExpr {
     pub ctor: Ctor,
     pub level: Option<crate::builtins::Level>,
-    pub instance: Option<crate::definitions::FunctionInstance>,
+    pub instance: Option<crate::definitions::ResolvedInstance>,
     /// Checked computation retained through Shape and copied into Item.
     pub expression: Option<crate::evaluation::TypedExpr>,
     pub fields: Dict,

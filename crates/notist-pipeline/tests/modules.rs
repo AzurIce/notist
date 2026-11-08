@@ -28,11 +28,11 @@ fn compilation_and_linking_keep_independently_shared_artifacts() {
     assert_eq!(code.imports.len(), 1);
     assert_eq!(
         linked.scope().imports()["value"],
-        ImportBinding::Function(FunctionId::new("dep", "value"))
+        ImportBinding::Function(FunctionId::new("dep", "value").def_id())
     );
     assert_eq!(
         linked.scope().exports()["show"],
-        ImportBinding::Function(FunctionId::new("main", "show"))
+        ImportBinding::Function(FunctionId::new("main", "show").def_id())
     );
     assert!(!linked.scope().exports().contains_key("text"));
 
@@ -158,19 +158,33 @@ fn unresolved_and_failed_links_do_not_install_partial_modules() {
 
 #[derive(Default)]
 struct ObservedExports {
+    identities: notist_core::definition_identity::Definitions,
     lookups: Cell<usize>,
     enumerations: Cell<usize>,
     table: Arc<ExportTable>,
 }
 
 impl ModuleExports for ObservedExports {
-    fn lookup(&self, module: &str, name: &str) -> Option<ImportBinding> {
-        assert_eq!(module, "dep");
+    fn function_identity(&self, id: notist_core::definitions::DefId) -> Option<FunctionId> {
+        self.identities.function(id).ok().cloned()
+    }
+    fn module_identity(
+        &self,
+        id: notist_core::definitions::ModuleId,
+    ) -> Option<notist_core::definitions::ModuleRef> {
+        self.identities.module(id).ok().cloned()
+    }
+    fn lookup(
+        &self,
+        module: notist_core::definitions::ModuleId,
+        name: &str,
+    ) -> Option<ImportBinding> {
+        assert_eq!(self.identities.module(module).unwrap().name(), "dep");
         self.lookups.set(self.lookups.get() + 1);
         self.table.get(name).cloned()
     }
-    fn all(&self, module: &str) -> Arc<ExportTable> {
-        assert_eq!(module, "dep");
+    fn all(&self, module: notist_core::definitions::ModuleId) -> Arc<ExportTable> {
+        assert_eq!(self.identities.module(module).unwrap().name(), "dep");
         self.enumerations.set(self.enumerations.get() + 1);
         self.table.clone()
     }
@@ -185,22 +199,27 @@ fn spec(code: &CodeModule) -> BindingSpec {
 
 #[test]
 fn binding_observes_only_the_export_surface_required_by_each_import_form() {
+    let mut identities = notist_core::definition_identity::Definitions::default();
     let exports = ObservedExports {
         table: Arc::new(ExportTable::from([
             (
                 "value".into(),
-                ImportBinding::Function(FunctionId::new("dep", "value")),
+                ImportBinding::Function(identities.insert(FunctionId::new("dep", "value"))),
             ),
             (
                 "other".into(),
-                ImportBinding::Function(FunctionId::new("dep", "other")),
+                ImportBinding::Function(identities.insert(FunctionId::new("dep", "other"))),
             ),
         ])),
+        identities,
         ..Default::default()
     };
     let namespace = compile("main", "import \"dep.notc\" as dep;");
     let bound = bind_imports(&spec(&namespace), &exports).unwrap();
-    assert_eq!(bound.imports()["dep"], ImportBinding::Module("dep".into()));
+    assert_eq!(
+        bound.imports()["dep"],
+        ImportBinding::Module(bound.identities().module_id("dep").unwrap())
+    );
     assert_eq!((exports.lookups.get(), exports.enumerations.get()), (0, 0));
 
     let member = compile("main", "import \"dep.notc\": value as selected;");

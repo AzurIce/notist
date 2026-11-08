@@ -268,7 +268,7 @@ fn forwarding_an_omitted_argument_omits_the_native_field() {
         );
         let graph = evaluation
             .root
-            .find(|item| item.function_id() == Some(graph_id.clone()))
+            .find(|item| item.function_id() == Some(graph_id.def_id()))
             .unwrap_or_else(|| panic!("{source}: graph boundary"));
         assert_eq!(
             graph.field("source"),

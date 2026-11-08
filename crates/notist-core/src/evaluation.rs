@@ -2,7 +2,7 @@
 //! These are pure IR data; checking and interpretation belong to the pipeline.
 
 use crate::{
-    definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
+    definitions::{ComptimeValue, FunctionDef, ResolvedInstance, Type},
     item::{Dict, Item},
 };
 use rowan::TextRange;
@@ -164,7 +164,7 @@ pub enum ResultPattern {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Invocation {
-    pub instance: FunctionInstance,
+    pub instance: ResolvedInstance,
     /// The call's contract snapshot. Captures share it; editing one invocation
     /// detaches its copy instead of changing another call's contract.
     pub definition: crate::shared::Shared<FunctionDef>,

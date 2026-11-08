@@ -41,7 +41,7 @@ Call.comptime 保存编译期实参；Call.args 按源码顺序保存 CallArg.Po
 
 RExpr 是独立的已解析内容节点结构，保存 ctor、已知 Value 字段、输入 children、body flavor、attrs 与源码范围；pending 保留已检查的调用、内容插值或失败信息。Shape 只使用公开内容契约，原样保留待求值表达式；Materialize 在 Shape 之后按源码位置挂载注解，将 attrs 与其他已解析信息写入 Item，并填充来源。
 
-ImportKind 区分 Module { alias }、Members(Vec<ImportMember>) 与 Wildcard；ImportMember 保存原成员名、本地名称和独立的原始源码范围。宿主加载依赖后，Context.import_bindings 按公开表展开选择并统一检查冲突；作用域中的 ImportBinding 只保存规范模块身份或 FunctionId。源码声明与已解析绑定分别保存。
+ImportKind 区分 Module { alias }、Members(Vec<ImportMember>) 与 Wildcard；ImportMember 保存原成员名、本地名称和独立的原始源码范围。宿主加载依赖后，Context.import_bindings_resolved 按公开表展开选择并统一检查冲突；作用域中的 ImportBinding 保存 ModuleId 或 DefId，并由 ModuleScope 保留名称拥有关系。源码声明与已解析绑定分别保存，见 [定义身份](definition-identity.not)。
 
 独立 Markup 支持文件级 `#import`；原生与 Markdown 前端都输出相同 Import 模型，声明不进入内容森林。Code 字面量禁止声明导入。宿主先读取声明并装配作用域，再调用共享后端。
 

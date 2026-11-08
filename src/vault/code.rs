@@ -23,12 +23,19 @@ impl<R: Resources> Vault<R> {
         match Environment::load_from(&overlay, &path) {
             Ok(environment) => {
                 let context = environment.context();
+                let module_id = context
+                    .root_id()
+                    .expect("loaded Code environment has a root module");
                 let definitions = DefinitionModule {
-                    module: id.clone(),
+                    module: context
+                        .identities()
+                        .module(module_id)
+                        .expect("root module name is retained")
+                        .clone(),
                     functions: context
                         .registry()
                         .functions()
-                        .filter(|f| f.id.module == id)
+                        .filter(|f| f.id.module_id() == module_id)
                         .cloned()
                         .collect(),
                     span: crate::TextRange::new(0.into(), (source.len() as u32).into()),

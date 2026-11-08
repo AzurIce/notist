@@ -108,7 +108,7 @@ fn renamed_functions_keep_lexical_scope_canonical_identity_and_instance_cache() 
     let calls: Vec<_> = a
         .root()
         .descendants()
-        .filter(|i| i.function_id() == Some(id.clone()))
+        .filter(|i| i.function_id() == Some(id.def_id()))
         .collect();
     assert_eq!(calls.len(), 3);
     assert!(
@@ -613,7 +613,7 @@ fn direct_imports_preserve_native_resources_output_mappings_and_published_asset_
                 .analysis
                 .root()
                 .descendants()
-                .filter(|i| i.function_id() == Some(original.clone()))
+                .filter(|i| i.function_id() == Some(original.def_id()))
                 .collect();
             assert_eq!(calls.len(), 3);
             assert!(

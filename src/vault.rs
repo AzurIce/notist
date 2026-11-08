@@ -634,17 +634,17 @@ pub(crate) fn bind_html(
 ) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
     let mut bindings = BTreeMap::new();
     let mut errors = Vec::new();
-    for definition in notist_html::components::component_ids(root)
-        .iter()
-        .filter_map(|id| environment.context().registry().get(id))
-        .filter(|definition| {
-            definition.id.module != "notist"
-                && !definition.implementation.is_code()
-                && (definition.returns.level().is_some()
-                    || matches!(definition.returns, crate::Type::Parameter(_)))
-        })
+    for definition in
+        notist_html::components::component_definitions(root, environment.context().registry())
+            .into_iter()
+            .filter(|definition| {
+                definition.id.module != "notist"
+                    && !definition.implementation.is_code()
+                    && (definition.returns.level().is_some()
+                        || matches!(definition.returns, crate::Type::Parameter(_)))
+            })
     {
-        let module = &environment.modules()[&definition.id.module];
+        let module = &environment.modules()[&definition.id.module_id()];
         let result = (|| -> Result<Option<ModuleLocator>, String> {
             let entries = notist_html::components::component_entries(&definition.id.name)
                 .map(|entry| resources.resolve(&module.path.parent().unwrap().join(entry)));
@@ -664,7 +664,7 @@ pub(crate) fn bind_html(
         })();
         match result {
             Ok(Some(module)) => {
-                bindings.insert(definition.id.clone(), module);
+                bindings.insert(definition.id.def_id(), module);
             }
             Ok(None) => {}
             Err(message) => errors.push(issue(
@@ -680,11 +680,16 @@ pub(crate) fn bind_html(
         Ok(_) => Err(errors),
         Err(binding_errors) => {
             for error in binding_errors {
-                let module = &environment.modules()[&error.id.module];
+                let definition = environment
+                    .context()
+                    .registry()
+                    .definition(error.id)
+                    .expect("bindings originate in this registry");
+                let module = &environment.modules()[&definition.id.module_id()];
                 let span = environment
                     .context()
                     .registry()
-                    .get(&error.id)
+                    .definition(error.id)
                     .unwrap()
                     .span;
                 errors.push(issue(&module.path, &module.source, span, error.message));

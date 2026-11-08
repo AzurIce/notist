@@ -163,7 +163,7 @@ fn list_boundaries_types_and_inline_pairs_are_preserved() {
     );
     let root = analyze("not", "- first\n\n  @(id: \"detail\")\n  second\n- next\n");
     assert_eq!(
-        notist::query::select(&root, "id:detail")[0].ctor(),
+        notist::query::select(&root, "id:detail", &Default::default()).unwrap()[0].ctor(),
         Ctor::Paragraph
     );
     let root = analyze(
@@ -303,7 +303,7 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
 fn block_annotation_attaches_to_the_first_hard_delimited_fragment() {
     let src = "@(id: \"keep\", tags: (\"range\",))\nbefore\n\n#callout[note]\n\nafter";
     let root = analyze("not", src);
-    let matches = notist::query::select(&root, "id:keep");
+    let matches = notist::query::select(&root, "id:keep", &Default::default()).unwrap();
     assert_eq!(matches.len(), 1);
     let target = matches[0];
     assert_eq!(target.ctor(), Ctor::Paragraph);
@@ -311,5 +311,10 @@ fn block_annotation_attaches_to_the_first_hard_delimited_fragment() {
         &src[usize::from(target.span.start())..usize::from(target.span.end())],
         "before"
     );
-    assert_eq!(notist::query::select(&root, "tag:range").len(), 1);
+    assert_eq!(
+        notist::query::select(&root, "tag:range", &Default::default())
+            .unwrap()
+            .len(),
+        1
+    );
 }

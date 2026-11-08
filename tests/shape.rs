@@ -37,7 +37,7 @@ fn soft_newlines_keep_inline_calls_inside_paragraph() {
         .into_parts();
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert!(diags[0].message.contains("unknown constructor"));
-    let dump = notist::dump::dump(&item);
+    let dump = notist::dump::dump(&item, &Default::default()).unwrap();
     assert_eq!(dump.matches("(paragraph").count(), 1, "{dump}");
 }
 #[test]
@@ -48,7 +48,7 @@ fn shape_groups_sections_by_heading_level() {
         .unwrap()
         .into_parts();
     assert!(diags.is_empty());
-    let out = notist::dump::dump(&item);
+    let out = notist::dump::dump(&item, &Default::default()).unwrap();
     assert_eq!(
         out,
         "\
@@ -119,7 +119,7 @@ fn shape_transfers_heading_attrs_to_section() {
         .unwrap()
         .into_parts();
     assert!(diags.is_empty());
-    let out = notist::dump::dump(&item);
+    let out = notist::dump::dump(&item, &Default::default()).unwrap();
     assert_eq!(
         out,
         "\

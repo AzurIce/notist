@@ -22,13 +22,15 @@ pub struct Context {
     registry: Registry,
     extensions: ExtensionPlan,
     program: crate::definitions::CodeProgram,
-    root: Option<String>,
+    root: Option<notist_core::definitions::ModuleId>,
+    identities: notist_core::definition_identity::Definitions,
     resource_root: String,
     checked: Arc<Mutex<BTreeMap<String, crate::code::CheckedProgram>>>,
 }
 impl Context {
     pub fn new(registry: Registry) -> Self {
         Self {
+            identities: registry.identities().clone(),
             registry,
             extensions: Default::default(),
             program: Default::default(),
@@ -52,7 +54,7 @@ impl Context {
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
-        let code = module.into();
+        let code = CodeModule::linked_snapshot(module.into());
         let targets: Vec<_> = targets.into_iter().collect();
         if code.imports.len() != targets.len() {
             return Err(vec![Diagnostic::new(
@@ -82,6 +84,49 @@ impl Context {
         let scope = bind_imports(&spec, self)?;
         Ok(Arc::new(LinkedModule { code, scope }))
     }
+    pub fn link_module_resolved(
+        &self,
+        module: impl Into<Arc<CodeModule>>,
+        targets: impl IntoIterator<Item = notist_core::definitions::ModuleId>,
+    ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
+        #[cfg(feature = "profiling")]
+        let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
+        let code = CodeModule::linked_snapshot(module.into());
+        let targets: Vec<_> = targets.into_iter().collect();
+        if targets.len() != code.imports.len() {
+            return Err(vec![Diagnostic::new(
+                Phase::Type,
+                code.definitions.span,
+                "module imports require one resolved target per declaration",
+            )]);
+        }
+        let owners = code
+            .imports
+            .iter()
+            .zip(targets)
+            .map(|(import, id)| {
+                self.identities
+                    .module(id)
+                    .ok()
+                    .filter(|_| self.registry.module_by_id(id).is_some())
+                    .cloned()
+                    .map(|owner| (import, owner))
+                    .ok_or_else(|| {
+                        Diagnostic::new(
+                            Phase::Type,
+                            import.span,
+                            "resolved import target is not loaded in this context",
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| vec![error])?;
+        let scope = bind_imports(
+            &BindingSpec::resolved(owners, Some(&code.definitions)),
+            self,
+        )?;
+        Ok(Arc::new(LinkedModule { code, scope }))
+    }
     /// Install a linked file produced for this dependency view. The caller must
     /// not mix a scope from another dependency snapshot into this Context.
     pub fn with_linked_module(
@@ -91,41 +136,87 @@ impl Context {
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Install);
         self.registry.register(module.code().definitions.clone())?;
+        self.identities.merge(self.registry.identities());
         self.checked = Default::default();
-        self.root = Some(module.code().id().to_owned());
-        self.program.install(module).map_err(|error| {
+        self.root = Some(module.code().module_id());
+        self.program
+            .install(module, &self.identities, self.registry.identities())
+            .map_err(|error| {
+                vec![Diagnostic::new(
+                    Phase::Type,
+                    Default::default(),
+                    error.to_string(),
+                )]
+            })?;
+        Ok(self)
+    }
+    pub fn with_root(mut self, module: impl Into<String>) -> Result<Self, Vec<Diagnostic>> {
+        let module = module.into();
+        let id = self.identities.module_id(&module).ok_or_else(|| {
             vec![Diagnostic::new(
                 Phase::Type,
                 Default::default(),
-                error.to_string(),
+                format!("root module `{module}` is not loaded"),
             )]
         })?;
+        self.root = Some(id);
         Ok(self)
-    }
-    pub fn with_root(mut self, module: impl Into<String>) -> Self {
-        self.root = Some(module.into());
-        self
     }
     /// Install a file's static import bindings and select its lexical scope.
     pub fn with_scope(
         mut self,
         module: impl Into<String>,
         imports: impl IntoIterator<Item = (String, ImportBinding)>,
-    ) -> Self {
+    ) -> Result<Self, Vec<Diagnostic>> {
         let module = module.into();
+        let imports: BTreeMap<_, _> = imports.into_iter().collect();
+        let errors: Vec<_> = imports
+            .iter()
+            .filter_map(|(alias, binding)| {
+                let owned = match binding {
+                    ImportBinding::Function(id) => self.identities.function(*id).map(|_| ()),
+                    ImportBinding::Module(id) => self.identities.module(*id).map(|_| ()),
+                };
+                owned.err().map(|error| {
+                    Diagnostic::new(
+                        Phase::Type,
+                        Default::default(),
+                        format!("invalid import binding `{alias}`: {error}"),
+                    )
+                })
+            })
+            .collect();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
         if self.program.module(&module).is_some() {
             // Overriding a Code module's lexical imports changes body meaning.
             self.checked = Default::default();
         }
+        let owner = notist_core::definitions::ModuleRef::try_new(module).map_err(|error| {
+            vec![Diagnostic::new(
+                Phase::Type,
+                Default::default(),
+                error.to_string(),
+            )]
+        })?;
+        let id = self.identities.insert_module(owner);
         self.program.with_scope(
-            module.clone(),
-            Arc::new(ModuleScope::from_bindings(imports.into_iter().collect())),
+            id,
+            Arc::new(ModuleScope::from_bindings(imports, self.identities.clone())),
+            &self.identities,
         );
-        self.root = Some(module);
-        self
+        self.root = Some(id);
+        Ok(self)
     }
     pub fn root(&self) -> Option<&str> {
-        self.root.as_deref()
+        Some(self.identities.module(self.root?).ok()?.name())
+    }
+    pub fn root_id(&self) -> Option<notist_core::definitions::ModuleId> {
+        self.root
+    }
+    pub fn identities(&self) -> &notist_core::definition_identity::Definitions {
+        &self.identities
     }
     /// Select the logical root for document paths. The standalone pipeline uses
     /// `/`, a virtual root, never the process working directory. No IO occurs.
@@ -155,6 +246,13 @@ impl Context {
     pub fn resolve_in(&self, scope: Option<&str>, path: &str) -> Option<&FunctionDef> {
         self.resolve_from(scope.or(self.root()), None, path)
     }
+    pub fn resolve_in_id(
+        &self,
+        scope: Option<notist_core::definitions::ModuleId>,
+        path: &str,
+    ) -> Option<&FunctionDef> {
+        self.resolve_from_id(scope.or(self.root), None, path)
+    }
     /// Resolve in a temporary import table, without inheriting the root scope.
     /// Module definitions and member traversal use the same resolver as Code.
     pub fn resolve_imports(
@@ -170,14 +268,26 @@ impl Context {
         imports: Option<&BTreeMap<String, ImportBinding>>,
         path: &str,
     ) -> Option<&FunctionDef> {
+        self.resolve_from_id(
+            scope.and_then(|name| self.identities.module_id(name)),
+            imports,
+            path,
+        )
+    }
+    fn resolve_from_id(
+        &self,
+        scope: Option<notist_core::definitions::ModuleId>,
+        imports: Option<&BTreeMap<String, ImportBinding>>,
+        path: &str,
+    ) -> Option<&FunctionDef> {
         let mut parts = path.split('.').peekable();
-        let mut module = scope.map(str::to_owned);
+        let mut module = scope;
         let mut temporary = imports;
         let mut first = true;
         while let Some(part) = parts.next() {
             if first && matches!(part, "notist" | "self") && parts.peek().is_some() {
                 if part == "notist" {
-                    module = Some("notist".into());
+                    module = self.identities.module_id("notist");
                 }
                 temporary = None;
                 first = false;
@@ -187,12 +297,12 @@ impl Context {
                 table.get(part).cloned()
             } else {
                 module
-                    .as_deref()
-                    .and_then(|module| self.public_binding(module, part))
+                    .as_ref()
+                    .and_then(|module| self.public_binding(*module, part))
             };
             match binding {
                 Some(ImportBinding::Function(id)) if parts.peek().is_none() => {
-                    return self.registry.get(&id);
+                    return self.registry.definition(id);
                 }
                 Some(ImportBinding::Module(id)) if parts.peek().is_some() => {
                     module = Some(id);
@@ -208,25 +318,44 @@ impl Context {
         None
     }
 
-    fn public_binding(&self, module: &str, name: &str) -> Option<ImportBinding> {
+    fn public_binding(
+        &self,
+        module: notist_core::definitions::ModuleId,
+        name: &str,
+    ) -> Option<ImportBinding> {
         self.registry
-            .function(module, name)
-            .map(|f| ImportBinding::Function(f.id.clone()))
-            .or_else(|| self.program.scope(module)?.imports().get(name).cloned())
+            .function_in(module, name)
+            .map(|f| ImportBinding::Function(f.id.def_id()))
+            .or_else(|| {
+                self.program
+                    .scope_by_id(module)?
+                    .imports()
+                    .get(name)
+                    .cloned()
+            })
     }
 
     /// Own definitions and static imports are public; the implicit prelude is not.
     pub fn public_bindings(&self, module: &str) -> BTreeMap<String, ImportBinding> {
+        self.identities
+            .module_id(module)
+            .map(|id| self.public_bindings_id(id))
+            .unwrap_or_default()
+    }
+    fn public_bindings_id(
+        &self,
+        module: notist_core::definitions::ModuleId,
+    ) -> BTreeMap<String, ImportBinding> {
         let mut bindings = self
             .program
-            .scope(module)
+            .scope_by_id(module)
             .map(|scope| scope.imports().clone())
             .unwrap_or_default();
         bindings.extend(
             self.registry
                 .functions()
-                .filter(|f| f.id.module == module)
-                .map(|f| (f.id.name.clone(), ImportBinding::Function(f.id.clone()))),
+                .filter(|f| f.id.module_id() == module)
+                .map(|f| (f.id.name.clone(), ImportBinding::Function(f.id.def_id()))),
         );
         bindings
     }
@@ -238,7 +367,42 @@ impl Context {
         imports: impl IntoIterator<Item = (&'a Import, String)>,
         local: Option<&DefinitionModule>,
     ) -> Result<BTreeMap<String, ImportBinding>, Vec<Diagnostic>> {
-        bind_imports(&BindingSpec::new(imports, local), self).map(|scope| scope.imports().clone())
+        let targets = imports
+            .into_iter()
+            .map(|(import, name)| {
+                self.identities
+                    .module_id(&name)
+                    .map(|id| (import, id))
+                    .ok_or_else(|| {
+                        vec![Diagnostic::new(
+                            Phase::Type,
+                            import.span,
+                            format!("import target `{name}` is not loaded"),
+                        )]
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.import_bindings_resolved(targets, local)
+    }
+    pub fn import_bindings_resolved<'a>(
+        &self,
+        imports: impl IntoIterator<Item = (&'a Import, notist_core::definitions::ModuleId)>,
+        local: Option<&DefinitionModule>,
+    ) -> Result<BTreeMap<String, ImportBinding>, Vec<Diagnostic>> {
+        let owners = imports
+            .into_iter()
+            .map(|(import, id)| {
+                self.identities
+                    .module(id)
+                    .cloned()
+                    .map(|owner| (import, owner))
+                    .map_err(|error| {
+                        vec![Diagnostic::new(Phase::Type, import.span, error.to_string())]
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        bind_imports(&BindingSpec::resolved(owners, local), self)
+            .map(|scope| scope.imports().clone())
     }
     pub fn resolve(&self, path: &str) -> Option<&FunctionDef> {
         self.resolve_in(self.root(), path)
@@ -268,21 +432,37 @@ impl Context {
     }
 }
 impl ModuleExports for Context {
-    fn lookup(&self, module: &str, name: &str) -> Option<ImportBinding> {
+    fn function_identity(
+        &self,
+        id: notist_core::definitions::DefId,
+    ) -> Option<notist_core::definitions::FunctionId> {
+        self.identities.function(id).ok().cloned()
+    }
+    fn module_identity(
+        &self,
+        id: notist_core::definitions::ModuleId,
+    ) -> Option<notist_core::definitions::ModuleRef> {
+        self.identities.module(id).ok().cloned()
+    }
+    fn lookup(
+        &self,
+        module: notist_core::definitions::ModuleId,
+        name: &str,
+    ) -> Option<ImportBinding> {
         self.public_binding(module, name)
     }
-    fn all(&self, module: &str) -> Arc<ExportTable> {
+    fn all(&self, module: notist_core::definitions::ModuleId) -> Arc<ExportTable> {
         // Source modules already own their public table. Native modules and
         // explicit scope overlays retain the same registry-first semantics.
-        if let Some(linked) = self.program.module(module)
+        if let Some(linked) = self.program.module_by_id(module)
             && self
                 .program
-                .scope(module)
+                .scope_by_id(module)
                 .is_some_and(|scope| Arc::ptr_eq(scope, linked.scope()))
         {
             return linked.scope().exports().clone();
         }
-        Arc::new(self.public_bindings(module))
+        Arc::new(self.public_bindings_id(module))
     }
 }
 impl Default for Context {
@@ -313,6 +493,19 @@ impl notist_eval::EvaluationContext for Context {
     fn specialize(
         &self,
         instance: &notist_core::definitions::FunctionInstance,
+        program: crate::code::CheckedProgram,
+    ) -> (crate::code::CheckedProgram, Vec<Diagnostic>) {
+        self.specialize_resolved(&instance.clone().into(), program)
+    }
+    fn target_resolved(
+        &self,
+        id: notist_core::definitions::DefId,
+    ) -> notist_core::definitions::DefId {
+        self.extensions().target_id(id)
+    }
+    fn specialize_resolved(
+        &self,
+        instance: &notist_core::definitions::ResolvedInstance,
         program: crate::code::CheckedProgram,
     ) -> (crate::code::CheckedProgram, Vec<Diagnostic>) {
         let mut checker = crate::code::Checker::with_program(self, program);

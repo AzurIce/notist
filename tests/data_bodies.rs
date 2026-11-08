@@ -448,7 +448,7 @@ body
                 .root
                 .descendants()
                 .filter(|n| n.function_id()
-                    == Some(notist_core::definitions::FunctionId::new("demo", "view")))
+                    == Some(notist_core::definitions::FunctionId::new("demo", "view").def_id()))
                 .count(),
             0
         );

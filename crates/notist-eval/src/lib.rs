@@ -29,6 +29,38 @@ pub trait EvaluationContext {
     fn registry(&self) -> &Registry;
     fn resource_root(&self) -> &str;
     fn target(&self, id: &FunctionId) -> FunctionId;
+    fn target_resolved(
+        &self,
+        id: notist_core::definitions::DefId,
+    ) -> notist_core::definitions::DefId {
+        self.registry()
+            .definition(id)
+            .map(|d| self.target(&d.id).def_id())
+            .unwrap_or(id)
+    }
+    fn specialize_resolved(
+        &self,
+        instance: &notist_core::definitions::ResolvedInstance,
+        program: CheckedProgram,
+    ) -> (CheckedProgram, Vec<Diagnostic>) {
+        match self.registry().identities().function(instance.function) {
+            Ok(name) => self.specialize(
+                &FunctionInstance {
+                    function: name.clone(),
+                    arguments: instance.arguments.clone(),
+                },
+                program,
+            ),
+            Err(error) => (
+                program,
+                vec![Diagnostic::new(
+                    notist_core::diag::Phase::Type,
+                    Default::default(),
+                    error.to_string(),
+                )],
+            ),
+        }
+    }
     /// Conservative default for custom hosts. Hosts without replacement rules
     /// can let already concrete content bypass call synthesis entirely.
     fn has_mappings(&self) -> bool {

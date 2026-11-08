@@ -863,7 +863,12 @@ fn embed_function_supports_named_target_attrs_and_reports_invalid_calls() {
         analyze("前 @(id: \"resource\")#embed(target: \"paper.pdf\", description: \"说明\") 后");
     let embed = root.find(|n| n.ctor() == Ctor::Embed).unwrap();
     assert_eq!(embed.attrs.get("id"), Some(&Value::Str("resource".into())));
-    assert_eq!(notist::query::select(&root, "ctor:embed").len(), 1);
+    assert_eq!(
+        notist::query::select(&root, "ctor:embed", &Default::default())
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(text_of(&root), "前  后");
 
     let engine = Pipeline::default();

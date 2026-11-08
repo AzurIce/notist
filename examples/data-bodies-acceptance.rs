@@ -209,7 +209,7 @@ fn main() {
         for node in result.root.descendants() {
             assert!(node.as_expr().is_none());
             if let Some(instance) = node.instance() {
-                specializations.insert(instance.key());
+                specializations.insert(instance.key(result.sources.definitions()).unwrap());
             }
             nodes += 1;
         }

@@ -190,12 +190,12 @@ pub fn inspection_json(
             write_expr,
         );
         out.push_str(",\"ir2\":");
-        write_forest(
+        write_resolved_forest(
             &mut out,
             analysis.root().span,
             &inspection.shaped,
-            write_resolved,
-        );
+            analysis.sources(),
+        )?;
         out.push(',');
     }
     out.push_str("\"core\":");
@@ -602,8 +602,36 @@ fn write_expr(out: &mut String, expr: &Expr) {
     }
 }
 
-fn write_resolved(out: &mut String, expr: &RExpr) {
-    let mut label = expr.ctor.to_string();
+fn write_resolved_forest(
+    out: &mut String,
+    range: rowan::TextRange,
+    exprs: &[RExpr],
+    sources: &crate::Sources,
+) -> Result<(), serde_json::Error> {
+    out.push_str(&format!(
+        "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
+        u32::from(range.start()),
+        u32::from(range.end())
+    ));
+    for (i, expr) in exprs.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        write_resolved(out, expr, sources)?;
+    }
+    out.push_str("]}");
+    Ok(())
+}
+fn write_resolved(
+    out: &mut String,
+    expr: &RExpr,
+    sources: &crate::Sources,
+) -> Result<(), serde_json::Error> {
+    let mut label = expr
+        .ctor
+        .name(sources.definitions())
+        .map_err(<serde_json::Error as serde::ser::Error>::custom)?
+        .into_owned();
     for (key, value) in expr.fields.iter() {
         label.push_str(&format!(" :{key} {value}"));
     }
@@ -627,11 +655,12 @@ fn write_resolved(out: &mut String, expr: &RExpr) {
             if index > 0 {
                 out.push(',');
             }
-            write_resolved(out, child);
+            write_resolved(out, child, sources)?;
         }
         out.push(']');
     }
     out.push('}');
+    Ok(())
 }
 
 fn write_item(
@@ -641,7 +670,9 @@ fn write_item(
 ) -> Result<(), serde_json::Error> {
     out.push_str(&format!(
         "{{\"kind\":\"{}\",\"start\":{},\"end\":{}",
-        item.ctor().name(),
+        item.ctor()
+            .name(sources.definitions())
+            .map_err(<serde_json::Error as serde::ser::Error>::custom)?,
         u32::from(item.span.start()),
         u32::from(item.span.end()),
     ));

@@ -72,8 +72,9 @@ fn compile_cached(
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodeProgram {
-    modules: Arc<BTreeMap<String, Arc<LinkedModule>>>,
-    scopes: Arc<BTreeMap<String, Arc<ModuleScope>>>,
+    modules: Arc<BTreeMap<notist_core::definitions::ModuleId, Arc<LinkedModule>>>,
+    scopes: Arc<BTreeMap<notist_core::definitions::ModuleId, Arc<ModuleScope>>>,
+    identities: notist_core::definition_identity::Definitions,
     sources: Sources,
 }
 impl CodeProgram {
@@ -85,30 +86,59 @@ impl CodeProgram {
         Some(self.module(module)?.code().source_path())
     }
     pub fn module(&self, module: &str) -> Option<&Arc<LinkedModule>> {
-        self.modules.get(module)
+        self.module_by_id(self.identities.module_id(module)?)
+    }
+    pub fn module_by_id(
+        &self,
+        module: notist_core::definitions::ModuleId,
+    ) -> Option<&Arc<LinkedModule>> {
+        self.modules.get(&module)
     }
     pub fn scope(&self, module: &str) -> Option<&Arc<ModuleScope>> {
-        self.scopes
-            .get(module)
-            .or_else(|| self.module(module).map(|m| m.scope()))
+        self.scope_by_id(self.identities.module_id(module)?)
     }
-    pub(crate) fn body(&self, function: &FunctionId) -> Option<&CodeBody> {
-        self.module(&function.module)?.code().body(&function.name)
+    pub fn scope_by_id(
+        &self,
+        module: notist_core::definitions::ModuleId,
+    ) -> Option<&Arc<ModuleScope>> {
+        self.scopes
+            .get(&module)
+            .or_else(|| self.module_by_id(module).map(|m| m.scope()))
+    }
+    pub(crate) fn body_by_id(
+        &self,
+        function: notist_core::definitions::DefId,
+    ) -> Option<&CodeBody> {
+        let module = self.identities.function(function).ok()?.module_id();
+        self.module_by_id(module)?.code().body_by_id(function)
     }
     pub(crate) fn install(
         &mut self,
         module: Arc<LinkedModule>,
+        identities: &notist_core::definition_identity::Definitions,
+        registered: &notist_core::definition_identity::Definitions,
     ) -> Result<(), notist_core::source::SourceError> {
         self.sources.insert(module.code().source_record().clone())?;
-        Arc::make_mut(&mut self.modules).insert(module.code().id().to_owned(), module);
+        self.identities = identities.clone();
+        *self.sources.definitions_mut() = registered.clone();
+        Arc::make_mut(&mut self.modules).insert(module.code().module_id(), module);
         Ok(())
     }
-    pub(crate) fn with_scope(&mut self, module: String, scope: Arc<ModuleScope>) {
-        Arc::make_mut(&mut self.scopes).insert(module, scope);
+    pub(crate) fn with_scope(
+        &mut self,
+        id: notist_core::definitions::ModuleId,
+        scope: Arc<ModuleScope>,
+        identities: &notist_core::definition_identity::Definitions,
+    ) {
+        self.identities = identities.clone();
+        Arc::make_mut(&mut self.scopes).insert(id, scope);
     }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CodeBody {
+    // Source declaration metadata, retained independently of mutable public
+    // signature snapshots so COW edits cannot orphan the body's index names.
+    pub definition: FunctionId,
     pub expression: Option<Expr>,
     pub diagnostics: Vec<Diagnostic>,
     pub source: notist_core::source::Source,
@@ -118,11 +148,44 @@ pub(crate) struct CodeBody {
 pub struct CodeModule {
     pub definitions: Arc<DefinitionModule>,
     pub imports: Arc<[Import]>,
-    bodies: Arc<BTreeMap<String, CodeBody>>,
+    bodies: Arc<BTreeMap<notist_core::definitions::DefId, CodeBody>>,
     source: notist_core::source::Source,
 }
 
 impl CodeModule {
+    pub(crate) fn linked_snapshot(code: Arc<Self>) -> Arc<Self> {
+        if code
+            .bodies
+            .values()
+            .all(|body| body.definition.module_id() == code.module_id())
+        {
+            return code;
+        }
+        let mut snapshot = (*code).clone();
+        let bodies = code
+            .bodies
+            .iter()
+            .map(|(id, body)| {
+                if let Some(definition) = code
+                    .definitions
+                    .functions
+                    .iter()
+                    .find(|definition| definition.id.name == body.definition.name)
+                {
+                    let mut body = body.clone();
+                    body.definition = definition.id.clone();
+                    (definition.id.def_id(), body)
+                } else {
+                    (*id, body.clone())
+                }
+            })
+            .collect();
+        snapshot.bodies = Arc::new(bodies);
+        Arc::new(snapshot)
+    }
+    pub fn module_id(&self) -> notist_core::definitions::ModuleId {
+        self.definitions.module.id()
+    }
     pub fn id(&self) -> &str {
         &self.definitions.module
     }
@@ -137,14 +200,16 @@ impl CodeModule {
     pub fn source_record(&self) -> &notist_core::source::Source {
         &self.source
     }
-    pub(crate) fn body(&self, name: &str) -> Option<&CodeBody> {
-        self.bodies.get(name)
+    pub(crate) fn body_by_id(&self, id: notist_core::definitions::DefId) -> Option<&CodeBody> {
+        self.bodies.get(&id)
     }
     pub(crate) fn bodies(&self) -> impl Iterator<Item = &CodeBody> {
-        self.bodies.values()
+        let mut bodies: Vec<_> = self.bodies.values().collect();
+        bodies.sort_by(|a, b| a.definition.name.cmp(&b.definition.name));
+        bodies.into_iter()
     }
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.bodies.values().flat_map(|b| b.diagnostics.iter())
+        self.bodies().flat_map(|b| b.diagnostics.iter())
     }
 }
 
@@ -172,7 +237,16 @@ fn compile_uncached(
     let parsed = notist_syntax::code::parse_module(source, frontend);
     let ast = Module::cast(parsed.syntax()).unwrap();
     let mut diagnostics = Vec::new();
-    let mut definitions = DefinitionModule::new(module);
+    let identity = notist_core::definitions::ModuleRef::try_new(module).map_err(|error| {
+        let mut diagnostic = Diagnostic::new(Phase::Type, ast.range(), error.to_string());
+        diagnostic.source = Some(origin.clone());
+        vec![diagnostic]
+    })?;
+    let mut definitions = DefinitionModule {
+        module: identity,
+        functions: Vec::new(),
+        span: ast.range(),
+    };
     definitions.span = ast.range();
     let mut bodies = BTreeMap::new();
     let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
@@ -211,8 +285,9 @@ fn compile_uncached(
             }
             if definition.implementation.is_code() {
                 bodies.insert(
-                    definition.id.name.clone(),
+                    definition.id.def_id(),
                     CodeBody {
+                        definition: definition.id.clone(),
                         expression: expr,
                         diagnostics: body_diags,
                         source: origin.clone(),
@@ -403,8 +478,14 @@ fn lower_function(
             return None;
         }
     };
-    let mut definition =
-        FunctionDef::new(FunctionId::new(module, f.name()?.text()), accepts, returns);
+    let identity = match FunctionId::try_new(module, f.name()?.text()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            diags.push(Diagnostic::new(Phase::Type, f.range(), error.to_string()));
+            return None;
+        }
+    };
+    let mut definition = FunctionDef::new(identity, accepts, returns);
     definition.comptime = comptime;
     definition.children_type = children_type;
     definition.span = f.range();

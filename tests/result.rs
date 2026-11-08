@@ -170,7 +170,7 @@ fn show() -> InlineContent {
     let root = evaluate(module, "#self.show()");
     assert_eq!(text(&root).trim_end(), "nullnestedinner");
     let widget = root
-        .find(|item| item.function_id() == Some(FunctionId::new("result", "widget")))
+        .find(|item| item.function_id() == Some(FunctionId::new("result", "widget").def_id()))
         .unwrap();
     assert_eq!(
         widget.field("values"),
@@ -609,7 +609,7 @@ fn show() -> InlineContent { [#widget(err("<invalid>"), ok(1))#widget(ok(2))] }
     );
     let widgets: Vec<_> = root
         .descendants()
-        .filter(|item| item.function_id() == Some(definition.id.clone()))
+        .filter(|item| item.function_id() == Some(definition.id.def_id()))
         .collect();
     assert_eq!(
         widgets[0].field("optional"),
@@ -771,7 +771,7 @@ fn host_supplied_result_defaults_keep_the_declared_inactive_type() {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let widget = output
         .root
-        .find(|item| item.function_id() == Some(FunctionId::new("result", "widget")))
+        .find(|item| item.function_id() == Some(FunctionId::new("result", "widget").def_id()))
         .unwrap();
     assert_eq!(
         widget.field("value"),

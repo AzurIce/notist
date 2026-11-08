@@ -47,7 +47,7 @@ Lower 把一份模块拆成三个去向：
 
 == 实例检查：Expr → TypedExpr
 
-检查以 FunctionInstance（函数身份 + 编译期实参值）为单位、按需进行。Checker 会话持有只读 Context、当前模块、局部绑定与实例缓存 CheckedProgram，规则如下：
+检查以 ResolvedInstance（DefId + 编译期实参值）为单位、按需进行；FunctionInstance 是输入边界的具名选择器。Checker 会话持有只读 Context、当前 ModuleId、局部绑定与实例缓存 CheckedProgram，名称拥有关系随 Sources 保留。见 [定义身份](../definition-identity.not)。规则如下：
 
 - *名称解析*：局部绑定遮蔽优先，随后是当前文件的函数与静态绑定，未绑定的裸名回落内置 prelude；限定路径只遍历公开绑定；`notist` 与 `self` 是保留命名空间。非调用位置的模块成员访问报 `module members must be called`。
 - *常量折叠与折枝*：沿途记录编译期已知值；编译期已知的 If / Match 直接折枝，未选中分支不做名称与类型检查。

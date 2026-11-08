@@ -457,7 +457,7 @@ stateDiagram-v2
     assert!(table.children().iter().all(|row| row.children().len() == 2));
     let id = notist::FunctionId::new("mermaid", "diagram");
     let diagram = table.children()[1].children()[1]
-        .find(|node| node.ctor().function_id() == Some(id.clone()))
+        .find(|node| node.ctor().function_id() == Some(id.def_id()))
         .unwrap();
     assert_eq!(diagram.level, Level::Block);
     assert_eq!(

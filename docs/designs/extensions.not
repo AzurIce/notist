@@ -96,7 +96,7 @@ command 是程序与独立参数的数组，不经过 shell。进程的工作目
 | version | 协议版本，当前为 1 |
 | stage | `before_check`、`after_check` 或 `after_evaluate` |
 | path | 当前文档的来源身份 |
-| sources | 文档及已加载模块的源码，按来源身份索引 |
+| sources | 文档及模块的源码修订，以及已解析定义的名称拥有快照 |
 | functions | 已加载 Registry 的公开函数签名 |
 | document | `before_check` 为 LoweredDocument；其他阶段为 Item |
 

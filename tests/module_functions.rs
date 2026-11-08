@@ -16,7 +16,9 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
     );
     let panel = analysis
         .root()
-        .find(|item| item.ctor().function_id() == Some(FunctionId::new("widgets", "panel")))
+        .find(|item| {
+            item.ctor().function_id() == Some(FunctionId::new("widgets", "panel").def_id())
+        })
         .unwrap();
     assert_eq!(panel.level, Level::Block);
     assert_eq!(panel.field("title"), Some(&Value::Str("Panel".into())));
@@ -27,10 +29,20 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
             .any(|child| child.ctor() == Ctor::Paragraph)
     );
     assert_eq!(
-        notist::query::select(analysis.root(), "function:widgets.badge").len(),
+        notist::query::select(
+            analysis.root(),
+            "function:widgets.badge",
+            analysis.sources()
+        )
+        .unwrap()
+        .len(),
         2
     );
-    assert!(notist::query::select(analysis.root(), "level:block").contains(&panel));
+    assert!(
+        notist::query::select(analysis.root(), "level:block", analysis.sources())
+            .unwrap()
+            .contains(&panel)
+    );
     let json = notist::json::item(panel, analysis.sources()).unwrap();
     assert_eq!(json["function"], "widgets.panel");
     assert_eq!(json["level"], "block");
@@ -44,7 +56,11 @@ fn extensions_preserve_fragment_boundaries_and_resolved_identity() {
     )
     .unwrap();
     assert!(debug["diagnostics"].as_array().unwrap().is_empty());
-    assert!(notist::dump::dump(panel).contains("[block]"));
+    assert!(
+        notist::dump::dump(panel, analysis.sources())
+            .unwrap()
+            .contains("[block]")
+    );
 }
 #[test]
 fn external_contract_errors_stay_distinct_from_unknown_calls() {
@@ -112,7 +128,7 @@ fn serialized_extensions_need_no_module_to_restore_category_and_children() {
     assert_eq!(panel.level, Level::Block);
     assert_eq!(
         panel.ctor().function_id(),
-        Some(FunctionId::new("widgets", "panel"))
+        Some(FunctionId::new("widgets", "panel").def_id())
     );
     assert_eq!(panel.field("title"), Some(&Value::Str("Panel".into())));
     assert!(!panel.children().is_empty());
@@ -180,7 +196,7 @@ fn serialized_items_retain_pending_calls_and_checked_expressions() {
         .unwrap();
     let original = analysis
         .root()
-        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet")))
+        .find(|i| i.function_id() == Some(FunctionId::new("demo", "greet").def_id()))
         .unwrap();
     let call = restored
         .find(|i| i.function_id() == original.function_id())

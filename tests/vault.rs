@@ -106,14 +106,14 @@ fn html_registry_pairs_retain_their_own_source_snapshot_environment() {
         );
         assert!(
             environment
-                .modules()
-                .contains_key(&format!("/vault/{directory}/lib.notc"))
+                .module(&format!("/vault/{directory}/lib.notc"))
+                .is_some()
         );
         let other = if directory == "one" { "two" } else { "one" };
         assert!(
             !environment
-                .modules()
-                .contains_key(&format!("/vault/{other}/lib.notc"))
+                .module(&format!("/vault/{other}/lib.notc"))
+                .is_some()
         );
     }
 }
@@ -651,7 +651,7 @@ fn local_and_worker_inputs_use_the_same_real_module_signatures_and_entries() {
                 definition.id.module != "notist" && !definition.id.module.starts_with("notist.")
             })
         {
-            let module = &environment.modules()[&definition.id.module];
+            let module = &environment.modules()[&definition.id.module_id()];
             for entry in notist_html::components::component_entries(&definition.id.name) {
                 let path = module.path.parent().unwrap().join(entry);
                 if path.is_file() {
@@ -863,7 +863,7 @@ fn normalized_document_paths_and_source_snapshots_share_one_environment() {
     let second = vault.environment_for("/notes/./doc.not", source).unwrap();
     assert!(Arc::ptr_eq(&first, &second));
     assert!(Arc::ptr_eq(
-        &first.modules()["/notes/ui.notc"].source,
+        &first.module("/notes/ui.notc").unwrap().source,
         first
             .context()
             .program()
@@ -872,7 +872,7 @@ fn normalized_document_paths_and_source_snapshots_share_one_environment() {
             .unwrap(),
     ));
     assert!(Arc::ptr_eq(
-        &first.modules()["/notes/ui.notc"].source,
+        &first.module("/notes/ui.notc").unwrap().source,
         analysis.sources().get("/notes/ui.notc").unwrap(),
     ));
     let output = vault

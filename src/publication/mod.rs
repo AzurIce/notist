@@ -158,7 +158,7 @@ impl Assets {
         let mut registrations = String::new();
         let mut tags = BTreeMap::<String, (FunctionId, PathBuf)>::new();
         for (index, component) in components.iter().enumerate() {
-            let definition_module = &environment.modules()[&component.id.module];
+            let definition_module = &environment.modules()[&component.id.module_id()];
             let root = definition_module.path.parent().unwrap();
             let source = component.module.resource().ok_or_else(|| {
                 Error::Message(format!(

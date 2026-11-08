@@ -129,14 +129,14 @@ fn project_diagram_declaration_selects_either_renderer_without_a_local_component
             let semantic = output
                 .analysis
                 .root()
-                .find(|item| item.function_id() == Some(semantic_id.clone()))
+                .find(|item| item.function_id() == Some(semantic_id.def_id()))
                 .unwrap();
             assert!(semantic.as_expr().is_some());
             assert_eq!(semantic.field("theme"), Some(&Value::Str(theme.into())));
             let evaluated = output
                 .evaluation
                 .root
-                .find(|item| item.function_id() == Some(target_id.clone()))
+                .find(|item| item.function_id() == Some(target_id.def_id()))
                 .unwrap();
             assert_eq!(evaluated.instance().unwrap().function, target_id);
             assert_eq!(evaluated.fields(), semantic.fields());
@@ -202,7 +202,14 @@ fn importing_native_functions_does_not_implicitly_transform_content() {
         .unwrap();
     let e = v.evaluate("doc.not", &a).unwrap();
     let math = e.root.find(|i| i.ctor() == Ctor::Math).unwrap();
-    assert_eq!(math.instance().unwrap().function.module, "notist");
+    assert_eq!(
+        e.sources
+            .definitions()
+            .function(math.instance().unwrap().function)
+            .unwrap()
+            .module,
+        "notist"
+    );
 }
 #[test]
 fn explicit_extensions_resolve_private_imports_and_preserve_semantic_identity() {
@@ -223,13 +230,36 @@ fn explicit_extensions_resolve_private_imports_and_preserve_semantic_identity() 
         .evaluation
         .root
         .find(|i| {
-            i.function_id()
-                .is_some_and(|id| id.module == "/project/math/view.notc")
+            i.function_id().is_some_and(|id| {
+                output
+                    .evaluation
+                    .sources
+                    .definitions()
+                    .function(id)
+                    .unwrap()
+                    .module
+                    == "/project/math/view.notc"
+            })
         })
         .unwrap();
-    assert_eq!(original.function_id().unwrap().module, "notist");
     assert_eq!(
-        math.instance().unwrap().function.module,
+        output
+            .analysis
+            .sources()
+            .definitions()
+            .function(original.function_id().unwrap())
+            .unwrap()
+            .module,
+        "notist"
+    );
+    assert_eq!(
+        output
+            .evaluation
+            .sources
+            .definitions()
+            .function(math.instance().unwrap().function)
+            .unwrap()
+            .module,
         "/project/math/view.notc"
     );
     assert_eq!(math.field("text"), Some(&Value::Str("x".into())));
@@ -302,23 +332,37 @@ to = "view.math"
     let math = evaluated
         .root
         .find(|i| {
-            i.function_id()
-                .is_some_and(|id| id.module == "/project/second.notc")
+            i.function_id().is_some_and(|id| {
+                evaluated.sources.definitions().function(id).unwrap().module
+                    == "/project/second.notc"
+            })
         })
         .unwrap();
     assert_eq!(
-        math.instance().unwrap().function.module,
+        evaluated
+            .sources
+            .definitions()
+            .function(math.instance().unwrap().function)
+            .unwrap()
+            .module,
         "/project/second.notc"
     );
     let direct = evaluated
         .root
         .find(|i| {
-            i.function_id()
-                .is_some_and(|id| id.module == "/project/document.notc")
+            i.function_id().is_some_and(|id| {
+                evaluated.sources.definitions().function(id).unwrap().module
+                    == "/project/document.notc"
+            })
         })
         .unwrap();
     assert_eq!(
-        direct.instance().unwrap().function.module,
+        evaluated
+            .sources
+            .definitions()
+            .function(direct.instance().unwrap().function)
+            .unwrap()
+            .module,
         "/project/document.notc"
     );
 }

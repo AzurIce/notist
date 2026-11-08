@@ -72,19 +72,23 @@ pub fn describe_prepared(path: &str, inputs: &str) -> String {
         let analysis = vault.analyze(path, &source)?;
         let evaluated = vault.evaluate(path, &analysis)?;
         let environment = vault.environment_for(path, &source)?;
-        let functions: Vec<_> = notist_html::components::component_ids(&evaluated.root)
-            .iter()
-            .filter_map(|id| environment.context().registry().get(id))
-            .filter(|definition| !definition.implementation.is_code())
-            .map(|definition| {
-                json!({
-                    "module": definition.id.module,
-                    "root": environment.modules()[&definition.id.module].path.parent().unwrap(),
-                    "name": definition.id.name,
-                    "entries": notist_html::components::component_entries(&definition.id.name)
-                })
+        let functions: Vec<_> = notist_html::components::component_definitions(
+            &evaluated.root,
+            environment.context().registry(),
+        )
+        .into_iter()
+        .filter(|definition| {
+            definition.id.module != "notist" && !definition.implementation.is_code()
+        })
+        .map(|definition| {
+            json!({
+                "module": definition.id.module,
+                "root": environment.modules()[&definition.id.module_id()].path.parent().unwrap(),
+                "name": definition.id.name,
+                "entries": notist_html::components::component_entries(&definition.id.name)
             })
-            .collect();
+        })
+        .collect();
         Ok(json!({"functions": functions, "diagnostics": []}))
     })();
     match result {

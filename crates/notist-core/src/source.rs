@@ -3,22 +3,23 @@
 //! Nodes carry only an ID. An owning `Source`/`Sources` must travel with any
 //! retained IR. The registry holds weak references to identities, never bodies;
 //! the last owner removes its registry entry, including the key/name storage.
+use crate::identity::{Id, IdAllocator};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
-    num::NonZeroU32,
-    sync::{
-        Arc, LazyLock, Mutex, Weak,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::{Arc, LazyLock, Mutex, Weak},
 };
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum SourceTag {}
+
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SourceId(NonZeroU32);
+pub struct SourceId(Id<SourceTag>);
 
 impl SourceId {
     /// A synthetic location with no source. Never resolved to another source.
-    pub const DETACHED: Self = Self(NonZeroU32::new(1).unwrap());
+    pub const DETACHED: Self = Self(Id::new(1));
 }
 impl Default for SourceId {
     fn default() -> Self {
@@ -49,15 +50,12 @@ struct Identity {
     key: Key,
     named: bool,
 }
-static NEXT: AtomicU32 = AtomicU32::new(2);
+static NEXT: IdAllocator<SourceTag> = IdAllocator::new(2);
 static IDENTITIES: LazyLock<Mutex<HashMap<Key, Weak<Identity>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn allocate() -> Result<SourceId, SourceError> {
-    let raw = NEXT
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .map_err(|_| SourceError::Exhausted)?;
-    Ok(SourceId(NonZeroU32::new(raw).unwrap()))
+    NEXT.allocate().map(SourceId).ok_or(SourceError::Exhausted)
 }
 impl Drop for Identity {
     fn drop(&mut self) {
@@ -221,6 +219,8 @@ pub enum SourceError {
     Conflict { name: String },
     Ambiguous { name: String },
     Unknown { name: String },
+    Definition(crate::definition_identity::DefinitionError),
+    InvalidDefinition(String),
 }
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -237,6 +237,8 @@ impl fmt::Display for SourceError {
                 "ambiguous source name `{name}`; use its identity or namespace"
             ),
             Self::Unknown { name } => write!(f, "unknown source name `{name}`"),
+            Self::Definition(error) => error.fmt(f),
+            Self::InvalidDefinition(error) => f.write_str(error),
         }
     }
 }
@@ -244,8 +246,24 @@ impl std::error::Error for SourceError {}
 
 /// An immutable-view, copy-on-write collection of owned source revisions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Sources(Arc<BTreeMap<SourceId, Source>>);
+pub struct Sources(
+    Arc<BTreeMap<SourceId, Source>>,
+    crate::definition_identity::Definitions,
+);
 impl Sources {
+    pub fn definitions(&self) -> &crate::definition_identity::Definitions {
+        &self.1
+    }
+    pub fn definitions_mut(&mut self) -> &mut crate::definition_identity::Definitions {
+        &mut self.1
+    }
+    pub fn with_definitions(
+        mut self,
+        definitions: &crate::definition_identity::Definitions,
+    ) -> Self {
+        self.1.merge(definitions);
+        self
+    }
     /// Verify all locations, including deferred IR and expansion chains.
     pub fn validate_node(&self, node: &crate::item::Node) -> Result<(), SourceError> {
         self.validate_references(Reference::Node(node))
@@ -282,6 +300,23 @@ impl Sources {
             tests::record_visit(&reference);
             match reference {
                 Reference::Node(node) => {
+                    if let Some(item) = node.as_item() {
+                        if let Some(instance) = &item.instance {
+                            self.1
+                                .function(instance.function)
+                                .map_err(SourceError::Definition)?;
+                        }
+                        if let crate::item::Ctor::Extension(extension) = &item.ctor
+                            && !item
+                                .instance
+                                .as_ref()
+                                .is_some_and(|instance| instance.function == extension.id)
+                        {
+                            self.1
+                                .function(extension.id)
+                                .map_err(SourceError::Definition)?;
+                        }
+                    }
                     if let Some(origin) = &node.origin {
                         check(origin.source)?;
                         for location in origin.expansion.iter() {
@@ -329,6 +364,14 @@ impl Sources {
                             pending.extend(arms.iter().map(|arm| Reference::Expression(&arm.body)));
                         }
                         ExprKind::Call(call) => {
+                            self.1
+                                .function(call.instance.function)
+                                .map_err(SourceError::Definition)?;
+                            if call.definition.id.def_id() != call.instance.function {
+                                return Err(SourceError::InvalidDefinition(
+                                    "call declaration and instance identities differ".into(),
+                                ));
+                            }
                             check(call.source)?;
                             pending.extend(
                                 call.arguments
@@ -417,7 +460,10 @@ impl Sources {
     }
     /// Atomic merge: no partial changes if any revision conflicts.
     pub fn merge(&mut self, other: &Self) -> Result<(), SourceError> {
+        // Name ownership is independent of source revision compatibility; merge
+        // only after all conflicts have been checked below.
         if Arc::ptr_eq(&self.0, &other.0) || other.is_empty() {
+            self.1.merge(&other.1);
             return Ok(());
         }
         for (id, source) in other.0.iter() {
@@ -434,6 +480,7 @@ impl Sources {
         for source in other.0.values() {
             self.insert(source.clone())?;
         }
+        self.1.merge(&other.1);
         Ok(())
     }
     pub fn len(&self) -> usize {
@@ -466,7 +513,10 @@ impl Sources {
 }
 impl From<Source> for Sources {
     fn from(source: Source) -> Self {
-        Self(Arc::new(BTreeMap::from([(source.id(), source)])))
+        Self(
+            Arc::new(BTreeMap::from([(source.id(), source)])),
+            Default::default(),
+        )
     }
 }
 enum Reference<'a> {
@@ -568,7 +618,8 @@ mod tests {
                     instance: FunctionInstance {
                         function: definition.id.clone(),
                         arguments: Vec::new(),
-                    },
+                    }
+                    .into(),
                     definition: definition.into(),
                     arguments: Vec::new(),
                     children: Some(Box::new(children)),
@@ -588,7 +639,8 @@ mod tests {
     #[test]
     fn nested_literal_calls_visit_each_stored_node_and_expression_once() {
         let source = Source::metadata("walk-once.not").unwrap();
-        let sources = Sources::from(source.clone());
+        let sources = Sources::from(source.clone())
+            .with_definitions(crate::builtins::registry().identities());
         let mut node = Node::text("leaf".into(), Default::default());
         for _ in 0..12 {
             let children = expression(ExprKind::Content(vec![node].into()), source.id());
@@ -610,7 +662,8 @@ mod tests {
     fn exclusive_traversal_still_checks_nested_origins_expansions_and_call_sources() {
         let owner = Source::metadata("walk-owner.not").unwrap();
         let missing = Source::metadata("walk-missing.not").unwrap();
-        let sources = Sources::from(owner.clone());
+        let sources =
+            Sources::from(owner.clone()).with_definitions(crate::builtins::registry().identities());
         for position in 0..6 {
             let mut leaf = Node::text("leaf".into(), Default::default());
             leaf.origin = Some(Origin {
@@ -662,7 +715,8 @@ mod tests {
     fn exclusive_traversal_still_checks_non_content_expression_branches() {
         let owner = Source::metadata("walk-branches-owner.not").unwrap();
         let missing = Source::metadata("walk-branches-missing.not").unwrap();
-        let sources = Sources::from(owner.clone());
+        let sources =
+            Sources::from(owner.clone()).with_definitions(crate::builtins::registry().identities());
         for position in 0..5 {
             let input = |index| {
                 expression(
@@ -755,6 +809,7 @@ mod tests {
     fn ids_are_32_bit_and_do_not_have_a_16_bit_source_limit() {
         assert_eq!(size_of::<SourceId>(), 4);
         assert_eq!(size_of::<Option<SourceId>>(), 4);
+        assert_eq!(format!("{:?}", SourceId::DETACHED), "SourceId(1)");
         let sources: Vec<_> = (0..70_000)
             .map(|i| Source::metadata(format!("wide-{i}.not")).unwrap())
             .collect();

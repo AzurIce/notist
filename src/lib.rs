@@ -24,10 +24,12 @@ pub use notist_core::shared::{Array, Text};
 pub use rowan::{TextRange, TextSize};
 
 pub use notist_core::annotation::{Annotation, AnnotationKind, LiteralDict};
+pub use notist_core::definition_identity::{DefinitionError, Definitions};
 pub use notist_core::definitions::{
-    ComptimeParameter, ComptimeValue, DefinitionModule, FunctionDef, FunctionId, FunctionImpl,
-    FunctionInstance, Import, ImportBinding, ImportKind, ImportMember, NativeFunction,
-    ParameterDef, ParameterMode, Type, ValueConstraint,
+    ComptimeParameter, ComptimeValue, DefId, DefinitionModule, FunctionDef, FunctionId,
+    FunctionImpl, FunctionInstance, Import, ImportBinding, ImportKind, ImportMember, ModuleId,
+    ModuleRef, NativeFunction, ParameterDef, ParameterMode, ResolvedInstance, Type,
+    ValueConstraint,
 };
 pub use notist_core::diag::{Diagnostic, DiagnosticCode, Phase, Sources};
 pub use notist_core::frontend::{

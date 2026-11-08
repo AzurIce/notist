@@ -406,7 +406,7 @@ fn resolved_ctor(definition: &FunctionDef) -> Ctor {
         a => a,
     };
     Ctor::Extension(ExtensionCtor {
-        id: definition.id.clone(),
+        id: definition.id.def_id(),
         accepts,
         level: definition.returns.level().unwrap_or(Level::Inline),
     })

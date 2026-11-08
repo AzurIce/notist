@@ -56,15 +56,34 @@ pub struct ModuleSource {
 #[derive(Debug)]
 pub struct Environment {
     config_path: Option<PathBuf>,
-    modules: Arc<BTreeMap<String, ModuleSource>>,
+    modules: Arc<BTreeMap<crate::ModuleId, ModuleSource>>,
     context: Context,
 }
 impl Environment {
     pub fn config_path(&self) -> Option<&Path> {
         self.config_path.as_deref()
     }
-    pub fn modules(&self) -> &BTreeMap<String, ModuleSource> {
+    pub fn modules(&self) -> &BTreeMap<crate::ModuleId, ModuleSource> {
         &self.modules
+    }
+    pub fn module(&self, name: &str) -> Option<&ModuleSource> {
+        self.modules
+            .get(&self.context.identities().module_id(name)?)
+    }
+    pub fn module_records(&self) -> impl Iterator<Item = (&str, &ModuleSource)> {
+        let mut records: Vec<_> = self
+            .modules
+            .iter()
+            .filter_map(|(id, source)| {
+                self.context
+                    .identities()
+                    .module(*id)
+                    .ok()
+                    .map(|name| (name.name(), source))
+            })
+            .collect();
+        records.sort_by_key(|(name, _)| *name);
+        records.into_iter()
     }
     pub fn context(&self) -> &Context {
         &self.context

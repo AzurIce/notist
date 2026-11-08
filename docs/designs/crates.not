@@ -94,7 +94,7 @@ crate 根的 lib.rs 声明自身模块并公开入口；调用方按职责所在
 
 Pipeline.analyze / inspect 是完整分析入口，宿主可拆成 lower 与 analyze_lowered，以便在两者之间装配 import 作用域。后端显式接收 Context。前端的 Parse / Lower 只接收源码与语法选项，输出 import 声明列表、Expr 森林与并列的节点注解；Context 从 Resolve 开始提供函数定义，注解由 Materialize 在 Shape 之后挂载。Pipeline.compile_module 接收内容方言、模块身份、来源路径与 .notc 源码，阶段一将 Markup 字面量 Lower 为 IR₁ 并嵌入 CodeModule 的 Expr 树；阶段二实例检查向共享 Markup 内容管线提供 IR₁ 与词法环境，生成 Item 森林。该管线从 Resolve 开始，不包含前端 Parse / Lower。Pipeline.analyze_content_literal 接收内容前缀与 Context，直接返回 Item 森林、flavor 和诊断，并保留解析产物。Context 的 ExtensionPlan 在检查前、检查后与求值后运行文档 hooks，并在 Evaluate 中选择执行目标；replace 保留原始调用身份。renderer 接收 Item 与渲染配置。
 
-CodeModule 共享保存单文件声明、函数体与源码，只包含未解析 import 声明。宿主解析路径并加载依赖后，纯绑定器按 BindingSpec 和 ModuleExports 生成 ModuleScope，其公开表只引用模块／函数身份。LinkedModule 组合两层产物，CodeProgram 按模块共享持有；Registry 共享同一份 DefinitionModule 并维护函数名索引。检查、求值与导航通过当前 Context 定位定义和函数体，不从绑定结果中取得依赖实现。单文件编译按源码与编译上下文进行 comemo 复用，导入绑定按 BindingSpec 和跟踪的导出查询复用；这两种计算缓存不替代宿主输入加载。
+CodeModule 共享保存单文件声明、按 DefId 索引的函数体与源码，只包含未解析 import 声明。宿主解析路径并加载依赖后，纯绑定器按 BindingSpec 和 ModuleExports 生成 ModuleScope，其公开表保存 ModuleId／DefId 和名称拥有快照。LinkedModule 组合两层产物，CodeProgram 按 ModuleId 共享持有模块和作用域；Registry 的数字索引共享同一份 DefinitionModule，名字索引只用于解析边界。检查、求值与导航通过当前 Context 定位定义和函数体，不从绑定结果中取得依赖实现。单文件编译按源码与编译上下文进行 comemo 复用，导入绑定按 BindingSpec 和跟踪的导出查询复用；这两种计算缓存不替代宿主输入加载。身份、修订和输出边界见 [定义身份](definition-identity.not)。
 
 实例检查借用 Context 中的 CodeBody，将具体签名、已检查函数体和诊断保存为 CheckedProgram 的不可变记录。Context 可以复用成功的检查计划，求值结果由每次执行独立生成。
 

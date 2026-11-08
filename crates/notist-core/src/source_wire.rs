@@ -2,7 +2,7 @@
 //! Import DTOs are temporary boundary data, not a second runtime content tree.
 use crate::{
     builtins::Level,
-    definitions::{ComptimeValue, FunctionDef, FunctionInstance, Type},
+    definitions::{ComptimeValue, FunctionDef, ResolvedInstance, Type},
     evaluation::{
         CallSite, ContentShape, ExprKind, Invocation, ResultArm, ResultPattern, TypedExpr,
     },
@@ -133,6 +133,56 @@ impl SerializeWithSources for SourceId {
         serializer.serialize_str(name)
     }
 }
+impl SerializeWithSources for ResolvedInstance {
+    fn serialize_with<S: Serializer>(
+        &self,
+        sources: &Sources,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Out<'a> {
+            function: &'a crate::definitions::FunctionId,
+            arguments: &'a [ComptimeValue],
+        }
+        Out {
+            function: sources
+                .definitions()
+                .function(self.function)
+                .map_err(S::Error::custom)?,
+            arguments: &self.arguments,
+        }
+        .serialize(serializer)
+    }
+}
+impl SerializeWithSources for Ctor {
+    fn serialize_with<S: Serializer>(
+        &self,
+        sources: &Sources,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        if let Ctor::Extension(extension) = self {
+            #[derive(Serialize)]
+            enum Out<'a> {
+                Extension {
+                    id: &'a crate::definitions::FunctionId,
+                    accepts: crate::builtins::Accepts,
+                    level: Level,
+                },
+            }
+            Out::Extension {
+                id: sources
+                    .definitions()
+                    .function(extension.id)
+                    .map_err(S::Error::custom)?,
+                accepts: extension.accepts,
+                level: extension.level,
+            }
+            .serialize(serializer)
+        } else {
+            self.serialize(serializer)
+        }
+    }
+}
 
 struct Arguments<'a>(&'a [(String, TypedExpr)], &'a Sources);
 impl Serialize for Arguments<'_> {
@@ -193,10 +243,10 @@ impl SerializeWithSources for NodeContent {
 }
 #[derive(Serialize)]
 struct ContentItemOut<'a> {
-    ctor: &'a Ctor,
+    ctor: Wire<'a, Ctor>,
     fields: &'a Dict,
     children: Wire<'a, [Node]>,
-    instance: &'a Option<Shared<FunctionInstance>>,
+    instance: Option<Wire<'a, ResolvedInstance>>,
 }
 impl SerializeWithSources for ContentItem {
     fn serialize_with<S: Serializer>(
@@ -205,10 +255,10 @@ impl SerializeWithSources for ContentItem {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         ContentItemOut {
-            ctor: &self.ctor,
+            ctor: sources.wire(&self.ctor),
             fields: &self.fields,
             children: sources.wire(self.children.as_slice()),
-            instance: &self.instance,
+            instance: self.instance.as_deref().map(|value| sources.wire(value)),
         }
         .serialize(serializer)
     }
@@ -378,7 +428,7 @@ impl SerializeWithSources for ResultArm {
 }
 #[derive(Serialize)]
 struct InvocationOut<'a> {
-    instance: &'a FunctionInstance,
+    instance: Wire<'a, ResolvedInstance>,
     definition: &'a FunctionDef,
     arguments: Arguments<'a>,
     children: Option<Wire<'a, TypedExpr>>,
@@ -397,8 +447,13 @@ impl SerializeWithSources for Invocation {
         sources: &Sources,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
+        if self.instance.function != self.definition.id.def_id() {
+            return Err(S::Error::custom(
+                "call declaration and instance identities differ",
+            ));
+        }
         InvocationOut {
-            instance: &self.instance,
+            instance: sources.wire(&self.instance),
             definition: &self.definition,
             arguments: Arguments(&self.arguments, sources),
             children: self.children.as_deref().map(|v| sources.wire(v)),
@@ -419,6 +474,54 @@ pub struct Input {
     allow_unknown: bool,
 }
 impl Input {
+    fn identity(
+        &mut self,
+        name: crate::definition_identity::FunctionName,
+    ) -> Result<crate::definitions::FunctionId, SourceError> {
+        if let Some(id) = self.sources.definitions().find(&name.module, &name.name) {
+            return self
+                .sources
+                .definitions()
+                .function(id)
+                .cloned()
+                .map_err(SourceError::Definition);
+        }
+        if !self.allow_unknown {
+            return Err(SourceError::InvalidDefinition(format!(
+                "function `{}.{}` is not owned by this definition snapshot",
+                name.module, name.name
+            )));
+        }
+        let owner = crate::definitions::FunctionId::try_new(name.module, name.name)
+            .map_err(|error| SourceError::InvalidDefinition(error.to_string()))?;
+        self.sources.definitions_mut().insert(owner.clone());
+        Ok(owner)
+    }
+    fn instance(&mut self, instance: InstanceIn) -> Result<ResolvedInstance, SourceError> {
+        let id = self.identity(instance.function)?.def_id();
+        Ok(ResolvedInstance {
+            function: id,
+            arguments: instance.arguments,
+        })
+    }
+    fn definition(
+        &mut self,
+        definition: crate::definitions::FunctionDefWire<crate::definition_identity::FunctionName>,
+    ) -> Result<FunctionDef, SourceError> {
+        let definition = crate::definitions::FunctionDefWire {
+            id: self.identity(definition.id)?,
+            parameters: definition.parameters,
+            children: definition.children,
+            returns: definition.returns,
+            comptime: definition.comptime,
+            children_type: definition.children_type,
+            code: definition.code,
+            implementation: definition.implementation,
+            span: definition.span,
+        };
+        FunctionDef::try_from(definition)
+            .map_err(|error| SourceError::InvalidDefinition(error.into()))
+    }
     fn source(&mut self, name: &str) -> Result<SourceId, SourceError> {
         if name.is_empty() {
             return Ok(SourceId::DETACHED);
@@ -452,10 +555,33 @@ enum ContentIn {
 }
 #[derive(Deserialize)]
 struct ItemIn {
-    ctor: Ctor,
+    ctor: CtorIn,
     fields: Dict,
     children: Vec<NodeIn>,
-    instance: Option<Shared<FunctionInstance>>,
+    instance: Option<InstanceIn>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CtorIn {
+    Extension(ExtensionIn),
+    Native(Ctor),
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtensionIn {
+    #[serde(rename = "Extension")]
+    extension: ExtensionCtorIn,
+}
+#[derive(Deserialize)]
+struct ExtensionCtorIn {
+    id: crate::definition_identity::FunctionName,
+    accepts: crate::builtins::Accepts,
+    level: Level,
+}
+#[derive(Deserialize)]
+struct InstanceIn {
+    function: crate::definition_identity::FunctionName,
+    arguments: Vec<ComptimeValue>,
 }
 #[derive(Deserialize)]
 pub struct OriginIn {
@@ -515,8 +641,8 @@ struct ArmIn {
 }
 #[derive(Deserialize)]
 pub struct InvocationIn {
-    instance: FunctionInstance,
-    definition: Shared<FunctionDef>,
+    instance: InstanceIn,
+    definition: crate::definitions::FunctionDefWire<crate::definition_identity::FunctionName>,
     arguments: Vec<(String, ExpressionIn)>,
     children: Option<Box<ExpressionIn>>,
     attrs: Dict,
@@ -553,7 +679,20 @@ impl DeserializeWithSources for Node {
         Ok(Self {
             content: match v.content {
                 ContentIn::Item(i) => NodeContent::Item(ContentItem {
-                    ctor: i.ctor,
+                    ctor: match i.ctor {
+                        CtorIn::Native(ctor) => ctor,
+                        CtorIn::Extension(ctor) => {
+                            let instance = s.instance(InstanceIn {
+                                function: ctor.extension.id,
+                                arguments: Vec::new(),
+                            })?;
+                            Ctor::Extension(crate::item::ExtensionCtor {
+                                id: instance.function,
+                                accepts: ctor.extension.accepts,
+                                level: ctor.extension.level,
+                            })
+                        }
+                    },
                     fields: i.fields,
                     children: i
                         .children
@@ -561,7 +700,10 @@ impl DeserializeWithSources for Node {
                         .map(|n| Node::decode(n, s))
                         .collect::<Result<Vec<_>, _>>()?
                         .into(),
-                    instance: i.instance,
+                    instance: i
+                        .instance
+                        .map(|value| s.instance(value).map(Shared::new))
+                        .transpose()?,
                 }),
                 ContentIn::Expr(e) => NodeContent::Expr(TypedExpr::decode(*e, s)?.into()),
             },
@@ -671,9 +813,16 @@ impl DeserializeWithSources for TypedExpr {
 impl DeserializeWithSources for Invocation {
     type Input = InvocationIn;
     fn decode(v: InvocationIn, s: &mut Input) -> Result<Self, SourceError> {
+        let instance = s.instance(v.instance)?;
+        let definition = s.definition(v.definition)?;
+        if instance.function != definition.id.def_id() {
+            return Err(SourceError::InvalidDefinition(
+                "call declaration and instance identities differ".into(),
+            ));
+        }
         Ok(Self {
-            instance: v.instance,
-            definition: v.definition,
+            instance,
+            definition: definition.into(),
             arguments: arguments(v.arguments, s)?,
             children: v.children.map(|v| expression(*v, s)).transpose()?,
             attrs: v.attrs,

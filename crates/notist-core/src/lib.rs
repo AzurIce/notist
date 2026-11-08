@@ -2,6 +2,7 @@
 pub mod annotation;
 pub mod builtins;
 pub mod data;
+pub mod definition_identity;
 pub mod definitions;
 pub mod diag;
 pub mod dump;
@@ -10,6 +11,7 @@ pub mod evaluation;
 pub mod expr;
 pub mod extensions;
 pub mod frontend;
+mod identity;
 pub mod index;
 pub mod inputs;
 pub mod item;

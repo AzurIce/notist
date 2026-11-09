@@ -9,7 +9,8 @@ Code 是用于计算数据与生成内容的函数语言。每份 .notc 是独�
 Module       = (ImportDecl | FunctionDecl)*
 ImportDecl   = "import" String (("as" name) | (":" ("*" | ImportMember ("," ImportMember)* ","?)))? ";"
 ImportMember = name ("as" name)?
-FunctionDecl = "fn" name ComptimeParams? Params? Children? "->" TypeRef (Block | ";")
+FunctionDecl = "fn" name ComptimeParams? Params? Children? "->" TypeRef Where? (Block | ";")
+Where        = "where" Expr
 ComptimeParams = "<" (name ":" TypeRef ("=" Literal)? ",")* ">"
 Params       = "(" (name "?"? ":" TypeRef ("=" Literal)? ",")* ")"
 Children     = "[" "children" ":" TypeRef "]"
@@ -34,7 +35,8 @@ import syntax Value from `types.not`;
 syntax Module -> Trivia* ((ImportDecl | FunctionDecl) Trivia*)* !ANY;
 syntax ImportDecl -> `import` STR ((`as` IDENT) | (`:` (`*` | ImportMember (`,` ImportMember)* `,`?)))? `;`;
 syntax ImportMember -> IDENT (`as` IDENT)?;
-syntax FunctionDecl -> `fn` IDENT ComptimeParams? Params? Children? `->` TypeRef (Block | `;`);
+syntax FunctionDecl -> `fn` IDENT ComptimeParams? Params? Children? `->` TypeRef Where? (Block | `;`);
+syntax Where -> `where` Expr;
 syntax ComptimeParams -> `<` ComptimeParam (`,` ComptimeParam)* `,`? `>`;
 syntax ComptimeParam -> IDENT `:` TypeRef (`=` Value)?;
 syntax Params -> `(` (Parameter (`,` Parameter)* `,`?)? `)`;

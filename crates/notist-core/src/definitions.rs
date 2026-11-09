@@ -419,6 +419,7 @@ pub enum NativeFunction {
     Panic,
     Str,
     ArrayLen,
+    PathJoin,
     Data(crate::data::DataFunction),
 }
 impl NativeFunction {
@@ -439,6 +440,8 @@ pub struct FunctionDef {
     pub children: Accepts,
     pub returns: Type,
     pub comptime: Vec<ComptimeParameter>,
+    /// Evaluated after comptime inference, in a scope containing only <> inputs.
+    pub where_clause: Option<crate::expr::Expr>,
     pub children_type: Option<Type>,
     pub implementation: FunctionImpl,
     pub span: TextRange,
@@ -452,6 +455,7 @@ impl FunctionDef {
             children,
             returns,
             comptime: Vec::new(),
+            where_clause: None,
             children_type: match children {
                 Accepts::Inline => Some(Type::InlineContent),
                 Accepts::Nothing => None,
@@ -473,6 +477,8 @@ pub(crate) struct FunctionDefWire<I = FunctionId> {
     pub(crate) children: Accepts,
     pub(crate) returns: Type,
     pub(crate) comptime: Vec<ComptimeParameter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) where_clause: Option<crate::expr::Expr>,
     pub(crate) children_type: Option<Type>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) code: Option<bool>,
@@ -491,6 +497,7 @@ impl From<FunctionDef> for FunctionDefWire {
             children: d.children,
             returns: d.returns,
             comptime: d.comptime,
+            where_clause: d.where_clause,
             children_type: d.children_type,
             code: Some(d.implementation.is_code()),
             implementation: matches!(
@@ -501,6 +508,7 @@ impl From<FunctionDef> for FunctionDefWire {
                         | NativeFunction::Data(_)
                         | NativeFunction::Str
                         | NativeFunction::ArrayLen
+                        | NativeFunction::PathJoin
                 )
             )
             .then_some(d.implementation),
@@ -529,6 +537,7 @@ impl TryFrom<FunctionDefWire> for FunctionDef {
             children: d.children,
             returns: d.returns,
             comptime: d.comptime,
+            where_clause: d.where_clause,
             children_type: d.children_type,
             implementation,
             span: d.span,
@@ -562,9 +571,14 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
     }
     let mut names = BTreeSet::new();
     for function in &module.functions {
+        if let Some(condition) = &function.where_clause {
+            let names = function.comptime.iter().map(|p| p.name.clone()).collect();
+            validate_where(condition, &names, &mut report);
+        }
         let reserved = match function.implementation {
             FunctionImpl::Native(NativeFunction::Str) => Some(("notist", "str")),
             FunctionImpl::Native(NativeFunction::ArrayLen) => Some(("notist.array", "len")),
+            FunctionImpl::Native(NativeFunction::PathJoin) => Some(("notist.path", "join")),
             _ => None,
         };
         if reserved
@@ -733,6 +747,104 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
         }
     }
     diagnostics
+}
+
+/// Inspect all branches, including ones a concrete instance will not execute.
+/// A where clause cannot acquire ordinary inputs or module/import bindings.
+fn validate_where(
+    expr: &crate::expr::Expr,
+    names: &BTreeSet<String>,
+    report: &mut impl FnMut(TextRange, String),
+) {
+    use crate::expr::Expr;
+    match expr {
+        Expr::Ref { name, span } => {
+            if !names.contains(name)
+                && Type::builtin(name).is_none()
+                && !matches!(name.as_str(), "Option" | "Result" | "_")
+            {
+                report(
+                    *span,
+                    format!(
+                        "where can only reference <> parameters and built-in types; `{name}` is not available"
+                    ),
+                );
+            }
+        }
+        Expr::Literal(..) | Expr::PathLiteral { .. } => {}
+        Expr::Member { base, .. } => validate_where(base, names, report),
+        Expr::Binary { left, right, .. } => {
+            validate_where(left, names, report);
+            validate_where(right, names, report);
+        }
+        Expr::Unary { value, .. } | Expr::Comptime { value, .. } => {
+            validate_where(value, names, report)
+        }
+        Expr::If {
+            condition, yes, no, ..
+        } => {
+            validate_where(condition, names, report);
+            validate_where(yes, names, report);
+            validate_where(no, names, report);
+        }
+        Expr::Match { subject, arms, .. } => {
+            validate_where(subject, names, report);
+            for (pattern, value) in arms {
+                validate_where(pattern, names, report);
+                validate_where(value, names, report);
+            }
+        }
+        Expr::Block {
+            bindings, value, ..
+        } => {
+            let mut locals = names.clone();
+            for (name, value) in bindings {
+                validate_where(value, &locals, report);
+                locals.insert(name.clone());
+            }
+            validate_where(value, &locals, report);
+        }
+        Expr::For {
+            binding,
+            subject,
+            body,
+            ..
+        } => {
+            validate_where(subject, names, report);
+            let mut locals = names.clone();
+            locals.insert(binding.clone());
+            validate_where(body, &locals, report);
+        }
+        Expr::Array(values, _) => {
+            for value in values {
+                validate_where(value, names, report);
+            }
+        }
+        Expr::Dict(values, _) => {
+            for (_, value) in values {
+                validate_where(value, names, report);
+            }
+        }
+        Expr::Call {
+            callee,
+            args,
+            comptime,
+            children,
+            ..
+        } => {
+            validate_where(callee, names, report);
+            for arg in args.iter().chain(comptime) {
+                validate_where(arg.value(), names, report);
+            }
+            for child in children {
+                validate_where(child, names, report);
+            }
+        }
+        Expr::Content { .. } | Expr::Fragment { .. } => report(
+            expr.span(),
+            "where requires a comptime Bool, not content".into(),
+        ),
+    }
 }
 
 pub fn valid_name(name: &str) -> bool {

@@ -143,6 +143,7 @@ impl Lexer<'_> {
                         "else" => SyntaxKind::ElseKeyword,
                         "match" => SyntaxKind::MatchKeyword,
                         "comptime" => SyntaxKind::ComptimeKeyword,
+                        "where" => SyntaxKind::WhereKeyword,
                         _ => SyntaxKind::Ident,
                     }
                 } else {

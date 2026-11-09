@@ -34,6 +34,7 @@ pub enum NativeParameter {
     Index,
     Error,
     Message,
+    Relative,
 }
 impl NativeParameter {
     fn from_name(name: &str) -> Option<Self> {
@@ -49,6 +50,7 @@ impl NativeParameter {
             "index" => Self::Index,
             "error" => Self::Error,
             "message" => Self::Message,
+            "relative" => Self::Relative,
             _ => return None,
         })
     }

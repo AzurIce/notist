@@ -56,6 +56,8 @@ title = "My Site"
 
 所有目录字段相对包根，styles / scripts 相对 content。点开头的条目、target、node_modules、输出目录及主题输入不参与内容发现。未知字段和无效 glob 会报错。
 
+serve 注册内容目录监听时使用相同的 exclude 规则，排除目录在遍历前剪枝；挂载路径按 mounts.path 匹配。模板及显式构建依赖的必要监听不受内容发现过滤取消，见 [预览](cli.not)。
+
 === 外部目录挂载
 
 ```toml
@@ -112,7 +114,7 @@ watch = ["Cargo.toml", "examples"]
 
 builtins 是保留命名空间。外部表必须提供非空 command 数组，可选 watch 数组，不接受 kind / stages 等未知字段。command 直接执行，不经过 shell；CWD 和 watch 相对包根。
 
-原生扩展按 Builder.with_extension 注册顺序先运行；配置扩展再按 extension_order 或完整名称排序运行。prepare 修改源码和数据，Rust enrich 根据最终页面信息补充展示数据。watch 在失败构建中也生效，Rust Resources 读取的依赖由宿主记录。协议见 [SSG 站点扩展](ssg/extensions.not)。
+各阶段先按 Builder.with_extension 注册顺序运行原生扩展，再按 extension_order 或完整名称排序运行配置扩展。before_compile 只修改源码集合；before_template 读取最终 Pages，只修改模板 data。一次构建的两个事件复用同一实例或命令进程，命令使用 JSON Lines 通信。watch 在失败构建中也生效，Rust Resources 读取的依赖由宿主记录。协议见 [SSG 站点扩展](ssg/extensions.not)。
 
 == 路径基准
 

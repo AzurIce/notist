@@ -289,6 +289,8 @@ theme/
 
 Book 扩展的数据位于 site.data.book；普通页面上下文沿用 SSG，不增加 Book 专用顶层字段：
 
+before_compile 解析 SUMMARY 并将章节结构保存在本次构建的扩展实例中；before_template 根据最终 Pages 生成完整的 site.data.book，不通过模板 data 传递中间状态。
+
 | 字段 | 内容 |
 | --- | --- |
 | site.title | 站点标题 |

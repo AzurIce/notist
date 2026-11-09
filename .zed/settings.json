@@ -1,0 +1,21 @@
+{
+  "lsp": {
+    "notist": {
+      "binary": {
+        "path": "cargo",
+        "arguments": [
+          "run",
+          "--quiet",
+          "--jobs",
+          "8",
+          "--package",
+          "notist-cli",
+          "--bin",
+          "notist",
+          "--",
+          "lsp"
+        ]
+      }
+    }
+  }
+}

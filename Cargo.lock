@@ -999,6 +999,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codespan-reporting",
+ "globset",
  "indicatif",
  "notify",
  "notist",

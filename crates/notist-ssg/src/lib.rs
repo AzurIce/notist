@@ -20,10 +20,15 @@ pub use routes::Route;
 /// Site build driver, with native extensions followed by configured commands.
 #[derive(Debug, Default)]
 pub struct Builder {
-    extensions: Vec<Box<dyn extensions::SiteExtension>>,
+    extensions: Vec<Box<dyn extensions::ExtensionFactory>>,
 }
 impl Builder {
-    pub fn with_extension(mut self, extension: impl extensions::SiteExtension + 'static) -> Self {
+    /// Register a prototype; each build receives a fresh clone, not the previous
+    /// build's mutated instance. Clone should isolate build-local mutable state.
+    pub fn with_extension(
+        mut self,
+        extension: impl extensions::SiteExtension + Clone + 'static,
+    ) -> Self {
         self.extensions.push(Box::new(extension));
         self
     }

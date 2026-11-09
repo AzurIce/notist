@@ -1,7 +1,7 @@
 use notist::{MemoryResources, Vault};
 use notist_ssg::{
     Builder, Error, SiteConfig,
-    extensions::{SiteContext, SiteExtension, SiteInput},
+    extensions::{CompileInput, SiteContext, SiteExtension},
 };
 use std::path::Path;
 
@@ -122,13 +122,13 @@ fn strict_named_configuration_and_complete_explicit_order() {
     config.validate().unwrap();
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Generate;
 impl SiteExtension for Generate {
     fn name(&self) -> &str {
         "generate"
     }
-    fn prepare(&self, _: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
+    fn before_compile(&mut self, _: &SiteContext<'_>, input: &mut CompileInput) -> Result<(), Error> {
         input
             .documents
             .insert("SUMMARY.not".into(), "- [Generated](deep/page.not)".into());
@@ -148,6 +148,25 @@ fn native_generation_can_supply_summary_and_all_pages_without_disk_sources() {
     assert_eq!(output.pages.len(), 1);
     assert_eq!(output.data["book"]["navigation"][0]["title"], "Generated");
     assert!(html(&output, "deep/page.html").contains("Generated body"));
+}
+
+#[test]
+fn native_book_summary_state_does_not_leak_between_rebuilds() {
+    let mut config = config();
+    config.extensions.builtins.book = None;
+    let builder = Builder::default().with_extension(notist_ssg::builtins::book::Book::default());
+    let first = builder.build(&mut vault(&[
+        ("content/index.not", "= First"),
+        ("content/SUMMARY.not", "- [Custom label](index.not)"),
+    ]), &config).unwrap();
+    assert_eq!(first.data["book"]["navigation"][0]["title"], "Custom label");
+    assert!(builder.build(&mut vault(&[
+        ("content/index.not", "= Broken"),
+        ("content/SUMMARY.not", "- [Missing](missing.not)"),
+    ]), &config).is_err());
+    let last = builder.serve(&mut vault(&[("content/index.not", "= Last")]), &config).unwrap();
+    assert!(last.data["book"]["structure"].is_null());
+    assert_eq!(last.data["book"]["navigation"][0]["title"], "Last");
 }
 
 #[test]
@@ -182,11 +201,11 @@ fn an_output_inside_content_is_never_rediscovered() {
     assert_eq!(output.pages.len(), 1);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Remove;
 impl SiteExtension for Remove {
     fn name(&self) -> &str { "remove" }
-    fn prepare(&self, _: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
+    fn before_compile(&mut self, _: &SiteContext<'_>, input: &mut CompileInput) -> Result<(), Error> {
         input.documents.remove(Path::new("a.not"));
         Ok(())
     }
@@ -204,7 +223,7 @@ fn later_extensions_cannot_leave_dangling_navigation_or_overwrite_reserved_data(
             ("content/a.not", "= A"),
             ("content/SUMMARY.not", "- [Home](index.not)\n- [A](a.not)"),
         ]), &config).unwrap_err();
-    assert!(error.to_string().contains("(enrich): book navigation references removed page"));
+    assert!(error.to_string().contains("(before_template): book navigation references removed page"));
     let error = Builder::default().build(&mut vault(&[
         ("content/index.not", "= Home"),
         ("data/book.json", "{}"),

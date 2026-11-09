@@ -3,6 +3,40 @@ use notist::{
     Context, DefinitionModule, FunctionDef, FunctionId, ParameterDef, ParameterMode, Pipeline,
     Registry, Type, Value, builtins,
 };
+
+#[test]
+fn where_predicates_survive_definition_serialization_and_registry_snapshots() {
+    let module = Pipeline::default()
+        .compile_module(
+            "doc.not",
+            "where_wire",
+            "where_wire/lib.notc",
+            "fn resource<T: Type>(target: T) -> InlineContent where T == Path || T == String;",
+        )
+        .unwrap();
+    let definition = &module.definitions.functions[0];
+    let encoded = serde_json::to_value(definition).unwrap();
+    assert!(encoded.get("where_clause").is_some());
+    let decoded: FunctionDef = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, *definition);
+    let mut registry = Registry::new();
+    registry.register(module.definitions.clone()).unwrap();
+    assert_eq!(
+        registry
+            .function("where_wire", "resource")
+            .unwrap()
+            .where_clause,
+        definition.where_clause
+    );
+    let bare = FunctionDef::new(FunctionId::new("bare", "f"), Accepts::Nothing, Type::Int);
+    assert!(
+        serde_json::to_value(bare)
+            .unwrap()
+            .get("where_clause")
+            .is_none()
+    );
+}
+
 #[test]
 fn definitions_preserve_parameter_types_modes_and_defaults() {
     let m=notist_pipeline::Pipeline::default().compile_module("content.not", "widgets", "widgets/lib.notc","fn panel<C: Type = BlockContent>(title: String, count: Int = 2, note?: String, tags: Array<Array<Bool>> = ((true,),))[children: C] -> BlockContent;").unwrap();

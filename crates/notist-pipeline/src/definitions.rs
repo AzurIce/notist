@@ -460,6 +460,16 @@ fn lower_function(
     };
     let mut definition = FunctionDef::new(identity, accepts, returns);
     definition.comptime = comptime;
+    if let Some(clause) = f.where_clause() {
+        definition.where_clause = expression(clause.condition()?, None, None, diags);
+        if definition.where_clause.is_none() {
+            diags.push(Diagnostic::new(
+                Phase::Type,
+                clause.range(),
+                "invalid where expression",
+            ));
+        }
+    }
     definition.children_type = children_type;
     definition.span = f.range();
     if f.body().is_some() {

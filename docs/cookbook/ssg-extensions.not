@@ -2,7 +2,7 @@
 
 本例让 Notist SSG 在构建时读取 Cargo.toml 的 `[[example]]` 和 Rust 源文件，为每个 example 生成一个页面及模板数据。增减 Cargo targets 后重新构建即可，无须为每项维护独立的文档与 data 目录中的 TOML 文件。
 
-本例使用 SSG 的 prepare 扩展，接收文档源码与 JSON 数据，返回生成结果。协议见 [SSG 站点扩展](../ssg/extensions.not#json-i-o-协议)。
+本例使用 SSG 的 before_compile 生成源码，在同一进程中保留元信息，随后在 before_template 生成模板数据。协议见 [SSG 站点扩展](../ssg/extensions.not#json-i-o-协议)。
 
 == 文件布局
 
@@ -69,7 +69,7 @@ website/content/index.not 是唯一需要手写的内容页：
 
 链接目标稍后由扩展创建，可以在构建中正常解析。
 
-== 实现 prepare
+== 实现事件处理
 
 将下面代码保存到 website/scripts/examples.py：
 
@@ -80,19 +80,15 @@ import tomllib
 from pathlib import Path
 
 
-def prepare(request, manifest_path):
-    if request["version"] != 1 or request["stage"] != "prepare":
-        raise ValueError("unsupported site extension request")
-
+def compile_sources(request, manifest_path):
     manifest = tomllib.loads(manifest_path.read_text())
-    site = request["input"]
-    documents = site["documents"]
+    documents = request["documents"]
 
     # 本扩展管理 examples/ 页面和 site.data.examples。
     for path in list(documents):
         if path.startswith("examples/"):
             del documents[path]
-    site["data"]["examples"] = {}
+    examples = {}
     links = ["# Examples", ""]
 
     for target in manifest.get("example", []):
@@ -103,21 +99,34 @@ def prepare(request, manifest_path):
             f"@!(title: {quoted_name}, example: {quoted_name})\n\n"
             f"# {name}\n\n```rust\n{source.rstrip()}\n```\n"
         )
-        site["data"]["examples"][name] = {"name": name, "code": source}
+        examples[name] = {"name": name, "code": source}
         links.append(f"- [{name}]({name}.md)")
 
     documents["examples/index.md"] = "\n".join(links) + "\n"
-    return {"version": 1, "input": site}
+    return documents, examples
 
 
-try:
-    response = prepare(json.load(sys.stdin), Path(sys.argv[1]))
-except Exception as error:
-    response = {"version": 1, "errors": [str(error)]}
-json.dump(response, sys.stdout)
+examples = {}
+for line in sys.stdin:
+    request = json.loads(line)
+    response = {"version": 2, "event": request["event"]}
+    try:
+        if request["version"] != 2:
+            raise ValueError("unsupported site extension request")
+        if request["event"] == "before_compile":
+            response["documents"], examples = compile_sources(request, Path(sys.argv[1]))
+        elif request["event"] == "before_template":
+            data = request["data"]
+            data["examples"] = examples
+            response["data"] = data
+        else:
+            raise ValueError("unsupported event")
+    except Exception as error:
+        response["errors"] = [str(error)]
+    print(json.dumps(response), flush=True)
 ```
 
-input.documents 的键相对于 content：examples/hello.md 生成 examples/hello.html。根注解将 example 名称提供给模板中的 page.attrs.example。
+documents 的键相对于 content：examples/hello.md 生成 examples/hello.html。根注解将 example 名称提供给模板中的 page.attrs.example。
 
 本扩展重新生成 examples/ 下的页面与 site.data.examples，保留其他内容。请将手写页面放在 examples/ 以外，避免被覆盖。
 
@@ -170,7 +179,7 @@ content 中仍只有手写的 index.not，data 目录不需要创建。添加新
 
 调试脚本时，日志写到 stderr，例如 `print("loading manifest", file=sys.stderr)`。stdout 只能返回协议响应。清单缺失或无法解析时，本例返回 errors，构建失败，CLI 保留已有输出；修复被 watch 观察的文件后，预览会重新构建。
 
-单独执行 `notist check website/content/index.not` 只检查现有单文档，不执行站点 prepare，因此应通过 build 检查生成页面之间的链接和完整站点。
+单独执行 `notist check website/content/index.not` 只检查现有单文档，不执行站点扩展，因此应通过 build 检查生成页面之间的链接和完整站点。
 
 仓库还提供 examples/ssg-extensions，包含分组目录、相邻 scenes.rs 源码读取，以及保留现有媒体数据的生成版本。从 Notist 仓库根目录可直接执行：
 

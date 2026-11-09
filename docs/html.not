@@ -114,7 +114,7 @@ let result = renderer.render_with_diagnostics(analysis.root());
 
 Renderer.with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写 link 或远程 embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
 
-本地 embed 的 Path 只传给 Renderer.with_resource_resolver：回调接收 Item 与 ResourcePath，返回宿主选定的基础公开 URL。renderer 在安全检查后附加独立的 query／fragment 并转义 HTML；同一资源的不同引用可以使用不同后缀。None 产生 UnpublishedResource 诊断并省略 href，不回退到逻辑路径或文件系统路径。Path 不会传给 link 的 URL 回调。
+link 与 embed 的 Path 只传给 Renderer.with_resource_resolver：回调接收 Item 与 ResourcePath，返回宿主选定的基础公开 URL。renderer 在安全检查后附加独立的 query／fragment 并转义 HTML；同一资源的不同引用可以使用不同后缀。None 产生 UnpublishedResource 诊断并省略 href，不回退到逻辑路径或文件系统路径。Path 不会传给字符串 URL 回调。
 
 ```rust
 let renderer = notist_html::Renderer::new()

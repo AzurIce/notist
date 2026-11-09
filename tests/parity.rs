@@ -258,7 +258,7 @@ fn invalid_builtin_contracts_report_diagnostics_and_retain_values() {
         ),
         ("#heading<level: \"bad\">[heading]", "comptime"),
         ("#heading<level: 0>[heading]", "positive integer"),
-        ("#link(target: 42)[label]", "must be string"),
+        ("#link(target: 42)[label]", "where clause"),
         ("#embed()", "requires `target`"),
         ("#raw()", "requires `text`"),
         ("#list(ordered: \"yes\")[#item[ x ]]", "must be boolean"),

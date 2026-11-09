@@ -1,8 +1,28 @@
+#import "components/lib.notc" as components;
 = 扩展 Notist（Experimental）
 
 文档扩展在指定阶段接收文档，返回修改后的文档或诊断。Rust 实现注册 `DocumentExtension`；外部程序通过 `[[extensions]]` 配置为 command，以 stdin / stdout 交换 JSON。check、html、Book 与 SSG 都会运行对应阶段的扩展。
 
 站点层的页面集合、路由与发布扩展见 [SSG 站点扩展](ssg/extensions.not)；完整的类型与来源规则见 [文档扩展设计](designs/extensions.not)。
+
+== 文档生命周期
+
+每篇文档经历以下阶段，强调节点为 DocumentExtension 钩子：
+
+#components.diagram(r#"""
+flowchart TB
+    parse[解析与降级] --> before{{before_check}}
+    before --> check[名称解析与检查]
+    check --> after{{after_check · 只读}}
+    after --> evaluate[求值]
+    evaluate --> output{{after_evaluate}}
+    output --> backend[交给输出后端]
+
+    classDef hook fill:#e0edf9,stroke:#3974a8,stroke-width:2px,color:#173b5b
+    class before,after,output hook
+"""#)
+
+文档扩展处理单篇文档的树，不负责站点输入集合、路由与模板；站点构建先完成全部文档的分析，再完成全部文档的求值。站点生命周期见 [SSG 站点扩展](ssg/extensions.not#构建生命周期)。
 
 == 扩展
 

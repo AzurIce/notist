@@ -332,7 +332,7 @@ fn local_paths_require_safe_host_urls_and_never_fall_back_to_url_strings() {
 }
 
 #[test]
-fn links_keep_the_string_contract_and_do_not_use_the_path_resolver() {
+fn links_preserve_strings_and_resolve_explicit_paths_without_conversion() {
     let root = evaluate(
         "/project/pages/page.not",
         "[Guide](guide.not?q=1#part)",
@@ -351,10 +351,9 @@ fn links_keep_the_string_contract_and_do_not_use_the_path_resolver() {
         )
         .unwrap();
     assert!(
-        analysis
-            .diagnostics()
-            .iter()
-            .any(|d| d.message.contains("must be string"))
+        analysis.diagnostics().is_empty(),
+        "{:?}",
+        analysis.diagnostics()
     );
     let mut malformed = link.clone();
     malformed
@@ -363,13 +362,80 @@ fn links_keep_the_string_contract_and_do_not_use_the_path_resolver() {
         .fields
         .insert("target", expected("pages/guide.not"));
     let output = Renderer::new()
-        .with_resource_resolver(|_, _| panic!("link migration is deferred"))
+        .with_resource_resolver(|_, path| {
+            assert_eq!(
+                path,
+                &ResourcePath::resolve("/project", "/project/pages/page.not", "./guide.not")
+                    .unwrap()
+            );
+            Some("../guide/".into())
+        })
         .render_with_diagnostics(&malformed);
-    assert_eq!(output.diagnostics.len(), 1);
-    assert!(!output.html.contains("href="));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.html.contains("href=\"../guide/\""));
+    let missing = Renderer::new().render_with_diagnostics(&malformed);
+    assert_eq!(missing.diagnostics.len(), 1);
+    assert!(!missing.html.contains("href="));
+    let string_output = Renderer::new()
+        .with_resource_resolver(|_, _| panic!("URL strings do not use Path resolution"))
+        .render_with_diagnostics(link);
+    assert!(string_output.diagnostics.is_empty());
     assert!(!Type::String.accepts(&expected("pages/image.svg")));
     assert!(Type::ResourceTarget.accepts(&expected("pages/image.svg")));
     assert!(Type::ResourceTarget.accepts(&Value::Str("https://example.test".into())));
+}
+
+#[test]
+fn generic_links_and_directory_joins_preserve_the_callers_resource_identity() {
+    let module = Pipeline::default()
+        .compile_module(
+            "doc.not",
+            "links",
+            "/project/components/links.notc",
+            r#"
+        fn forward<T: Type>(target: T) -> InlineContent
+        where T == Path || T == String { [#link(target)[download]] }
+        fn gallery(directory: Path, name: String) -> InlineContent {
+            [#forward(directory.join(name + ".glb"))]
+        }
+    "#,
+        )
+        .unwrap();
+    let context = context().with_module(module).unwrap();
+    let root = evaluate(
+        "/project/models/drill/page.not",
+        r#"#self.gallery(p".", "drill")"#,
+        &context,
+    );
+    let link = root.find(|node| node.ctor() == Ctor::Link).unwrap();
+    assert_eq!(
+        link.field("target"),
+        Some(&expected("models/drill/drill.glb"))
+    );
+    let root = evaluate(
+        "/project/models/drill/page.not",
+        r#"#self.forward("https://example.test")"#,
+        &context,
+    );
+    assert_eq!(
+        root.find(|node| node.ctor() == Ctor::Link)
+            .unwrap()
+            .field("target"),
+        Some(&Value::Str("https://example.test".into()))
+    );
+    for relative in ["../../../../escape", "/other", "https://example.test", ""] {
+        assert!(
+            ResourcePath::resolve("/project", "/project/models/drill/page.not", ".")
+                .unwrap()
+                .join(relative)
+                .is_err()
+        );
+    }
+    let joined = ResourcePath::resolve("/project", "/project/models/drill/page.not", ".")
+        .unwrap()
+        .join("./a?b#c%.glb")
+        .unwrap();
+    assert_eq!(joined.path(), "models/drill/a?b#c%.glb");
 }
 
 #[test]

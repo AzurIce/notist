@@ -31,14 +31,14 @@ pub fn overlay(config: &mut SiteConfig, root: &str) {
     config.exclude.push(format!("{}/**", root.display()));
 }
 
-pub fn build<R: Resources>(
+pub fn build<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
 ) -> Result<BuildOutput, Error> {
     reading_order(Builder::default().build(vault, config))
 }
 
-pub fn serve<R: Resources>(
+pub fn serve<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
 ) -> Result<BuildOutput, Error> {

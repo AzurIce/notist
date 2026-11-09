@@ -598,7 +598,7 @@ fn render_templates(
     })
 }
 
-pub(crate) fn build<R: Resources>(
+pub(crate) fn build<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
     extensions: &[Box<dyn crate::extensions::SiteExtension>],
@@ -760,10 +760,21 @@ pub(crate) fn build<R: Resources>(
     // any page can consume another document as text, regardless of route order.
     let mut handles = Vec::with_capacity(analyzed.len());
     let evaluation_stage = notist::progress::Span::enter(|| "Evaluate documents".into());
+    let evaluation_start = std::time::Instant::now();
+    let workers = std::env::var("NOTIST_EVAL_WORKERS").ok()
+        .map(|s| s.parse::<usize>().expect("NOTIST_EVAL_WORKERS must be an integer"));
+    let parallel = if let Some(workers) = workers {
+        let jobs: Vec<_> = analyzed.iter().map(|(_, _, analysis, handle)| (handle, analysis)).collect();
+        Some(vault.evaluate_documents_parallel(&jobs, workers)?)
+    } else { None };
+    let mut parallel = parallel.map(Vec::into_iter);
     for (route, text, analysis, handle) in analyzed {
         let document =
             notist::progress::Span::enter(|| format!("Document {}", route.path.display()));
-        let evaluation = vault.evaluate_document(&handle, &analysis)?;
+        let evaluation = match &mut parallel {
+            Some(results) => results.next().unwrap()?,
+            None => vault.evaluate_document(&handle, &analysis)?,
+        };
         errors.extend(
             evaluation
                 .diagnostics
@@ -792,6 +803,9 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     evaluation_stage.finish();
+    if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
+        eprintln!("[eval-batch] seconds={:.9}", evaluation_start.elapsed().as_secs_f64());
+    }
     let asset_stage = notist::progress::Span::enter(|| "Prepare assets, Sass and templates".into());
     let mut assets = Assets::new(output);
     for document in &documents {

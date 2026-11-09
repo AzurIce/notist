@@ -12,6 +12,7 @@ use std::{
 };
 
 mod code;
+mod parallel;
 pub use code::CodeAnalysis;
 
 #[derive(Debug)]

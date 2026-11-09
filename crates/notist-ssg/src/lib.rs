@@ -27,7 +27,7 @@ impl Builder {
         self.extensions.push(Box::new(extension));
         self
     }
-    pub fn build<R: notist::Resources>(
+    pub fn build<R: notist::Resources + Send>(
         &self,
         vault: &mut notist::Vault<R>,
         config: &SiteConfig,
@@ -36,7 +36,7 @@ impl Builder {
     }
 
     /// Preview retains recoverable content errors, but never publishes fatal failures.
-    pub fn serve<R: notist::Resources>(
+    pub fn serve<R: notist::Resources + Send>(
         &self,
         vault: &mut notist::Vault<R>,
         config: &SiteConfig,

@@ -61,8 +61,8 @@ fn show(value: Int) -> InlineContent {
 
 Result 可以嵌入 Array、Dict、Option 或另一个 Result。例如 `Result<Option<String>, String>` 的 `ok(none)` 是成功但无值，与 `err("bad")` 不同。两种变体的载荷都参与现有逻辑值大小预算与 Path 导出检查。
 
-纯 Result 构造与匹配可以在 comptime 执行，完整静态类型在折叠后保留。它不把内部求值器的失败变成可捕获值：`ok(read_text(source))` 若读取失败，仍走原有诊断；输入未准备仍返回宿主 NeedResources。资源授权、输入一致性、预算与 Code-only 限制不变。
+纯 Result 构造与匹配可以在 comptime 执行，完整静态类型在折叠后保留。它不把内部求值器的失败变成可捕获值：`ok(read_text(source))` 若读取失败，走正常诊断通道；输入未准备返回宿主 NeedResources。这些操作同样受资源授权、输入一致性、预算与 Code-only 限制约束。
 
 组件参数使用带标签的编码：`["ok", payload]`／`["err", payload]`；浏览器解码为 `{ kind: "ok", value: ... }`／`{ kind: "err", value: ... }`。调试与模板展示 JSON 使用 `{ "ok": ... }`／`{ "err": ... }`。
 
-独立 Markup 的实参、注解和声明默认值仍遵守数据字面量限制，不为 Result 开放任意调用。需要构造或处理 Result 时放在 notc Code 中；JSON／TOML 接口见 [Data](data.not)，read_text 的返回类型保持 String。
+独立 Markup 的实参、注解和声明默认值遵守数据字面量限制，不为 Result 开放任意调用。需要构造或处理 Result 时放在 notc Code 中；JSON／TOML 接口见 [Data](data.not)，read_text 的返回类型保持 String。

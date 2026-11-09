@@ -721,8 +721,19 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             Construction::Element(children) => {
                 let (children, mut summary) =
                     self.present(children, limit.saturating_sub(1), expansion);
-                let mut node = item_shell(&piece.source);
-                node.as_item_mut().expect("element content").children = children.into();
+                let mut node = item_with_content(
+                    &piece.source,
+                    ContentItem {
+                        ctor: piece.source.ctor(),
+                        fields: piece
+                            .source
+                            .as_item()
+                            .map(|i| i.fields.clone())
+                            .unwrap_or_default(),
+                        children: children.into(),
+                        instance: piece.source.as_item().and_then(|i| i.instance.clone()),
+                    },
+                );
                 append_expansion(&mut node, expansion);
                 if !valid_structure(&node) {
                     out.push(self.error(
@@ -1136,8 +1147,8 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         }
         let implementation = self.implementation(&target)?;
         let definition = &implementation.definition;
-        let mut inputs = Scope::new();
-        if code {
+        let inputs = if code {
+            let mut inputs = Scope::new();
             for (name, value) in pending_inputs {
                 let id = implementation
                     .inputs
@@ -1163,7 +1174,10 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     Runtime::Content(ty.clone(), children.clone()),
                 );
             }
-        }
+            Some(inputs)
+        } else {
+            None
+        };
         if call.definition.id.module == "notist"
             && call.definition.id.name == "heading"
             && let Some(ComptimeValue::Data(value)) = call.instance.arguments.first()
@@ -1217,7 +1231,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 Err(Failure::at(message.clone(), call))
             }
             FunctionImpl::Code => match &implementation.body {
-                Some(body) => self.expr(body, &inputs),
+                Some(body) => self.expr(body, &inputs.unwrap_or_default()),
                 None => Err("missing checked body".into()),
             },
             FunctionImpl::Native(NativeFunction::Construct) => {
@@ -1250,13 +1264,15 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         level: source.level,
                     })
                 };
-                let mut node = item_shell(source);
-                node.content = NodeContent::Item(ContentItem {
-                    ctor,
-                    fields,
-                    children: Default::default(),
-                    instance: Some(target.clone().into()),
-                });
+                let node = item_with_content(
+                    source,
+                    ContentItem {
+                        ctor,
+                        fields,
+                        children: Default::default(),
+                        instance: Some(target.clone().into()),
+                    },
+                );
                 let count = 1 + children.nodes;
                 Ok(Runtime::Content(
                     call.definition.returns.clone(),
@@ -1372,17 +1388,9 @@ fn expand_ready(node: &mut Node, expansion: &SourceChain) {
         expand_ready(child, expansion);
     }
 }
-fn item_shell(source: &Node) -> Node {
+fn item_with_content(source: &Node, content: ContentItem) -> Node {
     Node {
-        content: NodeContent::Item(ContentItem {
-            ctor: source.ctor(),
-            fields: source
-                .as_item()
-                .map(|i| i.fields.clone())
-                .unwrap_or_default(),
-            children: Default::default(),
-            instance: source.as_item().and_then(|i| i.instance.clone()),
-        }),
+        content: NodeContent::Item(content),
         attrs: source.attrs.clone(),
         origin: source.origin.clone(),
         level: source.level,
@@ -1390,14 +1398,15 @@ fn item_shell(source: &Node) -> Node {
     }
 }
 fn error_content(source: &Node, message: String) -> Node {
-    let mut node = item_shell(source);
-    node.content = NodeContent::Item(ContentItem {
-        ctor: Ctor::Error(message),
-        fields: Dict::default(),
-        children: Default::default(),
-        instance: None,
-    });
-    node
+    item_with_content(
+        source,
+        ContentItem {
+            ctor: Ctor::Error(message),
+            fields: Dict::default(),
+            children: Default::default(),
+            instance: None,
+        },
+    )
 }
 fn error_piece(source: &Node, message: String) -> Piece {
     Piece {
@@ -1445,13 +1454,15 @@ fn emit_mount(source: &Node, nodes: Vec<Node>, expansion: &SourceChain, out: &mu
     if source.attrs.is_empty() {
         out.extend(nodes);
     } else {
-        let mut group = item_shell(source);
-        group.content = NodeContent::Item(ContentItem {
-            ctor: Ctor::Group,
-            fields: Dict::default(),
-            children: nodes.into(),
-            instance: None,
-        });
+        let mut group = item_with_content(
+            source,
+            ContentItem {
+                ctor: Ctor::Group,
+                fields: Dict::default(),
+                children: nodes.into(),
+                instance: None,
+            },
+        );
         append_expansion(&mut group, expansion);
         out.push(group);
     }
@@ -1542,6 +1553,50 @@ mod tests {
             EvaluationMode::Runtime,
         )
     }
+    #[test]
+    fn final_item_payload_preserves_source_metadata_without_source_fields_or_children() {
+        let source = Node::text("source".into(), rowan::TextRange::new(3.into(), 9.into()));
+        let mut source =
+            source.with_children(vec![Node::text("old child".into(), Default::default())]);
+        source.attrs.insert("id", Value::Str("mount".into()));
+        let owner = notist_core::source::Source::metadata("origin.not").unwrap();
+        source.origin = Some(notist_core::item::Origin {
+            source: owner.id(),
+            start: 3,
+            end: 9,
+            expansion: Default::default(),
+        });
+        let children: Shared<Vec<Node>> =
+            vec![Node::text("final child".into(), Default::default())].into();
+        let node = item_with_content(
+            &source,
+            ContentItem {
+                ctor: Ctor::Group,
+                fields: Dict::default(),
+                children: children.clone(),
+                instance: None,
+            },
+        );
+        assert_eq!(node.attrs, source.attrs);
+        assert_eq!(node.origin, source.origin);
+        assert_eq!(node.level, source.level);
+        assert_eq!(node.span, source.span);
+        assert_eq!(node.ctor(), Ctor::Group);
+        assert!(node.fields().is_empty());
+        assert!(node.as_item().unwrap().children.shares_storage(&children));
+        assert_eq!(
+            source.children()[0].field("text"),
+            Some(&Value::Str("old child".into()))
+        );
+
+        let error = error_content(&source, "failure".into());
+        assert_eq!(error.attrs, source.attrs);
+        assert_eq!(error.origin, source.origin);
+        assert_eq!(error.span, source.span);
+        assert!(error.children().is_empty());
+        assert!(error.fields().is_empty());
+    }
+
     #[test]
     fn call_closures_share_code_and_capture_lexical_snapshots_without_substitution() {
         let context = Context;

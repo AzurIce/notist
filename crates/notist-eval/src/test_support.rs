@@ -2,7 +2,15 @@
 use super::*;
 
 pub fn item_shell(item: &Node) -> Node {
-    super::item_shell(item)
+    super::item_with_content(
+        item,
+        ContentItem {
+            ctor: item.ctor(),
+            fields: item.as_item().map(|i| i.fields.clone()).unwrap_or_default(),
+            children: Default::default(),
+            instance: item.as_item().and_then(|i| i.instance.clone()),
+        },
+    )
 }
 
 pub fn assert_summaries<C: EvaluationContext + ?Sized>(

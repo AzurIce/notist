@@ -69,6 +69,29 @@ pub enum Type {
 }
 
 impl Type {
+    /// Built-in, unparameterized type spelling at source-language boundaries.
+    /// Container arguments and lexical type parameters are handled by callers.
+    pub fn builtin(name: &str) -> Option<Self> {
+        Some(match name {
+            "Type" => Self::Type,
+            "Never" => Self::Never,
+            "Data" => Self::Data,
+            "DataError" => Self::DataError,
+            "InlineContent" => Self::InlineContent,
+            "BlockContent" => Self::BlockContent,
+            "Unit" => Self::Unit,
+            "Bool" => Self::Bool,
+            "Int" => Self::Int,
+            "Float" => Self::Float,
+            "String" => Self::String,
+            "Path" => Self::Path,
+            "ResourceTarget" => Self::ResourceTarget,
+            "Dict" => Self::Dict,
+            "Array" => Self::Array(None),
+            _ => return None,
+        })
+    }
+
     pub fn accepts(&self, value: &Value) -> bool {
         match (self, value) {
             (Self::Unit, Value::Unit)

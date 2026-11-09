@@ -360,31 +360,18 @@ fn lower_type(
         ));
         return None;
     }
-    Some(match name.as_str() {
-        "Type" => Type::Type,
-        "Never" => Type::Never,
-        "Data" => Type::Data,
-        "DataError" => Type::DataError,
-        "Unit" => Type::Unit,
-        "Bool" => Type::Bool,
-        "Int" => Type::Int,
-        "Float" => Type::Float,
-        "String" => Type::String,
-        "Path" => Type::Path,
-        "ResourceTarget" => Type::ResourceTarget,
-        "Dict" => Type::Dict,
-        "InlineContent" => Type::InlineContent,
-        "BlockContent" => Type::BlockContent,
-        _ if params.iter().any(|p| p.name == name && p.ty == Type::Type) => Type::Parameter(name),
-        _ => {
-            diags.push(Diagnostic::new(
-                Phase::Type,
-                t.range(),
-                format!("unknown type `{name}`"),
-            ));
-            return None;
-        }
-    })
+    if let Some(ty) = Type::builtin(&name) {
+        Some(ty)
+    } else if params.iter().any(|p| p.name == name && p.ty == Type::Type) {
+        Some(Type::Parameter(name))
+    } else {
+        diags.push(Diagnostic::new(
+            Phase::Type,
+            t.range(),
+            format!("unknown type `{name}`"),
+        ));
+        None
+    }
 }
 fn ct_default(
     p: &Parameter,
@@ -396,29 +383,15 @@ fn ct_default(
     let el = p.default_value()?.value()?;
     if *ty == Type::Type {
         let name = el.to_string();
-        let ty = match name.as_str() {
-            "Type" => Type::Type,
-            "Never" => Type::Never,
-            "Data" => Type::Data,
-            "DataError" => Type::DataError,
-            "InlineContent" => Type::InlineContent,
-            "BlockContent" => Type::BlockContent,
-            "Bool" => Type::Bool,
-            "Int" => Type::Int,
-            "Float" => Type::Float,
-            "String" => Type::String,
-            "Path" => Type::Path,
-            "ResourceTarget" => Type::ResourceTarget,
-            "Dict" => Type::Dict,
-            "Unit" => Type::Unit,
-            _ => {
-                diags.push(Diagnostic::new(
-                    Phase::Type,
-                    el.text_range(),
-                    "expected a type default",
-                ));
-                return None;
-            }
+        // Preserve the declaration-default grammar: erased Array is available
+        // in annotations/expressions, but is not a supported type default.
+        let Some(ty) = Type::builtin(&name).filter(|ty| !matches!(ty, Type::Array(_))) else {
+            diags.push(Diagnostic::new(
+                Phase::Type,
+                el.text_range(),
+                "expected a type default",
+            ));
+            return None;
         };
         Some(ComptimeValue::Type(ty))
     } else {

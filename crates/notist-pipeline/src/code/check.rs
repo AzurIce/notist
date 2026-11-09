@@ -381,26 +381,6 @@ impl<'a> Checker<'a> {
         }
         self.ensure_instance(instance, &def, &ct);
     }
-    fn type_name(name: &str) -> Option<Type> {
-        Some(match name {
-            "Type" => Type::Type,
-            "Never" => Type::Never,
-            "Data" => Type::Data,
-            "DataError" => Type::DataError,
-            "InlineContent" => Type::InlineContent,
-            "BlockContent" => Type::BlockContent,
-            "Unit" => Type::Unit,
-            "Bool" => Type::Bool,
-            "Int" => Type::Int,
-            "Float" => Type::Float,
-            "String" => Type::String,
-            "Path" => Type::Path,
-            "ResourceTarget" => Type::ResourceTarget,
-            "Dict" => Type::Dict,
-            "Array" => Type::Array(None),
-            _ => return None,
-        })
-    }
     fn reference(&mut self, name: &str, span: TextRange) -> TypedExpr {
         if let Some(v) = self.scope.get(name) {
             let mut value = v.clone();
@@ -408,7 +388,7 @@ impl<'a> Checker<'a> {
             value.source = self.source.id();
             return value;
         }
-        if let Some(t) = Self::type_name(name) {
+        if let Some(t) = Type::builtin(name) {
             return self.constant(ComptimeValue::Type(t), span);
         }
         self.failed(span, format!("unbound reference `{name}`"))

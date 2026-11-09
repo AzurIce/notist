@@ -56,6 +56,8 @@ title = "My Site"
 
 所有目录字段相对包根，styles / scripts 相对 content。点开头的条目、target、node_modules、输出目录及主题输入不参与内容发现。未知字段和无效 glob 会报错。
 
+serve 注册内容目录监听时使用相同的 exclude 规则，排除目录在遍历前剪枝；挂载路径按 mounts.path 匹配。模板及显式构建依赖的必要监听不受内容发现过滤取消，见 [预览](cli.not)。
+
 === 外部目录挂载
 
 ```toml

@@ -1,5 +1,4 @@
 //! HTTP server for the same publication artifact produced by static builds.
-use notify::{RecursiveMode, Watcher};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
@@ -13,6 +12,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 mod report;
 mod terminal;
+mod watch;
 use report::Report;
 use terminal::Terminal;
 
@@ -144,7 +144,6 @@ fn run(
     no_clear_screen: bool,
     verbose: bool,
 ) -> Result<(), Error> {
-    let root = target.root.clone();
     // Keep the bound listener: probing and then rebinding would race other processes.
     let listener = bind(listen).map_err(|error| Error::Message(error.to_string()))?;
     let server =
@@ -164,46 +163,23 @@ fn run(
         let _ = sender.send(event);
     })
     .map_err(|error| Error::Message(error.to_string()))?;
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|error| Error::Message(error.to_string()))?;
     let mut observed = BTreeSet::new();
-    let mut watched = BTreeMap::new();
     let mut output = None;
+    let mut watches = watch::Watches::default();
+    let mut plan = watch::Plan::new(&target, &observed, None);
+    watches.sync(&mut watcher, &plan)?;
     rebuild(&state, &mut observed, &mut output, &terminal, &target);
-    watch_external(&mut watcher, &root, &observed, &mut watched)?;
+    plan = watch::Plan::new(&target, &observed, output.as_deref());
+    watches.sync(&mut watcher, &plan)?;
     let shared = state.clone();
-    let watcher_root = root.clone();
     thread::spawn(move || {
         let mut watcher = watcher;
         while let Ok(event) = receiver.recv() {
+            watches.observe(&event);
             let relevant = |event: &Result<notify::Event, notify::Error>| match event {
                 Ok(event) => {
                     !matches!(event.kind, notify::EventKind::Access(_))
-                        && event.paths.iter().any(|path| {
-                            if output
-                                .as_ref()
-                                .is_some_and(|output| path.starts_with(output))
-                            {
-                                return false;
-                            }
-                            if let Ok(relative) = path.strip_prefix(&watcher_root) {
-                                let ignored = relative.iter().any(|part| {
-                                    part.to_string_lossy().starts_with('.')
-                                        || part == "target"
-                                        || part == "node_modules"
-                                });
-                                // Hidden paths are normally noise, but a concrete
-                                // input read (or removal of its ancestor) must
-                                // invalidate the preview just like a cold build.
-                                !ignored || observed.iter().any(|input| input.starts_with(path))
-                            } else {
-                                observed.iter().any(|input| {
-                                    input.starts_with(path)
-                                        || (input.is_dir() && path.starts_with(input))
-                                })
-                            }
-                        })
+                        && event.paths.iter().any(|path| plan.relevant(path))
                 }
                 Err(_) => true,
             };
@@ -213,15 +189,16 @@ fn run(
             let deadline = Instant::now() + Duration::from_millis(200);
             while Instant::now() < deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if receiver.recv_timeout(remaining).is_err() {
-                    break;
+                match receiver.recv_timeout(remaining) {
+                    Ok(event) => watches.observe(&event),
+                    Err(_) => break,
                 }
             }
             crate::progress::observe(verbose, || {
                 rebuild(&shared, &mut observed, &mut output, &terminal, &target);
             });
-            if let Err(error) = watch_external(&mut watcher, &watcher_root, &observed, &mut watched)
-            {
+            plan = watch::Plan::new(&target, &observed, output.as_deref());
+            if let Err(error) = watches.sync(&mut watcher, &plan) {
                 eprintln!("{error}");
             }
         }
@@ -271,51 +248,6 @@ fn rebuild(
     let has_preview = published.site.is_some();
     drop(published);
     terminal.render(&report, has_preview);
-}
-fn watch_external(
-    watcher: &mut impl Watcher,
-    root: &Path,
-    observed: &BTreeSet<PathBuf>,
-    watched: &mut BTreeMap<PathBuf, bool>,
-) -> Result<(), Error> {
-    // Backends drop directory watches when the directory is deleted. Permit
-    // registration again if an external input directory is later recreated.
-    watched.retain(|directory, _| directory.is_dir());
-    for input in observed.iter().filter(|path| !path.starts_with(root)) {
-        let recursive = input.is_dir();
-        let mut directory = if recursive {
-            input.as_path()
-        } else {
-            input.parent().unwrap()
-        };
-        while !directory.is_dir() {
-            directory = directory.parent().unwrap();
-        }
-        // File dependencies only need their parent. Recursing a fallback
-        // ancestor (possibly /) would watch unrelated trees and delay startup.
-        if watched
-            .get(directory)
-            .is_none_or(|previous| recursive && !previous)
-        {
-            if watched.contains_key(directory) {
-                watcher
-                    .unwatch(directory)
-                    .map_err(|error| Error::Message(error.to_string()))?;
-            }
-            watcher
-                .watch(
-                    directory,
-                    if recursive {
-                        RecursiveMode::Recursive
-                    } else {
-                        RecursiveMode::NonRecursive
-                    },
-                )
-                .map_err(|error| Error::Message(error.to_string()))?;
-            watched.insert(directory.into(), recursive);
-        }
-    }
-    Ok(())
 }
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name, value).unwrap()

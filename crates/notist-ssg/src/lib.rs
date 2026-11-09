@@ -1,4 +1,4 @@
-//! Shared static-site compilation, routing, extensions and replaceable themes.
+//! Directory-preserving document publication with replaceable site templates.
 mod assets;
 mod build;
 pub mod builtins;
@@ -17,7 +17,7 @@ pub use config::{Mount, SiteConfig};
 pub use document::{Heading, Page};
 pub use routes::Route;
 
-/// Site build driver, with native extensions followed by ordered configured extensions.
+/// Site build driver, with native extensions followed by configured commands.
 #[derive(Debug, Default)]
 pub struct Builder {
     extensions: Vec<Box<dyn extensions::SiteExtension>>,

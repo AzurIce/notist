@@ -24,7 +24,7 @@ pub struct BookConfig {
     /// Relative to the site content root. None discovers SUMMARY.not or SUMMARY.md.
     pub summary: Option<PathBuf>,
     /// Restrict publication to SUMMARY entries; otherwise it only controls navigation.
-    pub enable: bool,
+    pub select: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,7 +78,6 @@ impl SiteExtension for Book {
             input.documents.remove(&PathBuf::from(name));
         }
         let entries = if let Some(path) = summary {
-            let path = mounts.resolve(&path);
             let source = summary_source
                 .map(Ok)
                 .unwrap_or_else(|| context.resources.source(&path))?;
@@ -115,7 +114,7 @@ impl SiteExtension for Book {
                 ));
             }
             let plan = plan.unwrap();
-            if self.config.enable {
+            if self.config.select {
                 input
                     .documents
                     .retain(|p, _| plan.includes(&mounts.resolve(&content.join(p)), &mounts));

@@ -4,26 +4,26 @@ Notist SSG 将源文档渲染为正文，再套用模板，在输出目录的对
 
 == 构建与预览
 
-在包的 Notist.toml 中声明 site：
+在 Notist.toml 中添加一个 Site target：
 
 ```toml
-[package]
+[project]
 name = "example"
 
-[site]
+[[site]]
 title = "My Site"
 ```
 
-默认从 content 读取文档，使用内置 default 主题；templates 中的同名模板优先。default 提供极简 page 模板，没有导航、侧栏等布局，也可显式配置 theme = "builtins.default"。
+默认从 content 读取文档，使用 templates 中的模板。没有自定义模板时，使用内置的极简 page 模板，可以直接构建，但没有导航、侧栏等站点布局。
 
 ```sh
 notist build
 notist serve --port 8000
 ```
 
-build 默认输出到 workspace 根的 notist-output/example/；独立包则使用包根。serve 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
+`build` 默认输出到 `dist/<target>/`，上例为 `dist/example-site/`。`serve` 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
 
-目录与其他配置见 [Notist.toml 配置](../configuration.not#site)，命令行选项见 [Notist CLI](../cli.not)。
+目录与其他配置见 [Notist.toml 配置](../configuration.not#site-target)，命令行选项见 [Notist CLI](../cli.not)。
 
 == 源文件与输出
 
@@ -37,8 +37,6 @@ content/guide/image.svg    → guide/image.svg
 ```
 
 文档间的本地链接会指向对应的 HTML 页面。
-
-directory_urls = true 时，README / index 文档映射到所在目录的 index.html，其他文档映射到 `<stem>/index.html`。include / exclude 控制发现范围；content = "." 可直接使用项目内的混合文档树，此时建议 copy_content_assets = false，仅发布正文显式引用的资源。
 
 == 模板
 
@@ -72,11 +70,8 @@ directory_urls = true 时，README / index 文档映射到所在目录的 index.
 | `site.pages` / `site.directories` | 整站页面与目录，可用于组织导航。 |
 | `site.data` | data 目录加载的额外信息。 |
 | `assets.highlight` / `assets.components` | 代码高亮样式与组件脚本的地址；自定义模板按上例加载。 |
-| `assets.styles` / `assets.scripts` | 配置中按声明顺序追加的资源 URL，模板可自行加载。 |
 
 模板可以使用 include 和 extends 拆分、复用布局；引用模板名时不带 .tera。`url(path='index.html')` 可以生成带 base_url 的站点链接。
-
-`url(path='guide/', relative_to=page.route.output)` 生成当前页相对 URL，不依赖部署前缀。
 
 === 页面属性
 
@@ -114,8 +109,6 @@ repository = "https://github.com/example/project"
 - static 下的文件复制到输出目录，可放 CSS、图片等资源。
 - sass 下的 .scss / .sass 编译为对应路径的 .css；以 _ 开头的文件仅用于导入。
 - theme 可以指定一个包含 templates、static、sass 的主题目录；站点中的同名文件优先于主题。
-- 默认主题位于 crates/notist-ssg/src/themes/default/templates/page.tera，与 Book 一样以独立模板文件嵌入，不在 Rust 中拼写 HTML。
-- theme = "builtins.book" 选择内置阅读主题；同时启用 `[site.extensions.builtins.book]` 提供其所需的章节数据。详见 [Notist Book](../book.not)。
 
 例如 `static/site.css` 输出为 `site.css`，模板中用 `{{url(path='site.css')}}` 引用。
 

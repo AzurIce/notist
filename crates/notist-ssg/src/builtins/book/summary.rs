@@ -20,12 +20,13 @@ pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
 
 /// A declared entry before target resolution. A `None` target is an unlinked
 /// chapter; an empty target is a draft entry.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Entry {
     pub kind: NavigationKind,
     pub label: Option<String>,
     pub target: Option<String>,
     pub collapsed: bool,
+    #[serde(skip)]
     pub span: TextRange,
     pub children: Vec<Entry>,
 }
@@ -400,12 +401,7 @@ pub(crate) fn resolve<R: Resources>(
                         Target::Label
                     } else if value.ends_with('/') {
                         let book_path = mounts.path(&path).unwrap();
-                        let kind = if mounts.is_virtual_directory(&book_path)
-                            || sources.iter().any(|source| {
-                                mounts
-                                    .path(source)
-                                    .is_some_and(|p| p != book_path && p.starts_with(&book_path))
-                            }) {
+                        let kind = if mounts.is_virtual_directory(&book_path) || sources.iter().any(|source| mounts.path(source).is_some_and(|p| p.starts_with(&book_path))) {
                             Ok(Some(ResourceKind::Directory))
                         } else {
                             resources.kind(&path)

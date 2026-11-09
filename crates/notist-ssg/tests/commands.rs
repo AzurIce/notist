@@ -127,37 +127,3 @@ fn invalid_protocol_paths_sources_and_command_failures_abort_the_site_build() {
         assert!(error.to_string().contains(message), "{error}");
     }
 }
-
-#[test]
-fn explicit_order_interleaves_commands_and_builtins() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("generate.sh"),
-        "cat >/dev/null\ncat response.json\n",
-    )
-    .unwrap();
-    fs::write(
-        root.path().join("response.json"),
-        json!({"version": 1, "input": {
-            "documents": {"index.not": "= Generated", "SUMMARY.not": "- [Home](index.not)"},
-            "data": {}
-        }})
-        .to_string(),
-    )
-    .unwrap();
-    let config: SiteConfig = toml::from_str("extension_order=['generate','builtins.book']\ntheme='builtins.book'\n[extensions.builtins.book]\n[extensions.generate]\ncommand=['sh','generate.sh']").unwrap();
-    let output = Builder::default()
-        .build(&mut Vault::new(FsResources::new(root.path())), &config)
-        .unwrap();
-    assert_eq!(output.pages.len(), 1);
-    assert_eq!(output.data["book"]["navigation"][0]["title"], "Home");
-    let mut wrong = config;
-    wrong.extension_order.reverse();
-    assert!(
-        Builder::default()
-            .build(&mut Vault::new(FsResources::new(root.path())), &wrong)
-            .unwrap_err()
-            .to_string()
-            .contains("book contains no selected documents")
-    );
-}

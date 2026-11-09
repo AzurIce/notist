@@ -185,9 +185,7 @@ fn an_output_inside_content_is_never_rediscovered() {
 #[derive(Debug)]
 struct Remove;
 impl SiteExtension for Remove {
-    fn name(&self) -> &str {
-        "remove"
-    }
+    fn name(&self) -> &str { "remove" }
     fn prepare(&self, _: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
         input.documents.remove(Path::new("a.not"));
         Ok(())
@@ -201,26 +199,16 @@ fn later_extensions_cannot_leave_dangling_navigation_or_overwrite_reserved_data(
     let error = Builder::default()
         .with_extension(notist_ssg::builtins::book::Book::default())
         .with_extension(Remove)
-        .build(
-            &mut vault(&[
-                ("content/index.not", "= Home"),
-                ("content/a.not", "= A"),
-                ("content/SUMMARY.not", "- [Home](index.not)\n- [A](a.not)"),
-            ]),
-            &config,
-        )
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("(enrich): book navigation references removed page")
-    );
-    let error = Builder::default()
-        .build(
-            &mut vault(&[("content/index.not", "= Home"), ("data/book.json", "{}")]),
-            &self::config(),
-        )
-        .unwrap_err();
+        .build(&mut vault(&[
+            ("content/index.not", "= Home"),
+            ("content/a.not", "= A"),
+            ("content/SUMMARY.not", "- [Home](index.not)\n- [A](a.not)"),
+        ]), &config).unwrap_err();
+    assert!(error.to_string().contains("(enrich): book navigation references removed page"));
+    let error = Builder::default().build(&mut vault(&[
+        ("content/index.not", "= Home"),
+        ("data/book.json", "{}"),
+    ]), &self::config()).unwrap_err();
     assert!(error.to_string().contains("site.data.book is reserved"));
 }
 

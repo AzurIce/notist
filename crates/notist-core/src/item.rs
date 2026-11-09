@@ -685,19 +685,135 @@ impl Node {
         };
     }
 
-    /// Depth-first iteration over this item and all its descendants.
+    /// Depth-first, pre-order iteration over this item and all its descendants.
+    /// Traversal storage grows with depth, not the number of siblings; shallow
+    /// trees use inline storage without allocating a traversal stack.
+    #[inline]
     pub fn descendants(&self) -> impl Iterator<Item = &Item> {
-        let mut stack = vec![self];
-        std::iter::from_fn(move || {
-            let item = stack.pop()?;
-            stack.extend(item.children().iter().rev());
-            Some(item)
-        })
+        Descendants::new(self)
     }
 
     /// The first descendant (self included) matching `pred`.
     pub fn find(&self, pred: impl Fn(&Item) -> bool) -> Option<&Item> {
         self.descendants().find(|item| pred(item))
+    }
+}
+
+/// Keep one child cursor per active level rather than pushing every sibling.
+/// Deep trees spill onto the heap instead of recursing on the call stack.
+struct Descendants<'a> {
+    current: std::slice::Iter<'a, Item>,
+    stack: smallvec::SmallVec<[std::slice::Iter<'a, Item>; 8]>,
+}
+
+impl<'a> Descendants<'a> {
+    #[inline]
+    fn new(root: &'a Item) -> Self {
+        Self {
+            current: std::slice::from_ref(root).iter(),
+            stack: smallvec::SmallVec::new(),
+        }
+    }
+}
+
+impl<'a> Iterator for Descendants<'a> {
+    type Item = &'a Item;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.current.next() {
+                let children = item.children();
+                if !children.is_empty() {
+                    let remaining = std::mem::replace(&mut self.current, children.iter());
+                    // A single-child chain needs no saved parent cursor.
+                    if !remaining.as_slice().is_empty() {
+                        self.stack.push(remaining);
+                    }
+                }
+                return Some(item);
+            }
+            self.current = self.stack.pop()?;
+        }
+    }
+}
+
+#[cfg(test)]
+mod traversal_tests {
+    use super::*;
+
+    fn node(children: Vec<Item>) -> Item {
+        Item::new(Ctor::Node, TextRange::empty(0.into())).with_children(children)
+    }
+
+    #[test]
+    fn descendants_preserves_preorder_and_reference_identity() {
+        let root = node(vec![node(vec![node(vec![]), node(vec![])]), node(vec![])]);
+        let first = &root.children()[0];
+        let expected = [
+            &root,
+            first,
+            &first.children()[0],
+            &first.children()[1],
+            &root.children()[1],
+        ];
+        let actual: Vec<_> = root.descendants().collect();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(std::ptr::eq(actual, expected));
+        }
+        assert!(std::ptr::eq(root.find(|_| true).unwrap(), &root));
+        assert!(root.find(|_| false).is_none());
+    }
+
+    #[test]
+    fn wide_tree_keeps_inline_cursors_and_original_sibling_order() {
+        let root = node((0..4096).map(|_| node(vec![])).collect());
+        let mut descendants = Descendants::new(&root);
+        assert!(std::ptr::eq(descendants.next().unwrap(), &root));
+        for child in root.children() {
+            assert!(std::ptr::eq(descendants.next().unwrap(), child));
+            assert!(!descendants.stack.spilled());
+            assert!(descendants.stack.is_empty());
+        }
+        assert!(descendants.next().is_none());
+        assert!(descendants.next().is_none());
+    }
+
+    #[test]
+    fn deep_tree_spills_without_recursive_traversal() {
+        let depth = 4096;
+        let mut root = node(vec![]);
+        for _ in 0..depth {
+            root = node(vec![root, node(vec![])]);
+        }
+        let mut descendants = Descendants::new(&root);
+        let mut count = 0;
+        let mut spilled = false;
+        while descendants.next().is_some() {
+            count += 1;
+            spilled |= descendants.stack.spilled();
+        }
+        drop(descendants);
+        // Teardown is iterative too: recursive Node destruction is a separate
+        // concern, and must not overflow the test thread's call stack.
+        let mut pending = vec![root];
+        while let Some(mut item) = pending.pop() {
+            pending.extend(std::mem::take(item.children_mut().unwrap()));
+        }
+        assert_eq!(count, depth * 2 + 1);
+        assert!(spilled);
+    }
+
+    #[test]
+    fn leaf_is_included_once_and_exhaustion_is_stable() {
+        let root = node(vec![]);
+        let mut descendants = Descendants::new(&root);
+        assert!(!descendants.stack.spilled());
+        assert!(std::ptr::eq(descendants.next().unwrap(), &root));
+        assert!(descendants.next().is_none());
+        assert!(descendants.next().is_none());
+        assert!(!descendants.stack.spilled());
     }
 }
 

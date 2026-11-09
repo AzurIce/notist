@@ -1039,6 +1039,7 @@ dependencies = [
  "rowan",
  "serde",
  "serde_json",
+ "smallvec",
  "toml_edit",
 ]
 

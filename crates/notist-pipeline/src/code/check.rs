@@ -629,6 +629,19 @@ impl<'a> Checker<'a> {
                     }
                     return self.failed(span, "non-exhaustive comptime match");
                 }
+                // Every runtime match first evaluates its subject, including a
+                // wildcard-only match. Conditions and Option payloads read this
+                // internal binding instead of copying the subject computation.
+                let Some(subject_id) = self.declare_in("$match", subject.span, span) else {
+                    return self.failed(span, "cannot allocate match subject binding");
+                };
+                let initializer = subject;
+                let subject = self.typed(
+                    initializer.ty.clone(),
+                    ExprKind::Input(subject_id),
+                    None,
+                    initializer.span,
+                );
                 let mut wildcard = false;
                 let mut covered_some = false;
                 let mut covered_none = false;
@@ -721,7 +734,13 @@ impl<'a> Checker<'a> {
                 if !wildcard && !(covered_some && covered_none) {
                     self.report(span, "runtime match requires a final `_` arm");
                 }
-                result.unwrap_or_else(|| self.failed(span, "empty match"))
+                let result = result.unwrap_or_else(|| self.failed(span, "empty match"));
+                self.typed(
+                    result.ty.clone(),
+                    ExprKind::Block(vec![(subject_id, initializer)], Box::new(result)),
+                    None,
+                    span,
+                )
             }
             Expr::For {
                 binding,

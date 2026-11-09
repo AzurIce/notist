@@ -112,6 +112,54 @@ fn build_reports_cover_core_site_and_publication_even_on_failure() {
     );
 }
 
+#[test]
+fn jobs_and_timings_cover_every_page_with_valid_worker_parents() {
+    for jobs in ["1", "4"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fixture(root);
+        for i in 0..257 {
+            write(
+                root,
+                &format!("content/page-{i}.not"),
+                &format!("= Page {i}"),
+            );
+        }
+        let result = command(root)
+            .args(["build", "--jobs", jobs, "--timings=json"])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report = std::fs::read_dir(root.join("target/notist-timings"))
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .find(|p| p.extension().unwrap() == "json")
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        let spans = report["spans"].as_array().unwrap();
+        for stage in ["host.document.evaluate", "site.template.page"] {
+            assert_eq!(
+                spans.iter().filter(|s| s["stage"] == stage).count(),
+                258,
+                "{stage}"
+            );
+        }
+        assert!(spans.iter().all(|s| s["status"] == "finished"));
+        for span in spans {
+            if let Some(parent) = span["parent"].as_u64() {
+                let parent = &spans[parent as usize];
+                assert!(parent["start_ns"].as_u64() <= span["start_ns"].as_u64());
+                assert!(parent["end_ns"].as_u64() >= span["end_ns"].as_u64());
+            }
+        }
+    }
+}
+
 struct Preview {
     child: Child,
     address: String,
@@ -128,7 +176,7 @@ impl Preview {
         let address = socket.local_addr().unwrap().to_string();
         drop(socket);
         let mut cmd = command(root);
-        cmd.args(["serve", "--address", &address, "--no-clear-screen"]);
+        cmd.args(["serve", "--address", &address, "--no-clear-screen", "-j2"]);
         if timings {
             cmd.arg("--timings");
         }

@@ -12,6 +12,7 @@ use std::{
 };
 
 mod code;
+mod parallel;
 pub use code::CodeAnalysis;
 
 #[derive(Debug)]
@@ -526,16 +527,27 @@ impl<R: Resources> Vault<R> {
         analysis: &Analysis,
         context: &crate::Context,
     ) -> Result<Evaluation, VaultError> {
-        let evaluation = crate::progress::Span::stage("host.document.evaluate", || {
-            "Evaluate Code and extensions".into()
-        });
-        evaluation.attribute("source", || analysis.source().name().to_string());
-        let result = self.pipeline.evaluate_with_inputs_and_limits(
+        Self::evaluate_prepared(
+            &self.pipeline,
             analysis,
             context,
             &self.resources,
             self.evaluation_limits,
-        );
+        )
+    }
+
+    fn evaluate_prepared(
+        pipeline: &Pipeline,
+        analysis: &Analysis,
+        context: &crate::Context,
+        inputs: &dyn crate::EvaluationInputs,
+        limits: crate::Limits,
+    ) -> Result<Evaluation, VaultError> {
+        let evaluation = crate::progress::Span::stage("host.document.evaluate", || {
+            "Evaluate Code and extensions".into()
+        });
+        evaluation.attribute("source", || analysis.source().name().to_string());
+        let result = pipeline.evaluate_with_inputs_and_limits(analysis, context, inputs, limits);
         match result {
             crate::EvaluationOutcome::Complete(output) => {
                 evaluation.finish();

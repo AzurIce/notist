@@ -2,7 +2,17 @@
 use crate::{package::Package, publication::publish};
 use notist::Vault;
 use notist_ssg::{BuildOutput, Builder, Error};
-use std::{collections::BTreeSet, path::PathBuf, process::ExitCode};
+use std::{collections::BTreeSet, num::NonZeroUsize, path::PathBuf, process::ExitCode, sync::Arc};
+
+pub(crate) fn executor(jobs: Option<NonZeroUsize>) -> Result<Arc<notist::Executor>, String> {
+    let result = match jobs {
+        Some(jobs) => notist::Executor::new(jobs),
+        None => notist::Executor::auto(),
+    };
+    result
+        .map(Arc::new)
+        .map_err(|error| format!("cannot create build executor: {error}"))
+}
 
 pub(crate) struct Build {
     pub artifact: BuildOutput,
@@ -12,6 +22,7 @@ pub(crate) struct Build {
 pub(crate) fn assemble(
     target: &Package,
     preview: bool,
+    executor: &Arc<notist::Executor>,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     notist::evict_caches(10);
     let prepared = notist::progress::run_stage(
@@ -35,7 +46,7 @@ pub(crate) fn assemble(
         // Per-page data projections accumulate across a large generated site.
         .with_data_cache_limits(512 * 1024 * 1024, 65_536)
         .with_config(prepared.config);
-    let builder = Builder::default();
+    let builder = Builder::default().with_executor(executor.clone());
     let result = if preview {
         builder.serve(&mut vault, &options)
     } else {
@@ -50,12 +61,12 @@ pub(crate) fn assemble(
         })
         .map_err(|e| (e, observed))
 }
-pub(crate) fn build_package(target: &Package) -> ExitCode {
+pub(crate) fn build_package(target: &Package, executor: &Arc<notist::Executor>) -> ExitCode {
     let result = notist::progress::run_stage(
         "host.build",
         || format!("Build {}", target.name),
         || {
-            let result = assemble(target, false).map_err(|(e, _)| e)?;
+            let result = assemble(target, false, executor).map_err(|(e, _)| e)?;
             notist::progress::run_stage(
                 "host.publish",
                 || "Publish files".into(),

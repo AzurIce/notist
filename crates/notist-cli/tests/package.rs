@@ -35,6 +35,88 @@ const SITE: &str = "[package]\nname='manual'\n[site]";
 const BOOK: &str = "[package]\nname='manual'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}";
 
 #[test]
+fn global_jobs_controls_builds_without_the_obsolete_evaluation_environment() {
+    use std::{collections::BTreeMap, path::PathBuf};
+    fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, dir: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, result);
+                } else {
+                    result.insert(
+                        path.strip_prefix(root).unwrap().into(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut result = BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", SITE);
+    write(
+        root,
+        "templates/page.tera",
+        "{{page.title}}|{{page.html | safe}}",
+    );
+    for i in 0..521 {
+        write(
+            root,
+            &format!("content/page-{i}.not"),
+            &format!("= Page {i}\n\n*Body* {i}"),
+        );
+    }
+    let output = root.join("notist-output/manual");
+    let mut expected = None;
+    for args in [&["-j1", "build"][..], &["build", "--jobs", "4"][..]] {
+        let result = Command::new(env!("CARGO_BIN_EXE_notist"))
+            .current_dir(root)
+            .args(args)
+            .env("NOTIST_EVAL_WORKERS", "not-a-number")
+            .output()
+            .unwrap();
+        success(result);
+        let files = inventory(&output);
+        if let Some(expected) = &expected {
+            assert_eq!(&files, expected);
+        } else {
+            expected = Some(files);
+        }
+    }
+    failure(run(root, &["build", "--jobs", "0"]), "invalid value");
+}
+
+#[test]
+fn workspace_build_accepts_the_same_global_jobs_option() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", "[workspace]\nmembers=['a','b']");
+    for name in ["a", "b"] {
+        write(
+            root,
+            &format!("{name}/Notist.toml"),
+            &format!("[package]\nname='{name}'\n[site]"),
+        );
+        write(
+            root,
+            &format!("{name}/content/index.not"),
+            &format!("= {name}"),
+        );
+    }
+    success(run(root, &["-j2", "build", "--workspace"]));
+    for name in ["a", "b"] {
+        assert!(
+            root.join(format!("notist-output/{name}/index.html"))
+                .is_file()
+        );
+    }
+}
+
+#[test]
 fn nearest_package_builds_one_site_into_its_named_output_directory() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

@@ -46,8 +46,11 @@ struct Build {
     output: PathBuf,
     observed: BTreeSet<PathBuf>,
 }
-fn assemble(target: &crate::package::Package) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    crate::ssg::assemble(target, true)
+fn assemble(
+    target: &crate::package::Package,
+    executor: &Arc<notist::Executor>,
+) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
+    crate::ssg::assemble(target, true, executor)
         .map(|b| Build {
             artifact: BuildOutput {
                 pages: b.artifact.pages.len(),
@@ -91,9 +94,10 @@ pub(crate) fn serve_package(
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
     verbose: bool,
+    jobs: Option<std::num::NonZeroUsize>,
     timings: bool,
 ) -> std::process::ExitCode {
-    match run(target, listen, no_clear_screen, verbose, timings) {
+    match run(target, listen, no_clear_screen, verbose, jobs, timings) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -146,8 +150,11 @@ fn run(
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
     verbose: bool,
+    jobs: Option<std::num::NonZeroUsize>,
     timings: bool,
 ) -> Result<(), Error> {
+    // One pool for the initial build and every subsequent watcher rebuild.
+    let executor = crate::ssg::executor(jobs).map_err(Error::Message)?;
     // Keep the bound listener: probing and then rebinding would race other processes.
     let listener = bind(listen).map_err(|error| Error::Message(error.to_string()))?;
     let server =
@@ -173,7 +180,15 @@ fn run(
     let mut watches = watch::Watches::default();
     let mut plan = watch::Plan::new(&target, &observed, None);
     watches.sync(&mut watcher, &plan)?;
-    rebuild(&state, &mut observed, &mut output, &terminal, &target, None);
+    rebuild(
+        &state,
+        &mut observed,
+        &mut output,
+        &terminal,
+        &target,
+        &executor,
+        None,
+    );
     plan = watch::Plan::new(&target, &observed, output.as_deref());
     watches.sync(&mut watcher, &plan)?;
     let shared = state.clone();
@@ -217,6 +232,7 @@ fn run(
                     &mut output,
                     &terminal,
                     &target,
+                    &executor,
                     Some((received, changes)),
                 );
             });
@@ -242,6 +258,7 @@ fn rebuild(
     output: &mut Option<PathBuf>,
     terminal: &Terminal,
     target: &crate::package::Package,
+    executor: &Arc<notist::Executor>,
     trigger: Option<(Instant, BTreeSet<PathBuf>)>,
 ) {
     let (previous, has_preview) = {
@@ -256,7 +273,7 @@ fn rebuild(
     let mut build = || {
         let span =
             notist::progress::Span::stage("host.rebuild", || format!("Rebuild {}", target.name));
-        let result = assemble(target);
+        let result = assemble(target, executor);
         let mut published = state.write().unwrap();
         published.event += 1;
         match result {

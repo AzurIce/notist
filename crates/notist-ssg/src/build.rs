@@ -528,7 +528,7 @@ fn image(node: &Item, url: &str) -> Option<String> {
 }
 
 /// Rendering uses only immutable prepared values. Resource reads, document
-/// hooks, evaluation and publication remain ordered host operations.
+/// hooks and publication remain ordered host operations.
 fn render_templates(
     engine: &tera::Tera,
     config: &SiteConfig,
@@ -536,13 +536,14 @@ fn render_templates(
     values: &TemplateContext,
     components: &BTreeMap<PathBuf, String>,
     highlight_css: &Path,
-    workers: usize,
+    executor: &notist::Executor,
 ) -> Result<Vec<Vec<u8>>, Error> {
-    let render = |start: usize, end: usize| {
+    let render = |start: usize, chunk: &[Page]| {
         let mut context = values.context.clone();
         let mut current_directory: Option<&str> = None;
-        let mut output = Vec::with_capacity(end - start);
-        for (i, page) in pages.iter().enumerate().take(end).skip(start) {
+        let mut output = Vec::with_capacity(chunk.len());
+        for (offset, page) in chunk.iter().enumerate() {
+            let i = start + offset;
             let timing = notist::progress::Span::stage("site.template.page", || {
                 format!("Template {}", page.route.path.display())
             });
@@ -582,41 +583,23 @@ fn render_templates(
         }
         Ok::<_, Error>(output)
     };
-    let workers = workers.clamp(1, 8).min(pages.len().max(1));
-    if workers == 1 {
-        return render(0, pages.len());
+    // Chunk sizing is a batching choice, not an independent concurrency limit.
+    let chunk = pages.len().div_ceil(executor.jobs()).max(128);
+    let chunks = executor.map_chunks(pages, chunk, render);
+    let mut output = Vec::with_capacity(pages.len());
+    // Ordered collection preserves the first page error and deterministic output.
+    for chunk in chunks {
+        output.extend(chunk?);
     }
-    std::thread::scope(|scope| {
-        let chunk = pages.len().div_ceil(workers);
-        let render = &render;
-        let handles: Vec<_> = (0..pages.len())
-            .step_by(chunk)
-            .map(|start| {
-                let context = notist::progress::timings::context();
-                scope.spawn(move || {
-                    notist::progress::timings::with_context(context, || {
-                        render(start, (start + chunk).min(pages.len()))
-                    })
-                })
-            })
-            .collect();
-        let mut output = Vec::with_capacity(pages.len());
-        // Ordered joins preserve the first page error and deterministic output.
-        for handle in handles {
-            let rendered = handle
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
-            output.extend(rendered);
-        }
-        Ok(output)
-    })
+    Ok(output)
 }
 
-pub(crate) fn build<R: Resources>(
+pub(crate) fn build<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
     extensions: &[Box<dyn crate::extensions::ExtensionFactory>],
     recover: bool,
+    executor: &notist::Executor,
 ) -> Result<BuildOutput, Error> {
     notist::progress::run_stage(
         "site.build",
@@ -782,11 +765,31 @@ pub(crate) fn build<R: Resources>(
             let mut handles = Vec::with_capacity(analyzed.len());
             let evaluation_stage =
                 notist::progress::Span::stage("site.evaluate", || "Evaluate documents".into());
+            let evaluation_start = std::time::Instant::now();
+            let parallel = if executor.jobs() > 1 && analyzed.len() > 128 {
+                let jobs: Vec<_> = analyzed
+                    .iter()
+                    .map(|(_, _, analysis, handle)| (handle, analysis))
+                    .collect();
+                Some(vault.evaluate_documents(&jobs, executor)?)
+            } else {
+                None
+            };
+            let parallelized = parallel.is_some();
+            let mut parallel = parallel.map(Vec::into_iter);
             for (route, text, analysis, handle) in analyzed {
-                let document = notist::progress::Span::stage("site.document.evaluate", || {
-                    format!("Document {}", route.path.display())
-                });
-                let evaluation = vault.evaluate_document(&handle, &analysis)?;
+                let document = notist::progress::Span::stage(
+                    if parallelized {
+                        "site.document.prepare"
+                    } else {
+                        "site.document.evaluate"
+                    },
+                    || format!("Document {}", route.path.display()),
+                );
+                let evaluation = match &mut parallel {
+                    Some(results) => results.next().unwrap()?,
+                    None => vault.evaluate_document(&handle, &analysis)?,
+                };
                 errors.extend(
                     evaluation
                         .diagnostics
@@ -815,6 +818,12 @@ pub(crate) fn build<R: Resources>(
                 return Err(Error::Diagnostics(errors));
             }
             evaluation_stage.finish();
+            if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
+                eprintln!(
+                    "[eval-batch] seconds={:.9}",
+                    evaluation_start.elapsed().as_secs_f64()
+                );
+            }
             let asset_stage =
                 notist::progress::Span::stage("site.assets", || "Prepare assets and Sass".into());
             let mut assets = Assets::new(output);
@@ -1057,11 +1066,6 @@ pub(crate) fn build<R: Resources>(
             let engine = templates::load(vault.resources(), config)?;
             let dirs = directories(&pages, &source_dirs, &content);
             let values = TemplateContext::new(config, &pages, &dirs, &data)?;
-            let workers = if pages.len() >= 1024 {
-                std::thread::available_parallelism().map_or(1, usize::from)
-            } else {
-                1
-            };
             let rendered = render_templates(
                 &engine,
                 config,
@@ -1069,7 +1073,7 @@ pub(crate) fn build<R: Resources>(
                 &values,
                 &components,
                 &highlight_css,
-                workers,
+                executor,
             )?;
             for (page, bytes) in pages.iter().zip(rendered) {
                 assets.write_reserved(&page.route.output, bytes)?;
@@ -1222,8 +1226,11 @@ mod tests {
     }
     #[test]
     fn parallel_templates_preserve_values_order_and_first_error() {
+        let serial_executor = notist::Executor::new(std::num::NonZeroUsize::MIN).unwrap();
+        let parallel_executor =
+            notist::Executor::new(std::num::NonZeroUsize::new(4).unwrap()).unwrap();
         let content = Path::new("/site/content");
-        let pages: Vec<_> = (0..24)
+        let pages: Vec<_> = (0..521)
             .map(|i| Page {
                 route: Route::new(content.join(format!("p{i}.not")), content).unwrap(),
                 title: format!("page-{i}"),
@@ -1241,38 +1248,53 @@ mod tests {
         engine.add_raw_template("page", "{{page.title}}|{{page.html | safe}}|{{directory.pages | length}}|{{site.pages | length}}").unwrap();
         let components = BTreeMap::new();
         let highlight = Path::new("_notist/highlight.css");
-        let serial =
-            render_templates(&engine, &config, &pages, &values, &components, highlight, 1).unwrap();
+        let serial = render_templates(
+            &engine,
+            &config,
+            &pages,
+            &values,
+            &components,
+            highlight,
+            &serial_executor,
+        )
+        .unwrap();
         let (parallel, timings) = notist::timings::capture(|| {
             let parent = notist::progress::Span::stage("site.templates", || "Templates".into());
-            let result =
-                render_templates(&engine, &config, &pages, &values, &components, highlight, 4)
-                    .unwrap();
+            let result = render_templates(
+                &engine,
+                &config,
+                &pages,
+                &values,
+                &components,
+                highlight,
+                &parallel_executor,
+            )
+            .unwrap();
             parent.finish();
             result
         });
-        assert_eq!(timings.spans.len(), 25);
+        assert_eq!(timings.spans.len(), 522);
         assert!(
             timings.spans[1..]
                 .iter()
                 .all(|span| span.parent == Some(0) && span.status == "finished")
         );
-        assert_eq!(
+        assert!(
             timings.spans[1..]
                 .iter()
                 .map(|span| span.lane)
                 .collect::<BTreeSet<_>>()
-                .len(),
-            4
+                .len()
+                <= parallel_executor.jobs()
         );
         assert_eq!(serial, parallel);
         assert!(
             String::from_utf8(parallel[7].clone())
                 .unwrap()
-                .starts_with("page-7|<strong>7</strong>|24|24")
+                .starts_with("page-7|<strong>7</strong>|521|521")
         );
         let mut invalid = pages;
-        for index in [3, 18] {
+        for index in [3, 318] {
             invalid[index]
                 .attrs
                 .insert("template".into(), serde_json::json!("missing"));
@@ -1284,7 +1306,7 @@ mod tests {
             &values,
             &components,
             highlight,
-            1,
+            &serial_executor,
         )
         .unwrap_err()
         .to_string();
@@ -1295,7 +1317,7 @@ mod tests {
             &values,
             &components,
             highlight,
-            4,
+            &parallel_executor,
         )
         .unwrap_err()
         .to_string();

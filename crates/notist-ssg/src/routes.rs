@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
 
 /// A source document keeps its relative path and only changes its extension.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Route {
     pub source: PathBuf,
     pub path: PathBuf,

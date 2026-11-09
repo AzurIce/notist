@@ -526,7 +526,7 @@ fn render_templates(
 pub(crate) fn build<R: Resources>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
-    extensions: &[Box<dyn crate::extensions::SiteExtension>],
+    extensions: &[Box<dyn crate::extensions::ExtensionFactory>],
     recover: bool,
 ) -> Result<BuildOutput, Error> {
     let config = &{
@@ -540,8 +540,8 @@ pub(crate) fn build<R: Resources>(
         config
     };
     config.validate()?;
-    let configured = crate::extensions::configured(config)?;
-    let extensions: Vec<&dyn crate::extensions::SiteExtension> = extensions.iter().chain(configured.iter()).map(|e| e.as_ref()).collect();
+    let mut extensions: Vec<_> = extensions.iter().map(|e| e.create()).collect();
+    extensions.extend(crate::extensions::configured(config)?);
     let content = vault.resources().resolve(&config.content);
     let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
     let output = vault.resources().resolve(&config.output);
@@ -585,7 +585,7 @@ pub(crate) fn build<R: Resources>(
         )));
     }
     let mut sources = vec![];
-    let discovery = notist::progress::Span::enter(|| "Discover documents and data".into());
+    let discovery = notist::progress::Span::enter(|| "Discover documents".into());
     let mut content_assets = vec![];
     let mut source_dirs = vec![];
     let globs = |patterns: &[String]| -> Result<globset::GlobSet, Error> {
@@ -614,7 +614,7 @@ pub(crate) fn build<R: Resources>(
         )?;
         }
     }
-    let mut input = crate::extensions::SiteInput {
+    let mut input = crate::extensions::CompileInput {
         documents: sources
             .into_iter()
             .map(|source| {
@@ -624,12 +624,11 @@ pub(crate) fn build<R: Resources>(
                 ))
             })
             .collect::<Result<_, Error>>()?,
-        data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
     };
     discovery.finish();
     let routes = notist::progress::run(
         || "Run site extensions and plan routes".into(),
-        || crate::extensions::prepare(vault, config, &extensions, &mut input),
+        || crate::extensions::before_compile(vault, config, &mut extensions, &mut input),
     )?;
     let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
     // Mounts may introduce virtual ancestors without documents of their own.
@@ -706,7 +705,7 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     evaluation_stage.finish();
-    let asset_stage = notist::progress::Span::enter(|| "Prepare assets, Sass and templates".into());
+    let asset_stage = notist::progress::Span::enter(|| "Prepare assets and Sass".into());
     let mut assets = Assets::new(output);
     for document in &documents {
         assets.reserve_generated(document.page.route.output.clone())?;
@@ -744,9 +743,7 @@ pub(crate) fn build<R: Resources>(
             outputs.insert(path.clone());
         }
     }
-    let engine = templates::load(vault.resources(), config)?;
     asset_stage.finish();
-    let mut data = input.data;
     let by_source = DocumentIndex::new(&documents);
     let mut warnings = vec![];
     let mut pages = vec![];
@@ -874,9 +871,21 @@ pub(crate) fn build<R: Resources>(
         return Err(Error::Diagnostics(errors));
     }
     rendering.finish();
-    crate::extensions::enrich(vault.resources(), config, &extensions, &pages, &mut data)?;
+    let mut template_input = crate::extensions::TemplateInput {
+        pages: &pages,
+        data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
+    };
+    crate::extensions::before_template(
+        vault.resources(),
+        config,
+        &mut extensions,
+        &mut template_input,
+    )?;
+    let data = template_input.data;
+    crate::extensions::finish(&mut extensions)?;
     let templates_stage =
         notist::progress::Span::enter(|| format!("Render templates ({} pages)", pages.len()));
+    let engine = templates::load(vault.resources(), config)?;
     let dirs = directories(&pages, &source_dirs, &content);
     let values = TemplateContext::new(config, &pages, &dirs, &data)?;
     let workers = if pages.len() >= 1024 {

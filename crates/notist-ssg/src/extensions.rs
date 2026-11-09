@@ -1,5 +1,4 @@
-//! Experimental site input extensions, applied once before routing and compilation.
-//! The source/data boundary is being validated against concrete generation cases.
+//! Build-scoped site extensions, called at compilation and template boundaries.
 use crate::{Error, Route, SiteConfig};
 use notist::{Resources, Vault};
 use serde::{Deserialize, Serialize};
@@ -13,8 +12,13 @@ use std::{
 /// paths; values are source text in the format selected by the path's extension.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SiteInput {
+pub struct CompileInput {
     pub documents: BTreeMap<PathBuf, String>,
+}
+
+/// Final pages are read-only; only template data can be changed.
+pub struct TemplateInput<'a> {
+    pub pages: &'a [crate::Page],
     pub data: BTreeMap<String, serde_json::Value>,
 }
 
@@ -25,21 +29,40 @@ pub struct SiteContext<'a> {
     pub config: &'a SiteConfig,
 }
 
-/// Experimental site extension. Runs once per build after discovery and data
-/// loading, before documents enter the shared Notist pipeline. It can add,
-/// replace or remove sources and data. A failed extension aborts the build.
+/// One mutable instance per build, retained across both events and discarded on
+/// success or failure. Builder clones native extension prototypes for each build.
 pub trait SiteExtension: Debug + Send + Sync {
     fn name(&self) -> &str;
-    fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error>;
-
-    /// Add presentation data after compilation, using final titles and routes.
-    fn enrich(
-        &self,
+    fn before_compile(
+        &mut self,
         _context: &SiteContext<'_>,
-        _pages: &[crate::Page],
-        _data: &mut BTreeMap<String, serde_json::Value>,
+        _input: &mut CompileInput,
     ) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Add presentation data after compilation, using final titles and routes.
+    fn before_template(
+        &mut self,
+        _context: &SiteContext<'_>,
+        _input: &mut TemplateInput<'_>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Close build-scoped resources before committing output.
+    fn finish(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub(crate) trait ExtensionFactory: Debug + Send + Sync {
+    fn create(&self) -> Box<dyn SiteExtension>;
+}
+
+impl<T: SiteExtension + Clone + 'static> ExtensionFactory for T {
+    fn create(&self) -> Box<dyn SiteExtension> {
+        Box::new(self.clone())
     }
 }
 
@@ -97,7 +120,7 @@ pub(crate) fn valid_path(path: &Path) -> bool {
 fn validate<R: Resources>(
     vault: &Vault<R>,
     config: &SiteConfig,
-    input: &SiteInput,
+    input: &CompileInput,
 ) -> Result<Vec<Route>, Error> {
     let mut outputs = BTreeSet::new();
     let content = vault.resources().resolve(&config.content);
@@ -125,12 +148,16 @@ fn validate<R: Resources>(
         }
         routes.push(route);
     }
-    for key in input.data.keys() {
+    Ok(routes)
+}
+
+fn validate_data(data: &BTreeMap<String, serde_json::Value>) -> Result<(), Error> {
+    for key in data.keys() {
         if !valid_path(Path::new(key)) {
             return Err(Error::Message(format!("invalid site data key `{key}`")));
         }
     }
-    Ok(routes)
+    Ok(())
 }
 
 fn contextualize(extension: &dyn SiteExtension, stage: &str, error: Error) -> Error {
@@ -146,11 +173,11 @@ fn contextualize(extension: &dyn SiteExtension, stage: &str, error: Error) -> Er
     }
 }
 
-pub(crate) fn prepare<R: Resources>(
+pub(crate) fn before_compile<R: Resources>(
     vault: &Vault<R>,
     config: &SiteConfig,
-    extensions: &[&dyn SiteExtension],
-    input: &mut SiteInput,
+    extensions: &mut [Box<dyn SiteExtension>],
+    input: &mut CompileInput,
 ) -> Result<Vec<Route>, Error> {
     let context = SiteContext {
         resources: vault.resources(),
@@ -163,20 +190,20 @@ pub(crate) fn prepare<R: Resources>(
             vault.resources().kind(path)?;
         }
     }
-    let run = |extension: &dyn SiteExtension, input: &mut SiteInput| {
+    let run = |extension: &mut dyn SiteExtension, input: &mut CompileInput| {
         let progress = notist::progress::Span::enter(|| format!("Extension {}", extension.name()));
         let mut candidate = input.clone();
         let routes = extension
-            .prepare(&context, &mut candidate)
+            .before_compile(&context, &mut candidate)
             .and_then(|()| validate(vault, config, &candidate))
-            .map_err(|error| contextualize(extension, "prepare", error))?;
+            .map_err(|error| contextualize(extension, "before_compile", error))?;
         *input = candidate;
         progress.finish();
         Ok::<_, Error>(routes)
     };
     let mut routes = None;
     for extension in extensions {
-        routes = Some(run(*extension, input)?);
+        routes = Some(run(extension.as_mut(), input)?);
     }
     match routes {
         Some(routes) => Ok(routes),
@@ -217,20 +244,32 @@ pub(crate) fn configured(config: &SiteConfig) -> Result<Vec<Box<dyn SiteExtensio
         .collect()
 }
 
-pub(crate) fn enrich(
+pub(crate) fn before_template(
     resources: &dyn Resources,
     config: &SiteConfig,
-    extensions: &[&dyn SiteExtension],
-    pages: &[crate::Page],
-    data: &mut BTreeMap<String, serde_json::Value>,
+    extensions: &mut [Box<dyn SiteExtension>],
+    input: &mut TemplateInput<'_>,
 ) -> Result<(), Error> {
     let context = SiteContext { resources, config };
     for extension in extensions {
-        let mut candidate = data.clone();
+        let mut candidate = TemplateInput {
+            pages: input.pages,
+            data: input.data.clone(),
+        };
         extension
-            .enrich(&context, pages, &mut candidate)
-            .map_err(|e| contextualize(*extension, "enrich", e))?;
-        *data = candidate;
+            .before_template(&context, &mut candidate)
+            .and_then(|()| validate_data(&candidate.data))
+            .map_err(|e| contextualize(extension.as_ref(), "before_template", e))?;
+        input.data = candidate.data;
+    }
+    Ok(())
+}
+
+pub(crate) fn finish(extensions: &mut [Box<dyn SiteExtension>]) -> Result<(), Error> {
+    for extension in extensions {
+        extension
+            .finish()
+            .map_err(|e| contextualize(extension.as_ref(), "finish", e))?;
     }
     Ok(())
 }

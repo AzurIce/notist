@@ -112,7 +112,7 @@ watch = ["Cargo.toml", "examples"]
 
 builtins 是保留命名空间。外部表必须提供非空 command 数组，可选 watch 数组，不接受 kind / stages 等未知字段。command 直接执行，不经过 shell；CWD 和 watch 相对包根。
 
-原生扩展按 Builder.with_extension 注册顺序先运行；配置扩展再按 extension_order 或完整名称排序运行。prepare 修改源码和数据，Rust enrich 根据最终页面信息补充展示数据。watch 在失败构建中也生效，Rust Resources 读取的依赖由宿主记录。协议见 [SSG 站点扩展](ssg/extensions.not)。
+各阶段先按 Builder.with_extension 注册顺序运行原生扩展，再按 extension_order 或完整名称排序运行配置扩展。before_compile 只修改源码集合；before_template 读取最终 Pages，只修改模板 data。一次构建的两个事件复用同一实例或命令进程，命令使用 JSON Lines 通信。watch 在失败构建中也生效，Rust Resources 读取的依赖由宿主记录。协议见 [SSG 站点扩展](ssg/extensions.not)。
 
 == 路径基准
 

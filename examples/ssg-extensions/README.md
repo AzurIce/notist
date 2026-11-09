@@ -24,8 +24,14 @@ selects the Notist package. To build all workspace sites, run
 render hashes. The extension owns the `examples/` document namespace. It is a
 generation example, not a migration of Ranim's rendering/publishing workflow.
 
-Native extensions implement `notist_ssg::extensions::SiteExtension` and register
-through `notist_ssg::Builder::with_extension`. Commands use `[site.extensions.<name>]`;
+Each command process handles `before_compile` and `before_template` JSON Lines
+events in one build. It keeps generated metadata in memory between events;
+only the second event receives template data. Flush one response per event and
+exit on stdin EOF. Each rebuild starts a new process.
+
+Native extensions implement `notist_ssg::extensions::SiteExtension` and `Clone`, and register
+through `notist_ssg::Builder::with_extension`. A fresh clone handles both events in each build.
+Commands use `[site.extensions.<name>]`;
 built-ins use `[site.extensions.builtins.<name>]`. Set `extension_order` on the site
 to order dependent extensions explicitly; otherwise configured names are sorted.
 This API and protocol are experimental and can change as use cases develop.

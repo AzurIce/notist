@@ -99,6 +99,16 @@ pub struct DocumentHandle {
     owner: Arc<()>,
 }
 
+/// An immutable source analysis and its exact environment for editor queries.
+/// Navigation reuses lowering; the index includes single-file check diagnostics.
+#[derive(Debug)]
+pub struct DocumentTooling {
+    pub analysis: Analysis,
+    pub environment: Arc<Environment>,
+    pub navigation: crate::SourceNavigation,
+    pub index: crate::index::Index,
+}
+
 /// One input batch, potentially containing multiple nearest configs. Loaded
 /// bytes, errors and document inputs remain fixed; create a new Vault for the
 /// next build or edit. This is a lazy view, not an atomic filesystem snapshot.
@@ -269,6 +279,25 @@ impl<R: Resources> Vault<R> {
         self.compile(path.as_ref(), source, false, None)
             .map(|(analysis, _)| analysis)
     }
+
+    /// Analyze once for diagnostics, outlines, hover and source navigation.
+    /// Runs analysis hooks, never evaluation or output/SSG extensions.
+    pub fn analyze_for_tooling(
+        &mut self,
+        path: impl AsRef<Path>,
+        source: &str,
+    ) -> Result<DocumentTooling, VaultError> {
+        let mut navigation = crate::SourceNavigation::default();
+        let (mut analysis, _, handle) =
+            self.compile_bound(path.as_ref(), source, false, None, Some(&mut navigation))?;
+        let index = crate::vault_index::check_document(path.as_ref(), &mut analysis);
+        Ok(DocumentTooling {
+            analysis,
+            environment: handle.environment,
+            navigation,
+            index,
+        })
+    }
     /// Analyze a document under a host-selected logical resource root, without
     /// changing module roots, import resolution or the Vault's access boundary.
     /// Site hosts use their content directory for root-relative embed references.
@@ -298,7 +327,7 @@ impl<R: Resources> Vault<R> {
     ) -> Result<(Analysis, DocumentHandle), VaultError> {
         let root = self.resources.resolve(resource_root.as_ref());
         let (analysis, _, handle) =
-            self.compile_bound(path.as_ref(), source, false, Some(&root))?;
+            self.compile_bound(path.as_ref(), source, false, Some(&root), None)?;
         Ok((analysis, handle))
     }
     fn compile(
@@ -308,7 +337,7 @@ impl<R: Resources> Vault<R> {
         capture: bool,
         resource_root: Option<&Path>,
     ) -> Result<(Analysis, notist_pipeline::Inspection), VaultError> {
-        self.compile_bound(path, source, capture, resource_root)
+        self.compile_bound(path, source, capture, resource_root, None)
             .map(|(analysis, inspection, _)| (analysis, inspection))
     }
     fn compile_bound(
@@ -317,6 +346,7 @@ impl<R: Resources> Vault<R> {
         source: &str,
         capture: bool,
         resource_root: Option<&Path>,
+        navigation: Option<&mut crate::SourceNavigation>,
     ) -> Result<(Analysis, notist_pipeline::Inspection, DocumentHandle), VaultError> {
         let compilation = crate::progress::Span::enter(|| {
             format!(
@@ -349,6 +379,10 @@ impl<R: Resources> Vault<R> {
                 .clone()
                 .with_resource_root(root.to_string_lossy())
         });
+        if let Some(navigation) = navigation {
+            *navigation =
+                crate::SourceNavigation::from_lowered(&output, source, environment.context());
+        }
         let checking = crate::progress::Span::enter(|| "Check and materialize".into());
         let (mut analysis, inspection) = self.pipeline.analyze_lowered(
             &path,

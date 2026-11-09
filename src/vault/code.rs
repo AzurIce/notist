@@ -7,6 +7,26 @@ pub struct CodeAnalysis {
     pub definitions: Option<DefinitionModule>,
     pub diagnostics: Vec<Diagnostic>,
     pub sources: Sources,
+    environment: Option<Arc<Environment>>,
+}
+impl CodeAnalysis {
+    /// The exact loaded import graph used by checking, reusable by tooling.
+    pub fn environment(&self) -> Option<&Arc<Environment>> {
+        self.environment.as_ref()
+    }
+
+    /// Source navigation from the same compiled module, without parsing again.
+    pub fn navigation(&self) -> crate::SourceNavigation {
+        let Some(environment) = &self.environment else {
+            return Default::default();
+        };
+        let context = environment.context();
+        context
+            .root_id()
+            .and_then(|id| context.program().module_by_id(id))
+            .map(|module| crate::SourceNavigation::from_module(module.code(), context))
+            .unwrap_or_default()
+    }
 }
 impl<R: Resources> Vault<R> {
     pub fn analyze_code(
@@ -44,6 +64,7 @@ impl<R: Resources> Vault<R> {
                     definitions: Some(definitions),
                     diagnostics: self.pipeline.check_module(&id, context),
                     sources: context.program().sources(),
+                    environment: Some(Arc::new(environment)),
                 })
             }
             Err(errors) => {
@@ -74,6 +95,7 @@ impl<R: Resources> Vault<R> {
                     definitions: None,
                     diagnostics,
                     sources,
+                    environment: None,
                 })
             }
         }

@@ -35,6 +35,26 @@ fn code_tooling_uses_project_identity_dependencies_and_the_supplied_source() {
         source
     );
     assert!(analysis.sources.by_name("/project/dep/lib.notc").is_ok());
+    let environment = analysis.environment().unwrap();
+    assert_eq!(
+        environment
+            .module("/project/lib.notc")
+            .unwrap()
+            .source
+            .as_ref(),
+        source
+    );
+    let navigation = notist::Pipeline::default()
+        .source_navigation("/project/lib.notc", source, environment.context())
+        .unwrap();
+    assert_eq!(
+        navigation
+            .definition_at(environment.context(), source.find("dep.value()").unwrap())
+            .unwrap()
+            .id
+            .name,
+        "value"
+    );
     let json: serde_json::Value =
         serde_json::from_str(&notist::cst_json::module_json(source, &analysis)).unwrap();
     assert_eq!(json["functions"][1]["function"], "/project/lib.notc.view");
@@ -69,6 +89,7 @@ fn invalid_signatures_keep_the_recovered_module_tree_and_definition_source() {
         .analyze_code("lib.notc", source)
         .unwrap();
     assert!(analysis.definitions.is_none());
+    assert!(analysis.environment().is_none());
     assert!(!analysis.diagnostics.is_empty());
     assert_eq!(
         analysis.sources.get("/project/lib.notc").unwrap().as_ref(),

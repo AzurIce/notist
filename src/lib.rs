@@ -57,7 +57,7 @@ pub use notist_pipeline::progress;
 pub use notist_pipeline::{
     Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,
     Evaluation, EvaluationOutcome, ExportTable, Limits, LinkedModule, Lowered, ModuleExports,
-    ModuleScope, Pipeline, UnsupportedFormat, bind_imports, evict_caches,
+    ModuleScope, Pipeline, SourceNavigation, UnsupportedFormat, bind_imports, evict_caches,
 };
 pub use notist_syntax as syntax;
 
@@ -82,7 +82,8 @@ pub mod vault_index;
 pub use environment::{Environment, ModuleSource, SourceDiagnostic};
 pub use resources::{FsResources, MemoryResources, OverlayResources, ResourceError, Resources};
 pub use vault::{
-    CodeAnalysis, DocumentHandle, HtmlOutput, ItemOutput, RenderOptions, Vault, VaultError,
+    CodeAnalysis, DocumentHandle, DocumentTooling, HtmlOutput, ItemOutput, RenderOptions, Vault,
+    VaultError,
 };
 pub use vault_index::VaultIndex;
 #[cfg(target_arch = "wasm32")]

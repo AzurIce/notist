@@ -386,6 +386,24 @@ fn rendering_and_debugging_each_lower_exactly_once_and_respect_overrides() {
             .is_some()
     );
     assert_eq!(analysis, output.analysis);
+    let tooling = vault.analyze_for_tooling("doc.not", DOCUMENT).unwrap();
+    assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 3);
+    assert_eq!(tooling.analysis, analysis);
+    for _ in 0..3 {
+        assert_eq!(
+            tooling
+                .navigation
+                .definition_at(
+                    tooling.environment.context(),
+                    DOCUMENT.find("widgets.badge").unwrap()
+                )
+                .unwrap()
+                .id
+                .name,
+            "badge"
+        );
+    }
+    assert_eq!(LOWER_CALLS.load(Ordering::SeqCst), 3);
 }
 
 #[test]

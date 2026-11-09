@@ -405,8 +405,13 @@ fn build_inner<R: Resources>(
         })
         .collect();
     let ids: BTreeMap<_, _> = prepared
-        .iter()
-        .map(|page| (page.route.source.clone(), &page.outline.ids))
+        .iter_mut()
+        .map(|page| {
+            (
+                page.route.source.clone(),
+                std::mem::take(&mut page.outline.ids),
+            )
+        })
         .collect();
     let mut assets = Assets::new(vault.resources().resolve(&config.output));
     let mut warnings = vec![];
@@ -418,7 +423,9 @@ fn build_inner<R: Resources>(
         Some(entries) => Layout::declared(entries, &pages),
         None => Layout::new(&config.title, &pages),
     };
-    for (page, metadata) in prepared.iter().zip(&pages) {
+    // Cross-page lookups own only anchor metadata. Consume each content tree so
+    // already rendered pages do not remain live until the entire book is done.
+    for (page, metadata) in prepared.into_iter().zip(&pages) {
         let document =
             notist::progress::Span::enter(|| format!("Render {}", page.route.path.display()));
         let mut resolved = BTreeMap::new();
@@ -452,7 +459,7 @@ fn build_inner<R: Resources>(
             };
             match target {
                 Ok(routes::Target::External) => {}
-                Err(message) => errors.push(content_diagnostic(page, node, message)),
+                Err(message) => errors.push(content_diagnostic(&page, node, message)),
                 Ok(routes::Target::Local {
                     path,
                     query,
@@ -461,7 +468,7 @@ fn build_inner<R: Resources>(
                     let path = mounts.resolve(&path);
                     let Some(book_path) = mounts.path(&path) else {
                         let mut diagnostic = content_diagnostic(
-                            page,
+                            &page,
                             node,
                             format!(
                                 "local content reference `{value}` is outside Vault root `{}` and configured book mounts",
@@ -487,7 +494,7 @@ fn build_inner<R: Resources>(
                                 &mut errors
                             };
                             diagnostics.push(content_diagnostic(
-                                page,
+                                &page,
                                 node,
                                 format!("missing anchor `#{anchor}` in `{}`", path.display()),
                             ));
@@ -503,7 +510,7 @@ fn build_inner<R: Resources>(
                         }
                     } else if vault.supports(&path) {
                         let diagnostic = content_diagnostic(
-                            page,
+                            &page,
                             node,
                             format!(
                                 "document `{}` is not published by this site",
@@ -518,7 +525,7 @@ fn build_inner<R: Resources>(
                         let route = match Route::new(path.clone(), book_path) {
                             Ok(route) => route,
                             Err(message) => {
-                                errors.push(content_diagnostic(page, node, message));
+                                errors.push(content_diagnostic(&page, node, message));
                                 continue;
                             }
                         };
@@ -531,7 +538,7 @@ fn build_inner<R: Resources>(
                         let destination = book_path.as_path();
                         if destination.starts_with("_notist") {
                             errors.push(content_diagnostic(
-                                page,
+                                &page,
                                 node,
                                 "_notist is reserved for generated resources",
                             ));
@@ -539,7 +546,7 @@ fn build_inner<R: Resources>(
                         }
                         if vault.resources().kind(&path)? != Some(ResourceKind::File) {
                             let diagnostic = content_diagnostic(
-                                page,
+                                &page,
                                 node,
                                 format!("missing local resource `{value}`"),
                             );

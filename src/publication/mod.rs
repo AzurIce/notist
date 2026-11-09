@@ -12,6 +12,32 @@ use std::fmt;
 
 pub mod url;
 
+/// Ordinary template data, distinct from bit-exact component/IR wire values.
+/// Resource identities and private data views are never exposed to templates.
+pub fn presentation_value(value: &crate::Value) -> serde_json::Value {
+    use crate::Value;
+    use serde_json::{Value as Json, json};
+    match value {
+        Value::Unit | Value::None | Value::Path(_) | Value::Data(_) | Value::DataError(_) => {
+            Json::Null
+        }
+        Value::Bool(value) => json!(value),
+        Value::Int(value) => json!(value),
+        Value::Float(value) => json!(value),
+        Value::Str(value) => json!(value.as_str()),
+        Value::Array(values) => Json::Array(values.iter().map(presentation_value).collect()),
+        Value::Dict(values) => Json::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.to_owned(), presentation_value(value)))
+                .collect(),
+        ),
+        Value::Some(value) => presentation_value(value),
+        Value::Ok(value) => json!({"ok": presentation_value(value)}),
+        Value::Err(value) => json!({"err": presentation_value(value)}),
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     Message(String),
@@ -208,7 +234,31 @@ impl Assets {
 
 #[cfg(test)]
 mod tests {
-    use super::Assets;
+    use super::{Assets, presentation_value};
+
+    #[test]
+    fn template_values_preserve_scalars_and_variants_without_exporting_resources() {
+        use crate::Value;
+        let private = crate::ResourcePath::resolve("/private", "doc.not", "data.txt").unwrap();
+        let values: Value = Value::Array(
+            vec![
+                Value::Unit,
+                Value::None,
+                Value::Bool(false),
+                Value::Int(i64::MAX),
+                Value::Float(f64::INFINITY),
+                Value::Str("中文 \"<&>".into()),
+                Value::Some(Box::new(Value::Ok(Box::new(Value::Err(Box::new(
+                    Value::Path(private),
+                )))))),
+            ]
+            .into(),
+        );
+        assert_eq!(
+            presentation_value(&values),
+            serde_json::json!([null, null, false, i64::MAX, null, "中文 \"<&>", {"ok":{"err":null}}])
+        );
+    }
 
     #[test]
     fn generated_paths_reject_exact_and_ancestor_collisions_in_both_orders() {

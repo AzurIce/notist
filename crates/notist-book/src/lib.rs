@@ -25,7 +25,7 @@ pub use config::{BookConfig, Mount};
 use layout::Layout;
 pub use layout::{Navigation, PageLink};
 use mounts::Mounts;
-use notist::publication::{self, Assets};
+use notist::publication::{self, Assets, presentation_value};
 pub use outline::Heading;
 use outline::Outline;
 pub use routes::{Route, Routes};
@@ -83,30 +83,6 @@ pub struct Page {
     pub attrs: BTreeMap<String, serde_json::Value>,
     pub headings: Vec<Heading>,
 }
-// Templates consume ordinary JSON, independently of the typed component wire format.
-fn presentation_value(value: &Value) -> serde_json::Value {
-    use serde_json::{Value as Json, json};
-    match value {
-        Value::Unit | Value::None => Json::Null,
-        // Logical resource identities are not public template values or URLs.
-        Value::Path(_) | Value::Data(_) | Value::DataError(_) => Json::Null,
-        Value::Bool(value) => json!(value),
-        Value::Int(value) => json!(value),
-        Value::Float(value) => json!(value),
-        Value::Str(value) => json!(value.as_str()),
-        Value::Array(values) => Json::Array(values.iter().map(presentation_value).collect()),
-        Value::Dict(values) => Json::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.to_owned(), presentation_value(value)))
-                .collect(),
-        ),
-        Value::Some(value) => presentation_value(value),
-        Value::Ok(value) => json!({"ok":presentation_value(value)}),
-        Value::Err(value) => json!({"err":presentation_value(value)}),
-    }
-}
-
 /// Fully validated files. A failed build returns no partial publication.
 #[derive(Debug)]
 pub struct BuildOutput {

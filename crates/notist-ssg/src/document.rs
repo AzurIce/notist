@@ -1,4 +1,5 @@
 use crate::{Error, Route};
+use notist::publication::presentation_value as value;
 use notist::{Ctor, Diagnostic, Item, SourceDiagnostic, Sources, Value};
 use serde::Serialize;
 use std::{
@@ -36,24 +37,6 @@ pub(crate) struct Document {
 
 pub(crate) fn diagnostic(path: &Path, source: &str, d: Diagnostic) -> SourceDiagnostic {
     SourceDiagnostic::locate(path, source, d)
-}
-
-fn value(input: &Value) -> serde_json::Value {
-    use serde_json::{Value as Json, json};
-    match input {
-        Value::Unit | Value::None => Json::Null,
-        // Logical resource identities are not public template values or URLs.
-        Value::Path(_) | Value::Data(_) | Value::DataError(_) => Json::Null,
-        Value::Bool(v) => json!(v),
-        Value::Int(v) => json!(v),
-        Value::Float(v) => json!(v),
-        Value::Str(v) => json!(v.as_str()),
-        Value::Array(v) => Json::Array(v.iter().map(value).collect()),
-        Value::Dict(v) => Json::Object(v.iter().map(|(k, v)| (k.into(), value(v))).collect()),
-        Value::Some(v) => value(v),
-        Value::Ok(v) => json!({"ok":value(v)}),
-        Value::Err(v) => json!({"err":value(v)}),
-    }
 }
 
 fn text(item: &Item) -> String {

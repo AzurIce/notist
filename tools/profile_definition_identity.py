@@ -13,7 +13,7 @@ import statistics
 import subprocess
 
 from profile_icexiv_refresh import freeze
-from profile_source_identity import BUILD_ENV, digest, inventory, save
+from profile_support import BUILD_ENV, digest, inventory, save, target_directory
 from profile_source_cost import instrument, run, summarize
 
 REPO = Path(__file__).resolve().parents[1]
@@ -59,9 +59,7 @@ def build_kind(a, kind):
     m = verify(a)
     if kind in m['binaries']:
         raise ValueError('never replace a recorded executable: ' + kind)
-    # Copied source mtimes can be older than a previous build in a shared target.
-    # Binding-identity acceptance isolates every frozen revision (including probes).
-    target = a.target / kind if getattr(a, 'isolated_targets', False) else a.target
+    target = target_directory(a.target, kind)
     env = dict(os.environ, **BUILD_ENV, CARGO_TARGET_DIR=str(target))
     with (a.out / 'logs' / f'build-{kind}.log').open('wb') as log:
         subprocess.run(['cargo', 'build', '--release', '--locked', '--offline', '-p', 'notist-cli', '--bin', 'notist'],

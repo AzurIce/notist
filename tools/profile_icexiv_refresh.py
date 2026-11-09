@@ -14,7 +14,8 @@ import subprocess
 import threading
 import time
 
-from profile_xiv_history import extract, git, once, save
+from profile_xiv_history import extract, git, once
+from profile_support import BUILD_ENV, digest, inventory, save
 from xiv_history_probes import enter_function, measure_rhs, MODULE_STATS
 from profile_current import parse_detail
 
@@ -22,17 +23,6 @@ REPO = Path(__file__).resolve().parents[1]
 OLD = Path('/tmp/opencode/notist-icexiv-profile-20261104')
 KINDS = ['before', 'current', 'coarse', 'detail']
 INPUTS = ['Notist.toml', 'content', 'data', 'inputs', 'modules', 'scripts', 'sources', 'static', 'templates']
-BUILD_ENV = dict(CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_RELEASE_DEBUG='1')
-
-
-def digest(path):
-    with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
-
-
-def inventory(root):
-    return {str(p.relative_to(root)): [p.stat().st_size, digest(p)]
-            for p in sorted(root.rglob('*')) if p.is_file() and '__pycache__' not in p.parts}
 
 
 def freeze(destination):

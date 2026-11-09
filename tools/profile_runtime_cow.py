@@ -5,7 +5,6 @@ Only the five runtime files are overlaid onto the pre-change snapshot. CLI and
 other concurrent edits must be identical in both sides of this comparison.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +16,8 @@ import subprocess
 import threading
 import time
 
+from profile_support import BUILD_ENV as ENV, digest, inventory, save
+
 FILES = [
     "crates/notist-core/src/shared.rs",
     "crates/notist-core/src/evaluation.rs",
@@ -24,25 +25,7 @@ FILES = [
     "crates/notist-pipeline/src/code/eval.rs",
     "crates/notist-pipeline/src/code/instance_cache.rs",
 ]
-ENV = {"CARGO_INCREMENTAL": "0", "CARGO_BUILD_JOBS": "2", "CARGO_PROFILE_RELEASE_DEBUG": "1"}
 KINDS = ["before", "after"]
-
-
-def save(path, value):
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-
-
-def inventory(root):
-    result = {}
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and "__pycache__" not in path.parts:
-            result[str(path.relative_to(root))] = [path.stat().st_size, digest(path)]
-    return result
-
-
-def digest(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def prepare(args):

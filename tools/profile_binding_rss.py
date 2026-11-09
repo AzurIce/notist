@@ -9,7 +9,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from profile_source_identity import BUILD_ENV, digest, inventory, save
+from profile_support import BUILD_ENV, digest, inventory, save
 from profile_definition_identity import verify as verify_reference
 from profile_icexiv_refresh import environment
 

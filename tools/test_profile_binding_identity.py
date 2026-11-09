@@ -33,7 +33,7 @@ class BindingIdentityProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir='/tmp/opencode') as directory:
             root = Path(directory)
             (root / 'logs').mkdir()
-            args = SimpleNamespace(out=root, target=root / 'target', isolated_targets=True)
+            args = SimpleNamespace(out=root, target=root / 'target')
             for kind in ['before', 'after', 'before-ledger', 'after-ledger']:
                 with patch.object(shared, 'verify', return_value={'binaries': {}}), patch.object(shared.subprocess, 'run') as run, patch.object(shared.shutil, 'copy2') as copy, patch.object(shared, 'digest', return_value=kind), patch.object(shared, 'save'):
                     shared.build_kind(args, kind)

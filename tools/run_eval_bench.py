@@ -5,7 +5,6 @@ No production optimization, disk IO workload, fixture reduction or cache result
 reuse is performed. Allocation diagnostics never supply performance timings.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,17 +14,9 @@ import statistics
 import subprocess
 import time
 
+from profile_support import BUILD_ENV, digest, save, target_directory
+
 REPO = Path(__file__).resolve().parents[1]
-BUILD_ENV = {"CARGO_INCREMENTAL": "0", "CARGO_BUILD_JOBS": "2", "CARGO_PROFILE_RELEASE_DEBUG": "1"}
-
-
-def digest(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def save(path, value):
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
 def git(*args):
@@ -72,6 +63,20 @@ def summarize(timing_runs, allocation):
     return result
 
 
+def build_variant(source, out, mode):
+    if mode not in {"time", "alloc"}:
+        raise ValueError("unknown benchmark build mode: " + mode)
+    target = target_directory(out / "target", mode)
+    env = dict(os.environ, **BUILD_ENV, CARGO_TARGET_DIR=str(target))
+    command = ["cargo", "build", "--release", "--locked", "--offline", "-p", "notist-eval-bench", "--bin", "notist-eval-bench"]
+    if mode == "alloc":
+        command += ["--features", "alloc-metrics"]
+    with (out / "logs" / f"build-{mode}.log").open("wb") as log:
+        subprocess.run(command, cwd=source, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+    shutil.copy2(target / "release/notist-eval-bench", out / "bin" / mode)
+    return env
+
+
 def run(args):
     out = args.out.resolve()
     if out.exists() or out.is_relative_to(REPO):
@@ -100,18 +105,10 @@ def run(args):
         shutil.copy2(REPO / relative, destination)
         if digest(destination) != expected:
             raise ValueError(f"source changed during freeze: {relative}")
-    env = dict(os.environ, **BUILD_ENV)
-    metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--offline", "--no-deps", "--format-version=1"], cwd=REPO, env=env))
-    executable = Path(metadata["target_directory"]) / "release/notist-eval-bench"
     for mode in ["time", "alloc"]:
-        command = ["cargo", "build", "--release", "--locked", "--offline", "-p", "notist-eval-bench", "--bin", "notist-eval-bench"]
-        if mode == "alloc":
-            command += ["--features", "alloc-metrics"]
-        with (out / "logs" / f"build-{mode}.log").open("wb") as log:
-            subprocess.run(command, cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
-        shutil.copy2(executable, out / "bin" / mode)
+        env = build_variant(out / "source", out, mode)
     manifest["binaries"] = {mode: digest(out / "bin" / mode) for mode in ["time", "alloc"]}
-    features = subprocess.check_output(["cargo", "tree", "-p", "notist-eval-bench", "--edges", "normal", "--format", "{p} features={f}", "--locked", "--offline"], cwd=REPO, env=env, text=True)
+    features = subprocess.check_output(["cargo", "tree", "-p", "notist-eval-bench", "--edges", "normal", "--format", "{p} features={f}", "--locked", "--offline"], cwd=out / "source", env=env, text=True)
     if "test-support" in features:
         raise ValueError("benchmark dependency graph enabled test-support")
     (out / "dependency-features.txt").write_text(features)

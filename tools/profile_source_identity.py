@@ -7,7 +7,6 @@ The reference supplies the frozen site and output inventory, not a candidate.
 Baseline sources come from HEAD; candidate sources include untracked Rust files.
 """
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,21 +17,12 @@ import subprocess
 import tarfile
 import time
 
-from profile_icexiv_refresh import environment, freeze, inventory
+from profile_icexiv_refresh import environment, freeze
 from profile_icexiv_refresh import instrument
 from profile_current import parse_detail
+from profile_support import BUILD_ENV, digest, inventory, save
 
 REPO = Path(__file__).resolve().parents[1]
-BUILD_ENV = dict(CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="2", CARGO_PROFILE_RELEASE_DEBUG="1")
-
-
-def save(path, value):
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-
-
-def digest(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def prepare(args):

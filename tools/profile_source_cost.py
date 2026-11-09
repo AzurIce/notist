@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from profile_source_identity import digest, inventory, save, BUILD_ENV
+from profile_support import digest, inventory, save, BUILD_ENV
 from profile_icexiv_refresh import environment
 from xiv_history_probes import enter_function
 

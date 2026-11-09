@@ -1,8 +1,11 @@
 """Keep timing and diagnostic evidence distinct; never launch performance work."""
 import copy
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from run_eval_bench import summarize
+from run_eval_bench import build_variant, summarize
 
 
 def evidence(mode, ns=1000):
@@ -20,6 +23,18 @@ def evidence(mode, ns=1000):
 
 
 class EvalBenchTests(unittest.TestCase):
+    def test_variants_build_the_frozen_source_in_separate_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            (out / "logs").mkdir()
+            for mode in ["time", "alloc"]:
+                with patch("run_eval_bench.subprocess.run") as run, patch("run_eval_bench.shutil.copy2") as copy:
+                    build_variant(out / "source", out, mode)
+                self.assertEqual(run.call_args.kwargs["cwd"], out / "source")
+                self.assertEqual(run.call_args.kwargs["env"]["CARGO_TARGET_DIR"], str(out / "target" / mode))
+                self.assertEqual("alloc-metrics" in run.call_args.args[0], mode == "alloc")
+                self.assertEqual(copy.call_args.args, (out / "target" / mode / "release/notist-eval-bench", out / "bin" / mode))
+
     def test_reports_process_medians_without_filtering_slow_samples(self):
         result = summarize([evidence("time", ns) for ns in [1000, 9000, 3000]], evidence("alloc"))
         self.assertEqual(result[0]["median_ns"], 3000)

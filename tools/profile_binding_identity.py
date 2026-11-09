@@ -13,7 +13,7 @@ from pathlib import Path
 
 from profile_definition_identity import build_kind, measure, ledgers, verify
 from profile_icexiv_refresh import freeze
-from profile_source_identity import BUILD_ENV, inventory, save
+from profile_support import BUILD_ENV, inventory, save
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -58,7 +58,6 @@ if __name__ == '__main__':
     parser.add_argument('--target', type=Path, default=Path('/tmp/opencode/notist-source-identity-complete-20261107/target'))
     parser.add_argument('--pairs', type=int, default=8)
     args = parser.parse_args()
-    args.isolated_targets = True
     args.out, args.reference, args.target = args.out.resolve(), args.reference.resolve(), args.target.resolve()
     if not 1 <= args.pairs <= 20:
         parser.error('--pairs must be 1..20')

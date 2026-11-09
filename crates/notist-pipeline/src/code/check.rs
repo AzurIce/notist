@@ -1784,23 +1784,25 @@ fn value_fits(value: &TypedExpr, expected: &Type) -> bool {
     if value.ty == Some(Type::Never) {
         return true;
     }
-    // A known ok/err payload does not erase the other half of its nominal type.
-    // In particular, an ok<Int, String> is not an ok<Int, Bool> just because
-    // no error payload happens to be present in this value.
-    fn result_identity(actual: &Type, expected: &Type) -> bool {
+    // An absent payload does not erase a container's nominal type. In
+    // particular, a typed none cannot change its Option parameter, just as an
+    // ok value cannot change the absent error parameter of its Result type.
+    fn nominal_identity(actual: &Type, expected: &Type) -> bool {
         match (actual, expected) {
-            (Type::Result(..), Type::Result(..)) => actual == expected,
-            (Type::Result(..), _) | (_, Type::Result(..)) => false,
-            (Type::Option(a), Type::Option(b)) | (Type::Array(Some(a)), Type::Array(Some(b))) => {
-                result_identity(a, b)
+            (Type::Option(_), Type::Option(_)) | (Type::Result(..), Type::Result(..)) => {
+                actual == expected
             }
+            (Type::Option(_) | Type::Result(..), _) | (_, Type::Option(_) | Type::Result(..)) => {
+                false
+            }
+            (Type::Array(Some(a)), Type::Array(Some(b))) => nominal_identity(a, b),
             _ => true,
         }
     }
     if value
         .ty
         .as_ref()
-        .is_some_and(|t| !result_identity(t, expected))
+        .is_some_and(|t| !nominal_identity(t, expected))
     {
         return false;
     }

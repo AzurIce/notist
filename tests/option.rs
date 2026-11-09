@@ -215,6 +215,33 @@ fn bare_none_outside_typed_positions_is_rejected() {
 }
 
 #[test]
+fn known_options_keep_their_nominal_payload_type() {
+    let identity = "fn identity<T: Type>(value: Option<T>) -> Option<T> { value }";
+    for body in [
+        "fn bad() -> Option<Int> { comptime identity<String>(none) }",
+        "fn bad() -> Option<Option<Int>> { comptime identity<Option<String>>(none) }",
+        "fn bad() -> Array<Option<Int>> { (comptime identity<String>(none),) }",
+        "fn accept(value: Option<Int>) -> String { \"accepted\" }\nfn bad() -> String { accept(comptime identity<String>(none)) }",
+    ] {
+        let diagnostics = module_diagnostics(&format!("{identity}\n{body}"));
+        assert!(
+            !diagnostics.is_empty(),
+            "{body} must not change a known Option's type"
+        );
+    }
+    for body in [
+        "fn good() -> Option<Int> { none }",
+        "fn good() -> Option<Int> { comptime identity<Int>(none) }",
+        "fn good() -> Array<Option<Int>> { (none,) }",
+        "fn good() -> Array<Option<Int>> { (,) }",
+        "fn good() -> Array<Array<Int>> { ((,),) }",
+    ] {
+        let diagnostics = module_diagnostics(&format!("{identity}\n{body}"));
+        assert!(diagnostics.is_empty(), "{body}: {diagnostics:?}");
+    }
+}
+
+#[test]
 fn option_subjects_match_constructor_patterns() {
     assert_eq!(evaluate_text("#self.show_folded()"), "hit some");
     assert_eq!(evaluate_text("#self.show_explicit()"), "direct");

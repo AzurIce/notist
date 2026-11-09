@@ -1,4 +1,4 @@
-//! Opt-in batch experiment. Only input/cache operations serialize; evaluation
+//! Batch evaluation. Only input/cache operations serialize; evaluation
 //! and output construction run outside the lock. No input snapshots are copied.
 use super::*;
 use crate::{EvaluationInputs, InputRead, ParsedDataCache, ResourcePath, ResourceSession};
@@ -7,10 +7,7 @@ use notist_core::{
     definitions::Type,
     item::Value,
 };
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Mutex;
 
 struct Inputs<'a, R>(Mutex<&'a mut ResourceSession<R>>);
 impl<R: Resources + Send> EvaluationInputs for Inputs<'_, R> {
@@ -46,14 +43,15 @@ impl<R: Resources + Send> ParsedDataCache for Inputs<'_, R> {
 }
 
 impl<R: Resources + Send> Vault<R> {
-    /// Experimental concurrent page evaluation. Results retain document order.
+    /// Evaluate independent documents using the host's shared executor.
+    /// Results retain document order. One job uses the ordinary serial path.
     /// Shared resource/cache limits remain batch-wide, but exhaustion may be
     /// attributed to a different page because input requests are interleaved.
     /// Extensions must tolerate concurrent calls across independent documents.
-    pub fn evaluate_documents_parallel(
+    pub fn evaluate_documents(
         &mut self,
         documents: &[(&DocumentHandle, &Analysis)],
-        workers: usize,
+        executor: &crate::Executor,
     ) -> Result<Vec<Result<Evaluation, VaultError>>, VaultError> {
         for (handle, analysis) in documents {
             self.check_handle(handle)?;
@@ -71,53 +69,34 @@ impl<R: Resources + Send> Vault<R> {
                 .into());
             }
         }
+        if executor.jobs() == 1 {
+            return Ok(documents
+                .iter()
+                .map(|(handle, analysis)| self.evaluate_document(handle, analysis))
+                .collect());
+        }
         let inputs = Inputs(Mutex::new(&mut self.resources));
         let pipeline = &self.pipeline;
         let limits = self.evaluation_limits;
-        let next = AtomicUsize::new(0);
         const BATCH: usize = 128;
-        let run = || {
-            let mut chunks = Vec::new();
-            loop {
-                let start = next.fetch_add(BATCH, Ordering::Relaxed);
-                if start >= documents.len() {
-                    break;
-                }
-                let output = documents[start..(start + BATCH).min(documents.len())]
-                    .iter()
-                    .map(|(handle, analysis)| {
-                        match pipeline.evaluate_with_inputs_and_limits(
-                            analysis,
-                            handle.environment.context(),
-                            &inputs,
-                            limits,
-                        ) {
-                            crate::EvaluationOutcome::Complete(output) => Ok(*output),
-                            crate::EvaluationOutcome::NeedResources(paths) => {
-                                Err(VaultError::NeedResources(paths))
-                            }
+        let chunks = executor.map_chunks(documents, BATCH, |_, documents| {
+            documents
+                .iter()
+                .map(|(handle, analysis)| {
+                    match pipeline.evaluate_with_inputs_and_limits(
+                        analysis,
+                        handle.environment.context(),
+                        &inputs,
+                        limits,
+                    ) {
+                        crate::EvaluationOutcome::Complete(output) => Ok(*output),
+                        crate::EvaluationOutcome::NeedResources(paths) => {
+                            Err(VaultError::NeedResources(paths))
                         }
-                    })
-                    .collect::<Vec<_>>();
-                chunks.push((start, output));
-            }
-            chunks
-        };
-        let workers = workers
-            .clamp(1, 8)
-            .min(documents.len().div_ceil(BATCH).max(1));
-        let mut chunks = if workers == 1 {
-            run()
-        } else {
-            std::thread::scope(|scope| {
-                let tasks: Vec<_> = (0..workers).map(|_| scope.spawn(&run)).collect();
-                tasks
-                    .into_iter()
-                    .flat_map(|task| task.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
-                    .collect::<Vec<_>>()
-            })
-        };
-        chunks.sort_by_key(|(start, _)| *start);
-        Ok(chunks.into_iter().flat_map(|(_, output)| output).collect())
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
+        Ok(chunks.into_iter().flatten().collect())
     }
 }

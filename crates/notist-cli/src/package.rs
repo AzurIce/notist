@@ -380,6 +380,7 @@ pub(crate) fn build(
     output: Option<&Path>,
     all: bool,
     names: &[String],
+    jobs: Option<std::num::NonZeroUsize>,
 ) -> ExitCode {
     let result = (|| {
         let current = locate(config)?;
@@ -432,8 +433,9 @@ pub(crate) fn build(
         for &index in &indices {
             scope.packages[index].prepare()?;
         }
+        let executor = crate::ssg::executor(jobs)?;
         for index in indices {
-            let result = crate::ssg::build_package(&scope.packages[index]);
+            let result = crate::ssg::build_package(&scope.packages[index], &executor);
             if result != ExitCode::SUCCESS {
                 return Ok(result);
             }

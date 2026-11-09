@@ -33,6 +33,9 @@ struct Cli {
     /// Show detailed, tree-shaped build progress on stderr
     #[arg(short, long, global = true)]
     verbose: bool,
+    /// Maximum build workers shared by all stages (default: available CPUs)
+    #[arg(short = 'j', long, global = true, value_name = "N")]
+    jobs: Option<std::num::NonZeroUsize>,
     #[command(subcommand)]
     command: Command,
     /// Use this Notist.toml instead of automatic configuration discovery
@@ -101,6 +104,32 @@ struct ListenOptions {
     address: Option<String>,
 }
 
+#[cfg(test)]
+mod jobs_tests {
+    use super::*;
+
+    #[test]
+    fn jobs_is_global_and_uses_one_positive_value() {
+        for args in [
+            vec!["notist", "-j", "3", "build"],
+            vec!["notist", "build", "--jobs", "3"],
+            vec!["notist", "serve", "-j3"],
+            vec!["notist", "-j3", "build", "--workspace"],
+        ] {
+            assert_eq!(Cli::try_parse_from(args).unwrap().jobs.unwrap().get(), 3);
+        }
+        assert!(
+            Cli::try_parse_from(["notist", "build"])
+                .unwrap()
+                .jobs
+                .is_none()
+        );
+        for value in ["0", "-1", "invalid"] {
+            assert!(Cli::try_parse_from(["notist", "build", "--jobs", value]).is_err());
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -116,13 +145,15 @@ fn run(cli: Cli) -> ExitCode {
             out_dir,
             workspace,
             packages,
-        } => package::build(config, out_dir.as_deref(), workspace, &packages),
+        } => package::build(config, out_dir.as_deref(), workspace, &packages, cli.jobs),
         Command::Serve {
             package,
             listen,
             no_clear_screen,
         } => match package::Package::load(config, None, package.as_deref()) {
-            Ok(package) => serve::serve_package(package, &listen, no_clear_screen, cli.verbose),
+            Ok(package) => {
+                serve::serve_package(package, &listen, no_clear_screen, cli.verbose, cli.jobs)
+            }
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE

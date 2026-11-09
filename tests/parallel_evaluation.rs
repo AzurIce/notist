@@ -1,4 +1,5 @@
-use notist::{MemoryResources, Vault};
+use notist::{Executor, MemoryResources, Vault};
+use std::num::NonZeroUsize;
 
 fn vault() -> Vault<MemoryResources> {
     let mut files = MemoryResources::new("/project");
@@ -11,6 +12,7 @@ fn vault() -> Vault<MemoryResources> {
 #[test]
 fn batch_matches_serial_including_data_errors_dependencies_and_sources() {
     for workers in [1, 2, 4, 8] {
+        let executor = Executor::new(NonZeroUsize::new(workers).unwrap()).unwrap();
         let mut vault = vault();
         // More than eight batches, with an uneven final batch.
         let documents: Vec<_> = (0..1041)
@@ -32,7 +34,7 @@ fn batch_matches_serial_including_data_errors_dependencies_and_sources() {
             .map(|(analysis, handle)| (handle, analysis))
             .collect();
         // Evaluate concurrently with a cold parsed-data cache.
-        let parallel = vault.evaluate_documents_parallel(&jobs, workers).unwrap();
+        let parallel = vault.evaluate_documents(&jobs, &executor).unwrap();
         assert_eq!(parallel.len(), documents.len());
         assert_eq!(vault.input_session().data_cache_stats().parses, 2);
         for ((analysis, handle), actual) in documents.iter().zip(parallel) {
@@ -45,20 +47,22 @@ fn batch_matches_serial_including_data_errors_dependencies_and_sources() {
 
 #[test]
 fn batch_rejects_foreign_handles_and_accepts_empty_input() {
+    let executor = Executor::new(NonZeroUsize::new(4).unwrap()).unwrap();
     let mut a = vault();
     let mut b = vault();
     let (analysis, handle) = a
         .analyze_document_with_resource_root("a.not", "hello", "/project")
         .unwrap();
     assert!(
-        b.evaluate_documents_parallel(&[(&handle, &analysis)], 4)
+        b.evaluate_documents(&[(&handle, &analysis)], &executor)
             .is_err()
     );
-    assert!(a.evaluate_documents_parallel(&[], 8).unwrap().is_empty());
+    assert!(a.evaluate_documents(&[], &executor).unwrap().is_empty());
 }
 
 #[test]
 fn batch_preserves_each_pages_content_budget_recovery() {
+    let executor = Executor::new(NonZeroUsize::new(4).unwrap()).unwrap();
     let mut vault = vault().with_evaluation_limits(notist::Limits {
         content_nodes: 1,
         ..Default::default()
@@ -78,7 +82,7 @@ fn batch_preserves_each_pages_content_budget_recovery() {
         .iter()
         .map(|(analysis, handle)| (handle, analysis))
         .collect();
-    let results = vault.evaluate_documents_parallel(&jobs, 4).unwrap();
+    let results = vault.evaluate_documents(&jobs, &executor).unwrap();
     for ((analysis, handle), result) in documents.iter().zip(results) {
         let expected = vault.evaluate_document(handle, analysis).unwrap();
         assert!(!expected.diagnostics.is_empty());

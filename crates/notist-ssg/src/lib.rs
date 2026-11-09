@@ -15,14 +15,41 @@ mod themes;
 pub use build::BuildOutput;
 pub use config::{Mount, SiteConfig};
 pub use document::{Heading, Page};
+pub use notist::Executor;
 pub use routes::Route;
+use std::sync::Arc;
 
 /// Site build driver, with native extensions followed by configured commands.
 #[derive(Debug, Default)]
 pub struct Builder {
     extensions: Vec<Box<dyn extensions::ExtensionFactory>>,
+    executor: Option<Arc<Executor>>,
 }
 impl Builder {
+    /// Share one concurrency budget across stages, package builds and rebuilds.
+    /// Without an explicit executor, each build uses the available CPU count.
+    ///
+    /// ```
+    /// use notist_ssg::{Builder, Executor};
+    /// use std::{num::NonZeroUsize, sync::Arc};
+    /// let executor = Arc::new(Executor::new(NonZeroUsize::new(4).unwrap())?);
+    /// let builder = Builder::default().with_executor(executor);
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn with_executor(mut self, executor: Arc<Executor>) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
+    fn executor(&self) -> Result<Arc<Executor>, Error> {
+        match &self.executor {
+            Some(executor) => Ok(executor.clone()),
+            None => Executor::auto()
+                .map(Arc::new)
+                .map_err(|error| Error::Message(format!("cannot create build executor: {error}"))),
+        }
+    }
+
     /// Register a prototype; each build receives a fresh clone, not the previous
     /// build's mutated instance. Clone should isolate build-local mutable state.
     pub fn with_extension(
@@ -37,7 +64,8 @@ impl Builder {
         vault: &mut notist::Vault<R>,
         config: &SiteConfig,
     ) -> Result<BuildOutput, Error> {
-        build::build(vault, config, &self.extensions, false)
+        let executor = self.executor()?;
+        build::build(vault, config, &self.extensions, false, &executor)
     }
 
     /// Preview retains recoverable content errors, but never publishes fatal failures.
@@ -46,7 +74,8 @@ impl Builder {
         vault: &mut notist::Vault<R>,
         config: &SiteConfig,
     ) -> Result<BuildOutput, Error> {
-        build::build(vault, config, &self.extensions, true)
+        let executor = self.executor()?;
+        build::build(vault, config, &self.extensions, true, &executor)
     }
 }
 

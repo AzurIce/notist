@@ -4,6 +4,8 @@
 Use an external output directory containing bin/baseline and bin/candidate.
 prepare copies a prior frozen input, changing only its manifest syntax for the
 current package API; measure establishes a NEW baseline output inventory.
+Candidates use the unified --jobs option; "serial" means --jobs 1 for both
+evaluation and templates. A legacy baseline keeps its original defaults.
 """
 import argparse
 import json
@@ -78,13 +80,14 @@ def run(root, mode, label, expected):
     for key in ['LD_PRELOAD', 'NOTIST_EVAL_WORKERS', 'NOTIST_EVAL_TIMING']:
         env.pop(key, None)
     binary = root / 'bin' / ('baseline' if mode == 'baseline' else 'candidate')
-    if mode not in ['baseline', 'serial']:
-        env['NOTIST_EVAL_WORKERS'] = mode
     if mode != 'baseline':
         env['NOTIST_EVAL_TIMING'] = '1'
+    command = [str(binary), 'build']
+    if mode != 'baseline':
+        command.extend(['--jobs', '1' if mode == 'serial' else mode])
     start = time.perf_counter()
     with log.with_suffix('.stdout').open('xb') as stdout, log.with_suffix('.stderr').open('xb') as stderr:
-        child = subprocess.Popen([str(binary), 'build'], cwd=root / 'site', env=env,
+        child = subprocess.Popen(command, cwd=root / 'site', env=env,
                                  stdout=stdout, stderr=stderr)
         _, status, usage = os.wait4(child.pid, 0)
         child.returncode = os.waitstatus_to_exitcode(status)
@@ -115,7 +118,7 @@ def measure(args):
     save(root / 'binaries.json', binaries)
     run(root, 'baseline', 'initial-baseline', None)
     expected = json.loads((root / 'output-inventory.json').read_text())
-    modes = ['baseline', 'serial', '1', '2', '4', '8']
+    modes = ['baseline', 'serial', '2', '4', '8']
     for mode in modes[1:]:
         run(root, mode, f'warmup-{mode}', expected)
     rows = []

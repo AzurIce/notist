@@ -69,6 +69,8 @@ pub use prepared::{PreparedFailure, PreparedInputs, PreparedResources};
 #[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
 pub mod command_extension;
 pub mod environment;
+pub mod execution;
+pub use execution::Executor;
 #[cfg(all(not(target_arch = "wasm32"), feature = "command-extensions"))]
 pub mod stdio;
 pub use notist_core::extensions;

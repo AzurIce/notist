@@ -23,6 +23,8 @@ notist serve --port 8000
 
 build 默认输出到 workspace 根的 notist-output/example/；独立包则使用包根。serve 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
 
+`notist build -j 8` 与 `notist serve -j 8` 为全部构建阶段设置统一的工作线程数上限；`-j 1` 使用串行求值与模板渲染。默认使用可用 CPU 数。求值和模板共用线程池，serve 重建复用该线程池，其他阶段仍保留自己的先后依赖。
+
 目录与其他配置见 [Notist.toml 配置](../configuration.not#site)，命令行选项见 [Notist CLI](../cli.not)。
 
 == 源文件与输出

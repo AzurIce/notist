@@ -1,4 +1,6 @@
-use rowan::NodeOrToken;
+//! Structured inspection data. String APIs serialize only at the transport edge.
+use rowan::{NodeOrToken, TextRange};
+use serde_json::{Value as Json, json};
 
 use notist_core::expr::{BodyFlavor, CallArg, Expr, RExpr};
 use notist_syntax::code::ast as code_ast;
@@ -9,135 +11,119 @@ use crate::item::Item;
 
 /// Module inspection keeps the recovered CST available even on semantic errors.
 pub fn module_json(src: &str, analysis: &crate::CodeAnalysis) -> String {
+    module_value(src, analysis).to_string()
+}
+
+pub(crate) fn module_value(src: &str, analysis: &crate::CodeAnalysis) -> Json {
     let parse = notist_syntax::code::parse_module(src, &notist_syntax::markup::MarkupContentParser);
-    let mut out = String::from("{\"tree\":");
-    write_element(&mut out, NodeOrToken::Node(parse.syntax()));
+    let mut result = json!({"tree": element_json(NodeOrToken::Node(parse.syntax()))});
     if let Some(module) = code_ast::Module::cast(parse.syntax()) {
-        out.push_str(",\"ast\":");
-        out.push_str(&module_ast(&module).to_string());
+        result["ast"] = module_ast(&module);
     }
-    match &analysis.definitions {
-        Some(module) => {
-            out.push_str(",\"functions\":[");
-            for (i, function) in module.functions.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&format!(
-                    "{{\"function\":{},\"start\":{},\"end\":{},\"signature\":{},\"children\":{},\"level\":{},\"parameters\":[",
-                    escape(&function.id.to_string()),
-                    u32::from(function.span.start()),
-                    u32::from(function.span.end()),
-                    escape(&src[usize::from(function.span.start())..usize::from(function.span.end())]),
-                    escape(&format!("{:?}", function.children)),
-                    function.returns.level().map(|level|escape(if level==crate::builtins::Level::Block{"block"}else{"inline"})).unwrap_or_else(||"null".into()),
-                ));
-                for (j, parameter) in function.parameters.iter().enumerate() {
-                    if j > 0 {
-                        out.push(',');
-                    }
-                    let mode = match parameter.mode {
+    if let Some(module) = &analysis.definitions {
+        result["functions"] = Json::Array(module.functions.iter().map(|function| {
+            let parameters: Vec<_> = function.parameters.iter().map(|parameter| {
+                let mut value = json!({
+                    "name": parameter.name,
+                    "type": type_json(&parameter.ty),
+                    "mode": match parameter.mode {
                         crate::ParameterMode::Required => "required",
                         crate::ParameterMode::Optional => "optional",
                         crate::ParameterMode::Default(_) => "default",
-                    };
-                    out.push_str(&format!(
-                        "{{\"name\":{},\"type\":{},\"mode\":{}",
-                        escape(&parameter.name),
-                        type_json(&parameter.ty),
-                        escape(mode)
-                    ));
-                    if let crate::ParameterMode::Default(value) = &parameter.mode {
-                        out.push_str(",\"default\":");
-                        crate::json::write_value(&mut out, value);
-                        out.push_str(",\"typed_default\":");
-                        out.push_str(&notist_html::components::value_json(value).to_string());
-                    }
-                    out.push('}');
+                    },
+                });
+                if let crate::ParameterMode::Default(default) = &parameter.mode {
+                    value["default"] = crate::json::value(default);
+                    value["typed_default"] = notist_html::components::value_json(default);
                 }
-                out.push(']');
-                out.push_str(&format!(",\"code\":{},\"returns\":{},\"children_type\":{},\"comptime\":{}",function.implementation.is_code(),type_json(&function.returns),function.children_type.as_ref().map(type_json).unwrap_or_default(),serde_json::json!(function.comptime.iter().map(|p|serde_json::json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>())));
-                out.push('}');
-            }
-            out.push_str("],\"diagnostics\":");
-            write_diagnostics(&mut out, &analysis.diagnostics);
-            out.push('}');
-        }
-        None => {
-            out.push_str(",\"diagnostics\":");
-            write_diagnostics(&mut out, &analysis.diagnostics);
-            out.push('}');
-        }
+                value
+            }).collect();
+            json!({
+                "function": function.id.to_string(),
+                "start": u32::from(function.span.start()),
+                "end": u32::from(function.span.end()),
+                "signature": &src[usize::from(function.span.start())..usize::from(function.span.end())],
+                "children": format!("{:?}", function.children),
+                "level": function.returns.level().map(|level| if level == crate::builtins::Level::Block { "block" } else { "inline" }),
+                "parameters": parameters,
+                "code": function.implementation.is_code(),
+                "returns": type_json(&function.returns),
+                "children_type": function.children_type.as_ref().map(type_json),
+                "comptime": function.comptime.iter().map(|p| json!({"name":p.name,"type":type_json(&p.ty),"default":p.default.as_ref().map(|v|v.key())})).collect::<Vec<_>>(),
+            })
+        }).collect());
     }
-    out
+    result["diagnostics"] = diagnostics_json(&analysis.diagnostics);
+    result
 }
 
-fn module_ast(module: &code_ast::Module) -> serde_json::Value {
-    let functions: Vec<_> = module
-        .functions()
-        .map(|function| {
-            let mut children = function
-                .parameters()
-                .map(|parameter| {
-                    let mut children = Vec::new();
-                    if let Some(ty) = parameter.ty() {
-                        children.push(ast_node("TypeRef", ty.syntax(), Vec::new()));
-                    }
-                    if let Some(default) = parameter.default_value() {
-                        children.push(ast_node("DefaultValue", default.syntax(), Vec::new()));
-                    }
-                    ast_node("Parameter", parameter.syntax(), children)
-                })
-                .collect::<Vec<_>>();
-            for parameter in function.comptime_parameters() {
-                children.push(ast_node(
-                    "ComptimeParameter",
-                    parameter.syntax(),
-                    Vec::new(),
-                ));
-            }
-            if let Some(body) = function.body() {
-                children.push(ast_node("Body", &body, Vec::new()));
-            }
-            if let Some(mount) = function.children_decl() {
-                children.push(ast_node("ChildrenDecl", mount.syntax(), Vec::new()));
-            }
-            if let Some(result) = function.return_type() {
-                children.push(ast_node("ReturnType", result.syntax(), Vec::new()));
-            }
-            ast_node("FunctionDecl", function.syntax(), children)
-        })
-        .collect();
+fn node(kind: &str, span: TextRange) -> Json {
+    json!({"kind":kind,"start":u32::from(span.start()),"end":u32::from(span.end())})
+}
+
+fn branch(kind: &str, span: TextRange, children: Vec<Json>) -> Json {
+    let mut value = node(kind, span);
+    value["children"] = Json::Array(children);
+    value
+}
+
+fn module_ast(module: &code_ast::Module) -> Json {
+    let functions = module.functions().map(|function| {
+        let mut children: Vec<_> = function
+            .parameters()
+            .map(|parameter| {
+                let mut children = Vec::new();
+                if let Some(ty) = parameter.ty() {
+                    children.push(ast_node("TypeRef", ty.syntax(), Vec::new()));
+                }
+                if let Some(default) = parameter.default_value() {
+                    children.push(ast_node("DefaultValue", default.syntax(), Vec::new()));
+                }
+                ast_node("Parameter", parameter.syntax(), children)
+            })
+            .collect();
+        children.extend(
+            function
+                .comptime_parameters()
+                .map(|parameter| ast_node("ComptimeParameter", parameter.syntax(), Vec::new())),
+        );
+        if let Some(body) = function.body() {
+            children.push(ast_node("Body", &body, Vec::new()));
+        }
+        if let Some(mount) = function.children_decl() {
+            children.push(ast_node("ChildrenDecl", mount.syntax(), Vec::new()));
+        }
+        if let Some(result) = function.return_type() {
+            children.push(ast_node("ReturnType", result.syntax(), Vec::new()));
+        }
+        ast_node("FunctionDecl", function.syntax(), children)
+    });
     let mut children: Vec<_> = module
         .imports()
-        .map(|i| {
+        .map(|import| {
             ast_node(
                 "ImportDecl",
-                i.syntax(),
-                i.members()
-                    .map(|m| ast_node("ImportMember", m.syntax(), Vec::new()))
+                import.syntax(),
+                import
+                    .members()
+                    .map(|member| ast_node("ImportMember", member.syntax(), Vec::new()))
                     .collect(),
             )
         })
         .collect();
     children.extend(functions);
     children.sort_by_key(|node| node["start"].as_u64());
-    let mut tree = ast_node("Module", module.syntax(), children);
-    tree.as_object_mut().unwrap().remove("label");
-    tree
+    branch("Module", module.range(), children)
 }
 
-fn ast_node(
-    kind: &str,
-    syntax: &SyntaxNode,
-    children: Vec<serde_json::Value>,
-) -> serde_json::Value {
-    serde_json::json!({"kind":kind, "start":u32::from(syntax.text_range().start()), "end":u32::from(syntax.text_range().end()), "label":syntax.text().to_string(), "children":children})
+fn ast_node(kind: &str, syntax: &SyntaxNode, children: Vec<Json>) -> Json {
+    let mut result = branch(kind, syntax.text_range(), children);
+    result["label"] = syntax.text().to_string().into();
+    result
 }
 
-fn type_json(ty: &crate::Type) -> serde_json::Value {
+fn type_json(ty: &crate::Type) -> Json {
     use crate::Type;
-    use serde_json::json;
     match ty {
         Type::Type => json!({"kind":"Type"}),
         Type::Never => json!({"kind":"Never"}),
@@ -154,11 +140,9 @@ fn type_json(ty: &crate::Type) -> serde_json::Value {
         Type::Path => json!({"kind":"Path"}),
         Type::ResourceTarget => json!({"kind":"ResourceTarget"}),
         Type::Dict => json!({"kind":"Dict"}),
-        Type::Array(element) => {
-            json!({"kind":"Array", "element":element.as_ref().map(|element| type_json(element))})
-        }
-        Type::Option(element) => json!({"kind":"Option", "element":type_json(element)}),
-        Type::Result(ok, err) => json!({"kind":"Result", "ok":type_json(ok), "err":type_json(err)}),
+        Type::Array(element) => json!({"kind":"Array","element":element.as_deref().map(type_json)}),
+        Type::Option(element) => json!({"kind":"Option","element":type_json(element)}),
+        Type::Result(ok, err) => json!({"kind":"Result","ok":type_json(ok),"err":type_json(err)}),
     }
 }
 
@@ -167,114 +151,73 @@ pub fn inspection_json(
     analysis: &crate::Analysis,
     inspection: Option<&notist_pipeline::Inspection>,
 ) -> Result<String, serde_json::Error> {
-    let mut out = String::from("{");
+    Ok(inspection_value(analysis, inspection)?.to_string())
+}
+
+pub(crate) fn inspection_value(
+    analysis: &crate::Analysis,
+    inspection: Option<&notist_pipeline::Inspection>,
+) -> Result<Json, serde_json::Error> {
+    let mut result = json!({});
     if let Some(inspection) = inspection {
-        if let Some(syntax) = inspection.syntax.as_deref().and_then(|syntax| {
-            syntax
-                .as_any()
-                .downcast_ref::<notist_syntax::tree::SyntaxNode>()
-        }) {
-            out.push_str("\"tree\":");
-            write_element(&mut out, NodeOrToken::Node(syntax.clone()));
+        if let Some(syntax) = inspection
+            .syntax
+            .as_deref()
+            .and_then(|syntax| syntax.as_any().downcast_ref::<SyntaxNode>())
+        {
+            result["tree"] = element_json(NodeOrToken::Node(syntax.clone()));
             if let Some(document) = ast::Document::cast(syntax.clone()) {
-                out.push_str(",\"ast\":");
-                write_ast(&mut out, &document);
+                result["ast"] = document_ast(&document);
             }
-            out.push(',');
         }
-        out.push_str("\"ir1\":");
-        write_forest(
-            &mut out,
+        result["ir1"] = branch(
+            "Document",
             analysis.root().span,
-            &inspection.lowered,
-            write_expr,
+            inspection.lowered.iter().map(expr_json).collect(),
         );
-        out.push_str(",\"ir2\":");
-        write_resolved_forest(
-            &mut out,
+        result["ir2"] = branch(
+            "Document",
             analysis.root().span,
-            &inspection.shaped,
-            analysis.sources(),
-        )?;
-        out.push(',');
+            inspection
+                .shaped
+                .iter()
+                .map(|expr| resolved_json(expr, analysis.sources()))
+                .collect::<Result<_, _>>()?,
+        );
     }
-    out.push_str("\"core\":");
-    write_item(&mut out, analysis.root(), analysis.sources())?;
-    out.push_str(",\"diagnostics\":");
-    write_diagnostics(&mut out, analysis.diagnostics());
-    out.push('}');
-    Ok(out)
+    result["core"] = item_json(analysis.root(), analysis.sources())?;
+    result["diagnostics"] = diagnostics_json(analysis.diagnostics());
+    Ok(result)
 }
 
-fn write_diagnostics(out: &mut String, diagnostics: &[crate::Diagnostic]) {
-    out.push('[');
-    for (i, diagnostic) in diagnostics.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&format!(
-            "{{\"source\":{},\"start\":{},\"end\":{},\"phase\":{},\"message\":{}}}",
-            diagnostic
-                .source
-                .as_ref()
-                .map(|s| escape(s))
-                .unwrap_or_else(|| "null".into()),
-            u32::from(diagnostic.span.start()),
-            u32::from(diagnostic.span.end()),
-            escape(&diagnostic.phase.to_string()),
-            escape(&diagnostic.message)
-        ));
-    }
-    out.push(']');
+fn diagnostics_json(diagnostics: &[crate::Diagnostic]) -> Json {
+    json!(diagnostics.iter().map(|d| json!({"source":d.source,"start":u32::from(d.span.start()),"end":u32::from(d.span.end()),"phase":d.phase.to_string(),"message":d.message})).collect::<Vec<_>>())
 }
 
-fn write_element(out: &mut String, element: NodeOrToken<SyntaxNode, SyntaxToken>) {
+fn element_json(element: NodeOrToken<SyntaxNode, SyntaxToken>) -> Json {
     match element {
-        NodeOrToken::Node(node) => {
-            let range = node.text_range();
-            out.push_str(&format!(
-                "{{\"kind\":\"{:?}\",\"start\":{},\"end\":{},\"children\":[",
-                node.kind(),
-                u32::from(range.start()),
-                u32::from(range.end()),
-            ));
-            for (i, child) in node.children_with_tokens().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_element(out, child);
-            }
-            out.push_str("]}");
-        }
+        NodeOrToken::Node(node) => branch(
+            &format!("{:?}", node.kind()),
+            node.text_range(),
+            node.children_with_tokens().map(element_json).collect(),
+        ),
         NodeOrToken::Token(token) => {
-            let range = token.text_range();
-            out.push_str(&format!(
-                "{{\"kind\":\"{:?}\",\"start\":{},\"end\":{},\"text\":{}}}",
-                token.kind(),
-                u32::from(range.start()),
-                u32::from(range.end()),
-                escape(token.text()),
-            ));
+            let mut value = node(&format!("{:?}", token.kind()), token.text_range());
+            value["text"] = token.text().into();
+            value
         }
     }
 }
 
-fn write_ast(out: &mut String, document: &ast::Document) {
-    let range = document.range();
-    out.push_str(&format!(
-        "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
-        u32::from(range.start()),
-        u32::from(range.end()),
-    ));
+fn document_ast(document: &ast::Document) -> Json {
     let elements: Vec<_> = document.elements().collect();
-    let mut first = true;
-    let mut run: Vec<NodeOrToken<SyntaxNode, SyntaxToken>> = Vec::new();
-    for i in 0..elements.len() {
-        let el = elements[i].clone();
-        match &el {
-            NodeOrToken::Node(node)
+    let mut children = Vec::new();
+    let mut run = Vec::new();
+    for (i, element) in elements.iter().enumerate() {
+        match element {
+            NodeOrToken::Node(syntax)
                 if matches!(
-                    node.kind(),
+                    syntax.kind(),
                     SyntaxKind::Heading
                         | SyntaxKind::ImportDecl
                         | SyntaxKind::List
@@ -285,254 +228,152 @@ fn write_ast(out: &mut String, document: &ast::Document) {
                         | SyntaxKind::BlockAnnotation
                 ) =>
             {
-                write_ast_run(out, &mut run, &mut first);
-                if !first {
-                    out.push(',');
-                }
-                first = false;
-                match node.kind() {
+                flush_inline(&mut run, &mut children);
+                children.push(match syntax.kind() {
                     SyntaxKind::Heading => {
-                        let heading = ast::Heading::cast(node.clone()).unwrap();
-                        let range = heading.range();
-                        out.push_str(&format!(
-                            "{{\"kind\":\"Heading\",\"start\":{},\"end\":{},\"label\":{},\"children\":[",
-                            u32::from(range.start()),
-                            u32::from(range.end()),
-                            escape(&format!("level = {}", heading.level())),
-                        ));
-                        for (j, token) in heading.content_tokens().iter().enumerate() {
-                            if j > 0 {
-                                out.push(',');
-                            }
-                            write_element(out, NodeOrToken::Token(token.clone()));
-                        }
-                        out.push_str("]}");
+                        let heading = ast::Heading::cast(syntax.clone()).unwrap();
+                        let mut value = branch(
+                            "Heading",
+                            heading.range(),
+                            heading
+                                .content_tokens()
+                                .iter()
+                                .map(|token| element_json(NodeOrToken::Token(token.clone())))
+                                .collect(),
+                        );
+                        value["label"] = format!("level = {}", heading.level()).into();
+                        value
                     }
                     SyntaxKind::Annotation | SyntaxKind::BlockAnnotation => {
-                        let annotation = code_ast::Annotation::cast(node.clone()).unwrap();
-                        let range = annotation.range();
+                        let annotation = code_ast::Annotation::cast(syntax.clone()).unwrap();
+                        let mut value = node("Annotation", annotation.range());
                         let (text, _) = annotation.payload();
-                        out.push_str(&format!(
-                            "{{\"kind\":\"Annotation\",\"start\":{},\"end\":{},\"label\":{}}}",
-                            u32::from(range.start()),
-                            u32::from(range.end()),
-                            escape(&format!(
-                                "{}({text})",
-                                if annotation.is_module() { "@!" } else { "@" }
-                            )),
-                        ));
+                        value["label"] = format!(
+                            "{}({text})",
+                            if annotation.is_module() { "@!" } else { "@" }
+                        )
+                        .into();
+                        value
                     }
                     SyntaxKind::List => {
-                        write_ast_list(out, &ast::List::cast(node.clone()).unwrap())
+                        let list = ast::List::cast(syntax.clone()).unwrap();
+                        let mut value = branch(
+                            "List",
+                            list.range(),
+                            list.items()
+                                .map(|item| {
+                                    branch(
+                                        "ListItem",
+                                        item.range(),
+                                        item.content().map(element_json).collect(),
+                                    )
+                                })
+                                .collect(),
+                        );
+                        value["label"] = format!(
+                            "ordered = {}",
+                            list.items().next().and_then(|item| item.marker())
+                                == Some(SyntaxKind::Plus)
+                        )
+                        .into();
+                        value
                     }
-                    SyntaxKind::Table | SyntaxKind::ImportDecl => {
-                        write_element(out, NodeOrToken::Node(node.clone()))
-                    }
+                    SyntaxKind::Table | SyntaxKind::ImportDecl => element_json(element.clone()),
                     SyntaxKind::Raw | SyntaxKind::Divider => {
-                        let range = node.text_range();
-                        out.push_str(&format!(
-                            "{{\"kind\":\"{:?}\",\"start\":{},\"end\":{}}}",
-                            node.kind(),
-                            u32::from(range.start()),
-                            u32::from(range.end()),
-                        ));
+                        node(&format!("{:?}", syntax.kind()), syntax.text_range())
                     }
                     _ => unreachable!(),
-                }
+                });
             }
-            // ParBreak / Error: boundaries without output
             NodeOrToken::Node(node)
                 if matches!(node.kind(), SyntaxKind::ParBreak | SyntaxKind::Error) =>
             {
-                write_ast_run(out, &mut run, &mut first)
+                flush_inline(&mut run, &mut children)
             }
-            NodeOrToken::Token(t)
-                if t.kind() == SyntaxKind::Newline && {
-                    let mut j = i + 1;
-                    while matches!(
-                        elements.get(j).map(|e| e.kind()),
-                        Some(SyntaxKind::Whitespace)
-                    ) {
-                        j += 1;
-                    }
+            NodeOrToken::Token(token)
+                if token.kind() == SyntaxKind::Newline && {
+                    let next = elements[i + 1..]
+                        .iter()
+                        .find(|element| element.kind() != SyntaxKind::Whitespace);
                     matches!(
-                        elements.get(j).map(|e| e.kind()),
+                        next.map(|element| element.kind()),
                         None | Some(SyntaxKind::Newline)
                     )
                 } =>
             {
-                write_ast_run(out, &mut run, &mut first);
+                flush_inline(&mut run, &mut children)
             }
-            _ => run.push(el),
+            _ => run.push(element.clone()),
         }
     }
-    write_ast_run(out, &mut run, &mut first);
-    out.push_str("]}");
+    flush_inline(&mut run, &mut children);
+    branch("Document", document.range(), children)
 }
 
-/// A maximal run of inline content, displayed as an Inline group of Lines.
-/// Lines are split at top-level newline tokens; inline nodes stay whole.
-/// Paragraphs are classified only after Resolve knows the content categories.
-fn write_ast_run(
-    out: &mut String,
-    run: &mut Vec<NodeOrToken<SyntaxNode, SyntaxToken>>,
-    first: &mut bool,
-) {
-    fn range_of(el: &NodeOrToken<SyntaxNode, SyntaxToken>) -> (u32, u32) {
-        match el {
-            NodeOrToken::Node(n) => {
-                let r = n.text_range();
-                (u32::from(r.start()), u32::from(r.end()))
-            }
-            NodeOrToken::Token(t) => {
-                let r = t.text_range();
-                (u32::from(r.start()), u32::from(r.end()))
-            }
-        }
-    }
-    let mut lines: Vec<Vec<NodeOrToken<SyntaxNode, SyntaxToken>>> = Vec::new();
+/// Display a maximal inline run as lines; paragraph classification belongs to Resolve.
+fn flush_inline(run: &mut Vec<NodeOrToken<SyntaxNode, SyntaxToken>>, out: &mut Vec<Json>) {
+    let mut lines = Vec::new();
     let mut current: Vec<NodeOrToken<SyntaxNode, SyntaxToken>> = Vec::new();
-    for el in run.drain(..) {
-        if matches!(&el, NodeOrToken::Token(t) if t.kind() == SyntaxKind::Newline) {
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-            }
+    let flush = |current: &mut Vec<NodeOrToken<SyntaxNode, SyntaxToken>>, lines: &mut Vec<Json>| {
+        if let (Some(first), Some(last)) = (current.first(), current.last()) {
+            let span = first.text_range().cover(last.text_range());
+            lines.push(branch(
+                "Line",
+                span,
+                current.drain(..).map(element_json).collect(),
+            ));
+        }
+    };
+    for element in run.drain(..) {
+        if matches!(&element, NodeOrToken::Token(token) if token.kind() == SyntaxKind::Newline) {
+            flush(&mut current, &mut lines);
         } else {
-            current.push(el);
+            current.push(element);
         }
     }
-    if !current.is_empty() {
-        lines.push(current);
+    flush(&mut current, &mut lines);
+    if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
+        let span = TextRange::new(
+            (first["start"].as_u64().unwrap() as u32).into(),
+            (last["end"].as_u64().unwrap() as u32).into(),
+        );
+        out.push(branch("Inline", span, lines));
     }
-    if lines.is_empty() {
-        return;
-    }
-    if !*first {
-        out.push(',');
-    }
-    *first = false;
-    let start = range_of(lines.first().unwrap().first().unwrap()).0;
-    let end = range_of(lines.last().unwrap().last().unwrap()).1;
-    out.push_str(&format!(
-        "{{\"kind\":\"Inline\",\"start\":{start},\"end\":{end},\"children\":["
-    ));
-    for (j, line) in lines.iter().enumerate() {
-        if j > 0 {
-            out.push(',');
-        }
-        let start = range_of(line.first().unwrap()).0;
-        let end = range_of(line.last().unwrap()).1;
-        out.push_str(&format!(
-            "{{\"kind\":\"Line\",\"start\":{start},\"end\":{end},\"children\":["
-        ));
-        for (k, el) in line.iter().enumerate() {
-            if k > 0 {
-                out.push(',');
-            }
-            write_element(out, el.clone());
-        }
-        out.push_str("]}");
-    }
-    out.push_str("]}");
 }
 
-fn write_ast_list_item(out: &mut String, item: &ast::ListItem) {
-    let range = item.range();
-    out.push_str(&format!(
-        "{{\"kind\":\"ListItem\",\"start\":{},\"end\":{},\"children\":[",
-        u32::from(range.start()),
-        u32::from(range.end()),
-    ));
-    let mut first = true;
-    for element in item.content() {
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        write_element(out, element);
+fn body_label(label: &mut String, body: BodyFlavor) {
+    match body {
+        BodyFlavor::Inline => label.push_str(" [inline]"),
+        BodyFlavor::Block => label.push_str(" [block]"),
+        BodyFlavor::None => {}
     }
-    out.push_str("]}");
 }
 
-fn write_ast_list(out: &mut String, list: &ast::List) {
-    let range = list.range();
-    let ordered = list.items().next().and_then(|item| item.marker()) == Some(SyntaxKind::Plus);
-    out.push_str(&format!(
-        "{{\"kind\":\"List\",\"start\":{},\"end\":{},\"label\":{},\"children\":[",
-        u32::from(range.start()),
-        u32::from(range.end()),
-        escape(&format!("ordered = {ordered}")),
-    ));
-    for (j, item) in list.items().enumerate() {
-        if j > 0 {
-            out.push(',');
-        }
-        write_ast_list_item(out, &item);
-    }
-    out.push_str("]}");
-}
-
-fn write_forest<T>(
-    out: &mut String,
-    range: rowan::TextRange,
-    exprs: &[T],
-    write: fn(&mut String, &T),
-) {
-    out.push_str(&format!(
-        "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
-        u32::from(range.start()),
-        u32::from(range.end()),
-    ));
-    for (i, expr) in exprs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        write(out, expr);
-    }
-    out.push_str("]}");
-}
-
-fn write_expr(out: &mut String, expr: &Expr) {
-    let span = expr.span();
-    let (start, end) = (u32::from(span.start()), u32::from(span.end()));
+fn expr_json(expr: &Expr) -> Json {
+    let mut value = node("Expression", expr.span());
     match expr {
         Expr::Fragment { children, .. } => {
-            out.push_str(&format!(
-                "{{\"kind\":\"Fragment\",\"start\":{start},\"end\":{end},\"children\":["
-            ));
-            for (i, child) in children.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_expr(out, child);
-            }
-            out.push_str("]}");
+            return branch(
+                "Fragment",
+                expr.span(),
+                children.iter().map(expr_json).collect(),
+            );
         }
-        Expr::Literal(value, _) => {
-            out.push_str(&format!(
-                "{{\"kind\":\"Literal\",\"start\":{start},\"end\":{end},\"label\":{}}}",
-                escape(&value.to_string())
-            ));
+        Expr::Literal(literal, _) => {
+            value["kind"] = "Literal".into();
+            value["label"] = literal.to_string().into();
         }
         Expr::PathLiteral { text, .. } => {
-            out.push_str(&format!(
-                "{{\"kind\":\"PathLiteral\",\"start\":{start},\"end\":{end},\"label\":{}}}",
-                escape(text)
-            ));
-        }
-        Expr::Member { base, name, .. } => {
-            out.push_str(&format!(
-                "{{\"kind\":\"Member\",\"start\":{start},\"end\":{end},\"label\":{},\"children\":[",
-                escape(name)
-            ));
-            write_expr(out, base);
-            out.push_str("]}");
+            value["kind"] = "PathLiteral".into();
+            value["label"] = text.as_str().into();
         }
         Expr::Ref { name, .. } => {
-            out.push_str(&format!(
-                "{{\"kind\":\"Ref\",\"start\":{start},\"end\":{end},\"label\":{}}}",
-                escape(name)
-            ));
+            value["kind"] = "Ref".into();
+            value["label"] = name.as_str().into();
+        }
+        Expr::Member { base, name, .. } => {
+            value = branch("Member", expr.span(), vec![expr_json(base)]);
+            value["label"] = name.as_str().into();
         }
         Expr::Call {
             callee,
@@ -542,91 +383,29 @@ fn write_expr(out: &mut String, expr: &Expr) {
             attrs,
             ..
         } => {
-            let mut label = expr
-                .callee_path()
-                .as_deref()
-                .unwrap_or("<expression>")
-                .to_string();
+            let mut label = expr.callee_path().unwrap_or_else(|| "<expression>".into());
             for (key, value) in attrs.iter() {
                 label.push_str(&format!(" @{key} {value}"));
             }
-            match body {
-                BodyFlavor::Inline => label.push_str(" [inline]"),
-                BodyFlavor::Block => label.push_str(" [block]"),
-                BodyFlavor::None => {}
-            }
-            out.push_str(&format!(
-                "{{\"kind\":\"Call\",\"start\":{start},\"end\":{end},\"label\":{}",
-                escape(&label)
-            ));
-            {
-                out.push_str(",\"children\":[");
-                let callee_span = callee.span();
-                out.push_str(&format!(
-                    "{{\"kind\":\"Callee\",\"start\":{},\"end\":{},\"children\":[",
-                    u32::from(callee_span.start()),
-                    u32::from(callee_span.end()),
-                ));
-                write_expr(out, callee);
-                out.push_str("]}");
-                for arg in args {
-                    out.push(',');
-                    let span = arg.value().span();
-                    out.push_str(&format!(
-                        "{{\"kind\":\"Arg\",\"start\":{},\"end\":{}",
-                        u32::from(span.start()),
-                        u32::from(span.end()),
-                    ));
-                    if let CallArg::Named { name, .. } = arg {
-                        out.push_str(&format!(",\"label\":{}", escape(name)));
-                    }
-                    out.push_str(",\"children\":[");
-                    write_expr(out, arg.value());
-                    out.push(']');
-                    out.push('}');
+            body_label(&mut label, *body);
+            let mut nodes = vec![branch("Callee", callee.span(), vec![expr_json(callee)])];
+            nodes.extend(args.iter().map(|arg| {
+                let mut value = branch("Arg", arg.value().span(), vec![expr_json(arg.value())]);
+                if let CallArg::Named { name, .. } = arg {
+                    value["label"] = name.as_str().into();
                 }
-                for child in children {
-                    out.push(',');
-                    write_expr(out, child);
-                }
-                out.push(']');
-            }
-            out.push('}');
+                value
+            }));
+            nodes.extend(children.iter().map(expr_json));
+            value = branch("Call", expr.span(), nodes);
+            value["label"] = label.into();
         }
-        other => {
-            out.push_str(&format!(
-                "{{\"kind\":\"Expression\",\"start\":{start},\"end\":{end},\"label\":{}}}",
-                escape(&format!("{other:?}"))
-            ));
-        }
+        other => value["label"] = format!("{other:?}").into(),
     }
+    value
 }
 
-fn write_resolved_forest(
-    out: &mut String,
-    range: rowan::TextRange,
-    exprs: &[RExpr],
-    sources: &crate::Sources,
-) -> Result<(), serde_json::Error> {
-    out.push_str(&format!(
-        "{{\"kind\":\"Document\",\"start\":{},\"end\":{},\"children\":[",
-        u32::from(range.start()),
-        u32::from(range.end())
-    ));
-    for (i, expr) in exprs.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        write_resolved(out, expr, sources)?;
-    }
-    out.push_str("]}");
-    Ok(())
-}
-fn write_resolved(
-    out: &mut String,
-    expr: &RExpr,
-    sources: &crate::Sources,
-) -> Result<(), serde_json::Error> {
+fn resolved_json(expr: &RExpr, sources: &crate::Sources) -> Result<Json, serde_json::Error> {
     let mut label = expr
         .ctor
         .name(sources.definitions())
@@ -638,49 +417,31 @@ fn write_resolved(
     for (key, value) in expr.attrs.iter() {
         label.push_str(&format!(" @{key} {value}"));
     }
-    match expr.body {
-        BodyFlavor::Inline => label.push_str(" [inline]"),
-        BodyFlavor::Block => label.push_str(" [block]"),
-        BodyFlavor::None => {}
-    }
-    out.push_str(&format!(
-        "{{\"kind\":\"Node\",\"start\":{},\"end\":{},\"label\":{}",
-        u32::from(expr.span.start()),
-        u32::from(expr.span.end()),
-        escape(&label),
-    ));
+    body_label(&mut label, expr.body);
+    let mut value = node("Node", expr.span);
+    value["label"] = label.into();
     if !expr.children.is_empty() {
-        out.push_str(",\"children\":[");
-        for (index, child) in expr.children.iter().enumerate() {
-            if index > 0 {
-                out.push(',');
-            }
-            write_resolved(out, child, sources)?;
-        }
-        out.push(']');
+        value["children"] = Json::Array(
+            expr.children
+                .iter()
+                .map(|child| resolved_json(child, sources))
+                .collect::<Result<_, _>>()?,
+        );
     }
-    out.push('}');
-    Ok(())
+    Ok(value)
 }
 
-fn write_item(
-    out: &mut String,
-    item: &Item,
-    sources: &crate::Sources,
-) -> Result<(), serde_json::Error> {
-    out.push_str(&format!(
-        "{{\"kind\":\"{}\",\"start\":{},\"end\":{}",
-        item.ctor()
-            .name(sources.definitions())
-            .map_err(<serde_json::Error as serde::ser::Error>::custom)?,
-        u32::from(item.span.start()),
-        u32::from(item.span.end()),
-    ));
-    out.push(',');
-    // Keep the debug tree's typed children, while exposing all semantic fields.
-    crate::json::write_metadata(out, item, sources)?;
-    out.push_str(",\"attrs\":");
-    crate::json::write_value(out, &crate::Value::Dict(item.attrs.clone()));
+fn item_json(item: &Item, sources: &crate::Sources) -> Result<Json, serde_json::Error> {
+    let mut value = crate::json::metadata(item, sources)?;
+    value["kind"] = item
+        .ctor()
+        .name(sources.definitions())
+        .map_err(<serde_json::Error as serde::ser::Error>::custom)?
+        .as_ref()
+        .into();
+    value["start"] = u32::from(item.span.start()).into();
+    value["end"] = u32::from(item.span.end()).into();
+    value["attrs"] = crate::json::value(&crate::Value::Dict(item.attrs.clone()));
     let mut label = String::new();
     for (key, value) in item.fields().iter() {
         label.push_str(&format!(" :{key} {value}"));
@@ -689,36 +450,15 @@ fn write_item(
         label.push_str(&format!(" @{key} {value}"));
     }
     if !label.is_empty() {
-        out.push_str(&format!(",\"label\":{}", escape(&label)));
+        value["label"] = label.into();
     }
     if !item.children().is_empty() {
-        out.push_str(",\"children\":[");
-        for (i, child) in item.children().iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            write_item(out, child, sources)?;
-        }
-        out.push(']');
+        value["children"] = Json::Array(
+            item.children()
+                .iter()
+                .map(|child| item_json(child, sources))
+                .collect::<Result<_, _>>()?,
+        );
     }
-    out.push('}');
-    Ok(())
-}
-
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    Ok(value)
 }

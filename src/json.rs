@@ -1,77 +1,7 @@
 //! Common IR JSON representation, independent of command output.
 use crate::{Item, Value};
 
-pub(crate) fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-pub(crate) fn write_value(out: &mut String, value: &Value) {
-    match value {
-        Value::Unit => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Int(i) => out.push_str(&i.to_string()),
-        Value::Float(x) => out.push_str(&if x.is_finite() {
-            x.to_string()
-        } else {
-            "null".into()
-        }),
-        Value::Str(s) => out.push_str(&json_escape(s)),
-        Value::Data(_) | Value::DataError(_) => out.push_str(&self::value(value).to_string()),
-        Value::Path(path) => out.push_str(
-            &serde_json::json!({"$path":{"root":path.root(),"path":path.path()}}).to_string(),
-        ),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, v) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_value(out, v);
-            }
-            out.push(']');
-        }
-        Value::Dict(dict) => {
-            out.push('{');
-            for (i, (k, v)) in dict.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&json_escape(k));
-                out.push(':');
-                write_value(out, v);
-            }
-            out.push('}');
-        }
-        Value::Some(value) => write_value(out, value),
-        Value::None => out.push_str("null"),
-        Value::Ok(value) => {
-            out.push_str("{\"ok\":");
-            write_value(out, value);
-            out.push('}');
-        }
-        Value::Err(value) => {
-            out.push_str("{\"err\":");
-            write_value(out, value);
-            out.push('}');
-        }
-    }
-}
-
-fn value(value: &Value) -> serde_json::Value {
+pub(crate) fn value(value: &Value) -> serde_json::Value {
     match value {
         Value::Unit => serde_json::Value::Null,
         Value::Bool(value) => (*value).into(),
@@ -117,7 +47,10 @@ fn instance_json(
     )
 }
 
-fn metadata(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, serde_json::Error> {
+pub(crate) fn metadata(
+    item: &Item,
+    sources: &crate::Sources,
+) -> Result<serde_json::Value, serde_json::Error> {
     let expression = serde_json::to_value(sources.wire(&item.as_expr()))?;
     let origin = serde_json::to_value(sources.wire(&item.origin))?;
     Ok(serde_json::json!({
@@ -131,16 +64,6 @@ fn metadata(item: &Item, sources: &crate::Sources) -> Result<serde_json::Value, 
         "typed_fields": notist_html::components::value_json(&Value::Dict(item.fields())),
         "typed_attrs": notist_html::components::value_json(&Value::Dict(item.attrs.clone())),
     }))
-}
-
-pub(crate) fn write_metadata(
-    out: &mut String,
-    item: &Item,
-    sources: &crate::Sources,
-) -> Result<(), serde_json::Error> {
-    let object = metadata(item, sources)?.to_string();
-    out.push_str(&object[1..object.len() - 1]);
-    Ok(())
 }
 
 /// Serialize one final IR node with its identity, byte range, metadata and
@@ -170,18 +93,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn result_tags_survive_both_presentation_json_paths() {
-        for value in [
-            Value::Ok(Box::new(Value::Some(Box::new(Value::Str("\"\\\n".into()))))),
-            Value::Err(Box::new(Value::Ok(Box::new(Value::Int(i64::MAX))))),
+    fn result_tags_survive_debug_json_serialization() {
+        for (value, expected) in [
+            (
+                Value::Ok(Box::new(Value::Some(Box::new(Value::Str("\"\\\n".into()))))),
+                serde_json::json!({"ok":"\"\\\n"}),
+            ),
+            (
+                Value::Err(Box::new(Value::Ok(Box::new(Value::Int(i64::MAX))))),
+                serde_json::json!({"err":{"ok":i64::MAX}}),
+            ),
         ] {
-            let mut out = String::new();
-            write_value(&mut out, &value);
+            assert_eq!(super::value(&value), expected);
+            let out = super::value(&value).to_string();
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&out).unwrap(),
-                super::value(&value)
+                expected
             );
-            assert!(out.starts_with("{\"ok\":") || out.starts_with("{\"err\":"));
         }
     }
 }

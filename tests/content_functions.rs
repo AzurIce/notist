@@ -158,7 +158,17 @@ fn divider_requires_exactly_three_dashes_on_its_own_line() {
         )
         .unwrap();
     let json = notist::cst_json::inspection_json(&analysis, Some(&inspection)).unwrap();
-    assert!(json.contains("\"kind\":\"Divider\",\"start\":7,\"end\":10"));
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let divider = json["ast"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "Divider")
+        .unwrap();
+    assert_eq!(
+        divider,
+        &serde_json::json!({"kind":"Divider","start":7,"end":10})
+    );
 }
 
 #[test]

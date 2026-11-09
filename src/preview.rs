@@ -126,8 +126,7 @@ pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
             Ok(analysis) => analysis,
             Err(error) => return error_json(error).to_string(),
         };
-        let mut data: Value =
-            serde_json::from_str(&crate::cst_json::module_json(src, &analysis)).unwrap();
+        let mut data = crate::cst_json::module_value(src, &analysis);
         annotate_analysis(&mut data, path);
         return data.to_string();
     }
@@ -135,11 +134,10 @@ pub fn analyze_prepared(path: &str, src: &str, inputs: &str) -> String {
         Ok(result) => result,
         Err(error) => return error_json(error).to_string(),
     };
-    let inspection_json = match crate::cst_json::inspection_json(&analysis, Some(&inspection)) {
+    let mut data = match crate::cst_json::inspection_value(&analysis, Some(&inspection)) {
         Ok(value) => value,
         Err(error) => return json!({"error":error.to_string()}).to_string(),
     };
-    let mut data: Value = serde_json::from_str(&inspection_json).unwrap();
     annotate_analysis(&mut data, path);
     match vault.render_output(path, &analysis, RenderOptions::default()) {
         Ok(output) => {

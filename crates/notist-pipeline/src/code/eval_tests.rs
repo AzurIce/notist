@@ -164,11 +164,23 @@ fn failed_calls_retain_the_owned_boundary_until_execution_commits() {
             match failure {
                 0 => call.invalid = Some("deliberate failure".into()),
                 1 => {
-                    call.arguments[0].1.known = None;
-                    call.arguments[0].1.kind = ExprKind::Failure("argument failed".into());
+                    let mut arguments: Vec<_> = call
+                        .arguments()
+                        .map(|(name, value)| (name.into(), value.clone()))
+                        .collect();
+                    arguments[0].1.known = None;
+                    arguments[0].1.kind = ExprKind::Failure("argument failed".into());
+                    call.set_arguments(arguments);
                 }
-                2 => call.definition.returns = Type::BlockContent,
-                _ => call.definition.returns = Type::String,
+                _ => {
+                    let mut definition = call.definition().clone();
+                    definition.returns = if failure == 2 {
+                        Type::BlockContent
+                    } else {
+                        Type::String
+                    };
+                    *call = call.clone().with_definition(definition);
+                }
             }
             let evaluated = evaluate(
                 &root,
@@ -310,9 +322,14 @@ fn evaluation_reads_the_supplied_item_tree_without_a_parallel_representation() {
     let call = root.children_mut().unwrap()[0].children_mut().unwrap()[0]
         .call_mut()
         .unwrap();
-    let argument = &mut call.arguments[0].1;
+    let mut arguments: Vec<_> = call
+        .arguments()
+        .map(|(name, value)| (name.into(), value.clone()))
+        .collect();
+    let argument = &mut arguments[0].1;
     argument.known = Some(ComptimeValue::Data(Value::Str("after".into())));
     argument.kind = ExprKind::Constant(argument.known.clone().unwrap());
+    call.set_arguments(arguments);
     // No prechecked instances: the compiler callback must install them on demand.
     let result = evaluate(
         &root,
@@ -359,12 +376,13 @@ fn editing_a_captured_signature_detaches_and_remains_authoritative() {
     let changed = root.children_mut().unwrap()[0].children_mut().unwrap()[0]
         .call_mut()
         .unwrap();
-    assert!(changed.definition.shares_storage(&original.definition));
-    changed.definition.parameters[0].constraint =
-        notist_core::definitions::ValueConstraint::PositiveInt;
-    assert!(!changed.definition.shares_storage(&original.definition));
+    assert!(std::ptr::eq(changed.definition(), original.definition()));
+    let mut definition = changed.definition().clone();
+    definition.parameters[0].constraint = notist_core::definitions::ValueConstraint::PositiveInt;
+    *changed = changed.clone().with_definition(definition);
+    assert!(!std::ptr::eq(changed.definition(), original.definition()));
     assert_eq!(
-        original.definition.parameters[0].constraint,
+        original.definition().parameters[0].constraint,
         notist_core::definitions::ValueConstraint::Any
     );
     let changed = evaluate(
@@ -412,7 +430,7 @@ fn checked_function_bodies_contain_typed_item_interpolations() {
         .program
         .instances
         .values()
-        .find(|r| r.definition.id.module == "demo")
+        .find(|r| r.definition().id.module == "demo")
         .unwrap()
         .body
         .as_ref()

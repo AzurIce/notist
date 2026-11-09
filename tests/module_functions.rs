@@ -203,7 +203,10 @@ fn serialized_items_retain_pending_calls_and_checked_expressions() {
         .unwrap();
     assert_eq!(call.as_expr(), original.as_expr());
     let call = call.call().expect("call expression");
-    assert!(matches!(&call.arguments[0].1.kind, ExprKind::Constant(_)));
+    assert!(matches!(
+        &call.checked_arguments()[0].expression.kind,
+        ExprKind::Constant(_)
+    ));
     let json = notist::json::item(original, analysis.sources()).unwrap();
     assert!(json.get("pending").is_none());
     assert_eq!(

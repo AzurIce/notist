@@ -13,10 +13,22 @@ use notist_core::{
     shared::Shared,
     source_chain::SourceChain,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
+#[path = "call.rs"]
+mod call;
 #[path = "data.rs"]
 mod data;
+use call::{ArgumentValues, NativeArguments};
+use notist_core::evaluation::NativeParameter;
+#[path = "content.rs"]
+mod content;
+use content::*;
+#[cfg(test)]
+#[path = "allocation_tests.rs"]
+mod allocation_tests;
+#[path = "emit.rs"]
+mod emit;
 #[path = "operators.rs"]
 mod operators;
 pub use operators::{binary, unary};
@@ -135,46 +147,6 @@ enum Runtime {
     Content(Type, Content),
 }
 
-/// A content value is a reusable construction plan, not an execution-state
-/// tree. Calls and loops pair shared code with a lexical environment. Splices
-/// retain the value computed at binding time. Only mount emits public Nodes.
-#[derive(Debug, Clone, Default)]
-struct Content {
-    pieces: Shared<Vec<Piece>>,
-    nodes: usize,
-}
-#[derive(Debug, Clone)]
-struct Piece {
-    source: Node,
-    kind: Construction,
-}
-#[derive(Debug, Clone)]
-enum Construction {
-    /// An already concrete, valid subtree shares its child storage verbatim.
-    Ready {
-        nodes: usize,
-    },
-    Element(Content),
-    Call {
-        call: Shared<Invocation>,
-        environment: Scope,
-        children: Content,
-    },
-    Repeat {
-        expression: Shared<TypedExpr>,
-        environment: Scope,
-    },
-    Splice(Content),
-    Error,
-}
-impl Content {
-    fn one(piece: Piece, nodes: usize) -> Self {
-        Self {
-            pieces: vec![piece].into(),
-            nodes,
-        }
-    }
-}
 #[derive(Clone, Copy, Default, Debug)]
 struct ContentSummary {
     nodes: usize,
@@ -290,7 +262,13 @@ pub fn run<C: EvaluationContext + ?Sized>(
         &Scope::new(),
         limits.content_nodes,
     );
-    let (mut nodes, _) = e.present(&content, limits.content_nodes, &SourceChain::default());
+    let mut nodes = Vec::with_capacity(content.pieces.len());
+    e.emit_content(
+        &content,
+        limits.content_nodes,
+        &SourceChain::default(),
+        &mut nodes,
+    );
     if !e.needed.is_empty() {
         return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
     }
@@ -402,7 +380,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         t.ty.clone().ok_or("missing checked for result category")?,
                         Content::one(
                             Piece {
-                                source: node,
+                                source: NodeMetadata::from(&node),
                                 kind: Construction::Repeat {
                                     expression: t.clone().into(),
                                     environment: scope.clone(),
@@ -412,7 +390,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         ),
                     )
                 }
-                ExprKind::Call(call) if call.definition.returns.level().is_some() => {
+                ExprKind::Call(call) if call.definition().returns.level().is_some() => {
                     self.require_runtime()?;
                     let node = Node::expression(t.clone());
                     let content = self.bind_content(
@@ -420,7 +398,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         scope,
                         self.limits.content_nodes,
                     );
-                    Runtime::Content(call.definition.returns.clone(), content)
+                    Runtime::Content(call.definition().returns.clone(), content)
                 }
                 ExprKind::Call(call) => {
                     let children = self.call_children(call, scope, self.limits.content_nodes);
@@ -536,7 +514,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         }
     }
     fn bind_content(&mut self, nodes: &[Node], scope: &Scope, limit: usize) -> Content {
-        let mut pieces = Vec::with_capacity(nodes.len());
+        let mut pieces = smallvec::SmallVec::with_capacity(nodes.len());
         let mut count = 0usize;
         for node in nodes {
             if !self.context.has_mappings()
@@ -544,8 +522,11 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 && count.saturating_add(added) <= limit
             {
                 pieces.push(Piece {
-                    source: node.clone(),
-                    kind: Construction::Ready { nodes: added },
+                    source: NodeMetadata::from(node),
+                    kind: Construction::Ready {
+                        item: node.as_item().expect("checked concrete subtree").clone(),
+                        nodes: added,
+                    },
                 });
                 count += added;
                 continue;
@@ -557,13 +538,13 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 NodeContent::Item(item) => {
                     let children =
                         self.bind_content(&item.children, scope, limit.saturating_sub(1));
-                    let added = 1 + children.nodes;
+                    let added = 1 + children.nodes();
                     let call = if node.function_id().is_some_and(|id| self.target(&id) != id) {
                         match self.synthetic_call(node) {
                             Ok(call) => call,
                             Err(failure) => {
                                 pieces.push(Piece {
-                                    source: failure_content(node, failure),
+                                    source: failure_source(&NodeMetadata::from(node), failure),
                                     kind: Construction::Error,
                                 });
                                 continue;
@@ -579,7 +560,14 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                                 environment: scope.clone(),
                                 children,
                             },
-                            None => Construction::Element(children),
+                            None => Construction::Element {
+                                spec: ElementSpec {
+                                    ctor: item.ctor.clone(),
+                                    fields: item.fields.clone(),
+                                    instance: item.instance.clone(),
+                                },
+                                children,
+                            },
                         },
                         added,
                     )
@@ -587,7 +575,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 NodeContent::Expr(expression) => match &expression.kind {
                     ExprKind::Call(call) => {
                         let children = self.call_children(call, scope, limit.saturating_sub(1));
-                        let added = 1 + children.nodes;
+                        let added = 1 + children.nodes();
                         (
                             Construction::Call {
                                 call: call.clone(),
@@ -609,7 +597,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                             if expression.ty.as_ref() == Some(&ty)
                                 && ty.level() == Some(node.level) =>
                         {
-                            let added = 1 + value.nodes;
+                            let added = 1 + value.nodes();
                             (Construction::Splice(value), added)
                         }
                         Ok(Runtime::Content(..)) => {
@@ -628,7 +616,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         }
                         Err(failure) => {
                             pieces.push(Piece {
-                                source: failure_content(node, failure),
+                                source: failure_source(&NodeMetadata::from(node), failure),
                                 kind: Construction::Error,
                             });
                             continue;
@@ -641,161 +629,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             } else {
                 count += added;
                 pieces.push(Piece {
-                    source: node.clone(),
+                    source: NodeMetadata::from(node),
                     kind,
                 });
             }
         }
-        Content {
-            pieces: pieces.into(),
-            nodes: count,
-        }
-    }
-    /// Emit final content directly. Aggregate rollback truncates only the output
-    /// suffix; source templates and lexical closures are immutable throughout.
-    fn present(
-        &mut self,
-        content: &Content,
-        limit: usize,
-        expansion: &SourceChain,
-    ) -> (Vec<Node>, ContentSummary) {
-        let mut result = Vec::with_capacity(content.pieces.len());
-        let mut summary = ContentSummary::default();
-        for piece in content.pieces.iter() {
-            let start = result.len();
-            let added = self.present_piece(piece, limit, expansion, &mut result);
-            if summary.nodes.saturating_add(added.nodes) > limit {
-                result.truncate(start);
-                result.push(self.error(
-                    &piece.source,
-                    "content size limit exceeded".into(),
-                    expansion,
-                ));
-                summary.failed = true;
-            } else {
-                summary.append(added);
-            }
-        }
-        (result, summary)
-    }
-    fn present_piece(
-        &mut self,
-        piece: &Piece,
-        limit: usize,
-        expansion: &SourceChain,
-        out: &mut Vec<Node>,
-    ) -> ContentSummary {
-        if matches!(piece.kind, Construction::Error) {
-            let Ctor::Error(message) = piece.source.ctor() else {
-                unreachable!()
-            };
-            out.push(self.error(&piece.source, message, expansion));
-            return ContentSummary::ERROR;
-        }
-        if limit == 0 {
-            out.push(self.error(
-                &piece.source,
-                "content size limit exceeded".into(),
-                expansion,
-            ));
-            return ContentSummary::ERROR;
-        }
-        match &piece.kind {
-            Construction::Ready { nodes } => {
-                if *nodes > limit {
-                    out.push(self.error(
-                        &piece.source,
-                        "content size limit exceeded".into(),
-                        expansion,
-                    ));
-                    return ContentSummary::ERROR;
-                }
-                let mut node = piece.source.clone();
-                expand_ready(&mut node, expansion);
-                out.push(node);
-                ContentSummary {
-                    nodes: *nodes,
-                    failed: false,
-                }
-            }
-            Construction::Element(children) => {
-                let (children, mut summary) =
-                    self.present(children, limit.saturating_sub(1), expansion);
-                let mut node = item_with_content(
-                    &piece.source,
-                    ContentItem {
-                        ctor: piece.source.ctor(),
-                        fields: piece
-                            .source
-                            .as_item()
-                            .map(|i| i.fields.clone())
-                            .unwrap_or_default(),
-                        children: children.into(),
-                        instance: piece.source.as_item().and_then(|i| i.instance.clone()),
-                    },
-                );
-                append_expansion(&mut node, expansion);
-                if !valid_structure(&node) {
-                    out.push(self.error(
-                        &piece.source,
-                        "evaluated content violated its checked structural role".into(),
-                        expansion,
-                    ));
-                    return ContentSummary::ERROR;
-                }
-                out.push(node);
-                summary.nodes += 1;
-                summary
-            }
-            Construction::Splice(content) => {
-                let (nodes, mut summary) =
-                    self.present(content, limit.saturating_sub(1), expansion);
-                emit_mount(&piece.source, nodes, expansion, out);
-                summary.nodes += 1;
-                summary
-            }
-            Construction::Repeat {
-                expression,
-                environment,
-            } => {
-                let mut chain = piece
-                    .source
-                    .origin
-                    .as_ref()
-                    .map(|o| o.expansion.clone())
-                    .unwrap_or_default();
-                if chain.is_empty() {
-                    chain = expansion.clone();
-                } else {
-                    chain.extend_from_slice(expansion);
-                }
-                match self.repeat(expression, environment, limit.saturating_sub(1), &chain) {
-                    Ok((nodes, mut summary)) => {
-                        emit_mount(&piece.source, nodes, expansion, out);
-                        summary.nodes += 1;
-                        summary
-                    }
-                    Err(failure) => {
-                        out.push(self.error_at(&piece.source, failure, expansion));
-                        ContentSummary::ERROR
-                    }
-                }
-            }
-            Construction::Call {
-                call,
-                environment,
-                children,
-            } => self.present_call(
-                &piece.source,
-                call,
-                environment,
-                children,
-                limit,
-                expansion,
-                out,
-            ),
-            Construction::Error => unreachable!(),
-        }
+        Content::from_pieces(pieces, count)
     }
     fn repeat(
         &mut self,
@@ -803,7 +642,8 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         environment: &Scope,
         limit: usize,
         expansion: &SourceChain,
-    ) -> Result<(Vec<Node>, ContentSummary), Failure> {
+        out: &mut Vec<Node>,
+    ) -> Result<ContentSummary, Failure> {
         let ExprKind::For {
             binding,
             subject,
@@ -823,7 +663,6 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             if values.len() > self.limits.iterations.saturating_sub(self.iterations) {
                 return Err("cumulative iteration limit exceeded".into());
             }
-            let mut nodes = Vec::new();
             let mut summary = ContentSummary::default();
             for (index, value) in values.iter().enumerate() {
                 self.iterations = self.iterations.saturating_add(1);
@@ -843,8 +682,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 if Some(&ty) != expression.ty.as_ref() {
                     return Err("for body violated its checked category".into());
                 }
-                let (iteration, added) =
-                    self.present(&content, limit.saturating_sub(summary.nodes), expansion);
+                let added = self.emit_content(
+                    &content,
+                    limit.saturating_sub(summary.nodes),
+                    expansion,
+                    out,
+                );
                 if summary.nodes.saturating_add(added.nodes) > limit {
                     return Err("content size limit exceeded".into());
                 }
@@ -852,16 +695,15 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     return Err(format!("for iteration {index} failed").into());
                 }
                 summary.append(added);
-                nodes.extend(iteration);
             }
-            Ok((nodes, summary))
+            Ok(summary)
         })();
         self.active_loops -= 1;
         result
     }
-    fn present_call(
+    fn emit_call(
         &mut self,
-        source: &Node,
+        source: &NodeMetadata,
         call: &Invocation,
         environment: &Scope,
         children: &Content,
@@ -887,9 +729,17 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             self.depth += 1;
         }
         let previous_steps = std::mem::replace(&mut self.steps, 0);
-        let result = self.execute(call, environment, children.clone(), Some(source));
+        let result = self.invoke(call, environment, children.clone(), Some(source));
         let summary = match result {
-            Ok(Runtime::Content(_, content)) => {
+            Ok(CallOutcome::Element(draft)) => self.emit_element(
+                draft.source,
+                draft.spec,
+                &draft.children,
+                limit,
+                expansion,
+                out,
+            ),
+            Ok(CallOutcome::Content(_, content)) => {
                 if code {
                     let mut chain = vec![location(call)];
                     if let Some(origin) = &source.origin {
@@ -897,15 +747,14 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                     }
                     chain.extend_from_slice(expansion);
                     let chain = SourceChain::from(chain);
-                    let (nodes, mut summary) =
-                        self.present(&content, limit.saturating_sub(1), &chain);
-                    emit_mount(source, nodes, expansion, out);
+                    let start = out.len();
+                    let mut summary =
+                        self.emit_content(&content, limit.saturating_sub(1), &chain, out);
+                    emit_mount(source, start, expansion, out);
                     summary.nodes += 1;
                     summary
                 } else {
-                    let (nodes, summary) = self.present(&content, limit, expansion);
-                    out.extend(nodes);
-                    summary
+                    self.emit_content(&content, limit, expansion, out)
                 }
             }
             Ok(_) => {
@@ -1001,20 +850,15 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 )
             })
             .collect();
-        Ok(Some(Invocation {
-            instance,
-            definition: definition.into(),
-            arguments,
-            children: None,
-            attrs: item.attrs.clone(),
-            span: item.span,
-            source,
-            site: CallSite::Markup,
-            resource_root: Some(self.context.resource_root().into()),
-            invalid: None,
-        }))
+        let mut call = Invocation::new(instance, definition, arguments);
+        call.attrs = item.attrs.clone();
+        call.span = item.span;
+        call.source = source;
+        call.site = CallSite::Markup;
+        call.resource_root = Some(self.context.resource_root().into());
+        Ok(Some(call))
     }
-    fn error(&mut self, source: &Node, message: String, expansion: &SourceChain) -> Node {
+    fn error(&mut self, source: &NodeMetadata, message: String, expansion: &SourceChain) -> Node {
         let mut node = error_content(source, message.clone());
         append_expansion(&mut node, expansion);
         let mut diagnostic = Diagnostic::new(Phase::Type, node.span, message);
@@ -1024,14 +868,23 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         self.diagnostics.push(diagnostic);
         node
     }
-    fn error_at(&mut self, source: &Node, failure: Failure, expansion: &SourceChain) -> Node {
-        let node = failure_content(source, failure);
-        let Ctor::Error(message) = node.ctor() else {
+    fn error_at(
+        &mut self,
+        source: &NodeMetadata,
+        failure: Failure,
+        expansion: &SourceChain,
+    ) -> Node {
+        let node = failure_source(source, failure);
+        let Ctor::Error(message) = &node.ctor else {
             unreachable!()
         };
-        self.error(&node, message, expansion)
+        self.error(&node, message.clone(), expansion)
     }
-    fn read_text(&mut self, call: &Invocation, fields: &Dict) -> Result<Runtime, Failure> {
+    fn read_text(
+        &mut self,
+        call: &Invocation,
+        fields: &NativeArguments<'_, '_>,
+    ) -> Result<Runtime, Failure> {
         if self.mode == EvaluationMode::Comptime {
             return Err(Failure::at(
                 "resource reading is not permitted during comptime evaluation",
@@ -1048,7 +901,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         if self.requests > self.limits.read_requests {
             return Err(Failure::at("resource request limit exceeded", call));
         }
-        let Some(Value::Path(path)) = fields.get("source") else {
+        let Some(Value::Path(path)) = fields.get(NativeParameter::Source) else {
             return Err(Failure::at("read_text requires a Path", call));
         };
         self.dependencies.insert(path.clone());
@@ -1085,106 +938,61 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         call: &Invocation,
         scope: &Scope,
         children: Content,
-        source: Option<&Node>,
+        source: Option<&NodeMetadata>,
     ) -> Result<Runtime, Failure> {
+        self.invoke(call, scope, children, source)
+            .map(|result| result.into_runtime(&call.definition().returns))
+    }
+    fn invoke<'source>(
+        &mut self,
+        call: &Invocation,
+        scope: &Scope,
+        children: Content,
+        source: Option<&'source NodeMetadata>,
+    ) -> Result<CallOutcome<'source>, Failure> {
         self.tick()?;
         if let Some(message) = &call.invalid {
             return Err(message.clone().into());
         }
-        let target = FunctionInstance {
-            function: self.target(&call.instance.function),
-            arguments: call.instance.arguments.clone(),
+        let function = self.target(&call.instance.function);
+        let target = if function == call.instance.function {
+            Cow::Borrowed(&call.instance)
+        } else {
+            Cow::Owned(FunctionInstance {
+                function,
+                arguments: call.instance.arguments.clone(),
+            })
         };
         let code = self
             .context
             .registry()
             .definition(target.function)
             .is_some_and(|d| d.implementation.is_code());
-        let mut pending_inputs = Vec::new();
-        let mut fields = Dict::default();
-        for (name, expression) in &call.arguments {
-            let value = self.expr(expression, scope)?;
-            let parameter = call.definition.parameters.iter().find(|p| p.name == *name);
-            let value = if parameter.is_some_and(|p| p.mode == ParameterMode::Optional)
-                && matches!(expression.ty, Some(Type::Option(_)))
-            {
-                match value {
-                    Runtime::Value(ComptimeValue::Data(Value::Some(value))) => {
-                        Runtime::Value(ComptimeValue::Data(*value))
-                    }
-                    Runtime::Value(ComptimeValue::Data(Value::None)) => continue,
-                    _ => {
-                        return Err(
-                            format!("invalid option for `{}.{name}`", call.definition.id).into(),
-                        );
-                    }
-                }
-            } else {
-                value
-            };
-            if let Some(parameter) = parameter
-                && let Runtime::Value(ComptimeValue::Data(value)) = &value
-                && !parameter.accepts(value)
-            {
-                return Err(format!("invalid value for `{}.{name}`", call.definition.id).into());
-            }
-            if let Runtime::Value(ComptimeValue::Data(value)) = &value {
-                fields.insert(name, value.clone());
-            }
-            if code {
-                let input = if parameter.is_some_and(|p| p.mode == ParameterMode::Optional) {
-                    match value {
-                        Runtime::Value(ComptimeValue::Data(v)) => {
-                            Runtime::Value(ComptimeValue::Data(Value::Some(Box::new(v))))
-                        }
-                        other => other,
-                    }
-                } else {
-                    value
-                };
-                pending_inputs.push((name.as_str(), input));
-            }
-        }
+        let arguments = ArgumentValues::evaluate(self, call, scope)?;
         let implementation = self.implementation(&target)?;
-        let definition = &implementation.definition;
-        let inputs = if code {
-            let mut inputs = Scope::new();
-            for (name, value) in pending_inputs {
-                let id = implementation
-                    .inputs
-                    .get(name)
-                    .ok_or("missing checked parameter binding")?;
-                inputs.insert(*id, value);
-            }
-            for p in &call.definition.parameters {
-                let id = implementation
-                    .inputs
-                    .get(&p.name)
-                    .ok_or("missing checked parameter binding")?;
-                if p.mode == ParameterMode::Optional && !inputs.contains_key(id) {
-                    inputs.insert(*id, Runtime::Value(ComptimeValue::Data(Value::None)));
-                }
-            }
-            if let Some(ty) = &call.definition.children_type {
-                inputs.insert(
-                    *implementation
-                        .inputs
-                        .get("children")
-                        .ok_or("missing checked children binding")?,
-                    Runtime::Content(ty.clone(), children.clone()),
-                );
-            }
-            Some(inputs)
-        } else {
-            None
-        };
-        if call.definition.id.module == "notist"
-            && call.definition.id.name == "heading"
-            && let Some(ComptimeValue::Data(value)) = call.instance.arguments.first()
-        {
-            fields.insert("level", value.clone());
+        let definition = implementation.definition();
+        if code != definition.implementation.is_code() {
+            return Err("implementation kind disagrees with selected definition".into());
         }
-        let data_call = call.definition.returns.level().is_none();
+        if call.definition().parameters.len() != definition.parameters.len()
+            || call
+                .definition()
+                .parameters
+                .iter()
+                .zip(&definition.parameters)
+                .any(|(caller, implementation)| caller.name != implementation.name)
+        {
+            return Err("call and implementation parameter layouts differ".into());
+        }
+        let (inputs, arguments) = if code {
+            (
+                Some(arguments.into_scope(&implementation, &children)?),
+                None,
+            )
+        } else {
+            (None, Some(arguments))
+        };
+        let data_call = call.definition().returns.level().is_none();
         if data_call {
             if self.depth >= self.limits.call_depth.min(32) {
                 return Err("evaluation call-depth limit exceeded".into());
@@ -1192,99 +1000,108 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             self.depth += 1;
         }
         // The closure ensures every early failure restores physical call depth.
-        let result = (|| match definition.implementation {
-            FunctionImpl::Native(NativeFunction::Str) => {
-                let text: notist_core::shared::Text = match fields.get("value") {
-                    Some(Value::Unit) => "()".into(),
-                    Some(Value::Bool(v)) => v.to_string().into(),
-                    Some(Value::Int(v)) => v.to_string().into(),
-                    Some(Value::Str(v)) => v.clone(),
-                    Some(Value::Float(v)) if v.is_nan() => "NaN".into(),
-                    Some(Value::Float(v)) if *v == f64::INFINITY => "Infinity".into(),
-                    Some(Value::Float(v)) if *v == f64::NEG_INFINITY => "-Infinity".into(),
-                    Some(Value::Float(v)) => v.to_string().into(),
-                    _ => {
-                        return Err(Failure::at(
-                            "str accepts only Unit, Bool, Int, Float or String",
-                            call,
-                        ));
+        let result = (|| {
+            if let FunctionImpl::Code = definition.implementation {
+                return match &implementation.body {
+                    Some(body) => self
+                        .expr(body, inputs.as_ref().expect("Code inputs"))
+                        .map(CallOutcome::from),
+                    None => Err("missing checked body".into()),
+                };
+            }
+            let mut arguments = arguments.expect("native arguments");
+            let mut fields = NativeArguments {
+                values: &mut arguments,
+                record: &implementation,
+            };
+            let value = match definition.implementation {
+                FunctionImpl::Native(NativeFunction::Str) => {
+                    let text: notist_core::shared::Text = match fields.get(NativeParameter::Value) {
+                        Some(Value::Unit) => "()".into(),
+                        Some(Value::Bool(v)) => v.to_string().into(),
+                        Some(Value::Int(v)) => v.to_string().into(),
+                        Some(Value::Str(v)) => v.clone(),
+                        Some(Value::Float(v)) if v.is_nan() => "NaN".into(),
+                        Some(Value::Float(v)) if *v == f64::INFINITY => "Infinity".into(),
+                        Some(Value::Float(v)) if *v == f64::NEG_INFINITY => "-Infinity".into(),
+                        Some(Value::Float(v)) => v.to_string().into(),
+                        _ => {
+                            return Err(Failure::at(
+                                "str accepts only Unit, Bool, Int, Float or String",
+                                call,
+                            ));
+                        }
+                    };
+                    Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text))))
+                }
+                FunctionImpl::Native(NativeFunction::ArrayLen) => {
+                    let Some(Value::Array(values)) = fields.get(NativeParameter::SelfValue) else {
+                        return Err(Failure::at("len requires an Array receiver", call));
+                    };
+                    let len = i64::try_from(values.len())
+                        .map_err(|_| Failure::at("array length exceeds Int", call))?;
+                    Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
+                }
+                FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
+                FunctionImpl::Native(NativeFunction::Data(kind)) => {
+                    self.data_native(kind, call, &mut fields)
+                }
+                FunctionImpl::Native(NativeFunction::Panic) => {
+                    let Some(Value::Str(message)) = fields.get(NativeParameter::Message) else {
+                        return Err(Failure::at("panic requires a String message", call));
+                    };
+                    Err(Failure::at(message.clone(), call))
+                }
+                FunctionImpl::Code => unreachable!("Code handled before native arguments"),
+                FunctionImpl::Native(NativeFunction::Construct) => {
+                    if definition.returns.level().is_none() {
+                        return Err(format!(
+                            "native value function `{}` has no implementation",
+                            definition.id
+                        )
+                        .into());
                     }
-                };
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text))))
-            }
-            FunctionImpl::Native(NativeFunction::ArrayLen) => {
-                let Some(Value::Array(values)) = fields.get("self") else {
-                    return Err(Failure::at("len requires an Array receiver", call));
-                };
-                let len = i64::try_from(values.len())
-                    .map_err(|_| Failure::at("array length exceeds Int", call))?;
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
-            }
-            FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
-            FunctionImpl::Native(NativeFunction::Data(kind)) => {
-                self.data_native(kind, call, &fields)
-            }
-            FunctionImpl::Native(NativeFunction::Panic) => {
-                let Some(Value::Str(message)) = fields.get("message") else {
-                    return Err(Failure::at("panic requires a String message", call));
-                };
-                Err(Failure::at(message.clone(), call))
-            }
-            FunctionImpl::Code => match &implementation.body {
-                Some(body) => self.expr(body, &inputs.unwrap_or_default()),
-                None => Err("missing checked body".into()),
-            },
-            FunctionImpl::Native(NativeFunction::Construct) => {
-                if definition.returns.level().is_none() {
-                    return Err(format!(
-                        "native value function `{}` has no implementation",
-                        definition.id
-                    )
-                    .into());
-                }
-                self.require_runtime()?;
-                if definition.id.module == "notist" && definition.id.name == "embed" {
-                    notist_core::embed::normalize(
-                        &mut fields,
-                        call.resource_root
-                            .as_deref()
-                            .unwrap_or(self.context.resource_root()),
-                        self.sources
-                            .name(call.source)
-                            .map_err(|e| Failure::from(e.to_string()))?,
-                    )?;
-                }
-                let source = source.ok_or("missing content source")?;
-                let ctor = if definition.id.module == "notist" {
-                    Ctor::from_name(&definition.id.name).unwrap_or_else(|| source.ctor())
-                } else {
-                    Ctor::Extension(notist_core::item::ExtensionCtor {
-                        id: definition.id.def_id(),
-                        accepts: definition.children,
-                        level: source.level,
-                    })
-                };
-                let node = item_with_content(
-                    source,
-                    ContentItem {
-                        ctor,
-                        fields,
-                        children: Default::default(),
-                        instance: Some(target.clone().into()),
-                    },
-                );
-                let count = 1 + children.nodes;
-                Ok(Runtime::Content(
-                    call.definition.returns.clone(),
-                    Content::one(
-                        Piece {
-                            source: node,
-                            kind: Construction::Element(children),
+                    self.require_runtime()?;
+                    let mut fields = arguments.into_fields();
+                    if call.definition().id.module == "notist"
+                        && call.definition().id.name == "heading"
+                        && let Some(ComptimeValue::Data(value)) = call.instance.arguments.first()
+                    {
+                        fields.insert("level".into(), value.clone());
+                    }
+                    if definition.id.module == "notist" && definition.id.name == "embed" {
+                        notist_core::embed::normalize(
+                            &mut fields,
+                            call.resource_root
+                                .as_deref()
+                                .unwrap_or(self.context.resource_root()),
+                            self.sources
+                                .name(call.source)
+                                .map_err(|e| Failure::from(e.to_string()))?,
+                        )?;
+                    }
+                    let source = source.ok_or("missing content source")?;
+                    let ctor = if definition.id.module == "notist" {
+                        Ctor::from_name(&definition.id.name).unwrap_or_else(|| source.ctor.clone())
+                    } else {
+                        Ctor::Extension(notist_core::item::ExtensionCtor {
+                            id: definition.id.def_id(),
+                            accepts: definition.children,
+                            level: source.level,
+                        })
+                    };
+                    return Ok(CallOutcome::Element(ElementDraft {
+                        source,
+                        spec: ElementSpec {
+                            ctor,
+                            fields: fields.finish(),
+                            instance: Some(target.into_owned().into()),
                         },
-                        count,
-                    ),
-                ))
-            }
+                        children,
+                    }));
+                }
+            };
+            value.map(CallOutcome::from)
         })();
         if data_call {
             self.depth -= 1;
@@ -1301,9 +1118,12 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             failure
         })?;
         let valid = match &result {
-            Runtime::Content(ty, _) => *ty == call.definition.returns,
-            Runtime::Value(ComptimeValue::Data(value)) => call.definition.returns.accepts(value),
-            Runtime::Value(ComptimeValue::Type(_)) => call.definition.returns == Type::Type,
+            CallOutcome::Content(ty, _) => *ty == call.definition().returns,
+            CallOutcome::Value(ComptimeValue::Data(value)) => {
+                call.definition().returns.accepts(value)
+            }
+            CallOutcome::Value(ComptimeValue::Type(_)) => call.definition().returns == Type::Type,
+            CallOutcome::Element(_) => call.definition().returns.level().is_some(),
         };
         if !valid {
             return Err(if data_call {
@@ -1349,11 +1169,11 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             .instances
             .get(&key)
             .ok_or("missing function instance")?;
-        if record.definition.id.def_id() != instance.function {
+        if record.definition().id.def_id() != instance.function {
             return Err("function instance identity mismatch".into());
         }
         if let Some(diagnostic) = record.diagnostics.first() {
-            return Err(format!("{}: {}", record.definition.id, diagnostic.message).into());
+            return Err(format!("{}: {}", record.definition().id, diagnostic.message).into());
         }
         self.implementations.insert(instance, record);
         Ok(record.clone())
@@ -1388,34 +1208,25 @@ fn expand_ready(node: &mut Node, expansion: &SourceChain) {
         expand_ready(child, expansion);
     }
 }
-fn item_with_content(source: &Node, content: ContentItem) -> Node {
-    Node {
-        content: NodeContent::Item(content),
-        attrs: source.attrs.clone(),
-        origin: source.origin.clone(),
-        level: source.level,
-        span: source.span,
-    }
-}
-fn error_content(source: &Node, message: String) -> Node {
-    item_with_content(
-        source,
-        ContentItem {
-            ctor: Ctor::Error(message),
-            fields: Dict::default(),
-            children: Default::default(),
-            instance: None,
-        },
-    )
+fn error_content(source: &NodeMetadata, message: String) -> Node {
+    source.node(ContentItem {
+        ctor: Ctor::Error(message),
+        fields: Dict::default(),
+        children: Default::default(),
+        instance: None,
+    })
 }
 fn error_piece(source: &Node, message: String) -> Piece {
+    let mut source = NodeMetadata::from(source);
+    source.ctor = Ctor::Error(message);
     Piece {
-        source: error_content(source, message),
+        source,
         kind: Construction::Error,
     }
 }
-fn failure_content(source: &Node, failure: Failure) -> Node {
-    let mut node = error_content(source, failure.message);
+fn failure_source(source: &NodeMetadata, failure: Failure) -> NodeMetadata {
+    let mut node = source.clone();
+    node.ctor = Ctor::Error(failure.message);
     if let Some(location) = failure.location {
         let mut expansion = failure.expansion;
         if let Some(origin) = &source.origin {
@@ -1450,19 +1261,15 @@ fn append_expansion(node: &mut Node, expansion: &SourceChain) {
         }
     }
 }
-fn emit_mount(source: &Node, nodes: Vec<Node>, expansion: &SourceChain, out: &mut Vec<Node>) {
-    if source.attrs.is_empty() {
-        out.extend(nodes);
-    } else {
-        let mut group = item_with_content(
-            source,
-            ContentItem {
-                ctor: Ctor::Group,
-                fields: Dict::default(),
-                children: nodes.into(),
-                instance: None,
-            },
-        );
+fn emit_mount(source: &NodeMetadata, start: usize, expansion: &SourceChain, out: &mut Vec<Node>) {
+    if !source.attrs.is_empty() {
+        let nodes: Vec<_> = out.drain(start..).collect();
+        let mut group = source.node(ContentItem {
+            ctor: Ctor::Group,
+            fields: Dict::default(),
+            children: nodes.into(),
+            instance: None,
+        });
         append_expansion(&mut group, expansion);
         out.push(group);
     }
@@ -1568,15 +1375,12 @@ mod tests {
         });
         let children: Shared<Vec<Node>> =
             vec![Node::text("final child".into(), Default::default())].into();
-        let node = item_with_content(
-            &source,
-            ContentItem {
-                ctor: Ctor::Group,
-                fields: Dict::default(),
-                children: children.clone(),
-                instance: None,
-            },
-        );
+        let node = NodeMetadata::from(&source).node(ContentItem {
+            ctor: Ctor::Group,
+            fields: Dict::default(),
+            children: children.clone(),
+            instance: None,
+        });
         assert_eq!(node.attrs, source.attrs);
         assert_eq!(node.origin, source.origin);
         assert_eq!(node.level, source.level);
@@ -1589,7 +1393,7 @@ mod tests {
             Some(&Value::Str("old child".into()))
         );
 
-        let error = error_content(&source, "failure".into());
+        let error = error_content(&NodeMetadata::from(&source), "failure".into());
         assert_eq!(error.attrs, source.attrs);
         assert_eq!(error.origin, source.origin);
         assert_eq!(error.span, source.span);
@@ -1615,22 +1419,16 @@ mod tests {
             .function("notist", "text")
             .unwrap()
             .clone();
-        let call: Shared<Invocation> = Invocation {
-            instance: FunctionInstance {
+        let mut call = Invocation::new(
+            FunctionInstance {
                 function: definition.id.def_id(),
                 arguments: Vec::new(),
             },
-            definition: definition.into(),
-            arguments: vec![("text".into(), input(x, Type::String))],
-            children: None,
-            attrs: Dict::default(),
-            span: Default::default(),
-            source: Default::default(),
-            site: CallSite::Code,
-            resource_root: None,
-            invalid: None,
-        }
-        .into();
+            definition,
+            vec![("text".into(), input(x, Type::String))],
+        );
+        call.site = CallSite::Code;
+        let call: Shared<Invocation> = call.into();
         let expression = TypedExpr {
             ty: Some(Type::InlineContent),
             kind: ExprKind::Call(call.clone()),
@@ -1659,11 +1457,14 @@ mod tests {
             panic!()
         };
         assert!(saved.shares_storage(&call));
-        assert!(matches!(&saved.arguments[0].1.kind, ExprKind::Input(id) if *id == x));
+        assert!(
+            matches!(&saved.checked_arguments()[0].expression.kind, ExprKind::Input(id) if *id == x)
+        );
         assert!(
             matches!(environment.get(&x), Some(Runtime::Value(ComptimeValue::Data(Value::Str(v)))) if v.as_str() == "first")
         );
-        assert!(content.pieces.shares_storage(&content.clone().pieces));
+        assert!(matches!((&content.pieces, &content.clone().pieces),
+            (Pieces::One(a), Pieces::One(b)) if a.shares_storage(b)));
         assert_eq!(e.requests, 0);
     }
     #[test]
@@ -1734,9 +1535,10 @@ mod tests {
         let content = e.bind_content(std::slice::from_ref(&source), &Scope::new(), 100);
         assert!(matches!(
             content.pieces[0].kind,
-            Construction::Ready { nodes: 2 }
+            Construction::Ready { nodes: 2, .. }
         ));
-        let (mut result, summary) = e.present(&content, 100, &SourceChain::default());
+        let mut result = Vec::new();
+        let summary = e.emit_content(&content, 100, &SourceChain::default(), &mut result);
         assert_eq!(summary.nodes, 2);
         assert!(
             result[0]
@@ -1747,7 +1549,7 @@ mod tests {
         );
         result[0].children_mut().unwrap().clear();
         assert_eq!(source.children().len(), 1);
-        assert_eq!(content.nodes, 2);
+        assert_eq!(content.nodes(), 2);
     }
     #[test]
     fn recovered_source_children_are_never_bound_or_executed() {
@@ -1766,7 +1568,8 @@ mod tests {
             .with_children(vec![Node::expression(input(missing, Type::InlineContent))]);
         let content = e.bind_content(&[source], &Scope::new(), 100);
         assert_eq!(e.steps, 0);
-        let (nodes, summary) = e.present(&content, 100, &SourceChain::default());
+        let mut nodes = Vec::new();
+        let summary = e.emit_content(&content, 100, &SourceChain::default(), &mut nodes);
         assert!(nodes[0].is_error());
         assert!(nodes[0].children().is_empty());
         assert!(summary.failed);

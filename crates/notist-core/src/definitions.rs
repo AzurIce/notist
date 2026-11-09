@@ -186,7 +186,7 @@ pub enum ParameterMode {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterDef {
-    pub name: String,
+    pub name: crate::shared::Text,
     pub ty: Type,
     pub mode: ParameterMode,
     pub positional: bool,
@@ -198,7 +198,7 @@ pub struct ParameterDef {
 }
 
 impl ParameterDef {
-    pub fn new(name: impl Into<String>, ty: Type, mode: ParameterMode) -> Self {
+    pub fn new(name: impl Into<crate::shared::Text>, ty: Type, mode: ParameterMode) -> Self {
         Self {
             name: name.into(),
             ty,
@@ -622,7 +622,7 @@ pub fn validate_module(module: &DefinitionModule) -> Vec<Diagnostic> {
             if !valid_name(&parameter.name) {
                 report(parameter.span, "invalid parameter name".to_string());
             }
-            if !parameters.insert(parameter.name.clone()) {
+            if !parameters.insert(parameter.name.to_string()) {
                 report(
                     parameter.span,
                     format!("duplicate parameter `{}`", parameter.name),

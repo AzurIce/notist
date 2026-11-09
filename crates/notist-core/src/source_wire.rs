@@ -235,6 +235,16 @@ impl SerializeWithSources for Ctor {
 }
 
 struct Arguments<'a>(&'a [(String, TypedExpr)], &'a Sources);
+struct CallArguments<'a>(&'a Invocation, &'a Sources);
+impl Serialize for CallArguments<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.checked_arguments().len()))?;
+        for (name, value) in self.0.arguments() {
+            seq.serialize_element(&(name, self.1.wire(value)))?;
+        }
+        seq.end()
+    }
+}
 struct LexicalArguments<'a>(&'a [(crate::binding::BindingId, TypedExpr)], &'a Sources);
 impl Serialize for LexicalArguments<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -494,7 +504,7 @@ impl SerializeWithSources for ResultArm {
 struct InvocationOut<'a> {
     instance: Wire<'a, ResolvedInstance>,
     definition: &'a FunctionDef,
-    arguments: Arguments<'a>,
+    arguments: CallArguments<'a>,
     children: Option<Wire<'a, TypedExpr>>,
     attrs: &'a Dict,
     span: (u32, u32),
@@ -511,15 +521,15 @@ impl SerializeWithSources for Invocation {
         sources: &Sources,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        if self.instance.function != self.definition.id.def_id() {
+        if self.instance.function != self.definition().id.def_id() {
             return Err(S::Error::custom(
                 "call declaration and instance identities differ",
             ));
         }
         InvocationOut {
             instance: sources.wire(&self.instance),
-            definition: &self.definition,
-            arguments: Arguments(&self.arguments, sources),
+            definition: self.definition(),
+            arguments: CallArguments(self, sources),
             children: self.children.as_deref().map(|v| sources.wire(v)),
             attrs: &self.attrs,
             span: range(self.span),
@@ -1044,17 +1054,21 @@ impl DeserializeWithSources for Invocation {
                 "call declaration and instance identities differ".into(),
             ));
         }
-        Ok(Self {
+        let mut call = Self::new(
             instance,
-            definition: definition.into(),
-            arguments: arguments(v.arguments, s)?,
-            children: v.children.map(|v| expression(*v, s)).transpose()?,
-            attrs: v.attrs,
-            span: v.span,
-            source: s.source(&v.source)?,
-            site: v.site,
-            resource_root: v.resource_root,
-            invalid: v.invalid,
-        })
+            definition,
+            arguments(v.arguments, s)?
+                .into_iter()
+                .map(|(name, value)| (name.into(), value))
+                .collect(),
+        );
+        call.children = v.children.map(|v| expression(*v, s)).transpose()?;
+        call.attrs = v.attrs;
+        call.span = v.span;
+        call.source = s.source(&v.source)?;
+        call.site = v.site;
+        call.resource_root = v.resource_root;
+        call.invalid = v.invalid;
+        Ok(call)
     }
 }

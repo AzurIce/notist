@@ -479,7 +479,7 @@ fn ir_counts(root: Option<&Item>, program: &CheckedProgram) -> Json {
     }
     fn invocation(call: &Invocation, counts: &mut Counts) {
         counts.calls += 1;
-        for (_, argument) in &call.arguments {
+        for (_, argument) in call.arguments() {
             expression(argument, counts);
         }
         if let Some(child) = &call.children {

@@ -20,10 +20,17 @@ fn an_owned_foreign_binding_with_the_same_name_does_not_alias_a_parameter() {
         .unwrap();
     let record = std::sync::Arc::make_mut(&mut program.instances)
         .values_mut()
-        .find(|record| record.definition.id.name == "value")
+        .find(|record| record.definition().id.name == "value")
         .unwrap();
     let record = std::sync::Arc::make_mut(record);
-    assert_ne!(record.inputs["x"], foreign);
+    assert_ne!(
+        record
+            .named_inputs()
+            .find(|(name, _)| *name == "x")
+            .unwrap()
+            .1,
+        foreign
+    );
     let body = record.body.as_mut().unwrap();
     body.kind = ExprKind::Input(foreign);
     body.ty = Some(Type::Int);
@@ -63,9 +70,11 @@ fn checked_implementation_records_cannot_impersonate_another_definition_id() {
     let other = context.resolve("self.other").unwrap().id.clone();
     let record = std::sync::Arc::make_mut(&mut program.instances)
         .values_mut()
-        .find(|record| record.definition.id.name == "show")
+        .find(|record| record.definition().id.name == "show")
         .unwrap();
-    std::sync::Arc::make_mut(record).definition.id = other;
+    let mut definition = record.definition().clone();
+    definition.id = other;
+    *record = std::sync::Arc::new((**record).clone().with_definition(definition));
     let result = notist_eval::evaluate(
         analysis.root(),
         &program,

@@ -1525,18 +1525,14 @@ impl<'a> Checker<'a> {
             .any(|p| p.ty == Type::ResourceTarget)
             .then(|| self.frame.resource_root.clone());
         self.ensure_instance(&instance, &concrete, &bindings);
-        Ok(Invocation {
-            instance,
-            definition: concrete.into(),
-            arguments: arguments.into_iter().collect(),
-            children,
-            attrs,
-            span,
-            source: self.frame.source.id(),
-            site: self.frame.site,
-            resource_root,
-            invalid: None,
-        })
+        let mut call = Invocation::new(instance, concrete, arguments.into_iter().collect());
+        call.children = children;
+        call.attrs = attrs;
+        call.span = span;
+        call.source = self.frame.source.id();
+        call.site = self.frame.site;
+        call.resource_root = resource_root;
+        Ok(call)
     }
 
     fn check_comptime(
@@ -1628,16 +1624,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let diagnostics_start = self.diagnostics.len();
-        std::sync::Arc::make_mut(&mut self.program.instances).insert(
-            key.clone(),
-            std::sync::Arc::new(InstanceRecord {
-                definition: def.clone(),
-                inputs: BTreeMap::new(),
-                body: None,
-                diagnostics: Vec::new(),
-                checking: true,
-            }),
-        );
+        let mut record = InstanceRecord::new(def.clone());
+        record.checking = true;
+        std::sync::Arc::make_mut(&mut self.program.instances)
+            .insert(key.clone(), std::sync::Arc::new(record));
         if !def.implementation.is_code() {
             std::sync::Arc::make_mut(
                 std::sync::Arc::make_mut(&mut self.program.instances)
@@ -1723,9 +1713,9 @@ impl<'a> Checker<'a> {
                 ParameterMode::Optional => Type::Option(Box::new(p.ty.clone())),
                 _ => p.ty.clone(),
             };
-            let id = inputs[&p.name];
+            let id = inputs[p.name.as_str()];
             let value = self.typed(Some(ty), ExprKind::Input(id), None, p.span);
-            self.frame.scope.insert(p.name.clone(), value);
+            self.frame.scope.insert(p.name.to_string(), value);
         }
         if let Some(ty) = &def.children_type {
             let id = inputs["children"];
@@ -1756,7 +1746,14 @@ impl<'a> Checker<'a> {
                 .unwrap(),
         );
         record.body = checked;
-        record.inputs = inputs;
+        record.inputs = notist_core::evaluation::FunctionInputs {
+            parameters: def
+                .parameters
+                .iter()
+                .map(|p| inputs.get(p.name.as_str()).copied())
+                .collect(),
+            children: inputs.get("children").copied(),
+        };
         record.diagnostics = diagnostics;
         record.checking = false;
         self.frame = previous_frame;

@@ -30,7 +30,7 @@ fn visit(expression: &TypedExpr, ids: &mut Vec<notist::BindingId>) {
             }
         }
         ExprKind::Call(call) => {
-            for (_, value) in &call.arguments {
+            for (_, value) in call.arguments() {
                 visit(value, ids);
             }
             if let Some(children) = &call.children {
@@ -88,7 +88,7 @@ fn nested_loop_shadowing_has_distinct_numeric_binders_and_retains_outer_values()
         .checked_program()
         .instances
         .values()
-        .find(|record| record.definition.id.module == "binding-loops")
+        .find(|record| record.definition().id.module == "binding-loops")
         .unwrap();
     let mut ids = Vec::new();
     visit(record.body.as_ref().unwrap(), &mut ids);
@@ -106,7 +106,7 @@ fn nested_loop_shadowing_has_distinct_numeric_binders_and_retains_outer_values()
                 .unwrap()
                 .owner
                 .as_ref(),
-            Some(&record.definition.id)
+            Some(&record.definition().id)
         );
     }
     let result = pipeline.evaluate(&analysis, &context);
@@ -255,7 +255,12 @@ fn one_source_compiled_under_two_modules_has_distinct_checked_inputs() {
         .checked_program()
         .instances
         .values()
-        .filter_map(|record| record.inputs.get("x").copied())
+        .filter_map(|record| {
+            record
+                .named_inputs()
+                .find(|(name, _)| *name == "x")
+                .map(|(_, id)| id)
+        })
         .collect();
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1]);
@@ -414,14 +419,20 @@ fn result_arm_payloads_shadow_parameters_and_wire_uses_explicit_free_bindings() 
             .checked_program()
             .instances
             .values()
-            .find(|record| record.definition.id.module == "binding-match")
+            .find(|record| record.definition().id.module == "binding-match")
             .unwrap();
         let body = record.body.as_ref().unwrap();
         let wire = serde_json::to_value(analysis.sources().wire(body)).unwrap();
         assert_eq!(
             analysis
                 .sources()
-                .decode_with_bindings::<TypedExpr>(wire, &record.inputs)
+                .decode_with_bindings::<TypedExpr>(
+                    wire,
+                    &record
+                        .named_inputs()
+                        .map(|(name, id)| (name.to_owned(), id))
+                        .collect()
+                )
                 .unwrap(),
             *body
         );

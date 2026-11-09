@@ -1,8 +1,9 @@
 //! Explicit embed inputs. Local URL spellings are normalized once at the
 //! constructor boundary; publication, existence checks and IO belong to hosts.
 use crate::{
-    item::{Ctor, Dict, Item, Value},
+    item::{Ctor, Item, Value},
     resource::ResourcePath,
+    shared::Fields,
 };
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 
@@ -54,7 +55,7 @@ pub fn targets(root: &Item) -> impl Iterator<Item = &Item> {
 
 /// Normalize source-level embed arguments, without checking or reading files.
 /// Already bound Paths (including `?`, `#`, `%` in filenames) are never parsed.
-pub fn normalize(fields: &mut Dict, root: &str, source: &str) -> Result<(), String> {
+pub fn normalize(fields: &mut impl Fields, root: &str, source: &str) -> Result<(), String> {
     let Some(target) = fields.get("target").cloned() else {
         return Err("embed requires a target".into());
     };
@@ -89,7 +90,7 @@ pub fn normalize(fields: &mut Dict, root: &str, source: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn add_suffix(fields: &mut Dict, name: &str, value: String) -> Result<(), String> {
+fn add_suffix(fields: &mut impl Fields, name: &str, value: String) -> Result<(), String> {
     if fields.get(name).is_some() {
         return Err(format!(
             "embed {name} supplied both in the URL and as an argument"
@@ -101,7 +102,7 @@ fn add_suffix(fields: &mut Dict, name: &str, value: String) -> Result<(), String
 
 /// Add semantic suffix fields to a host-provided URL. Resource filenames never
 /// enter this function; hosts encode the path when selecting its public URL.
-pub fn append_suffix(base: &str, fields: &Dict) -> Result<String, String> {
+pub fn append_suffix(base: &str, fields: &impl Fields) -> Result<String, String> {
     let query = string(fields, "query");
     let fragment = string(fields, "fragment");
     if query.is_some_and(|query| query.chars().any(|c| c.is_control() || c == '#')) {
@@ -134,7 +135,7 @@ pub fn append_suffix(base: &str, fields: &Dict) -> Result<String, String> {
     Ok(url)
 }
 
-pub fn string<'a>(fields: &'a Dict, name: &str) -> Option<&'a str> {
+pub fn string<'a>(fields: &'a impl Fields, name: &str) -> Option<&'a str> {
     match fields.get(name) {
         Some(Value::Str(value)) => Some(value),
         _ => None,

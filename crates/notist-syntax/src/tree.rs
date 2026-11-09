@@ -2,10 +2,23 @@
 //! Each domain defines its own typed AST and roots over this vocabulary.
 use rowan::Language;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u16)]
-pub enum SyntaxKind {
-    Eq = 0,
+// Keep the raw vocabulary and its checked conversion in one declaration.
+macro_rules! syntax_kinds {
+    ($($(#[$meta:meta])* $kind:ident),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(u16)]
+        pub enum SyntaxKind {
+            $($(#[$meta])* $kind),*
+        }
+
+        impl SyntaxKind {
+            const ALL: &[Self] = &[$(Self::$kind),*];
+        }
+    };
+}
+
+syntax_kinds! {
+    Eq,
     Whitespace,
     Text,
     Newline,
@@ -140,12 +153,34 @@ impl Language for Lang {
     }
 
     fn kind_from_raw(raw: rowan::SyntaxKind) -> Self::Kind {
-        // SAFETY: raw kinds only ever come from kind_to_raw (the builder is
-        // the sole tree constructor; trees are never persisted or produced
-        // elsewhere), so the value is always a valid discriminant.
-        unsafe { std::mem::transmute(raw.0) }
+        SyntaxKind::ALL
+            .get(usize::from(raw.0))
+            .copied()
+            .unwrap_or_else(|| panic!("invalid syntax kind {}", raw.0))
     }
 }
 
 pub type SyntaxNode = rowan::SyntaxNode<Lang>;
 pub type SyntaxToken = rowan::SyntaxToken<Lang>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_kind_round_trips_without_changing_raw_numbers() {
+        for (raw, &kind) in SyntaxKind::ALL.iter().enumerate() {
+            assert_eq!(kind as usize, raw);
+            assert_eq!(Lang::kind_from_raw(Lang::kind_to_raw(kind)), kind);
+        }
+    }
+
+    #[test]
+    fn invalid_raw_kinds_fail_safely() {
+        for raw in [SyntaxKind::ALL.len() as u16, u16::MAX] {
+            assert!(
+                std::panic::catch_unwind(|| Lang::kind_from_raw(rowan::SyntaxKind(raw))).is_err()
+            );
+        }
+    }
+}

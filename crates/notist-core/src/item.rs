@@ -433,7 +433,7 @@ impl Node {
         }
         match self.as_expr().map(|e| &e.kind) {
             Some(crate::evaluation::ExprKind::Call(call)) => {
-                let def = &call.definition;
+                let def = call.definition();
                 if def.id.module == "notist" {
                     Ctor::from_name(&def.id.name).unwrap_or(Ctor::Interpolation)
                 } else {
@@ -456,8 +456,8 @@ impl Node {
             return None;
         };
         if name == "level"
-            && call.definition.id.module == "notist"
-            && call.definition.id.name == "heading"
+            && call.definition().id.module == "notist"
+            && call.definition().id.name == "heading"
         {
             if let Some(crate::definitions::ComptimeValue::Data(value)) =
                 call.instance.arguments.first()
@@ -465,10 +465,10 @@ impl Node {
                 return Some(value);
             }
         }
-        let (_, arg) = call.arguments.iter().find(|(key, _)| key == name)?;
+        let (_, arg) = call.arguments().find(|(key, _)| *key == name)?;
         match arg.known.as_ref() {
             Some(crate::definitions::ComptimeValue::Data(value)) => {
-                if call.definition.parameters.iter().any(|p| {
+                if call.definition().parameters.iter().any(|p| {
                     p.name == name && p.mode == crate::definitions::ParameterMode::Optional
                 }) && matches!(arg.ty, Some(crate::definitions::Type::Option(_)))
                 {
@@ -497,9 +497,9 @@ impl Node {
             return Dict::default();
         };
         let mut fields = Dict::default();
-        for (name, _) in &call.arguments {
+        for (name, _) in call.arguments() {
             if let Some(value) = self.field(name) {
-                fields.insert(name.clone(), value.clone());
+                fields.insert(name, value.clone());
             }
         }
         if let Some(value) = self.field("level") {

@@ -38,21 +38,35 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "content/index.not", "= Original");
-    write(root, "edit.sh", "cat > \"$1\"\ncat \"$2\"\n");
+    write(root, "edit.py", r#"
+import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    r = json.loads(line)
+    if r['event'] == 'before_compile':
+        Path(sys.argv[1]).write_text(line)
+        response = json.loads(Path(sys.argv[2]).read_text())
+    else:
+        Path(sys.argv[1] + '.template').write_text(line)
+        data = r['data']
+        data['previous'] = sys.argv[1]
+        response = dict(version=2, event=r['event'], data=data)
+    print(json.dumps(response), flush=True)
+"#);
     write(
         root,
         "Notist.toml",
-        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.first]\ncommand=['sh','edit.sh','first-request.json','first-response.json']\n[site.extensions.second]\ncommand=['sh','edit.sh','second-request.json','second-response.json']",
+        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.first]\ncommand=['python3','edit.py','first-request.json','first-response.json']\n[site.extensions.second]\ncommand=['python3','edit.py','second-request.json','second-response.json']",
     );
     write(
         root,
         "first-response.json",
-        r##"{"version":1,"input":{"documents":{"index.not":"= First"},"data":{"step":1}}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= First"}}"##,
     );
     write(
         root,
         "second-response.json",
-        r##"{"version":1,"input":{"documents":{"index.not":"= Final\n\n[New](new/page.md)","new/page.md":"# New"},"data":{"step":2}}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Final\n\n[New](new/page.md)","new/page.md":"# New"}}"##,
     );
     let result = command(root).args(["build"]).output().unwrap();
     assert!(
@@ -63,8 +77,13 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     let request: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("second-request.json")).unwrap())
             .unwrap();
-    assert_eq!(request["input"]["documents"]["index.not"], "= First");
-    assert_eq!(request["input"]["data"]["step"], 1);
+    assert_eq!(request["documents"]["index.not"], "= First");
+    assert!(request.get("data").is_none());
+    let request: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("second-request.json.template")).unwrap()
+    ).unwrap();
+    assert_eq!(request["data"]["previous"], "first-request.json");
+    assert!(request["pages"].as_array().unwrap().iter().all(|p| !p["html"].as_str().unwrap().is_empty()));
     let original = std::fs::read_to_string(root.join("public/index.html")).unwrap();
     assert!(original.contains("Final"));
     assert!(original.contains("new/page.html"));
@@ -73,7 +92,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     write(
         root,
         "second-response.json",
-        r##"{"version":1,"errors":["missing manifest"]}"##,
+        r##"{"version":2,"event":"before_compile","errors":["missing manifest"]}"##,
     );
     let result = command(root).args(["build"]).output().unwrap();
     assert!(!result.status.success());
@@ -85,7 +104,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     write(
         root,
         "second-response.json",
-        r##"{"version":1,"input":{"documents":{"index.not":"= Latest"},"data":{}}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Latest"}}"##,
     );
     assert!(
         command(root)
@@ -107,13 +126,25 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
     write(&root, "content/index.not", "= Original");
     write(
         &root,
-        "edit.sh",
-        "cat > /dev/null\ncat ../external/nested/response.json\n",
+        "edit.py",
+        r#"
+import json, sys
+from pathlib import Path
+for line in sys.stdin:
+    r = json.loads(line)
+    response = dict(version=2, event=r['event'])
+    try:
+        if r['event'] == 'before_compile':
+            response = json.loads(Path('../external/nested/response.json').read_text())
+    except Exception as error:
+        response['errors'] = [str(error)]
+    print(json.dumps(response), flush=True)
+"#,
     );
     write(
         &root,
         "Notist.toml",
-        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.edit]\ncommand=['sh','edit.sh']\nwatch=['../external']",
+        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.edit]\ncommand=['python3','edit.py']\nwatch=['../external']",
     );
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -149,20 +180,20 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":1,"input":{"documents":{"index.not":"= Generated"},"data":{}}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Generated"}}"##,
         );
         wait("<h1 id=\"generated\">Generated");
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":1,"errors":["temporary failure"]}"##,
+            r##"{"version":2,"event":"before_compile","errors":["temporary failure"]}"##,
         );
         std::thread::sleep(Duration::from_millis(500));
         assert!(request(&address, "/").contains("Generated"));
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":1,"input":{"documents":{"index.not":"= Recovered"},"data":{}}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Recovered"}}"##,
         );
         wait("Recovered");
         std::fs::remove_dir_all(temp.path().join("external")).unwrap();
@@ -170,13 +201,13 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":1,"input":{"documents":{"index.not":"= Restored"},"data":{}}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Restored"}}"##,
         );
         wait("Restored");
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":1,"input":{"documents":{"index.not":"= Watched again"},"data":{}}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Watched again"}}"##,
         );
         wait("Watched again");
         assert!(!root.join("public").exists());

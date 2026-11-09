@@ -32,7 +32,7 @@ fn failure(output: Output, expected: &str) {
     );
 }
 const SITE: &str = "[package]\nname='manual'\n[site]";
-const BOOK: &str = "[package]\nname='manual'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}";
+const BOOK: &str = "[package]\nname='manual'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}";
 
 #[test]
 fn nearest_package_builds_one_site_into_its_named_output_directory() {
@@ -254,7 +254,7 @@ fn a_sibling_package_requires_an_explicit_publication_mount() {
     write(root, "website/Notist.toml", SITE);
     write(root, "website/content/index.md", "# Other");
     let output = run(&root.join("book"), &["build"]);
-    assert!(String::from_utf8_lossy(&output.stderr).contains("outside Vault"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("outside the content directory"));
     success(output);
     assert!(!root.join("book/notist-output/manual/website").exists());
     write(

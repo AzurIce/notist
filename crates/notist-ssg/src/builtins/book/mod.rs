@@ -6,7 +6,7 @@ mod summary;
 
 use crate::{
     Error, Page,
-    extensions::{SiteContext, SiteExtension, SiteInput},
+    extensions::{CompileInput, SiteContext, SiteExtension, TemplateInput},
     mounts::Mounts,
 };
 pub use layout::{Navigation, PageLink};
@@ -24,17 +24,21 @@ pub struct BookConfig {
     /// Relative to the site content root. None discovers SUMMARY.not or SUMMARY.md.
     pub summary: Option<PathBuf>,
     /// Restrict publication to SUMMARY entries; otherwise it only controls navigation.
-    pub enable: bool,
+    pub select: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Book {
     pub config: BookConfig,
+    entries: Option<Vec<structure::Entry>>,
 }
 
 impl Book {
     pub fn new(config: BookConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            entries: None,
+        }
     }
 }
 
@@ -43,7 +47,11 @@ impl SiteExtension for Book {
         "builtins.book"
     }
 
-    fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
+    fn before_compile(
+        &mut self,
+        context: &SiteContext<'_>,
+        input: &mut CompileInput,
+    ) -> Result<(), Error> {
         let content = context.resources.resolve(&context.config.content);
         let mounts = Mounts::new(context.resources, context.config)?;
         let summary = if let Some(path) = &self.config.summary {
@@ -78,7 +86,6 @@ impl SiteExtension for Book {
             input.documents.remove(&PathBuf::from(name));
         }
         let entries = if let Some(path) = summary {
-            let path = mounts.resolve(&path);
             let source = summary_source
                 .map(Ok)
                 .unwrap_or_else(|| context.resources.source(&path))?;
@@ -115,7 +122,7 @@ impl SiteExtension for Book {
                 ));
             }
             let plan = plan.unwrap();
-            if self.config.enable {
+            if self.config.select {
                 input
                     .documents
                     .retain(|p, _| plan.includes(&mounts.resolve(&content.join(p)), &mounts));
@@ -140,34 +147,22 @@ impl SiteExtension for Book {
         if input.documents.is_empty() {
             return Err(Error::Message("book contains no selected documents".into()));
         }
+        self.entries = entries;
+        Ok(())
+    }
+
+    fn before_template(
+        &mut self,
+        context: &SiteContext<'_>,
+        input: &mut TemplateInput<'_>,
+    ) -> Result<(), Error> {
+        let pages = input.pages;
         if input.data.contains_key("book") {
             return Err(Error::Message(
                 "site.data.book is reserved by the book extension".into(),
             ));
         }
-        input
-            .data
-            .insert("book".into(), serde_json::json!({"structure": entries}));
-        Ok(())
-    }
-
-    fn enrich(
-        &self,
-        context: &SiteContext<'_>,
-        pages: &[Page],
-        data: &mut BTreeMap<String, serde_json::Value>,
-    ) -> Result<(), Error> {
-        let book = data.get_mut("book").ok_or_else(|| {
-            Error::Message("book extension data was removed by another extension".into())
-        })?;
-        if !book.is_object() || book.get("structure").is_none() {
-            return Err(Error::Message(
-                "invalid book extension data: expected structure".into(),
-            ));
-        }
-        let entries: Option<Vec<structure::Entry>> =
-            serde_json::from_value(book["structure"].clone())
-                .map_err(|e| Error::Message(format!("invalid book structure data: {e}")))?;
+        let entries = &self.entries;
         fn validate(entries: &[structure::Entry], pages: &[Page]) -> Result<(), Error> {
             for entry in entries {
                 if let Some(source) = &entry.source {
@@ -182,11 +177,11 @@ impl SiteExtension for Book {
             }
             Ok(())
         }
-        if let Some(entries) = &entries {
+        if let Some(entries) = entries {
             validate(entries, pages)?;
         }
         let layout = match entries {
-            Some(entries) => layout::Layout::declared(&entries, pages),
+            Some(entries) => layout::Layout::declared(entries, pages),
             None => layout::Layout::new(&context.config.title, pages),
         };
         let mut metadata = BTreeMap::new();
@@ -210,13 +205,12 @@ impl SiteExtension for Book {
                 }),
             );
         }
-        book["navigation"] =
-            serde_json::to_value(layout.navigation(std::path::Path::new("__navigation__")))
-                .map_err(|e| Error::Message(e.to_string()))?;
-        book["order"] =
-            serde_json::to_value(layout.order()).map_err(|e| Error::Message(e.to_string()))?;
-        book["pages"] =
-            serde_json::to_value(metadata).map_err(|e| Error::Message(e.to_string()))?;
+        input.data.insert("book".into(), serde_json::json!({
+            "structure": entries,
+            "navigation": layout.navigation(std::path::Path::new("__navigation__")),
+            "order": layout.order(),
+            "pages": metadata,
+        }));
         Ok(())
     }
 }

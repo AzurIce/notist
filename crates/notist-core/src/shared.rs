@@ -335,6 +335,62 @@ impl PartialEq for Array {
 
 #[derive(Clone, Default)]
 pub struct Dict(Arc<DictStorage>);
+
+/// Field operations shared by semantic dictionaries and their owned construction phase.
+pub trait Fields {
+    fn get(&self, key: &str) -> Option<&Value>;
+    fn insert(&mut self, key: &str, value: Value);
+}
+
+/// Unique storage until the final dictionary escapes into a semantic value.
+#[derive(Debug, Default)]
+pub struct DictBuilder {
+    entries: Vec<(Text, Value)>,
+    budget_capacity: usize,
+}
+impl DictBuilder {
+    pub fn insert(&mut self, key: Text, value: Value) {
+        if let Some((_, previous)) = self.entries.iter_mut().find(|(name, _)| *name == key) {
+            *previous = value;
+        } else {
+            if self.entries.len() == self.budget_capacity {
+                self.budget_capacity = self.budget_capacity.saturating_mul(2).max(4);
+            }
+            if self.entries.capacity() == 0 {
+                self.entries.reserve_exact(1);
+            }
+            self.entries.push((key, value));
+        }
+    }
+    pub fn finish(self) -> Dict {
+        let index = DictStorage::make_index(&self.entries);
+        Dict(Arc::new(DictStorage {
+            entries: self.entries,
+            index,
+            budget_capacity: self.budget_capacity,
+            metrics: OnceLock::new(),
+        }))
+    }
+}
+impl Fields for DictBuilder {
+    fn get(&self, key: &str) -> Option<&Value> {
+        self.entries
+            .iter()
+            .find(|(name, _)| name.as_str() == key)
+            .map(|(_, v)| v)
+    }
+    fn insert(&mut self, key: &str, value: Value) {
+        self.insert(key.into(), value);
+    }
+}
+impl Fields for Dict {
+    fn get(&self, key: &str) -> Option<&Value> {
+        self.get(key)
+    }
+    fn insert(&mut self, key: &str, value: Value) {
+        self.insert(key, value);
+    }
+}
 #[derive(Default)]
 pub(crate) struct DictStorage {
     entries: Vec<(Text, Value)>,
@@ -572,6 +628,36 @@ mod wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owned_dictionary_construction_shares_keys_and_preserves_budget_and_updates() {
+        for count in [0, 1, 4, 8, 9, 16, 32] {
+            let mut builder = DictBuilder::default();
+            let mut reference = Dict::default();
+            let keys: Vec<Text> = (0..count).map(|i| format!("field-{i}").into()).collect();
+            for (i, key) in keys.iter().enumerate() {
+                builder.insert(key.clone(), Value::Int(i as i64));
+                reference.insert(key, Value::Int(i as i64));
+            }
+            if let Some(key) = keys.first() {
+                builder.insert(key.clone(), Value::Str("updated".into()));
+                reference.insert(key, Value::Str("updated".into()));
+            }
+            let dict = builder.finish();
+            assert_eq!(dict, reference);
+            assert_eq!(dict.metrics().bytes, reference.metrics().bytes);
+            assert_eq!(dict.metrics().resident, reference.metrics().resident);
+            for ((stored, _), key) in dict.0.entries.iter().zip(&keys) {
+                assert!(stored.shares_storage(key));
+            }
+            for key in &keys {
+                assert_eq!(dict.get(key), reference.get(key));
+            }
+            let mut copy = dict.clone();
+            copy.insert("new", Value::Bool(true));
+            assert!(dict.get("new").is_none());
+        }
+    }
 
     fn reference_dict_resident(entries: &Vec<(Text, Value)>) -> usize {
         let keys: BTreeSet<_> = entries.iter().map(|(key, _)| key.as_str()).collect();

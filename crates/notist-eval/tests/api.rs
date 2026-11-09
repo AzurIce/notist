@@ -39,25 +39,22 @@ impl NativeContext {
         } else {
             vec![]
         };
-        Invocation {
-            instance: FunctionInstance {
+        let mut call = Invocation::new(
+            FunctionInstance {
                 function: definition.id.clone(),
                 arguments: comptime,
             }
             .into(),
-            definition: definition.into(),
-            arguments: arguments
+            definition,
+            arguments
                 .into_iter()
                 .map(|(name, expr)| (name.into(), expr))
                 .collect(),
-            children: None,
-            attrs: Default::default(),
-            span: Default::default(),
-            source: self.source.id(),
-            site: CallSite::Code,
-            resource_root: Some("/".into()),
-            invalid: None,
-        }
+        );
+        call.source = self.source.id();
+        call.site = CallSite::Code;
+        call.resource_root = Some("/".into());
+        call
     }
 }
 
@@ -92,16 +89,8 @@ impl EvaluationContext for NativeContext {
         }
         let definition = bindings.instantiate().unwrap();
         assert!(!definition.implementation.is_code());
-        Arc::make_mut(&mut program.instances).insert(
-            instance.key(),
-            Arc::new(InstanceRecord {
-                inputs: Default::default(),
-                definition,
-                body: None,
-                diagnostics: vec![],
-                checking: false,
-            }),
-        );
+        Arc::make_mut(&mut program.instances)
+            .insert(instance.key(), Arc::new(InstanceRecord::new(definition)));
         (program, vec![])
     }
 }
@@ -157,6 +146,84 @@ fn checked_ir_evaluates_without_the_compiler_and_does_not_mutate_inputs() {
     assert_eq!(root, before);
     assert!(program.instances.is_empty());
     assert_eq!(context.specializations.get(), 1);
+}
+
+#[test]
+fn external_arguments_keep_duplicate_update_and_extra_field_semantics() {
+    let context = NativeContext::new();
+    let mut root = document(&context, value(Value::Str("unused".into())));
+    root.children_mut().unwrap()[0]
+        .call_mut()
+        .unwrap()
+        .set_arguments(vec![
+            ("text".into(), value(Value::Str("first".into()))),
+            ("extra".into(), value(Value::Int(7))),
+            ("text".into(), value(Value::Str("last".into()))),
+        ]);
+    let result = notist_eval::evaluate(
+        &root,
+        &CheckedProgram::default(),
+        &context.source.clone().into(),
+        &context,
+        Limits::default(),
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.root.children()[0].field("text"),
+        Some(&Value::Str("last".into()))
+    );
+    assert_eq!(
+        result.root.children()[0].field("extra"),
+        Some(&Value::Int(7))
+    );
+}
+
+#[test]
+fn argument_failure_precedes_external_implementation_layout_failure() {
+    let context = NativeContext::new();
+    let mut root = document(&context, value(Value::Str("unused".into())));
+    let call = root.children_mut().unwrap()[0].call_mut().unwrap();
+    let mut definition = call.definition().clone();
+    definition.parameters[0].name = "different".into();
+    let mut program = CheckedProgram::default();
+    Arc::make_mut(&mut program.instances).insert(
+        FunctionInstance {
+            function: definition.id.clone(),
+            arguments: call.instance.arguments.clone(),
+        }
+        .key(),
+        Arc::new(InstanceRecord::new(definition)),
+    );
+    let mut failure = value(Value::Str("unused".into()));
+    failure.known = None;
+    failure.kind = ExprKind::Failure("argument-first".into());
+    call.set_arguments(vec![("text".into(), failure)]);
+    let result = notist_eval::evaluate(
+        &root,
+        &program,
+        &context.source.clone().into(),
+        &context,
+        Limits::default(),
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(result.diagnostics[0].message.contains("argument-first"));
+    root.children_mut().unwrap()[0]
+        .call_mut()
+        .unwrap()
+        .set_arguments(vec![("text".into(), value(Value::Str("ok".into())))]);
+    let result = notist_eval::evaluate(
+        &root,
+        &program,
+        &context.source.clone().into(),
+        &context,
+        Limits::default(),
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert!(
+        result.diagnostics[0]
+            .message
+            .contains("parameter layouts differ")
+    );
 }
 
 #[test]

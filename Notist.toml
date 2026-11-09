@@ -13,7 +13,7 @@ copy_content_assets = false
 exclude = ["**/AGENTS.md"]
 
 [site.extensions.builtins.book]
-enable = true
+select = true
 
 [[extensions]]
 kind = "replace"

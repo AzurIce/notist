@@ -295,14 +295,19 @@ impl Sources {
         program: &crate::evaluation::CheckedProgram,
     ) -> Result<(), SourceError> {
         for record in program.instances.values() {
-            for (name, id) in &record.inputs {
-                self.validate_binding(*id)?;
+            if record.inputs.parameters.len() > record.definition().parameters.len() {
+                return Err(SourceError::Binding(
+                    "checked parameter bindings exceed the declaration".into(),
+                ));
+            }
+            for (name, id) in record.named_inputs() {
+                self.validate_binding(id)?;
                 if self
                     .2
-                    .get(*id)
+                    .get(id)
                     .map_err(|message| SourceError::Binding(message.into()))?
                     .name
-                    != *name
+                    != name
                 {
                     return Err(SourceError::Binding(
                         "checked parameter name and binding identity differ".into(),
@@ -420,15 +425,14 @@ impl Sources {
                             self.1
                                 .function(call.instance.function)
                                 .map_err(SourceError::Definition)?;
-                            if call.definition.id.def_id() != call.instance.function {
+                            if call.definition().id.def_id() != call.instance.function {
                                 return Err(SourceError::InvalidDefinition(
                                     "call declaration and instance identities differ".into(),
                                 ));
                             }
                             check(call.source)?;
                             pending.extend(
-                                call.arguments
-                                    .iter()
+                                call.arguments()
                                     .map(|(_, value)| Reference::Expression(value)),
                             );
                             if let Some(children) = &call.children {
@@ -676,28 +680,18 @@ mod tests {
             Accepts::Inline,
             Type::InlineContent,
         );
-        Node::expression(expression(
-            ExprKind::Call(
-                Invocation {
-                    instance: FunctionInstance {
-                        function: definition.id.clone(),
-                        arguments: Vec::new(),
-                    }
-                    .into(),
-                    definition: definition.into(),
-                    arguments: Vec::new(),
-                    children: Some(Box::new(children)),
-                    attrs: Default::default(),
-                    span: Default::default(),
-                    source,
-                    site: Default::default(),
-                    resource_root: None,
-                    invalid: None,
-                }
-                .into(),
-            ),
-            source,
-        ))
+        let mut call = Invocation::new(
+            FunctionInstance {
+                function: definition.id.clone(),
+                arguments: Vec::new(),
+            }
+            .into(),
+            definition,
+            Vec::new(),
+        );
+        call.children = Some(Box::new(children));
+        call.source = source;
+        Node::expression(expression(ExprKind::Call(call.into()), source))
     }
 
     #[test]
@@ -811,8 +805,7 @@ mod tests {
             let mut node = call(body, owner.id());
             node.call_mut()
                 .unwrap()
-                .arguments
-                .push(("argument".into(), condition));
+                .set_arguments(vec![("argument".into(), condition)]);
             assert!(node.children().is_empty());
             assert!(
                 matches!(sources.validate_node(&node), Err(SourceError::Missing(id)) if id == missing.id()),

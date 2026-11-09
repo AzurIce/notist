@@ -32,7 +32,7 @@ impl Pipeline {
                 let bound = definition
                     .parameters
                     .iter()
-                    .map(|p| p.name.clone())
+                    .map(|p| p.name.to_string())
                     .chain(definition.comptime.iter().map(|p| p.name.clone()))
                     .chain(
                         definition

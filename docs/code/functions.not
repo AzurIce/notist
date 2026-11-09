@@ -47,6 +47,22 @@ fn foo<x: T>(arg: E)[children: C] -> O {
 
 函数按具体实例检查，实例由函数身份与编译期实参决定。默认实例化深度和求值调用深度上限为 32，实例数上限为 4096；每个内容求值边界及每次编译期求值允许 100000 步，数据结果上限为 16 MiB，内容节点上限为 100000。Rust 宿主可通过 Limits 调整。编译产物与检查过程见 [Code 管线](../designs/pipeline/code.not)。
 
+=== Where 约束
+
+返回类型之后、函数体或分号之前可声明一个 where 表达式：
+
+```notc
+fn reference<T: Type>(target: T) -> InlineContent
+where T == Path || T == String;
+
+fn bounded<n: Int = 2>() -> InlineContent
+where n > 0 && n < 8 { [有效范围] }
+```
+
+where 在显式实参、输入类型推导和默认值确定全部编译期参数之后求值，必须产生已知的 Bool；false 或类型错误拒绝该实例，不检查或执行其函数体。Code 与 native 声明使用相同规则。
+
+表达式只能依赖本函数 <> 参数、字面量和内建类型名；允许由这些值计算的局部绑定，不能引用普通参数、children、模块函数或导入。所有分支都检查引用范围，不因短路或已知条件绕过。条件不读取资源。嵌套调用分别检查具体实例，不推导约束之间的包含关系，也不允许仅按 where 重载同名函数。替换目标实例同样必须满足其自身约束。
+
 == 表达式与检查
 
 Code 支持数据与内容字面量、名称引用、模块成员访问、函数调用、不可变 let、标量运算、if、match、for 和 comptime。模块顶层通过 import 加载依赖，见 [本地模块](../modules.not)。

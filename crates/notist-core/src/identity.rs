@@ -46,7 +46,7 @@ impl<Tag> IdAllocator<Tag> {
     /// exhausted counter stays exhausted instead of wrapping into another ID.
     pub(crate) fn allocate(&self) -> Option<Id<Tag>> {
         self.next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .ok()
             .map(Id::new)
     }

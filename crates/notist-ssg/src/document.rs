@@ -7,7 +7,7 @@ use std::{
     path::Path,
 };
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Heading {
     pub title: String,
     pub id: String,
@@ -15,7 +15,7 @@ pub struct Heading {
     pub level: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Page {
     pub route: Route,
     pub title: String,

@@ -77,7 +77,8 @@ fn class(token: &SyntaxToken) -> Option<&'static str> {
         | K::MatchKeyword
         | K::ForKeyword
         | K::InKeyword
-        | K::ComptimeKeyword => return Some("z-keyword"),
+        | K::ComptimeKeyword
+        | K::WhereKeyword => return Some("z-keyword"),
         K::Hash | K::At => return Some("z-keyword"),
         K::Escape => return Some("z-constant z-character z-escape"),
         K::Ident if matches!(token.text(), "true" | "false" | "none") => {

@@ -21,7 +21,7 @@ pub struct SiteConfig {
     /// Top-level .scss/.sass files are compiled; partials remain inputs only.
     pub sass: PathBuf,
     pub template: String,
-    /// Named site extensions, with a reserved builtins namespace.
+    /// Experimental site input extensions, in execution order.
     pub extensions: crate::extensions::ExtensionsConfig,
     /// Explicit permutation of configured extension names; defaults to name order.
     pub extension_order: Vec<String>,
@@ -43,7 +43,7 @@ impl Default for SiteConfig {
             base_url: "/".into(),
             content: "content".into(),
             output: "public".into(),
-            theme: Some("builtins.default".into()),
+            theme: None,
             templates: "templates".into(),
             static_dir: "static".into(),
             data: "data".into(),

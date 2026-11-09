@@ -1083,6 +1083,11 @@ impl<'a> Checker<'a> {
                     .registry()
                     .function("notist.array", "len")
                     .cloned(),
+                (Some(Type::Path), "join") => self
+                    .context
+                    .registry()
+                    .function("notist.path", "join")
+                    .cloned(),
                 _ => None,
             };
             if definition.is_none() {
@@ -1348,7 +1353,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        self.check_comptime(&def, &bindings, span);
+        let comptime_valid = self.check_comptime(&def, &bindings, span);
         if def.implementation == FunctionImpl::Native(NativeFunction::Str)
             && !matches!(
                 signature
@@ -1524,19 +1529,17 @@ impl<'a> Checker<'a> {
             .iter()
             .any(|p| p.ty == Type::ResourceTarget)
             .then(|| self.frame.resource_root.clone());
-        self.ensure_instance(&instance, &concrete, &bindings);
-        Ok(Invocation {
-            instance,
-            definition: concrete.into(),
-            arguments: arguments.into_iter().collect(),
-            children,
-            attrs,
-            span,
-            source: self.frame.source.id(),
-            site: self.frame.site,
-            resource_root,
-            invalid: None,
-        })
+        if comptime_valid {
+            self.ensure_instance(&instance, &concrete, &bindings);
+        }
+        let mut call = Invocation::new(instance, concrete, arguments.into_iter().collect());
+        call.children = children;
+        call.attrs = attrs;
+        call.span = span;
+        call.source = self.frame.source.id();
+        call.site = self.frame.site;
+        call.resource_root = resource_root;
+        Ok(call)
     }
 
     fn check_comptime(
@@ -1589,7 +1592,95 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+        if self.diagnostics.len() == start
+            && let Some(condition) = &def.where_clause
+        {
+            self.check_where(def, bindings, condition, span);
+        }
         self.diagnostics.len() == start
+    }
+
+    fn check_where(
+        &mut self,
+        def: &FunctionDef,
+        bindings: &ComptimeBindings,
+        condition: &Expr,
+        call_span: TextRange,
+    ) {
+        let (source, resource_root) = self
+            .context
+            .program()
+            .module_by_id(def.id.module_id())
+            .map(|module| {
+                let source = module.code().source_record().clone();
+                let root = source.namespace().name().to_owned();
+                (source, root)
+            })
+            .unwrap_or_else(|| (self.frame.source.clone(), self.frame.resource_root.clone()));
+        if let Err(error) = self.program.sources.insert(source.clone()) {
+            self.report(call_span, error.to_string());
+            return;
+        }
+        let previous = std::mem::replace(
+            &mut self.frame,
+            CheckFrame {
+                scope: BTreeMap::new(),
+                binding_scope: def.span,
+                binding_owner: Some(def.id.clone()),
+                module: None,
+                resource_root,
+                source,
+                site: CallSite::Code,
+            },
+        );
+        for parameter in bindings.signature().comptime() {
+            if let Some(value) = bindings.get(parameter.id) {
+                let mut checked = self.constant(value.clone(), condition.span());
+                if matches!(value, ComptimeValue::Data(_)) {
+                    checked.ty = bindings.require(&parameter.ty).ok();
+                }
+                self.frame.scope.insert(parameter.name.clone(), checked);
+            }
+        }
+        let start = self.diagnostics.len();
+        let checked = self.check_with_hint(condition, Some(Type::Bool));
+        self.expect(&checked, &Type::Bool);
+        if self.diagnostics.len() == start {
+            let known = checked.known.clone().map(Ok).unwrap_or_else(|| {
+                notist_eval::constant(
+                    &checked,
+                    &self.program,
+                    &self.frame.source.clone().into(),
+                    self.context,
+                )
+            });
+            match known {
+                Ok(ComptimeValue::Data(Value::Bool(true))) => {}
+                Ok(ComptimeValue::Data(Value::Bool(false))) => {
+                    self.report(
+                        condition.span(),
+                        format!("where clause for `{}` evaluated to false", def.id.name),
+                    );
+                }
+                Err(error) => {
+                    self.comptime_failed(condition.span(), "where clause", error);
+                }
+                _ => {
+                    self.report(
+                        condition.span(),
+                        "where clause must evaluate to a comptime Bool",
+                    );
+                }
+            }
+        }
+        let failed = self.diagnostics.len() != start;
+        self.frame = previous;
+        if failed {
+            self.report(
+                call_span,
+                format!("where clause rejected instance of `{}`", def.id.name),
+            );
+        }
     }
 
     fn ensure_instance(
@@ -1628,16 +1719,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let diagnostics_start = self.diagnostics.len();
-        std::sync::Arc::make_mut(&mut self.program.instances).insert(
-            key.clone(),
-            std::sync::Arc::new(InstanceRecord {
-                definition: def.clone(),
-                inputs: BTreeMap::new(),
-                body: None,
-                diagnostics: Vec::new(),
-                checking: true,
-            }),
-        );
+        let mut record = InstanceRecord::new(def.clone());
+        record.checking = true;
+        std::sync::Arc::make_mut(&mut self.program.instances)
+            .insert(key.clone(), std::sync::Arc::new(record));
         if !def.implementation.is_code() {
             std::sync::Arc::make_mut(
                 std::sync::Arc::make_mut(&mut self.program.instances)
@@ -1723,9 +1808,9 @@ impl<'a> Checker<'a> {
                 ParameterMode::Optional => Type::Option(Box::new(p.ty.clone())),
                 _ => p.ty.clone(),
             };
-            let id = inputs[&p.name];
+            let id = inputs[p.name.as_str()];
             let value = self.typed(Some(ty), ExprKind::Input(id), None, p.span);
-            self.frame.scope.insert(p.name.clone(), value);
+            self.frame.scope.insert(p.name.to_string(), value);
         }
         if let Some(ty) = &def.children_type {
             let id = inputs["children"];
@@ -1756,7 +1841,14 @@ impl<'a> Checker<'a> {
                 .unwrap(),
         );
         record.body = checked;
-        record.inputs = inputs;
+        record.inputs = notist_core::evaluation::FunctionInputs {
+            parameters: def
+                .parameters
+                .iter()
+                .map(|p| inputs.get(p.name.as_str()).copied())
+                .collect(),
+            children: inputs.get("children").copied(),
+        };
         record.diagnostics = diagnostics;
         record.checking = false;
         self.frame = previous_frame;

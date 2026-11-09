@@ -1,6 +1,6 @@
 # notist-eval
 
-Bounded evaluation of checked Notist IR. Runtime content binding, presentation,
+Bounded evaluation of checked Notist IR. Runtime content binding, emission,
 native/data calls, compile-time evaluation and the evaluation-local instance
 cache live here. Content trees use `Node { content: NodeContent, attrs, ... }`:
 `NodeContent::Expr` holds a checked expression (including calls), while
@@ -30,6 +30,18 @@ Concrete valid subtrees without execution mappings share their child storage.
 Children, literal forests, calls and loop templates use shared COW containers;
 editing checked input detaches it without changing another owner.
 
+All calls enter one invocation engine and produce a value, reusable content or
+an owned element draft. Immediate constructors finish their children and build
+the final node without wrapping the result in a singleton content plan. Captured
+content uses Empty/One/Many storage; empty plans allocate nothing and singleton
+plans share the piece directly. Source metadata is separate from output payloads.
+
+Arguments are evaluated and validated once, in checked-call order, into an owned
+inline-small frame. Native operations borrow or consume its values by bound role;
+Code transfers them to BindingId slots. Only constructors create a `DictBuilder`
+and freeze persistent fields. Logical dictionary budgets do not depend on the
+builder's physical capacity.
+
 Logical budgets still include mounts which dissolve in the output. Loop work,
 iterations and resource requests remain cumulative. Each mounted call owns its
 step budget, and physical calls/loop nesting are capped. An unprepared resource
@@ -57,6 +69,24 @@ Pipeline retains its public `evaluate*` methods and re-exports `Limits`,
 `Evaluation` and `EvaluationOutcome`. It merges source texts and runs ordered
 document extension hooks around this engine; callers of this crate directly
 receive the raw engine result, not those pipeline hooks.
+
+## Checked IR embedding
+
+- Construct calls with `Invocation::new(instance, definition, arguments)`;
+  argument names are shared `Text`. `arguments()` exposes the named wire/tooling
+  projection and `checked_arguments()` exposes immutable bound positions.
+- `set_arguments` and `with_definition` rebuild bindings without sorting or
+  deduplicating arguments. `argument_name` returns `None` for an external invalid
+  parameter position. Declarations and bound argument storage are not mutable
+  independently. Textual wire format and its supplied argument order are unchanged.
+- Construct implementation records with `InstanceRecord::new(definition)`.
+  `FunctionInputs.parameters` aligns optional BindingIds with declaration positions;
+  `children` is separate. `named_inputs()` is the explicit name projection.
+  `with_definition` rebases input slots by name and rebuilds native roles.
+- A host must supply a matching implementation kind and parameter layout for the
+  selected definition. Inconsistent external records fail diagnostically after
+  argument evaluation; they do not fall back to name-based execution. Existing
+  source, binding and instance ownership validation remains required.
 
 ## Tests
 

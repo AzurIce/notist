@@ -4,7 +4,7 @@ name = "ssg-extensions"
 [site]
 title = "Generated Rust examples"
 
-# Experimental site extension: source text and template data, once per build.
+# One process per build: source and template-data events.
 [site.extensions.examples]
 command = ["python3", "examples.py", "project/Cargo.toml"]
 watch = ["project"]

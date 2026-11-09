@@ -18,7 +18,7 @@ impl Checker<'_> {
         let annotations = self.resolve_annotations(&annotations);
         let span = expression.span();
         let r = match bound {
-            Ok((mut call, children)) if call.definition.returns.level().is_none() => {
+            Ok((mut call, children)) if call.definition().returns.level().is_none() => {
                 let mut shaped = if call.children.as_ref().and_then(|c| c.ty.as_ref())
                     == Some(&Type::InlineContent)
                 {
@@ -32,7 +32,7 @@ impl Checker<'_> {
                     &self.frame.source,
                     &mut self.diagnostics,
                 );
-                call.children = call.definition.children_type.as_ref().map(|ty| {
+                call.children = call.definition().children_type.as_ref().map(|ty| {
                     Box::new(self.typed(
                         Some(ty.clone()),
                         ExprKind::Content(children.into()),
@@ -40,14 +40,10 @@ impl Checker<'_> {
                         span,
                     ))
                 });
-                let ty = if call
-                    .arguments
-                    .iter()
-                    .any(|(_, arg)| arg.ty == Some(Type::Never))
-                {
+                let ty = if call.arguments().any(|(_, arg)| arg.ty == Some(Type::Never)) {
                     Type::Never
                 } else {
-                    call.definition.returns.clone()
+                    call.definition().returns.clone()
                 };
                 return self.typed(Some(ty), ExprKind::Call(call.into()), None, span);
             }
@@ -206,7 +202,7 @@ impl Checker<'_> {
     fn prepare_call(&mut self, e: &Expr, interpolation: bool) -> RExpr {
         match self.bind_call(e) {
             Ok((call, _))
-                if call.definition.returns == Type::Never
+                if call.definition().returns == Type::Never
                     && self.frame.site == notist_core::evaluation::CallSite::Code =>
             {
                 // A divergent interpolation is a pending computation, never a
@@ -319,7 +315,7 @@ impl Checker<'_> {
                 return Err(Box::new(r));
             }
         };
-        if call.definition.children_type == Some(Type::InlineContent)
+        if call.definition().children_type == Some(Type::InlineContent)
             && prepared.iter().any(contains_block)
         {
             let message = format!("`{name}` takes inline content; block children are not allowed");
@@ -342,24 +338,21 @@ impl Checker<'_> {
             unreachable!()
         };
         let span = *span;
-        if interpolation && call.definition.returns.level().is_none() {
+        if interpolation && call.definition().returns.level().is_none() {
             let message = "content interpolation requires a content result";
             self.report(span, message);
             call.invalid = Some(message.into());
         }
         call.children = None;
 
-        let mut fields = known_fields(
-            &call.definition,
-            call.arguments.iter().map(|(k, v)| (k.as_str(), v)),
-        );
-        if call.definition.id == notist_core::definitions::FunctionId::new("notist", "heading")
+        let mut fields = known_fields(call.definition(), call.arguments());
+        if call.definition().id == notist_core::definitions::FunctionId::new("notist", "heading")
             && let Some(ComptimeValue::Data(v)) = call.instance.arguments.first()
         {
             fields.insert("level", v.clone());
         }
-        let level = call.definition.returns.level().unwrap_or(Level::Inline);
-        let ctor = resolved_ctor(&call.definition);
+        let level = call.definition().returns.level().unwrap_or(Level::Inline);
+        let ctor = resolved_ctor(call.definition());
         let mut r = RExpr::new(ctor, span).with_children(prepared);
         r.fields = fields;
         r.body = *body;
@@ -367,11 +360,11 @@ impl Checker<'_> {
         r.level = Some(level);
         r.instance = Some(call.instance.clone());
         if matches!(
-            call.definition.children,
+            call.definition().children,
             Accepts::Rows | Accepts::Cells | Accepts::Items
         ) {
             let mut errors = Vec::new();
-            crate::resolve::validate_structure(&mut r, &call.definition.id.name, &mut errors);
+            crate::resolve::validate_structure(&mut r, &call.definition().id.name, &mut errors);
             if let Some(error) = errors.first() {
                 call.invalid = Some(error.message.clone());
             }
@@ -381,7 +374,7 @@ impl Checker<'_> {
         }
 
         r.expression = Some(self.typed(
-            Some(call.definition.returns.clone()),
+            Some(call.definition().returns.clone()),
             ExprKind::Call(call.into()),
             None,
             span,

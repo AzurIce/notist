@@ -4,7 +4,7 @@ use crate::{
     templates,
 };
 use notist::{
-    Ctor, Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, Value, Vault,
+    Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, Value, Vault,
     publication::{
         Assets,
         url::{fragment, relative_url},
@@ -179,58 +179,25 @@ fn discover<R: Resources>(
     directories: &mut Vec<PathBuf>,
 ) -> Result<(), Error> {
     let logical = mounts.path(path).unwrap();
-    if !logical.as_os_str().is_empty() && exclude.is_match(&logical) {
-        return Ok(());
-    }
+    if !logical.as_os_str().is_empty() && exclude.is_match(&logical) { return Ok(()); }
     directories.push(vault.resources().resolve(&config.content).join(&logical));
     for entry in vault.resources().entries(path)? {
-        if entry.file_name().is_some_and(|s| {
-            s.to_string_lossy().starts_with('.')
-                || s == "Notist.toml"
-                || s == "target"
-                || s == "node_modules"
-        }) {
-            continue;
-        }
-        let excluded_roots = [
-            &config.output,
-            &config.templates,
-            &config.static_dir,
-            &config.data,
-            &config.sass,
-        ];
-        if excluded_roots
-            .into_iter()
-            .any(|p| entry.starts_with(mounts.resolve(&vault.resources().resolve(p))))
-            || config
-                .theme
-                .as_ref()
-                .filter(|p| !crate::themes::is_builtin(p))
-                .is_some_and(|p| entry.starts_with(mounts.resolve(&vault.resources().resolve(p))))
+        if entry
+            .file_name()
+            .is_some_and(|s| s.to_string_lossy().starts_with('.') || s == "Notist.toml" || s == "target" || s == "node_modules")
         {
             continue;
         }
-        let logical = mounts.path(&entry).unwrap();
-        if exclude.is_match(&logical) {
+        let excluded_roots = [&config.output, &config.templates, &config.static_dir, &config.data, &config.sass];
+        if excluded_roots.into_iter().any(|p| entry.starts_with(vault.resources().resolve(p)))
+            || config.theme.as_ref().filter(|p| !crate::themes::is_builtin(p)).is_some_and(|p| entry.starts_with(vault.resources().resolve(p))) {
             continue;
         }
+        let logical = mounts.path(&entry).unwrap();
+        if exclude.is_match(&logical) { continue; }
         match vault.resources().kind(&entry)? {
-            Some(ResourceKind::Directory) => discover(
-                vault,
-                &entry,
-                config,
-                mounts,
-                include,
-                exclude,
-                sources,
-                assets,
-                directories,
-            )?,
-            Some(ResourceKind::File) if vault.supports(&entry) => {
-                if include.is_match(&logical) {
-                    sources.push(entry)
-                }
-            }
+            Some(ResourceKind::Directory) => discover(vault, &entry, config, mounts, include, exclude, sources, assets, directories)?,
+            Some(ResourceKind::File) if vault.supports(&entry) => { if include.is_match(&logical) { sources.push(entry) } },
             Some(ResourceKind::File) if !entry.extension().is_some_and(|s| s == "notc") => {
                 assets.push(entry)
             }
@@ -336,7 +303,7 @@ fn resolve_link(
         .decode_utf8()
         .map_err(|_| "invalid UTF-8 in link path")?;
     if path.contains(['\\', '\0']) {
-        return Err("invalid local URL path".into());
+        return Err("invalid local link path".into());
     }
     // Generated nodes retain their defining document as the reference base.
     let origin = node
@@ -355,59 +322,37 @@ fn resolve_link(
     };
     let source = mounts.resolve(&source);
     let logical = mounts.path(&source).map(|p| content.join(p));
-    let destination_doc = documents
-        .find(&source, content)
-        .or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
+    let destination_doc = documents.find(&source, content).or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
     let destination = if let Some(destination) = destination_doc {
         if let Some(anchor) = anchor.filter(|a| !a.is_empty()) {
             let decoded = percent_encoding::percent_decode_str(anchor)
                 .decode_utf8()
                 .map_err(|_| "invalid UTF-8 in anchor")?;
             if !destination.ids.contains(decoded.as_ref()) {
-                warnings.push(issue(
-                    document,
-                    node,
-                    format!(
+                warnings.push(issue(document, node, format!(
                         "missing anchor `{anchor}` in `{}`",
                         destination.route.path.display()
-                    ),
-                ));
+                )));
             }
         }
         Cow::Borrowed(destination.route.output.as_path())
     } else {
         let Some(published) = mounts.path(&source) else {
-            let mut warning = issue(
-                document,
-                node,
-                format!("reference `{target}` is outside Vault content and configured mounts"),
-            );
+            let mut warning = issue(document, node, format!("reference `{target}` is outside the content directory and configured mounts"));
             warning.diagnostic.code = Some(DiagnosticCode::OutsideVault);
             warnings.push(warning);
             return Ok(None);
         };
-        if published.starts_with("_notist") {
-            return Err("_notist is reserved for generated resources".into());
-        }
+        if published.starts_with("_notist") { return Err("_notist is reserved for generated resources".into()); }
         if outputs.contains(&published) {
             Cow::Owned(published)
         } else {
             let index = published.join("index.html");
             if !outputs.contains(&index) {
-                warnings.push(issue(
-                    document,
-                    node,
-                    format!("missing local resource `{target}` (not published)"),
-                ));
+                warnings.push(issue(document, node, format!("missing local reference `{target}` (not published)")));
                 if source.extension().is_some_and(|s| s == "not" || s == "md") {
-                    Cow::Owned(
-                        crate::Route::plan(content.join(&published), content, directory_urls)
-                            .map_err(|e| e.to_string())?
-                            .output,
-                    )
-                } else {
-                    Cow::Owned(published)
-                }
+                    Cow::Owned(crate::Route::plan(content.join(&published), content, directory_urls).map_err(|e| e.to_string())?.output)
+                } else { Cow::Owned(published) }
             } else {
                 Cow::Owned(index)
             }
@@ -417,14 +362,8 @@ fn resolve_link(
         String::new()
     } else {
         if directory_urls && destination.file_name().is_some_and(|s| s == "index.html") {
-            relative_url(
-                &document.page.route.output,
-                destination.parent().unwrap(),
-                true,
-            )
-        } else {
-            relative_url(&document.page.route.output, &destination, false)
-        }
+            relative_url(&document.page.route.output, destination.parent().unwrap(), true)
+        } else { relative_url(&document.page.route.output, &destination, false) }
     };
     if let Some(query) = query {
         url.push('?');
@@ -601,7 +540,7 @@ fn render_templates(
 pub(crate) fn build<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
-    extensions: &[Box<dyn crate::extensions::SiteExtension>],
+    extensions: &[Box<dyn crate::extensions::ExtensionFactory>],
     recover: bool,
 ) -> Result<BuildOutput, Error> {
     let config = &{
@@ -619,12 +558,8 @@ pub(crate) fn build<R: Resources + Send>(
         config
     };
     config.validate()?;
-    let configured = crate::extensions::configured(config)?;
-    let extensions: Vec<&dyn crate::extensions::SiteExtension> = extensions
-        .iter()
-        .chain(configured.iter())
-        .map(|e| e.as_ref())
-        .collect();
+    let mut extensions: Vec<_> = extensions.iter().map(|e| e.create()).collect();
+    extensions.extend(crate::extensions::configured(config)?);
     let content = vault.resources().resolve(&config.content);
     let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
     let output = vault.resources().resolve(&config.output);
@@ -663,7 +598,7 @@ pub(crate) fn build<R: Resources + Send>(
         )));
     }
     let mut sources = vec![];
-    let discovery = notist::progress::Span::enter(|| "Discover documents and data".into());
+    let discovery = notist::progress::Span::enter(|| "Discover documents".into());
     let mut content_assets = vec![];
     let mut source_dirs = vec![];
     let globs = |patterns: &[String]| -> Result<globset::GlobSet, Error> {
@@ -697,22 +632,19 @@ pub(crate) fn build<R: Resources + Send>(
             )?;
         }
     }
-    let mut input = crate::extensions::SiteInput {
+    let mut input = crate::extensions::CompileInput {
         documents: sources
             .into_iter()
             .map(|source| Ok((mounts.path(&source).unwrap(), vault.source(&source)?)))
             .collect::<Result<_, Error>>()?,
-        data: assets::data(
-            vault.resources(),
-            &mounts.resolve(&vault.resources().resolve(&config.data)),
-        )?,
     };
     discovery.finish();
     let routes = notist::progress::run(
         || "Run site extensions and plan routes".into(),
-        || crate::extensions::prepare(vault, config, &extensions, &mut input),
+        || crate::extensions::before_compile(vault, config, &mut extensions, &mut input),
     )?;
     let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
+    // Mounts may introduce virtual ancestors without documents of their own.
     for directory in source_dirs.clone() {
         for parent in directory.ancestors().skip(1) {
             if !parent.starts_with(&content) {
@@ -806,7 +738,7 @@ pub(crate) fn build<R: Resources + Send>(
     if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
         eprintln!("[eval-batch] seconds={:.9}", evaluation_start.elapsed().as_secs_f64());
     }
-    let asset_stage = notist::progress::Span::enter(|| "Prepare assets, Sass and templates".into());
+    let asset_stage = notist::progress::Span::enter(|| "Prepare assets and Sass".into());
     let mut assets = Assets::new(output);
     for document in &documents {
         assets.reserve_generated(document.page.route.output.clone())?;
@@ -846,9 +778,7 @@ pub(crate) fn build<R: Resources + Send>(
             outputs.insert(path.clone());
         }
     }
-    let engine = templates::load(vault.resources(), config)?;
     asset_stage.finish();
-    let mut data = input.data;
     let by_source = DocumentIndex::new(&documents);
     let mut warnings = vec![];
     let mut pages = vec![];
@@ -860,11 +790,7 @@ pub(crate) fn build<R: Resources + Send>(
         });
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
-        let links = document
-            .root
-            .descendants()
-            .filter(|n| n.ctor() == Ctor::Link);
-        for node in links.chain(notist::embed::targets(&document.root)) {
+        for node in notist::embed::references(&document.root) {
             if node.is_error() {
                 continue;
             }
@@ -923,7 +849,8 @@ pub(crate) fn build<R: Resources + Send>(
                     }
                 }
             }
-            if notist::embed::is_embed(node) {
+            if notist::embed::is_embed(node) || matches!(node.field("target"), Some(Value::Path(_)))
+            {
                 if let Some(Value::Path(path)) = node.field("target") {
                     match resolve_embed(
                         &document,
@@ -1022,9 +949,21 @@ pub(crate) fn build<R: Resources + Send>(
         return Err(Error::Diagnostics(errors));
     }
     rendering.finish();
-    crate::extensions::enrich(vault.resources(), config, &extensions, &pages, &mut data)?;
+    let mut template_input = crate::extensions::TemplateInput {
+        pages: &pages,
+        data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
+    };
+    crate::extensions::before_template(
+        vault.resources(),
+        config,
+        &mut extensions,
+        &mut template_input,
+    )?;
+    let data = template_input.data;
+    crate::extensions::finish(&mut extensions)?;
     let templates_stage =
         notist::progress::Span::enter(|| format!("Render templates ({} pages)", pages.len()));
+    let engine = templates::load(vault.resources(), config)?;
     let dirs = directories(&pages, &source_dirs, &content);
     let values = TemplateContext::new(config, &pages, &dirs, &data)?;
     let workers = if pages.len() >= 1024 {
@@ -1069,7 +1008,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(source, id)| {
-            let mut root = Item::new(Ctor::Doc, Default::default());
+            let mut root = Item::new(notist::Ctor::Doc, Default::default());
             root.attrs.insert("id", Value::Str(id.into()));
             Document::new(
                 Route::new(content.join(source), content).unwrap(),

@@ -8,9 +8,20 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         &mut self,
         kind: DataFunction,
         call: &Invocation,
-        fields: &Dict,
+        fields: &mut NativeArguments<'_, '_>,
     ) -> Result<Runtime, Failure> {
         use DataFunction::*;
+        // Consuming operations precede the borrowed view helpers below.
+        if kind == Expect {
+            return match fields.take(NativeParameter::Value) {
+                Some(Value::Ok(value)) => Ok(data_runtime(*value)),
+                Some(Value::Err(error)) => match *error {
+                    Value::DataError(error) => Err(self.fail_data(&error, call)),
+                    _ => Err(Failure::at("data_expect requires DataError", call)),
+                },
+                _ => Err(Failure::at("data_expect requires Result", call)),
+            };
+        }
         let mut limits = self.limits.data;
         limits.value_bytes = limits.value_bytes.min(self.limits.value_bytes);
         let target = || match call.instance.arguments.first() {
@@ -21,15 +32,15 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             Some(Value::Data(data)) => Ok(data),
             _ => Err(Failure::at("data operation requires Data", call)),
         };
-        let error = || match fields.get("error") {
+        let error = || match fields.get(NativeParameter::Error) {
             Some(Value::DataError(error)) => Ok(error),
             _ => Err(Failure::at("data operation requires DataError", call)),
         };
-        let key = || match fields.get("key") {
+        let key = || match fields.get(NativeParameter::Key) {
             Some(Value::Str(key)) => Ok(key.as_str()),
             _ => Err(Failure::at("data key must be String", call)),
         };
-        let index = || match fields.get("index") {
+        let index = || match fields.get(NativeParameter::Index) {
             Some(Value::Int(index)) => Ok(*index),
             _ => Err(Failure::at("data index must be Int", call)),
         };
@@ -51,7 +62,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let result = match kind {
             ReadJson | ReadToml => return self.read_data(kind, call, fields),
             ParseJson | ParseToml => {
-                let Some(Value::Str(text)) = fields.get("text") else {
+                let Some(Value::Str(text)) = fields.get(NativeParameter::Text) else {
                     return Err(Failure::at("data parsing requires String", call));
                 };
                 limits.working_bytes = self.data_retention.remaining(limits.working_bytes);
@@ -66,51 +77,54 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 )
                 .map(Value::Data)
             }
-            Decode => decode(view("data")?, target()?),
+            Decode => decode(view(NativeParameter::Data)?, target()?),
             Require => {
                 let t = target()?;
-                view("object")?.require(key()?).and_then(|d| decode(&d, t))
+                view(NativeParameter::Object)?
+                    .require(key()?)
+                    .and_then(|d| decode(&d, t))
             }
             Get => {
                 let t = target()?;
-                view("object")?.get(key()?).and_then(|d| match d {
-                    None => Ok(Value::None),
-                    Some(d) => decode(&d, t).map(|v| Value::Some(Box::new(v))),
-                })
+                view(NativeParameter::Object)?
+                    .get(key()?)
+                    .and_then(|d| match d {
+                        None => Ok(Value::None),
+                        Some(d) => decode(&d, t).map(|v| Value::Some(Box::new(v))),
+                    })
             }
             RequireIndex => {
                 let t = target()?;
-                view("array")?
+                view(NativeParameter::Array)?
                     .require_index(index()?)
                     .and_then(|d| decode(&d, t))
             }
             Index => {
                 let t = target()?;
-                view("array")?.index(index()?).and_then(|d| match d {
-                    None => Ok(Value::None),
-                    Some(d) => decode(&d, t).map(|v| Value::Some(Box::new(v))),
-                })
+                view(NativeParameter::Array)?
+                    .index(index()?)
+                    .and_then(|d| match d {
+                        None => Ok(Value::None),
+                        Some(d) => decode(&d, t).map(|v| Value::Some(Box::new(v))),
+                    })
             }
-            Has => view("object")?
+            Has => view(NativeParameter::Object)?
                 .get(key()?)
                 .map(|v| Value::Bool(v.is_some())),
-            Keys => view("object")?.keys().map(Value::Array),
-            Len => view("array")?.len().map(|n| Value::Int(n as i64)),
-            Kind => return Ok(data_runtime(Value::Str(view("data")?.kind().into()))),
+            Keys => view(NativeParameter::Object)?.keys().map(Value::Array),
+            Len => view(NativeParameter::Array)?
+                .len()
+                .map(|n| Value::Int(n as i64)),
+            Kind => {
+                return Ok(data_runtime(Value::Str(
+                    view(NativeParameter::Data)?.kind().into(),
+                )));
+            }
             ErrorKind => return Ok(data_runtime(Value::Str(error()?.kind().as_str().into()))),
             ErrorMessage => return Ok(data_runtime(Value::Str(error()?.message().into()))),
             ErrorPath => return Ok(data_runtime(Value::Str(error()?.path().into()))),
             Fail => return Err(self.fail_data(error()?, call)),
-            Expect => {
-                return match fields.get("value") {
-                    Some(Value::Ok(value)) => Ok(data_runtime((**value).clone())),
-                    Some(Value::Err(error)) => match error.as_ref() {
-                        Value::DataError(error) => Err(self.fail_data(error, call)),
-                        _ => Err(Failure::at("data_expect requires DataError", call)),
-                    },
-                    _ => Err(Failure::at("data_expect requires Result", call)),
-                };
-            }
+            Expect => unreachable!("consuming operation handled before borrowing views"),
         };
         self.retain_data_result(&result, call)?;
         data_result(result, call)
@@ -119,7 +133,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         &mut self,
         kind: DataFunction,
         call: &Invocation,
-        fields: &Dict,
+        fields: &NativeArguments<'_, '_>,
     ) -> Result<Runtime, Failure> {
         if self.mode == EvaluationMode::Comptime {
             return Err(Failure::at(
@@ -137,7 +151,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         if self.requests > self.limits.read_requests {
             return Err(Failure::at("resource request limit exceeded", call));
         }
-        let Some(Value::Path(path)) = fields.get("source") else {
+        let Some(Value::Path(path)) = fields.get(NativeParameter::Source) else {
             return Err(Failure::at("data reading requires a Path", call));
         };
         self.dependencies.insert(path.clone());

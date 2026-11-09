@@ -461,7 +461,7 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
         site.warnings[0]
             .diagnostic
             .message
-            .contains("outside Vault")
+            .contains("outside the content directory")
     );
 }
 
@@ -549,7 +549,7 @@ fn explicit_section_ids_and_duplicate_slugs_use_one_outline() {
 fn invalid_references_return_source_diagnostics_and_no_site() {
     for (target, message) in [
         ("_notist/missing.png", "reserved"),
-        ("missing%5cfile.png", "invalid local URL"),
+        ("missing%5cfile.png", "invalid local link path"),
     ] {
         let source = format!("# Home\n\n[Target]({target})");
         let mut files = resources(&[("README.md", &source), ("other.md", "# Other")]);
@@ -630,7 +630,7 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
                 assert_eq!(warning.path, Path::new("/vault").join(&path));
                 assert_eq!(warning.diagnostic.code, Some(DiagnosticCode::OutsideVault));
                 assert!(!warning.diagnostic.recovered);
-                assert!(warning.diagnostic.message.contains("outside Vault"));
+                assert!(warning.diagnostic.message.contains("outside the content directory"));
                 let output = html(&site, "guide/start/index.html");
                 assert!(
                     output.contains(&format!("href=\"{target}\"")),
@@ -658,7 +658,7 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
         ),
         ("../missing/README.not", "../../missing/", "not published"),
         ("missing%20page.not", "../missing%20page/", "not published"),
-        ("missing.png", "../missing.png", "missing local resource"),
+        ("missing.png", "../missing.png", "missing local reference"),
         ("other.md#absent", "../other/#absent", "missing anchor"),
         ("#absent", "#absent", "missing anchor"),
     ] {
@@ -1320,9 +1320,9 @@ fn serve_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
 #[test]
 fn generated_reference_diagnostics_point_into_the_code_definition() {
     for (target, message) in [
-        ("missing.png", "missing local resource"),
+        ("missing.png", "missing local reference"),
         ("other.not#absent", "missing anchor"),
-        ("../private.png", "outside Vault"),
+        ("../private.png", "outside the content directory"),
     ] {
         let module = format!(
             "{}fn view() -> InlineContent {{ [#link(target: \"{target}\")[click]] }}",

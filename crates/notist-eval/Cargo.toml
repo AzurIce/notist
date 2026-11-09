@@ -10,3 +10,4 @@ test-support = []
 [dependencies]
 notist-core = { path = "../notist-core" }
 rowan = "0.17.0"
+smallvec = "1"

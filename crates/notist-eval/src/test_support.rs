@@ -2,15 +2,12 @@
 use super::*;
 
 pub fn item_shell(item: &Node) -> Node {
-    super::item_with_content(
-        item,
-        ContentItem {
-            ctor: item.ctor(),
-            fields: item.as_item().map(|i| i.fields.clone()).unwrap_or_default(),
-            children: Default::default(),
-            instance: item.as_item().and_then(|i| i.instance.clone()),
-        },
-    )
+    NodeMetadata::from(item).node(ContentItem {
+        ctor: item.ctor(),
+        fields: item.as_item().map(|i| i.fields.clone()).unwrap_or_default(),
+        children: Default::default(),
+        instance: item.as_item().and_then(|i| i.instance.clone()),
+    })
 }
 
 pub fn assert_summaries<C: EvaluationContext + ?Sized>(
@@ -26,8 +23,8 @@ pub fn assert_summaries<C: EvaluationContext + ?Sized>(
             .iter()
             .map(|piece| match &piece.kind {
                 Construction::Error => 0,
-                Construction::Ready { nodes } => *nodes,
-                Construction::Element(children) | Construction::Splice(children) => {
+                Construction::Ready { nodes, .. } => *nodes,
+                Construction::Element { children, .. } | Construction::Splice(children) => {
                     1 + count(children)
                 }
                 Construction::Call { children, .. } => 1 + count(children),
@@ -48,8 +45,14 @@ pub fn assert_summaries<C: EvaluationContext + ?Sized>(
         &Scope::new(),
         limits.content_nodes,
     );
-    assert_eq!(bound.nodes, count(&bound), "binding: {limits:?}");
-    let (nodes, summary) = evaluator.present(&bound, limits.content_nodes, &SourceChain::default());
+    assert_eq!(bound.nodes(), count(&bound), "binding: {limits:?}");
+    let mut nodes = Vec::new();
+    let summary = evaluator.emit_content(
+        &bound,
+        limits.content_nodes,
+        &SourceChain::default(),
+        &mut nodes,
+    );
     assert!(summary.nodes <= limits.content_nodes);
     let actual = nodes
         .iter()

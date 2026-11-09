@@ -116,9 +116,9 @@ impl<'a> Renderer<'a> {
         self.url_resolver = Some(Box::new(resolve));
         self
     }
-    /// Select a public URL for an explicit local embed. No path stringification
+    /// Select a public URL for a Path link or embed. No path stringification
     /// or URL fallback occurs when a resource has no host binding. The returned
-    /// base URL is safety-checked; embed query/fragment fields are added afterward.
+    /// base URL is safety-checked; query/fragment fields are added afterward.
     pub fn with_resource_resolver(
         mut self,
         resolve: impl Fn(&Item, &notist_core::resource::ResourcePath) -> Option<String> + 'a,
@@ -676,13 +676,6 @@ impl State<'_, '_> {
 
     fn url(&mut self, item: &Item, field: &str, attribute: &str, embed: bool) {
         if let Some(Value::Path(path)) = item.field(field) {
-            if !embed {
-                self.diagnostic(
-                    item,
-                    format!("`{field}` requires a URL string; `{attribute}` omitted"),
-                );
-                return;
-            }
             let resolved = self
                 .renderer
                 .resource_resolver
@@ -706,7 +699,10 @@ impl State<'_, '_> {
                 None => {
                     self.diagnostic(
                         item,
-                        "local embed requires a host-provided resource URL".into(),
+                        format!(
+                            "local {} requires a host-provided resource URL",
+                            if embed { "embed" } else { "link" }
+                        ),
                     );
                     self.diagnostics.last_mut().unwrap().code =
                         Some(notist_core::diag::DiagnosticCode::UnpublishedResource);
@@ -725,7 +721,7 @@ impl State<'_, '_> {
                 .flatten();
             let target = resolved.as_deref().unwrap_or(url);
             if is_safe_url(url) && is_safe_url(target) {
-                if embed {
+                {
                     match notist_core::embed::append_suffix(target, &item.fields()) {
                         Ok(target) if is_safe_url(&target) => self.attr(attribute, &target),
                         Ok(_) => self.diagnostic(
@@ -734,8 +730,6 @@ impl State<'_, '_> {
                         ),
                         Err(message) => self.diagnostic(item, message),
                     }
-                } else {
-                    self.attr(attribute, target);
                 }
             } else {
                 self.diagnostic(
@@ -752,7 +746,17 @@ impl State<'_, '_> {
         self.field_title(item);
         self.output.push('>');
         if item.children().is_empty() {
-            self.text(string_field(item, "target").unwrap_or(""));
+            match item.field("target") {
+                Some(Value::Path(path)) => {
+                    let label = self
+                        .renderer
+                        .resource_resolver
+                        .as_ref()
+                        .and_then(|resolve| resolve(item, path));
+                    self.text(label.as_deref().unwrap_or(""));
+                }
+                _ => self.text(string_field(item, "target").unwrap_or("")),
+            }
         } else {
             self.children(item);
         }

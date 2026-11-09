@@ -58,6 +58,73 @@ fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
 }
 
 #[test]
+fn generic_path_links_publish_assets_and_resolve_document_routes_from_the_caller() {
+    let mut host = vault(&[
+        (
+            "content/pages/start.not",
+            r#"#import "../../views/lib.notc" as view;
+#view.forward(p"../guide.not", fragment: "intro")
+
+#view.download(p"../assets", "a?b#c%")
+
+#view.forward("https://example.test/path?q=1#part")"#,
+        ),
+        (
+            "views/lib.notc",
+            r#"
+fn forward<T: Type>(target: T, fragment?: String) -> InlineContent
+where T == Path || T == String { [#link(target, fragment: fragment)[打开]] }
+fn download(directory: Path, name: String) -> InlineContent {
+    [#forward(directory.join(name + ".glb"))]
+}"#,
+        ),
+        ("content/guide.not", "@(id: \"intro\")\n= Guide"),
+        ("content/assets/a?b#c%.glb", "model"),
+    ]);
+    let site = Builder::default()
+        .build(
+            &mut host,
+            &SiteConfig {
+                directory_urls: true,
+                copy_content_assets: false,
+                ..SiteConfig::default()
+            },
+        )
+        .unwrap();
+    assert!(site.warnings.is_empty(), "{:?}", site.warnings);
+    let output = html(&site, "pages/start/index.html");
+    assert!(output.contains("href=\"../../guide/#intro\""), "{output}");
+    assert!(
+        output.contains("href=\"../../assets/a%3Fb%23c%25.glb\""),
+        "{output}"
+    );
+    assert!(output.contains("href=\"https://example.test/path?q=1#part\""));
+    assert_eq!(site.files[Path::new("assets/a?b#c%.glb")], b"model");
+    assert!(!output.contains("/site"));
+}
+
+#[test]
+fn path_links_do_not_fall_back_to_unpublished_resource_spellings() {
+    for source in [
+        r#"#link(p"./missing.glb")[missing]"#,
+        r#"#link(p"./private.notc")[private]"#,
+        r#"#link(p"./guide.not", fragment: "missing")[guide]"#,
+    ] {
+        let mut host = vault(&[
+            ("content/index.not", source),
+            ("content/private.notc", "fn f() -> Int { 1 }"),
+            ("content/guide.not", "= Guide"),
+        ]);
+        assert!(
+            Builder::default()
+                .build(&mut host, &SiteConfig::default())
+                .is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn embeds_use_content_roots_bound_module_defaults_and_independent_suffixes() {
     let mut vault = vault(&[
         (
@@ -470,11 +537,8 @@ fn default_template_loads_highlight_styles_relative_to_nested_pages() {
 }
 
 #[test]
-fn implicit_and_explicit_default_themes_are_identical() {
-    assert_eq!(
-        SiteConfig::default().theme.as_deref(),
-        Some(Path::new("builtins.default"))
-    );
+fn no_theme_uses_the_minimal_page_template() {
+    assert_eq!(SiteConfig::default().theme, None);
     let parsed: SiteConfig = toml::from_str("").unwrap();
     assert_eq!(parsed.theme, SiteConfig::default().theme);
     let mut input = vault(&[
@@ -489,10 +553,11 @@ fn implicit_and_explicit_default_themes_are_identical() {
         ..Default::default()
     };
     let explicit = Builder::default().build(&mut input, &config).unwrap();
-    assert_eq!(implicit.files, explicit.files);
-    let nested = html(&explicit, "guide/start.html");
-    assert!(nested.contains("<title>Start · Site</title>"));
-    assert!(nested.contains("href=\"../_notist/highlight.css\""));
+    for output in [&implicit, &explicit] {
+        let nested = html(output, "guide/start.html");
+        assert!(nested.contains("<title>Start · Site</title>"));
+        assert!(nested.contains("href=\"../_notist/highlight.css\""));
+    }
 }
 
 #[test]

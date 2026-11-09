@@ -1,55 +1,75 @@
 #import "../components/lib.notc" as components;
 = Extension（Experimental）
 
-站点扩展的 prepare 接收整站源码与数据。Rust 还可通过 enrich 使用最终页面标题、属性与路由补充展示数据。外部命令使用 `[site.extensions.<name>]`，内置扩展使用 `[site.extensions.builtins.<name>]`。
+站点扩展在 before_compile 处理源码集合，在 before_template 处理模板数据。同一次构建的两个事件由同一扩展实例处理，可以在内部保留状态。外部命令使用 `[site.extensions.<name>]`，内置扩展使用 `[site.extensions.builtins.<name>]`。
 
-下图是 `prepare` 在构建与预览流程中的位置：
+== 构建生命周期
+
+强调节点为扩展钩子。单文档编译的内部阶段见 [扩展 Notist](../extensions.not#文档生命周期)。
 
 #components.diagram(r#"""
 flowchart TB
-    start[开始] --> SiteInput
-
-    subgraph SiteInput[准备 SiteInput]
-        direction LR
-        content[发现 content] --> data[加载 data]
-    end
-    subgraph Extension[Extension · prepare]
-        direction LR
-        Rust[运行原生 Rust 扩展] --> command[按名称或显式顺序运行配置扩展]
-    end
-    SiteInput --> Extension
-    Extension --> build[构建页面与资源 / Rust enrich / 渲染模板]
-
-    build --build--> publish[写入 output 目录]
-
-    build --serve--> preview[更新内存预览]
+    config[加载配置] --> discover[发现输入]
+    discover -- source --> before_compile{{before_compile}}
+    before_compile -- source --> compile[compile]
+    compile -- 文档树与页面元信息 --> render[render]
+    render -- Pages / HTML --> before_template{{before_template}}
+    data[加载 data] -- data --> before_template
+    before_template -- Pages / data --> template[template]
+    template -- build --> publish[写入 output]
+    template -- serve --> preview[更新内存预览]
     preview --> watch[等待文件变化]
-    watch --> SiteInput
+    watch --> discover
 
-    classDef buildPath fill:#dbe7f7,stroke:#5b7bd5,color:#16324f
-    classDef servePath fill:#dcf0e2,stroke:#2f8f5b,color:#123a26
-    class publish buildPath
-    class preview,watch servePath
-    linkStyle 5 stroke:#5b7bd5
-    linkStyle 6,7 stroke:#2f8f5b
-    linkStyle 8 stroke:#2f8f5b,stroke-dasharray:4 4
+    classDef hook fill:#e0edf9,stroke:#3974a8,stroke-width:2px,color:#173b5b
+    class before_compile,before_template hook
 """#)
 
-节点表示动作，箭头表示执行先后；`build` / `serve` 是分支条件。蓝色是 `build` 分支，绿色是 `serve` 循环。`serve` 持续通过 HTTP 提供内存预览，文件变化后重新加载输入并运行扩展；重建失败时保留上一次成功预览。
+- compile 校验输入、计算页面 URL 与输出路径、分析和求值文档、提取页面元信息。
+- render 由 SSG 解析链接与资源路径，调用 notist-html 渲染正文并生成组件资源。
+- template 加载模板，将正文与模板数据组合为完整页面。静态资源与 Sass 属于站点资源处理，不单列节点。
+- site.data 不进入 .not 求值环境，不经过 before_compile。
+- serve 每次重建创建新实例或新进程；失败时保留上一次成功预览。
 
-本文只说明这个扩展点的机制与 JSON I/O 协议。文档层扩展见 [扩展 Notist](../extensions.not)；完整可运行示例见 [从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。
+== 阶段输入
 
-== 扩展点
+```rust
+pub struct CompileInput {
+    pub documents: BTreeMap<PathBuf, String>,
+}
 
-| 扩展点 | 触发 | 输入 | 返回 |
-| --- | --- | --- | --- |
-| `prepare` | 每次 Site 构建一次，发现 content / data 后 | `SiteInput` | 完整 `SiteInput`，或错误 |
-| `enrich` | 页面编译和正文渲染后，模板渲染前；Rust 专用 | 最终 Page 列表与 data | 更新后的展示数据，或错误 |
+pub struct TemplateInput<'a> {
+    pub pages: &'a [Page],
+    pub data: BTreeMap<String, serde_json::Value>,
+}
+```
 
-- 一次构建运行一次，不按页面重复。`serve` 每次重建会重新运行。
-- 原生扩展按 Builder.with_extension 的注册顺序运行；配置中的内置和 command 扩展按 extension_order 运行，省略时按扩展名排序，不依赖 TOML 书写顺序。
-- 每个扩展修改一份输入副本，校验通过后交给下一个扩展；失败则停止构建。
-- 扩展只能修改 `SiteInput` 的 `documents` 与 `data`，不直接写源目录，也不能修改构建配置。
+| 事件 | 输入 | 可修改 |
+| --- | --- | --- |
+| `before_compile` | 发现后的源码集合 | documents |
+| `before_template` | 正文已渲染的 Pages、加载后的模板 data | data |
+
+- documents 的键是内容目录下的规范相对路径，使用 `/`；值是完整源码，扩展名决定前端。可以添加、删除或替换文档，不写回源文件。
+- data 的键是数据文件去掉扩展名后的相对路径，例如 data/example.toml 对应 example，嵌套键使用 folder/example。
+- 每个阶段先按 Builder 注册顺序运行原生扩展，再按 extension_order 运行配置扩展；未指定时按完整扩展名排序。
+- 每个钩子修改副本，成功且校验通过后才交给下一个扩展；失败停止构建，不提交本次修改。
+- 同一实例贯穿两个事件，内部状态仅属于本次构建。错误会终止该实例，不会用失败状态重试。
+
+Page 是页面展示模型，不包含文档树：
+
+```rust
+pub struct Page {
+    pub route: Route, // source、path、output、url
+    pub title: String,
+    pub attrs: BTreeMap<String, serde_json::Value>,
+    pub headings: Vec<Heading>, // title、id、anchor、level
+    pub html: String, // 正文 HTML，不包含整页模板
+    pub directory: String, // 内容相对目录，根目录为空
+    pub ancestors: Vec<String>,
+}
+```
+
+Book 在 before_compile 读取实际输入中的 SUMMARY、解析结构并按需筛选文档，结构保存在实例内；before_template 将结构与最终 Pages 匹配，一次性生成 site.data.book。SUMMARY 不作为普通页面发布，模板 data 不充当内部状态通道。
 
 == 配置
 
@@ -61,289 +81,166 @@ watch = ["scripts", "../Cargo.toml", "../examples"]
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `command` | string[] | 程序与参数；第一项必须非空；不经过 shell。 |
-| `watch` | path[] | 相对包根的额外输入；目录递归监听。 |
+| `command` | string[] | 程序与参数，第一项非空；不经过 shell。 |
+| `watch` | path[] | 相对包根的额外依赖；目录递归监听。 |
 
-- command、watch 与进程 CWD 均相对包根，即 Notist.toml 所在目录。
-- 将脚本读取的额外文件和目录列入 watch，修改后可触发预览重建，扩展失败时也有效。Rust 扩展通过 `SiteContext.resources` 读取的依赖由宿主记录。
-- 未知字段会使配置解析失败；`command` 为空或首项为空也会在校验阶段报错。
-- 顶层 extensions 是包的文档扩展，site.extensions 是命名的站点扩展字典，不再另分文档扩展层。
+command、watch 与进程 CWD 均相对 Notist.toml 所在的包根。每个命令接收两个事件，不需要配置 stages；不处理的事件也必须响应。未知配置字段、空 command 或无效 extension_order 会导致失败。
 
-内置 Book 示例：
+watch 在扩展执行前登记，失败构建也会保留这些依赖。Rust 扩展通过 SiteContext.resources 读取的依赖由宿主记录。路径基准见 [Notist.toml 配置](../configuration.not#路径基准)。
+
+内置 Book：
 
 ```toml
 [site.extensions.builtins.book]
 summary = "SUMMARY.not"
 ```
 
-表存在即启用；builtins 是保留命名空间。SUMMARY 在 prepare 阶段解析到 site.data.book.structure，enrich 补充共享导航树和各页阅读信息；Book 不选择或修改主题。详见 [Notist Book](../book.not)。
-
-路径基准见 [Notist.toml 配置](../configuration.not#路径基准)。
-
-== SiteInput
-
-```rust
-pub struct SiteInput {
-    pub documents: BTreeMap<PathBuf, String>,
-    pub data: BTreeMap<String, serde_json::Value>,
-}
-```
-
-| 字段 | 表示 | 修改方式 |
-| --- | --- | --- |
-| `documents` | 内容相对路径到源码字符串 | 增删改键；扩展名决定文档前端 |
-| `data` | 数据键到 JSON 值 | 增删改键；作为 `site.data` 的输入 |
-
-- `documents` 的键是内容目录下的规范相对路径，使用 `/`；值是完整源码文本。
-- `data` 的键是去掉扩展名的相对路径，例如物理文件 `data/example.toml` 对应 `example`；嵌套键使用 `folder/example`。
-- 配置了扩展时内容目录可以不存在，页面可以全部由 `documents` 提供；物理内容目录仍会作为初始输入被发现。
-- 修改不写回磁盘；下一次构建重新发现物理输入，因此删除的生成页面不会残留。
-
-返回 input 时需包含全部文档和数据，省略的键会被删除。字段与省略规则见下文“响应”。
+表存在即启用，builtins 是保留命名空间。Book 扩展不选择或修改主题，详见 [Notist Book](../book.not)。顶层 extensions 配置文档扩展，site.extensions 配置站点扩展。
 
 == JSON I/O 协议
 
-command 扩展的完整交互是：宿主启动一个进程，向 stdin 写入一个 JSON 请求并关闭，随后从 stdout 读取一个 JSON 响应。日志写 stderr。
+协议版本为 2。一个构建启动一个进程，通过 stdin / stdout 交换 JSON Lines：每行一个完整 JSON 对象，每个事件恰好一行响应，写入后立即 flush。stdout 只用于协议，日志写 stderr。宿主发送事件并等待响应后才继续，不广播并发修改。
 
-对应的 Rust 类型：
-
-```rust
-#[derive(Serialize, Deserialize)]
-pub struct Request {
-    pub version: u32,
-    pub stage: String,
-    pub root: PathBuf,
-    pub config: SiteConfig,
-    pub input: SiteInput,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Response {
-    pub version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<SiteInput>,
-    #[serde(default)]
-    pub errors: Vec<String>,
-}
-```
-
-Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}` 类型；`SiteInput` 与 `SiteConfig` 的 serde 表示就是协议格式。
-
-一次构建中每条 command 扩展启动一次进程，进程不常驻。stdout 只能包含一个 JSON 响应；额外的输出会使响应无效。`command` 不经过 shell，需要 shell 语法时显式调用 `sh -c`。
+两个事件复用同一进程，可以保留 SUMMARY 解析结果等内部状态。最后一个事件处理完成后，宿主关闭 stdin；扩展应在 EOF 时退出，宿主检查退出码与多余输出后才允许构建成功。任何阶段失败都会终止并回收进程，下一次构建启动新进程。不能等待 stdin EOF 才开始处理请求。
 
 === 请求
 
+每个请求都有 version、event、root、config。root 是包根绝对路径，也是进程 CWD；config 是完整 SiteConfig，字段见 [Notist.toml 配置](../configuration.not)。
+
+before_compile 只携带源码集合，不含 data 或 pages：
+
 ```json
 {
-  "version": 1,
-  "stage": "prepare",
+  "version": 2,
+  "event": "before_compile",
   "root": "/project/website",
-  "config": {
-    "title": "My Site",
-    "base_url": "https://example.com/",
-    "content": "content",
-    "output": "/project/website/public",
-    "theme": "builtins.default",
-    "templates": "templates",
-    "static_dir": "static",
-    "data": "data",
-    "sass": "sass",
-    "template": "page",
-    "extensions": {
-      "builtins": {"book": null},
-      "catalog": {
-        "command": ["python3", "scripts/catalog.py", "../Cargo.toml"],
-        "watch": ["scripts", "../Cargo.toml", "../examples"]
-      }
-    },
-    "extension_order": [],
-    "include": ["**"],
-    "exclude": [],
-    "directory_urls": false,
-    "mounts": [],
-    "copy_content_assets": true,
-    "styles": [],
-    "scripts": []
-  },
-  "input": {
-    "documents": {
-      "index.not": "= Home"
-    },
-    "data": {
-      "settings": {"language": "zh"}
-    }
-  }
+  "config": {"title": "My Site", "content": "content"},
+  "documents": {"index.not": "= Home"}
 }
 ```
 
-| 字段 | 类型 | 内容 |
-| --- | --- | --- |
-| `version` | number | 协议版本，固定为 1。 |
-| `stage` | string | 固定为 `prepare`。 |
-| `root` | string | 包根的绝对路径；也是命令 CWD。 |
-| `config` | object | 完整 `SiteConfig`，字段见下。 |
-| `input` | object | 当前 `SiteInput`，已包含前面扩展提交的结果。 |
+before_template 携带最终 pages 和前序扩展修改后的 data，不含源码集合：
 
-`config` 字段：
+```json
+{
+  "version": 2,
+  "event": "before_template",
+  "root": "/project/website",
+  "config": {"title": "My Site", "content": "content"},
+  "pages": [],
+  "data": {"settings": {"language": "zh"}}
+}
+```
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `title` | string | 站点标题。 |
-| `base_url` | string | 链接前缀。 |
-| `content` | string | 内容目录，相对 root。 |
-| `output` | string | 输出目录；CLI 下通常是绝对路径。 |
-| `theme` | string \| null | 主题目录，相对 root。 |
-| `templates` | string | 模板目录。 |
-| `static_dir` | string | 静态目录。 |
-| `data` | string | TOML / JSON 数据目录。 |
-| `sass` | string | Sass 入口目录。 |
-| `template` | string | 默认模板名。 |
-| `extensions` | object | 站点的命名扩展配置，包含 builtins 命名空间。 |
-
-input 包含加载后的源码与数据，以及前序扩展的修改。
+上例省略 config 的其余字段，pages 的元素使用上述 Page 结构。Rust 命令可用 notist_ssg::command 的 Request、Event、Response 类型读取和生成协议。
 
 === 响应
 
-成功响应仍需带 `version`，`input` 可选：
+响应必须携带相同的 version 和 event。before_compile 只能返回 documents；before_template 只能返回 data，不能返回 pages 或 documents：
 
 ```json
-{
-  "version": 1,
-  "input": {
-    "documents": {
-      "index.not": "= Home\n\n[Demo](examples/demo.md)",
-      "examples/demo.md": "# Demo\n\nGenerated from Cargo.toml."
-    },
-    "data": {
-      "demo": {"name": "demo"}
-    }
-  }
-}
+{"version":2,"event":"before_compile","documents":{"index.not":"= Edited","demo.md":"# Demo"}}
 ```
-
-| 字段 | 类型 | 内容 |
-| --- | --- | --- |
-| `version` | number | 必须为 1；不匹配即失败。 |
-| `input` | object \| null | 省略或 `null` 保持当前输入；给出时是完整快照。 |
-| `errors` | string[] | 可选；非空即终止构建。 |
-
-响应语义：
-
-- 省略 `input`、写 `"input": null` 或返回 `{"version":1}` 都保持当前输入不变。
-- 返回 `input` 时必须同时包含 `documents` 与 `data`；空映射写 `{}`。省略的页面或数据键会被删除。
-- `input` 和响应对象都拒绝未知字段。
-- `errors` 非空时构建失败，即使同时返回了 `input` 也不会应用。
-- 错误响应示例：
 
 ```json
-{
-  "version": 1,
-  "errors": ["missing Cargo.toml", "cannot read examples/"]
-}
+{"version":2,"event":"before_template","data":{"catalog":{"count":2}}}
 ```
 
-=== 最小 Python 脚本
+- 省略可修改字段或写 null 表示不修改；无操作响应仍需 version 与 event。
+- 返回映射表示完整替换，不是增量补丁；空映射表示清空。要保留已有键，先修改请求中的映射，再整体返回。
+- 响应拒绝未知字段、阶段不匹配、版本不匹配。before_compile 不允许返回 data，before_template 不允许返回 pages。
+- 可选 errors 是字符串数组，非空立即终止构建，即使同时返回修改也不会应用：
+
+```json
+{"version":2,"event":"before_compile","errors":["missing Cargo.toml"]}
+```
+
+=== 最小 Python 扩展
 
 ```python
 import json
 import sys
 
-request = json.load(sys.stdin)
-if request["version"] != 1 or request["stage"] != "prepare":
-    raise ValueError("unsupported site extension request")
-
-input = request["input"]
-input["documents"]["examples/demo.md"] = "# Demo\n\nGenerated.\n"
-input["data"]["demo"] = {"name": "demo"}
-
-json.dump({"version": 1, "input": input}, sys.stdout)
+generated = None
+for line in sys.stdin:
+    request = json.loads(line)
+    response = {"version": 2, "event": request["event"]}
+    try:
+        if request["version"] != 2:
+            raise ValueError("unsupported protocol version")
+        if request["event"] == "before_compile":
+            documents = request["documents"]
+            documents["examples/demo.md"] = "# Demo\n\nGenerated.\n"
+            generated = {"name": "demo"}
+            response["documents"] = documents
+        elif request["event"] == "before_template":
+            data = request["data"]
+            data["demo"] = generated
+            response["data"] = data
+        else:
+            raise ValueError("unsupported event")
+    except Exception as error:
+        response["errors"] = [str(error)]
+    print(json.dumps(response), flush=True)
 ```
 
-== 输入校验
+== 输入校验与失败
 
-扩展返回后校验文档路径、数据键及输出冲突，通过后才使用修改结果：
-
-- 文档路径必须是规范相对路径：不能为空、不能是绝对路径、不能含 `\`、单独的 `.` 或 `..` 段、空段或隐藏段；不能占用 `_notist`；必须由已注册前端支持。
-- 数据键同样必须是规范相对路径。
-- 两个生成或保留的文档不能映射到同一输出路径；生成文档也不能与已有输出冲突。
-- 生成文档的绝对源身份是 `content/<相对路径>`，imports、相对链接、嵌入与诊断以此为基准。
-- 生成文档的根注解照常生效，规则与手写文档相同。
-- 新目录自动进入 `site.directories`。
+- 文档路径必须是规范相对路径：不能为空、不能为绝对路径、不能含反斜杠、`.` 或 `..` 段、空段或隐藏段；不能占用 `_notist`；扩展名必须由已注册前端支持。
+- before_compile 后检查文档路径及输出冲突；before_template 后检查 data 键，键必须是规范相对路径。
+- 生成文档的源身份是 content 下的相对路径，imports、链接、嵌入与诊断以此为基准。根注解照常生效，新目录进入 site.directories。
+- 配置了扩展时 content 目录可以不存在，内容可以全部由扩展提供。每次构建重新发现输入，删除的生成页面不会残留。
+- 任一阶段失败停止构建，保留已有输出或上一次成功预览；脚本自行写文件、上传等外部副作用不会回滚。
+- 无效 JSON、缺少换行、版本不符、未知字段、非法路径、非零退出码和多余 stdout 都会使构建失败。错误信息包含扩展名与阶段。
 
 路径与输出规则见 [Notist SSG](README.not#源文件与输出)。
-
-== 失败与副作用
-
-- 任一扩展失败会停止构建，保留原有输出或上一次成功预览。
-- 失败保护只覆盖构建输入与产物；脚本自行写文件、上传或调用外部服务等副作用不会被回滚。
-- 非零退出状态、启动或通信失败、无效 JSON、版本不符、未知字段和非法路径都会转成扩展错误。
-- 错误信息包含扩展名与阶段，例如 `site extension "catalog" (prepare): ...`。
 
 == Rust 接入
 
 ```rust
-use notist::Resources;
-use notist_ssg::{Builder, Error, SiteConfig};
-use notist_ssg::extensions::{SiteContext, SiteExtension, SiteInput};
-
 pub trait SiteExtension: Debug + Send + Sync {
     fn name(&self) -> &str;
-    fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error>;
-    fn enrich(
-        &self,
-        context: &SiteContext<'_>,
-        pages: &[notist_ssg::Page],
-        data: &mut BTreeMap<String, serde_json::Value>,
+    fn before_compile(
+        &mut self, context: &SiteContext<'_>, input: &mut CompileInput,
     ) -> Result<(), Error> { Ok(()) }
-}
-
-pub struct SiteContext<'a> {
-    pub resources: &'a dyn Resources,
-    pub config: &'a SiteConfig,
+    fn before_template(
+        &mut self, context: &SiteContext<'_>, input: &mut TemplateInput<'_>,
+    ) -> Result<(), Error> { Ok(()) }
+    fn finish(&mut self) -> Result<(), Error> { Ok(()) }
 }
 ```
 
+两个事件默认不修改输入。finish 是成功路径上的资源收尾，不是数据修改阶段；失败清理由实例的 Drop 完成。SiteContext 提供只读 config 与 resources。
+
 ```rust
 use notist_ssg::{Builder, Error};
-use notist_ssg::extensions::{SiteContext, SiteExtension, SiteInput};
+use notist_ssg::extensions::{CompileInput, SiteContext, SiteExtension, TemplateInput};
 
-#[derive(Debug)]
-struct Catalog;
+#[derive(Debug, Clone, Default)]
+struct Catalog { count: usize }
 
 impl SiteExtension for Catalog {
     fn name(&self) -> &str { "catalog" }
 
-    fn prepare(
-        &self,
-        context: &SiteContext<'_>,
-        input: &mut SiteInput,
+    fn before_compile(
+        &mut self, _: &SiteContext<'_>, input: &mut CompileInput,
     ) -> Result<(), Error> {
-        let manifest = context.resources.source(std::path::Path::new("../Cargo.toml"))?;
-        input.documents.insert(
-            "examples/demo.md".into(),
-            format!("# Demo\n\n```toml\n{manifest}\n```\n"),
-        );
-        input.data.insert("catalog".into(), serde_json::json!({"count": 1}));
+        input.documents.insert("examples/demo.md".into(), "# Demo".into());
+        self.count = input.documents.len();
+        Ok(())
+    }
+
+    fn before_template(
+        &mut self, _: &SiteContext<'_>, input: &mut TemplateInput<'_>,
+    ) -> Result<(), Error> {
+        input.data.insert("catalog".into(), serde_json::json!({"count": self.count}));
         Ok(())
     }
 }
 
-let output = Builder::default()
-    .with_extension(Catalog)
-    .build(&mut vault, &config)?;
+let builder = Builder::default().with_extension(Catalog::default());
 ```
 
-- `name` 用于错误和进度信息。
-- `SiteContext` 提供 `resources` 与只读 `config`。`resources` 用于读取外部输入，CLI 宿主会记录依赖；`config` 是选中的完整 `SiteConfig`。
-- Builder.with_extension 注册的原生扩展按注册顺序运行，在所有配置扩展之前。
-- prepare 共用 SiteInput 与校验；enrich 是 Rust 专用阶段，默认不做任何操作，不会再启动 command 进程。
+Builder 注册的原生扩展需实现 Clone；每次构建从注册的原型克隆一个新实例，两个事件调用同一实例。Clone 必须隔离构建内可变状态，不应通过共享锁把中间结果带到另一构建。
 
-== 入口与示例
-
-- build / serve 运行包的站点扩展，serve 每次重建重新运行。
-- 单文件命令 check / cst / core / json / query / html 不运行站点扩展。
-- 站点扩展使用清单目录作为 CWD 与路径基准。
-- 完整可运行示例：`examples/ssg-extensions`，读取 Cargo.toml 与 Rust 源文件，在内存中生成页面和 `site.data`。
-- 分步教程：[从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。
-- 接口处于实验阶段，类型与协议可能调整。
+build / serve 运行站点扩展，单文件 check / cst / core / json / query / html 不运行。完整示例见 examples/ssg-extensions 与 [从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。接口与协议处于实验阶段。

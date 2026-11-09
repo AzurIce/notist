@@ -17,6 +17,42 @@ fn function_names(module: &ast::Module) -> Vec<String> {
 }
 
 #[test]
+fn where_clauses_are_lossless_and_separate_from_code_bodies() {
+    let source = "fn native<T: Type>(x: T) -> InlineContent\nwhere T == Path || T == String;\nfn code<n: Int>() -> Int where n > 0 { n }";
+    let module = module(source);
+    let functions: Vec<_> = module.functions().collect();
+    assert_eq!(functions.len(), 2);
+    assert_eq!(
+        functions[0]
+            .where_clause()
+            .unwrap()
+            .condition()
+            .unwrap()
+            .to_string(),
+        "T == Path || T == String"
+    );
+    assert!(functions[0].body().is_none());
+    assert!(functions[1].where_clause().is_some());
+    assert_eq!(functions[1].body().unwrap().text().to_string(), "{ n }");
+}
+
+#[test]
+fn broken_where_conditions_keep_the_next_declaration() {
+    for condition in ["", "T ==", "T ||", "("] {
+        let source =
+            format!("fn broken<T: Type>() -> Int where {condition};\nfn next() -> Int {{ 1 }}");
+        let parsed = parse_module(&source, &notist_syntax::markup::MarkupContentParser);
+        assert_eq!(parsed.syntax().text().to_string(), source);
+        assert!(!parsed.diagnostics.is_empty(), "{condition}");
+        let module = ast::Module::cast(parsed.syntax()).unwrap();
+        assert!(
+            function_names(&module).contains(&"next".into()),
+            "{condition}"
+        );
+    }
+}
+
+#[test]
 fn signatures_preserve_names_types_defaults_and_mounts() {
     let src = "// API\r\nfn diagram(source: String, theme: String = \"default\") -> Content;\r\n\
         fn panel(title?: String)[children: Content] -> Content;\n\

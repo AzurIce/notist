@@ -114,6 +114,15 @@ impl Parser<'_, '_> {
             return false;
         }
         self.eat_trivia();
+        if self.cur() == Some(SyntaxKind::WhereKeyword) {
+            self.state
+                .builder
+                .start_node(SyntaxKind::WhereClause.into());
+            self.eat();
+            self.expression(0);
+            self.state.builder.finish_node();
+            self.eat_trivia();
+        }
         if self.cur() == Some(SyntaxKind::LBrace) {
             self.block_expr();
             true

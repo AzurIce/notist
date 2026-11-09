@@ -51,9 +51,9 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
         let value = match &expression.kind {
             ExprKind::Call(call) => {
                 let mut call = call.clone();
-                if call.definition.children_type.is_some() || !children.is_empty() {
+                if call.definition().children_type.is_some() || !children.is_empty() {
                     call.children = Some(Box::new(TypedExpr {
-                        ty: call.definition.children_type.clone(),
+                        ty: call.definition().children_type.clone(),
                         known: None,
                         shape: notist_core::evaluation::ContentShape::of_items(&children),
                         kind: ExprKind::Content(children.into()),
@@ -61,7 +61,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
                         source: *source,
                     }));
                 }
-                let ty = Some(call.definition.returns.clone());
+                let ty = Some(call.definition().returns.clone());
                 let kind = ExprKind::Call(call);
                 let shape = notist_core::evaluation::ContentShape::of_expr(&kind);
                 TypedExpr {

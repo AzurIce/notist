@@ -68,6 +68,13 @@ fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
     item.descendants()
         .filter(|item| item.ctor() == Ctor::Link)
         .filter_map(|item| match item.field("target") {
+            Some(Value::Path(target)) => Some(Link {
+                span: item.span,
+                target: Target::Path {
+                    path: PathBuf::from(target.logical_path()),
+                    item: crate::embed::string(&item.fields(), "fragment").map(str::to_owned),
+                },
+            }),
             Some(Value::Str(target)) => Some(Link {
                 span: item.span,
                 target: parse_target(target, file_dir),
@@ -97,7 +104,7 @@ pub(crate) fn check_embed_paths(
     sources: &crate::Sources,
 ) -> Vec<Diagnostic> {
     let source = normalize(&root.join(path)).to_string_lossy().into_owned();
-    crate::embed::targets(item)
+    crate::embed::references(item)
         .filter_map(|node| {
             let Some(Value::Path(target)) = node.field("target") else {
                 return None;
@@ -108,10 +115,7 @@ pub(crate) fn check_embed_paths(
             let mut diagnostic = Diagnostic::new(
                 Phase::Semantic,
                 node.span,
-                format!(
-                    "local embedded resource is outside Vault root `{}`",
-                    root.display()
-                ),
+                format!("local resource is outside Vault root `{}`", root.display()),
             );
             diagnostic.code = Some(crate::DiagnosticCode::OutsideVault);
             if let Some(origin) = &node.origin {

@@ -29,7 +29,7 @@ impl Checker<'_> {
                 let children = crate::materialize::materialize(
                     &mut shaped,
                     &annotations,
-                    &self.source,
+                    &self.frame.source,
                     &mut self.diagnostics,
                 );
                 call.children = call.definition.children_type.as_ref().map(|ty| {
@@ -69,7 +69,7 @@ impl Checker<'_> {
         let node = crate::materialize::materialize(
             &mut shaped,
             &annotations,
-            &self.source,
+            &self.frame.source,
             &mut self.diagnostics,
         )
         .remove(0);
@@ -122,7 +122,7 @@ impl Checker<'_> {
         let items = crate::materialize::materialize(
             &mut shaped,
             &all_annotations,
-            &self.source,
+            &self.frame.source,
             &mut self.diagnostics,
         );
         (items, shaped)
@@ -167,7 +167,7 @@ impl Checker<'_> {
             let invalid = level.is_none()
                 && value.ty.is_some()
                 && !(value.ty == Some(Type::Never)
-                    && self.site == notist_core::evaluation::CallSite::Code);
+                    && self.frame.site == notist_core::evaluation::CallSite::Code);
             if invalid {
                 self.report(
                     span,
@@ -207,7 +207,7 @@ impl Checker<'_> {
         match self.bind_call(e) {
             Ok((call, _))
                 if call.definition.returns == Type::Never
-                    && self.site == notist_core::evaluation::CallSite::Code =>
+                    && self.frame.site == notist_core::evaluation::CallSite::Code =>
             {
                 // A divergent interpolation is a pending computation, never a
                 // data constructor or a claim to a structural content role.

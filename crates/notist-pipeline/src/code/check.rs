@@ -25,10 +25,9 @@ pub(super) struct CallFailure {
     pub(super) message: String,
 }
 
-pub(crate) struct Checker<'a> {
-    pub(super) context: &'a Context,
-    pub program: CheckedProgram,
-    pub diagnostics: Vec<Diagnostic>,
+/// The lexical meaning of the current source/instance, saved as one unit.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct CheckFrame {
     pub(super) scope: Scope,
     binding_scope: TextRange,
     binding_owner: Option<notist_core::definitions::FunctionId>,
@@ -36,6 +35,13 @@ pub(crate) struct Checker<'a> {
     pub(super) source: notist_core::source::Source,
     resource_root: String,
     pub(super) site: CallSite,
+}
+
+pub(crate) struct Checker<'a> {
+    pub(super) context: &'a Context,
+    pub program: CheckedProgram,
+    pub diagnostics: Vec<Diagnostic>,
+    pub(super) frame: CheckFrame,
     pub(super) depth: usize,
     // A function owns direct checking failures; interpolation scopes recover locally.
     pub(super) failures: Vec<Vec<Diagnostic>>,
@@ -49,7 +55,7 @@ impl<'a> Checker<'a> {
         name: &str,
         span: TextRange,
     ) -> Option<notist_core::binding::BindingId> {
-        self.declare_in(name, span, self.binding_scope)
+        self.declare_in(name, span, self.frame.binding_scope)
     }
     pub(super) fn declare_in(
         &mut self,
@@ -59,10 +65,10 @@ impl<'a> Checker<'a> {
     ) -> Option<notist_core::binding::BindingId> {
         match self.program.sources.bindings_mut().declare_with_owner(
             name,
-            &self.source,
+            &self.frame.source,
             span,
             scope,
-            self.binding_owner.as_ref(),
+            self.frame.binding_owner.as_ref(),
         ) {
             Ok(id) => Some(id),
             Err(message) => {
@@ -80,13 +86,15 @@ impl<'a> Checker<'a> {
                 ..Default::default()
             },
             diagnostics: Vec::new(),
-            scope: BTreeMap::new(),
-            binding_scope: TextRange::new(0.into(), u32::MAX.into()),
-            binding_owner: None,
-            module: None,
-            source: source.clone(),
-            resource_root: context.resource_root().into(),
-            site: CallSite::Markup,
+            frame: CheckFrame {
+                scope: BTreeMap::new(),
+                binding_scope: TextRange::new(0.into(), u32::MAX.into()),
+                binding_owner: None,
+                module: None,
+                source: source.clone(),
+                resource_root: context.resource_root().into(),
+                site: CallSite::Markup,
+            },
             depth: 0,
             failures: Vec::new(),
             content_annotations: Vec::new(),
@@ -95,13 +103,13 @@ impl<'a> Checker<'a> {
     }
     pub(crate) fn for_content(context: &'a Context, source: &notist_core::source::Source) -> Self {
         let mut checker = Self::new(context, source);
-        checker.module = context.root_id();
-        checker.site = CallSite::Code;
+        checker.frame.module = context.root_id();
+        checker.frame.site = CallSite::Code;
         checker
     }
     pub(super) fn report(&mut self, span: TextRange, message: impl Into<String>) {
         let mut d = Diagnostic::new(Phase::Type, span, message);
-        d.source = Some(self.source.clone());
+        d.source = Some(self.frame.source.clone());
         self.report_diagnostic(d);
     }
     fn report_diagnostic(&mut self, d: Diagnostic) {
@@ -118,7 +126,7 @@ impl<'a> Checker<'a> {
     ) -> TypedExpr {
         let message = format!("{label}: {}", failure.message);
         let (span, source) = failure.location.as_ref().map_or_else(
-            || (span, self.source.clone()),
+            || (span, self.frame.source.clone()),
             |location| {
                 (
                     TextRange::new(location.start.into(), location.end.into()),
@@ -153,7 +161,7 @@ impl<'a> Checker<'a> {
             kind,
             known,
             span,
-            source: self.source.id(),
+            source: self.frame.source.id(),
         }
     }
     fn constant(&self, v: ComptimeValue, span: TextRange) -> TypedExpr {
@@ -195,16 +203,16 @@ impl<'a> Checker<'a> {
                 None,
                 span,
             );
-            (name.to_owned(), self.scope.insert(name.into(), value))
+            (name.to_owned(), self.frame.scope.insert(name.into(), value))
         });
         let result = self.check_with_hint(body, hint);
         if let Some((name, previous)) = bound {
             match previous {
                 Some(previous) => {
-                    self.scope.insert(name, previous);
+                    self.frame.scope.insert(name, previous);
                 }
                 None => {
-                    self.scope.remove(&name);
+                    self.frame.scope.remove(&name);
                 }
             }
         }
@@ -279,16 +287,16 @@ impl<'a> Checker<'a> {
     }
     fn origin(&self, span: TextRange) -> Origin {
         Origin {
-            source: self.source.id(),
+            source: self.frame.source.id(),
             start: span.start().into(),
             end: span.end().into(),
             expansion: Default::default(),
         }
     }
     pub(super) fn resolve_attributes(&mut self, attrs: &LiteralDict) -> Dict {
-        let root = &self.resource_root;
+        let root = &self.frame.resource_root;
         let mut diagnostics = Vec::new();
-        let dict = super::literal::resolve_dict(attrs, root, &self.source, &mut diagnostics);
+        let dict = super::literal::resolve_dict(attrs, root, &self.frame.source, &mut diagnostics);
         for diagnostic in diagnostics {
             self.report(diagnostic.span, diagnostic.message);
         }
@@ -325,10 +333,10 @@ impl<'a> Checker<'a> {
             .ok()
             .and_then(|function| self.context.program().module_by_id(function.module_id()))
             .map(|module| module.code().source_record().clone())
-            .unwrap_or_else(|| self.source.clone());
-        let previous = std::mem::replace(&mut self.source, source);
+            .unwrap_or_else(|| self.frame.source.clone());
+        let previous = std::mem::replace(&mut self.frame.source, source);
         self.install_instance(instance);
-        self.source = previous;
+        self.frame.source = previous;
     }
     fn install_instance(&mut self, instance: &FunctionInstance) {
         let Some(mut def) = self
@@ -382,10 +390,10 @@ impl<'a> Checker<'a> {
         self.ensure_instance(instance, &def, &ct);
     }
     fn reference(&mut self, name: &str, span: TextRange) -> TypedExpr {
-        if let Some(v) = self.scope.get(name) {
+        if let Some(v) = self.frame.scope.get(name) {
             let mut value = v.clone();
             value.span = span;
-            value.source = self.source.id();
+            value.source = self.frame.source.id();
             return value;
         }
         if let Some(t) = Type::builtin(name) {
@@ -404,12 +412,16 @@ impl<'a> Checker<'a> {
             }
             Expr::Literal(v, _) => self.constant(ComptimeValue::Data(v.clone()), span),
             Expr::PathLiteral { .. } => {
-                match super::literal::resolve_literal(e, &self.resource_root, &self.source) {
+                match super::literal::resolve_literal(
+                    e,
+                    &self.frame.resource_root,
+                    &self.frame.source,
+                ) {
                     Ok(value) => self.constant(ComptimeValue::Data(value), span),
                     Err(error) => self.failed(error.span, error.message),
                 }
             }
-            Expr::Ref { name, .. } if name == "none" && !self.scope.contains_key("none") => {
+            Expr::Ref { name, .. } if name == "none" && !self.frame.scope.contains_key("none") => {
                 match type_hint {
                     Some(ty @ Type::Option(_)) => self.typed(
                         Some(ty),
@@ -439,30 +451,30 @@ impl<'a> Checker<'a> {
             Expr::Block {
                 bindings, value, ..
             } => {
-                let old = self.scope.clone();
-                let previous_scope = std::mem::replace(&mut self.binding_scope, span);
+                let old = self.frame.scope.clone();
+                let previous_scope = std::mem::replace(&mut self.frame.binding_scope, span);
                 let mut checked = Vec::new();
                 for (name, e) in bindings {
                     let t = self.check(e);
                     let Some(id) = self.declare(name, e.span()) else {
-                        self.scope = old;
-                        self.binding_scope = previous_scope;
+                        self.frame.scope = old;
+                        self.frame.binding_scope = previous_scope;
                         return self.failed(span, "cannot allocate lexical binding");
                     };
-                    if self.scope.contains_key(name) {
+                    if self.frame.scope.contains_key(name) {
                         self.report(e.span(), format!("duplicate binding `{name}`"));
                     }
                     let mut binding =
                         self.typed(t.ty.clone(), ExprKind::Input(id), t.known.clone(), e.span());
                     binding.shape = t.shape;
-                    self.scope.insert(name.clone(), binding);
+                    self.frame.scope.insert(name.clone(), binding);
                     if t.ty != Some(Type::Type) {
                         checked.push((id, t));
                     }
                 }
                 let val = self.check_with_hint(value, type_hint);
-                self.scope = old;
-                self.binding_scope = previous_scope;
+                self.frame.scope = old;
+                self.frame.binding_scope = previous_scope;
                 let ty = if checked.iter().any(|(_, v)| v.ty == Some(Type::Never)) {
                     Some(Type::Never)
                 } else {
@@ -575,14 +587,14 @@ impl<'a> Checker<'a> {
                                     Some(value),
                                     pattern.span(),
                                 );
-                                let old = self.scope.insert(name.clone(), binding);
+                                let old = self.frame.scope.insert(name.clone(), binding);
                                 let result = self.check_with_hint(body, type_hint);
                                 match old {
                                     Some(previous) => {
-                                        self.scope.insert(name, previous);
+                                        self.frame.scope.insert(name, previous);
                                     }
                                     None => {
-                                        self.scope.remove(&name);
+                                        self.frame.scope.remove(&name);
                                     }
                                 }
                                 return result;
@@ -728,7 +740,7 @@ impl<'a> Checker<'a> {
                 body,
                 ..
             } => {
-                let old_site = std::mem::replace(&mut self.site, CallSite::Code);
+                let old_site = std::mem::replace(&mut self.frame.site, CallSite::Code);
                 let subject = self.check(subject);
                 let element = match &subject.ty {
                     Some(Type::Array(Some(element))) => Some((**element).clone()),
@@ -740,20 +752,20 @@ impl<'a> Checker<'a> {
                 let Some(id) = self.declare_in(binding, span, span) else {
                     return self.failed(span, "cannot allocate loop binding");
                 };
-                let previous = self.scope.insert(
+                let previous = self.frame.scope.insert(
                     binding.clone(),
                     self.typed(element, ExprKind::Input(id), None, span),
                 );
                 let body = self.check_with_hint(body, type_hint.clone());
                 match previous {
                     Some(value) => {
-                        self.scope.insert(binding.clone(), value);
+                        self.frame.scope.insert(binding.clone(), value);
                     }
                     None => {
-                        self.scope.remove(binding);
+                        self.frame.scope.remove(binding);
                     }
                 }
-                self.site = old_site;
+                self.frame.site = old_site;
                 let ty = body.ty.clone().filter(|t| t.level().is_some()).or_else(|| {
                     (body.ty == Some(Type::Never))
                         .then_some(type_hint)
@@ -817,7 +829,7 @@ impl<'a> Checker<'a> {
                     notist_eval::constant(
                         &t,
                         &self.program,
-                        &self.source.clone().into(),
+                        &self.frame.source.clone().into(),
                         self.context,
                     )
                 });
@@ -1046,10 +1058,10 @@ impl<'a> Checker<'a> {
     pub(super) fn definition(&self, name: &str) -> Option<FunctionDef> {
         let root = name.split('.').next().unwrap_or_default();
         let reserved_namespace = name.contains('.') && matches!(root, "notist" | "self");
-        if !reserved_namespace && self.scope.contains_key(root) {
+        if !reserved_namespace && self.frame.scope.contains_key(root) {
             return None;
         }
-        self.context.resolve_in_id(self.module, name).cloned()
+        self.context.resolve_in_id(self.frame.module, name).cloned()
     }
     pub(super) fn call_target(&mut self, callee: &Expr) -> CallTarget {
         let name = callee.name_path().unwrap_or_else(|| "<method>".into());
@@ -1182,7 +1194,7 @@ impl<'a> Checker<'a> {
                 None => match notist_eval::constant(
                     &value,
                     &self.program,
-                    &self.source.clone().into(),
+                    &self.frame.source.clone().into(),
                     self.context,
                 ) {
                     Ok(value) => Some(value),
@@ -1244,7 +1256,7 @@ impl<'a> Checker<'a> {
                     .enumerate()
                     .find(|(_, p)| p.name == *name),
             };
-            if self.site == CallSite::Markup && !markup_literal(arg.value()) {
+            if self.frame.site == CallSite::Markup && !markup_literal(arg.value()) {
                 self.report(
                     arg.value().span(),
                     "standalone Markup arguments must be data literals",
@@ -1400,7 +1412,7 @@ impl<'a> Checker<'a> {
             }));
         }
         if matches!(def.implementation, FunctionImpl::Native(native) if native.reads_resources())
-            && self.site != CallSite::Code
+            && self.frame.site != CallSite::Code
         {
             self.report(
                 span,
@@ -1487,7 +1499,11 @@ impl<'a> Checker<'a> {
         {
             let mut fields =
                 known_fields(&concrete, arguments.iter().map(|(k, v)| (k.as_str(), v)));
-            match notist_core::embed::normalize(&mut fields, &self.resource_root, &self.source) {
+            match notist_core::embed::normalize(
+                &mut fields,
+                &self.frame.resource_root,
+                &self.frame.source,
+            ) {
                 Ok(()) => {
                     let target_span = arguments["target"].span;
                     for name in ["target", "query", "fragment"] {
@@ -1507,7 +1523,7 @@ impl<'a> Checker<'a> {
             .parameters
             .iter()
             .any(|p| p.ty == Type::ResourceTarget)
-            .then(|| self.resource_root.clone());
+            .then(|| self.frame.resource_root.clone());
         self.ensure_instance(&instance, &concrete, &bindings);
         Ok(Invocation {
             instance,
@@ -1516,8 +1532,8 @@ impl<'a> Checker<'a> {
             children,
             attrs,
             span,
-            source: self.source.id(),
-            site: self.site,
+            source: self.frame.source.id(),
+            site: self.frame.site,
             resource_root,
             invalid: None,
         })
@@ -1682,20 +1698,24 @@ impl<'a> Checker<'a> {
             };
             comptime_locals.push((parameter.name.clone(), value.clone(), ty));
         }
-        let old_scope = std::mem::take(&mut self.scope);
-        let old_binding_scope = std::mem::replace(&mut self.binding_scope, def.span);
-        let old_binding_owner = self.binding_owner.replace(def.id.clone());
-        let old_module = std::mem::replace(&mut self.module, Some(def.id.module_id()));
-        let old_source = std::mem::replace(&mut self.source, body.source.clone());
-        let old_site = std::mem::replace(&mut self.site, CallSite::Code);
-        let old_resource_root =
-            std::mem::replace(&mut self.resource_root, body.resource_root.clone());
+        let previous_frame = std::mem::replace(
+            &mut self.frame,
+            CheckFrame {
+                scope: BTreeMap::new(),
+                binding_scope: def.span,
+                binding_owner: Some(def.id.clone()),
+                module: Some(def.id.module_id()),
+                source: body.source.clone(),
+                resource_root: body.resource_root.clone(),
+                site: CallSite::Code,
+            },
+        );
         for (name, v, ty) in comptime_locals {
             let mut value = self.constant(v, def.span);
             if let Some(ty) = ty {
                 value.ty = Some(ty);
             }
-            self.scope.insert(name, value);
+            self.frame.scope.insert(name, value);
         }
         for p in &def.parameters {
             // Inside the body a `?: T` parameter is an Option<T> input.
@@ -1705,12 +1725,12 @@ impl<'a> Checker<'a> {
             };
             let id = inputs[&p.name];
             let value = self.typed(Some(ty), ExprKind::Input(id), None, p.span);
-            self.scope.insert(p.name.clone(), value);
+            self.frame.scope.insert(p.name.clone(), value);
         }
         if let Some(ty) = &def.children_type {
             let id = inputs["children"];
             let value = self.typed(Some(ty.clone()), ExprKind::Input(id), None, def.span);
-            self.scope.insert("children".into(), value);
+            self.frame.scope.insert("children".into(), value);
         }
         let start = self.diagnostics.len();
         self.failures.push(body.diagnostics.clone());
@@ -1726,7 +1746,7 @@ impl<'a> Checker<'a> {
         }
         for d in &mut self.diagnostics[start..] {
             if d.source.is_none() {
-                d.source = Some(self.source.clone());
+                d.source = Some(self.frame.source.clone());
             }
         }
         let diagnostics = self.failures.pop().unwrap();
@@ -1739,13 +1759,7 @@ impl<'a> Checker<'a> {
         record.inputs = inputs;
         record.diagnostics = diagnostics;
         record.checking = false;
-        self.scope = old_scope;
-        self.binding_scope = old_binding_scope;
-        self.binding_owner = old_binding_owner;
-        self.module = old_module;
-        self.source = old_source;
-        self.site = old_site;
-        self.resource_root = old_resource_root;
+        self.frame = previous_frame;
         if cacheable
             && self.diagnostics.len() == diagnostics_start
             && self.program.data_retention.is_empty()
@@ -1865,4 +1879,49 @@ pub(super) fn result_literal(e: &Expr) -> bool {
 
 pub(super) fn needs_hint(e: &Expr) -> bool {
     none_literal(e) || result_literal(e)
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn nested_instance_checks_restore_the_complete_caller_frame() {
+        for body in ["\"ok\"", "missing()"] {
+            let module = crate::Pipeline::default()
+                .compile_module_with_root(
+                    "body.not",
+                    "frame-test",
+                    "/module/lib.notc",
+                    &format!(
+                        "fn inner() -> String {{ {body} }} fn outer() -> String {{ inner() }}"
+                    ),
+                    "/module",
+                )
+                .unwrap();
+            let context = Context::default()
+                .with_resource_root("/caller")
+                .with_module(module)
+                .unwrap();
+            let source = notist_core::source::Source::new("/caller/doc.not", "caller").unwrap();
+            let mut checker = Checker::new(&context, &source);
+            checker.frame.module = context.root_id();
+            checker.frame.scope.insert(
+                "caller_local".into(),
+                checker.constant(ComptimeValue::Data(Value::Int(7)), Default::default()),
+            );
+            checker.type_hint = Some(Type::String);
+            let frame = checker.frame.clone();
+            checker.install(&FunctionInstance {
+                function: context.resolve("self.outer").unwrap().id.def_id(),
+                arguments: Vec::new(),
+            });
+            assert_eq!(checker.frame, frame);
+            assert_eq!(checker.type_hint, Some(Type::String));
+            assert_eq!(checker.diagnostics.is_empty(), body == "\"ok\"");
+            for diagnostic in checker.diagnostics {
+                assert_eq!(diagnostic.source.unwrap().name(), "/module/lib.notc");
+            }
+        }
+    }
 }

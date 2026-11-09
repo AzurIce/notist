@@ -168,16 +168,16 @@ impl Checker<'_> {
                 .map(ExprKind::Constant)
                 .unwrap_or_else(|| ExprKind::Input(*id));
             let input = self.typed(Some((**ty).clone()), kind, known, body.span());
-            (name.clone(), self.scope.insert(name, input))
+            (name.clone(), self.frame.scope.insert(name, input))
         });
         let checked = self.check_with_hint(body, hint);
         if let Some((name, previous)) = previous {
             match previous {
                 Some(value) => {
-                    self.scope.insert(name.clone(), value);
+                    self.frame.scope.insert(name.clone(), value);
                 }
                 None => {
-                    self.scope.remove(&name);
+                    self.frame.scope.remove(&name);
                 }
             }
         }

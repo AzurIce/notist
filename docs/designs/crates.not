@@ -10,14 +10,11 @@ workspace 围绕共享内容模型组织：前端产生 Expr 森林，管线生�
 #components.diagram(r#"""
 %%{init: {"flowchart": {"nodeSpacing": 24, "rankSpacing": 32}}}%%
 flowchart TB
-    cli["notist-cli"] --> book["notist-book"]
-    cli --> ssg["notist-ssg"]
+    cli["notist-cli"] --> ssg["notist-ssg"]
     ssg --> host
     ssg --> html
     cli --> host["notist · 资源与环境"]
     cli --> html["notist-html"]
-    book --> host
-    book --> html
     host --> pipeline["notist-pipeline"]
     host --> html
     host --> core["notist-core"]
@@ -36,9 +33,8 @@ flowchart TB
 - `notist-eval`：依赖 core，解释已检查的 Item / TypedExpr，负责内容绑定、挂载、原生与 Data 调用、编译期求值、逻辑预算及局部实例缓存。EvaluationContext 提供定义、执行映射和缺失实例的检查回调，由 pipeline 的 Context 实现；eval 不依赖检查器、语法、文件系统或输出后端。Pipeline 保留来源合并、文档扩展调度及原有 evaluate 入口。
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口，并通过 command_extension 将 stdio 外部命令适配为文档扩展。
-- `notist-book`：依赖 notist 与 html，在 Vault 之上处理章节组织、书籍路由、主题、跨章链接和构建产物。
-- `notist-ssg`：依赖 notist 与 html，将内容目录直接映射为 HTML，负责站点模板、目录呈现数据、资源、Sass 和完整构建产物；独立于 book。Builder 在编译前调度 SiteExtension，接收可编辑的整站文档源码与模板数据；CLI stdio 命令适配同一接口，完整扩展点见 [SSG 站点扩展](../ssg/extensions.not)。
-- `notist-cli`：依赖 notist、html、book 与 ssg，提供终端命令、构建、共享的发布与预览宿主及 LSP 入口。
+- `notist-ssg`：依赖 notist 与 html，负责站点编译、路由、链接检查、模板、资源、Sass 和完整构建产物。Book 通过内置 SiteExtension 提供 SUMMARY 与导航数据，通过独立的内置主题呈现。default 与 book 主题的模板均存放在 themes 目录。Builder 在编译前调度 prepare，在页面就绪后调度 Rust enrich；完整接口见 [SSG 站点扩展](../ssg/extensions.not)。
+- `notist-cli`：依赖 notist、html 与 ssg，提供终端命令、构建、共享的发布与预览宿主及 LSP 入口。
 - `notist-grammar`：位于 modules/grammar，独立解析文法记法并生成 SVG 铁路图，不依赖其他 workspace crate。
 
 == 接口与实现边界
@@ -112,7 +108,7 @@ Vault 在输入批次内复用模块装配与配置解析，逐文档建立词�
 
 core 的 EvaluationInputs、InputRead 与 InputError 定义同步的窄输入接口；eval 的 read_text 原生实现只查询该接口并检查 UTF-8。顶层 notist 的 ResourceSession 负责读取授权、有界后端和批次内固定的字节／错误缓存；Vault、Book 和 SSG 共用会话，输入更新通过新批次接收。PreparedInputs 区分字节、确认失败与未准备资源，浏览器按 NeedResources 准备并重试，详见 [资源输入与求值](resource-inputs.not)。
 
-notist-book 接收 Vault 与书籍配置，负责路由、导航、链接检查及产物组织；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
+notist-ssg 接收 Vault 与 SiteConfig，负责站点构建及 Book 等扩展的调度；notist-cli 提供名为 notist 的可执行文件，负责命令行、终端输出、本地预览与发布操作。LSP 的 stdio 传输和编辑器坐标转换由 CLI 的 lsp feature 提供，默认启用；库保留分析管线、查询与共享 IR 数据。
 
 notist.publication 提供资源复制、组件注册与发布 URL 计划，供书籍构建和单文档 HTML 导出共同使用。已知生成路径可先预留、再一次填入字节；预留与普通资源共用文件／目录冲突检查，未填槽位不能形成最终产物。
 

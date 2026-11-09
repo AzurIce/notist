@@ -30,25 +30,29 @@ pub(crate) fn prepare(
     resources: &impl Resources,
     config: &SiteConfig,
     content_assets: &[PathBuf],
+    mounts: &crate::mounts::Mounts,
     assets: &mut Assets,
 ) -> Result<BTreeSet<PathBuf>, Error> {
-    let content = resources.resolve(&config.content);
     let mut copies = BTreeMap::new();
-    for source in content_assets {
-        copies.insert(
-            source.strip_prefix(&content).unwrap().to_path_buf(),
-            source.clone(),
-        );
+    for source in content_assets.iter().filter(|_| config.copy_content_assets) {
+        copies.insert(mounts.path(source).unwrap(), source.clone());
     }
     let mut static_roots = vec![];
     let mut sass_roots = vec![];
+    let mut embedded = BTreeMap::new();
     if let Some(theme) = &config.theme {
-        let theme = resources.resolve(theme);
-        static_roots.push(theme.join("static"));
-        sass_roots.push(theme.join("sass"));
+        if crate::themes::is_builtin(theme) {
+            embedded = crate::themes::assets(theme.to_str().unwrap()).ok_or_else(|| {
+                Error::Message(format!("unknown builtin theme `{}`", theme.display()))
+            })?;
+        } else {
+            let theme = mounts.resolve(&resources.resolve(theme));
+            static_roots.push(theme.join("static"));
+            sass_roots.push(theme.join("sass"));
+        }
     }
-    static_roots.push(resources.resolve(&config.static_dir));
-    sass_roots.push(resources.resolve(&config.sass));
+    static_roots.push(mounts.resolve(&resources.resolve(&config.static_dir)));
+    sass_roots.push(mounts.resolve(&resources.resolve(&config.sass)));
     let mut static_files = BTreeMap::new();
     // Site assets intentionally override theme assets; content collisions are errors.
     for root in static_roots {
@@ -57,6 +61,13 @@ pub(crate) fn prepare(
         }
     }
     let mut published = BTreeSet::new();
+    for (name, bytes) in embedded {
+        let destination = PathBuf::from(name);
+        if !static_files.contains_key(&destination) {
+            assets.generated(destination.clone(), bytes)?;
+            published.insert(destination);
+        }
+    }
     for (destination, source) in copies.iter().chain(static_files.iter()) {
         if destination.starts_with("_notist") {
             return Err(Error::Message(

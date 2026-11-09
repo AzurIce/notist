@@ -1,7 +1,7 @@
 #import "../components/lib.notc" as components;
 = Extension（Experimental）
 
-站点扩展在构建前接收整站的文档源码与数据，可以增删改页面及模板数据。Rust 通过 `SiteExtension.prepare` 实现；外部命令通过 `[[site.extensions]]` 配置，以 stdin / stdout 交换 JSON。
+站点扩展的 prepare 接收整站源码与数据。Rust 还可通过 enrich 使用最终页面标题、属性与路由补充展示数据。外部命令使用 `[site.extensions.<name>]`，内置扩展使用 `[site.extensions.builtins.<name>]`。
 
 下图是 `prepare` 在构建与预览流程中的位置：
 
@@ -15,10 +15,10 @@ flowchart TB
     end
     subgraph Extension[Extension · prepare]
         direction LR
-        Rust[运行 Rust 扩展] --> command[运行 command 扩展]
+        Rust[运行原生 Rust 扩展] --> command[按名称或显式顺序运行配置扩展]
     end
     SiteInput --> Extension
-    Extension --> build[构建页面与资源]
+    Extension --> build[构建页面与资源 / Rust enrich / 渲染模板]
 
     build --build--> publish[写入 output 目录]
 
@@ -44,31 +44,39 @@ flowchart TB
 | 扩展点 | 触发 | 输入 | 返回 |
 | --- | --- | --- | --- |
 | `prepare` | 每次 Site 构建一次，发现 content / data 后 | `SiteInput` | 完整 `SiteInput`，或错误 |
+| `enrich` | 页面编译和正文渲染后，模板渲染前；Rust 专用 | 最终 Page 列表与 data | 更新后的展示数据，或错误 |
 
 - 一次构建运行一次，不按页面重复。`serve` 每次重建会重新运行。
-- 先按 `Builder.with_extension` 的注册顺序运行 Rust 扩展，再按 `[[site.extensions]]` 的配置顺序运行 command 扩展。
+- 原生扩展按 Builder.with_extension 的注册顺序运行；配置中的内置和 command 扩展按 extension_order 运行，省略时按扩展名排序，不依赖 TOML 书写顺序。
 - 每个扩展修改一份输入副本，校验通过后交给下一个扩展；失败则停止构建。
 - 扩展只能修改 `SiteInput` 的 `documents` 与 `data`，不直接写源目录，也不能修改构建配置。
 
 == 配置
 
 ```toml
-[[site.extensions]]
-kind = "command"
+[site.extensions.catalog]
 command = ["python3", "scripts/catalog.py", "../Cargo.toml"]
 watch = ["scripts", "../Cargo.toml", "../examples"]
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `kind` | `"command"` | 外部命令扩展。 |
 | `command` | string[] | 程序与参数；第一项必须非空；不经过 shell。 |
-| `watch` | path[] | 相对 Site target root 的额外输入；目录递归监听。 |
+| `watch` | path[] | 相对包根的额外输入；目录递归监听。 |
 
-- `command` 与 `watch` 相对 Site target root；进程 CWD 也是该 root。
+- command、watch 与进程 CWD 均相对包根，即 Notist.toml 所在目录。
 - 将脚本读取的额外文件和目录列入 watch，修改后可触发预览重建，扩展失败时也有效。Rust 扩展通过 `SiteContext.resources` 读取的依赖由宿主记录。
 - 未知字段会使配置解析失败；`command` 为空或首项为空也会在校验阶段报错。
-- 顶层 `[[extensions]]` 与 `[[site.extensions]]` 是不同配置表：前者是文档扩展，后者只属于选中的 Site target。
+- 顶层 extensions 是包的文档扩展，site.extensions 是命名的站点扩展字典，不再另分文档扩展层。
+
+内置 Book 示例：
+
+```toml
+[site.extensions.builtins.book]
+summary = "SUMMARY.not"
+```
+
+表存在即启用；builtins 是保留命名空间。SUMMARY 在 prepare 阶段解析到 site.data.book.structure，enrich 补充共享导航树和各页阅读信息；Book 不选择或修改主题。详见 [Notist Book](../book.not)。
 
 路径基准见 [Notist.toml 配置](../configuration.not#路径基准)。
 
@@ -136,19 +144,27 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
     "base_url": "https://example.com/",
     "content": "content",
     "output": "/project/website/public",
-    "theme": null,
+    "theme": "builtins.default",
     "templates": "templates",
     "static_dir": "static",
     "data": "data",
     "sass": "sass",
     "template": "page",
-    "extensions": [
-      {
-        "kind": "command",
+    "extensions": {
+      "builtins": {"book": null},
+      "catalog": {
         "command": ["python3", "scripts/catalog.py", "../Cargo.toml"],
         "watch": ["scripts", "../Cargo.toml", "../examples"]
       }
-    ]
+    },
+    "extension_order": [],
+    "include": ["**"],
+    "exclude": [],
+    "directory_urls": false,
+    "mounts": [],
+    "copy_content_assets": true,
+    "styles": [],
+    "scripts": []
   },
   "input": {
     "documents": {
@@ -165,7 +181,7 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
 | --- | --- | --- |
 | `version` | number | 协议版本，固定为 1。 |
 | `stage` | string | 固定为 `prepare`。 |
-| `root` | string | Site target root 的绝对路径；也是命令 CWD。 |
+| `root` | string | 包根的绝对路径；也是命令 CWD。 |
 | `config` | object | 完整 `SiteConfig`，字段见下。 |
 | `input` | object | 当前 `SiteInput`，已包含前面扩展提交的结果。 |
 
@@ -183,7 +199,7 @@ Rust 编写的命令可以直接复用 `notist_ssg::command::{Request, Response}
 | `data` | string | TOML / JSON 数据目录。 |
 | `sass` | string | Sass 入口目录。 |
 | `template` | string | 默认模板名。 |
-| `extensions` | array | 当前 Site target 的 `[[site.extensions]]` 配置。 |
+| `extensions` | object | 站点的命名扩展配置，包含 builtins 命名空间。 |
 
 input 包含加载后的源码与数据，以及前序扩展的修改。
 
@@ -274,6 +290,12 @@ use notist_ssg::extensions::{SiteContext, SiteExtension, SiteInput};
 pub trait SiteExtension: Debug + Send + Sync {
     fn name(&self) -> &str;
     fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error>;
+    fn enrich(
+        &self,
+        context: &SiteContext<'_>,
+        pages: &[notist_ssg::Page],
+        data: &mut BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), Error> { Ok(()) }
 }
 
 pub struct SiteContext<'a> {
@@ -297,7 +319,7 @@ impl SiteExtension for Catalog {
         context: &SiteContext<'_>,
         input: &mut SiteInput,
     ) -> Result<(), Error> {
-        let manifest = context.resources.source("../Cargo.toml")?;
+        let manifest = context.resources.source(std::path::Path::new("../Cargo.toml"))?;
         input.documents.insert(
             "examples/demo.md".into(),
             format!("# Demo\n\n```toml\n{manifest}\n```\n"),
@@ -314,14 +336,14 @@ let output = Builder::default()
 
 - `name` 用于错误和进度信息。
 - `SiteContext` 提供 `resources` 与只读 `config`。`resources` 用于读取外部输入，CLI 宿主会记录依赖；`config` 是选中的完整 `SiteConfig`。
-- `Builder::with_extension` 可注册多个 Rust 扩展，按注册顺序运行，全部在配置中的 command 之前。
-- Rust 扩展与 command 扩展共用 `SiteInput` 和同一套校验，区别只在输入方式。
+- Builder.with_extension 注册的原生扩展按注册顺序运行，在所有配置扩展之前。
+- prepare 共用 SiteInput 与校验；enrich 是 Rust 专用阶段，默认不做任何操作，不会再启动 command 进程。
 
 == 入口与示例
 
-- `notist build` 与 `notist serve` 会运行 Site target 的 `prepare`；`serve` 每次重建重新运行。
-- 单文件命令 `check` / `cst` / `core` / `json` / `query` / `html` 不选择 Site target，也不运行 `prepare`。
-- 在 workspace 中，Site 扩展使用选中 target 的 root 作为 CWD 与路径基准。
+- build / serve 运行包的站点扩展，serve 每次重建重新运行。
+- 单文件命令 check / cst / core / json / query / html 不运行站点扩展。
+- 站点扩展使用清单目录作为 CWD 与路径基准。
 - 完整可运行示例：`examples/ssg-extensions`，读取 Cargo.toml 与 Rust 源文件，在内存中生成页面和 `site.data`。
 - 分步教程：[从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。
 - 接口处于实验阶段，类型与协议可能调整。

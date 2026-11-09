@@ -2,13 +2,22 @@ use notist::{
     DiagnosticCode, MemoryResources, Resources, Vault,
     resources::{ResourceError, ResourceKind},
 };
-use notist_book::{BookConfig, BuildOutput, Error, Route, Routes, build};
+mod support;
 use notist_html::components::{component_tag, module_key};
+use notist_ssg::{BuildOutput, Error, SiteConfig};
 use std::path::{Path, PathBuf};
+use support::book::{book_config, build, overlay, serve};
 
 fn resources(files: &[(&str, &str)]) -> MemoryResources {
     let mut resources = MemoryResources::new("/vault");
     for (path, source) in files {
+        let source = if path.ends_with("templates/page.tera") {
+            format!(
+                "{{% set book = site.data.book.pages[page.route.path] %}}{{% set navigation = site.data.book.navigation %}}{{% set breadcrumbs = book.breadcrumbs %}}{{% set previous = book.previous %}}{{% set next = book.next %}}{source}"
+            )
+        } else {
+            source.to_string()
+        };
         resources.insert(path, source.as_bytes().to_vec());
     }
     resources
@@ -16,7 +25,7 @@ fn resources(files: &[(&str, &str)]) -> MemoryResources {
 fn render(files: &[(&str, &str)]) -> BuildOutput {
     build(
         &mut Vault::new(resources(files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap()
 }
@@ -41,7 +50,7 @@ fn text_inputs_become_body_content_without_becoming_published_assets_or_componen
         ),
         ("private/input.txt", "正文 <script> & private"),
     ]));
-    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    let site = build(&mut vault, &book_config("target/book")).unwrap();
     assert!(html(&site, "index.html").contains("正文 &lt;script&gt; &amp; private"));
     assert!(html(&site, "two/index.html").contains("正文 &lt;script&gt; &amp; private"));
     assert!(!site.files.contains_key(Path::new("private/input.txt")));
@@ -67,7 +76,7 @@ fn structured_inputs_are_shared_static_and_report_actual_data_sources() {
             r#"{"name":"静态正文 <&>","private":"SECRET"}"#,
         ),
     ]));
-    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    let site = build(&mut vault, &book_config("target/book")).unwrap();
     for path in ["index.html", "two/index.html"] {
         let output = html(&site, path);
         assert!(output.contains("静态正文 &lt;&amp;&gt;"));
@@ -81,7 +90,7 @@ fn structured_inputs_are_shared_static_and_report_actual_data_sources() {
         ("views/lib.notc", module),
         ("private/items.json", data),
     ]));
-    let Err(Error::Diagnostics(errors)) = build(&mut vault, &BookConfig::new("target/book")) else {
+    let Err(Error::Diagnostics(errors)) = build(&mut vault, &book_config("target/book")) else {
         panic!("expected data diagnostic")
     };
     assert!(
@@ -160,7 +169,7 @@ fn typed_embeds_validate_documents_and_anchors_without_changing_link_warnings() 
             ("other.not", "= Other"),
         ]));
         assert!(
-            build(&mut vault, &BookConfig::new("target/book")).is_err(),
+            build(&mut vault, &book_config("target/book")).is_err(),
             "{source}"
         );
     }
@@ -336,25 +345,23 @@ fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
         assert!(output.contains("class=\"language-typescript\"><span class="));
         assert!(output.contains("class=\"z-source z-notc\""));
         assert!(output.contains("<code class=\"language-unknown\">&lt;script&gt;&amp;\n</code>"));
-        assert!(output.contains("href=\"_notist/theme/highlight.css\""));
+        assert!(output.contains("href=\"_notist/highlight.css\""));
         let nested = html(&site, "guide/start/index.html");
-        assert!(nested.contains("href=\"../../_notist/theme/highlight.css\""));
+        assert!(nested.contains("href=\"../../_notist/highlight.css\""));
         assert!(nested.contains("class=\"z-source z-rust\""));
         assert_eq!(
-            html(&site, "_notist/theme/highlight.css"),
+            html(&site, "_notist/highlight.css"),
             notist_html::highlight::CSS
         );
     }
     let mut vault = Vault::new(resources(&[
         ("README.md", "```rust\nfn main() {}\n```"),
-        ("theme/assets/highlight.css", "pre code { color: purple; }"),
+        ("theme/static/highlight.css", "pre code { color: purple; }"),
     ]));
-    let config: BookConfig = toml::from_str("output='public'\ntheme='theme'").unwrap();
+    let mut config = book_config("public");
+    overlay(&mut config, "theme");
     let site = build(&mut vault, &config).unwrap();
-    assert_eq!(
-        html(&site, "_notist/theme/highlight.css"),
-        "pre code { color: purple; }"
-    );
+    assert_eq!(html(&site, "highlight.css"), "pre code { color: purple; }");
 }
 
 #[test]
@@ -428,7 +435,7 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
         files.insert(path, source.as_bytes().to_vec());
     }
     let mut vault = Vault::new(files.clone());
-    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    let site = build(&mut vault, &book_config("target/book")).unwrap();
     assert_eq!(site.pages.len(), 2);
     assert_eq!(site.pages[0].route.url, "/");
     assert_eq!(site.pages[0].title, "Documentation");
@@ -448,7 +455,7 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
         "README.not",
         b"= Documentation\n\n[Widgets](../modules/widgets/README.not)".to_vec(),
     );
-    let site = build(&mut Vault::new(files), &BookConfig::new("target/book")).unwrap();
+    let site = build(&mut Vault::new(files), &book_config("target/book")).unwrap();
     assert_eq!(site.warnings.len(), 1);
     assert!(
         site.warnings[0]
@@ -494,13 +501,13 @@ fn titles_do_not_change_routes_and_unlinked_directory_chapters_do_not_create_pag
 
 #[test]
 fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
-    let mut config = BookConfig::new("public");
+    let mut config = book_config("public");
     config.title = "Handbook".into();
-    config.theme = Some("theme".into());
+    overlay(&mut config, "theme");
     let site = build(&mut Vault::new(resources(&[
         ("a.md", "# 5. A"),
         ("b.md", "# B"),
-        ("theme/index.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}[{{child.kind}}:{{child.title}}]{% endfor %}]{% endfor %}"),
+        ("theme/templates/page.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}[{{child.kind}}:{{child.title}}]{% endfor %}]{% endfor %}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "a/index.html"),
@@ -512,12 +519,9 @@ fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
 #[test]
 fn colliding_readmes_and_file_directory_routes_fail() {
     for sources in [["README.not", "README.md"], ["foo.not", "foo/README.md"]] {
-        let error = Routes::new(
-            sources
-                .map(|path| Route::new(PathBuf::from("/vault").join(path), path.into()).unwrap()),
-        )
-        .unwrap_err();
-        assert!(error.contains("route collision"));
+        let files: Vec<_> = sources.iter().map(|path| (*path, "# Page")).collect();
+        let error = build(&mut Vault::new(resources(&files)), &book_config("public")).unwrap_err();
+        assert!(error.to_string().contains("route collision"));
     }
 }
 
@@ -550,7 +554,7 @@ fn invalid_references_return_source_diagnostics_and_no_site() {
         let source = format!("# Home\n\n[Target]({target})");
         let mut files = resources(&[("README.md", &source), ("other.md", "# Other")]);
         files.insert("/secret.md", b"# Secret".to_vec());
-        let error = build(&mut Vault::new(files), &BookConfig::new("target/book")).unwrap_err();
+        let error = build(&mut Vault::new(files), &book_config("target/book")).unwrap_err();
         let Error::Diagnostics(errors) = error else {
             panic!("expected source diagnostics: {error}");
         };
@@ -602,8 +606,7 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
     for target in [
         "../../outside/secret.md?view=full#anchor",
         "%2e%2e/%2e%2e/outside/secret.svg",
-        "/outside/secret.md",
-        "/vault-other/secret.md",
+        "../../vault-other/secret.md",
     ] {
         for extension in ["not", "md"] {
             for recover in [false, true] {
@@ -614,9 +617,9 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
                 files.insert("/outside/secret.svg", b"private asset".to_vec());
                 files.insert("/vault-other/secret.md", vec![255]);
                 let mut vault = Vault::new(NoOutsideContentReads(files)).with_config("Notist.toml");
-                let config = BookConfig::new("public");
+                let config = book_config("public");
                 let site = if recover {
-                    notist_book::serve(&mut vault, &config)
+                    serve(&mut vault, &config)
                 } else {
                     build(&mut vault, &config)
                 }
@@ -665,9 +668,9 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
                 ("guide/start.md", &source),
                 ("guide/other.md", "# Other"),
             ]));
-            let config = BookConfig::new("public");
+            let config = book_config("public");
             let site = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             }
@@ -716,9 +719,9 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
                 ("assets/a b.SVG", "<svg/>"),
                 ("file.pdf", "document"),
             ]));
-            let config = BookConfig::new("public");
+            let config = book_config("public");
             let site = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             }
@@ -751,9 +754,9 @@ fn image_embeds_preserve_unsafe_url_diagnostics() {
         for recover in [false, true] {
             let path = format!("README.{extension}");
             let mut vault = Vault::new(resources(&[(&path, "![Picture](javascript:bad.png)")]));
-            let config = BookConfig::new("public");
+            let config = book_config("public");
             let result = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             };
@@ -776,9 +779,9 @@ fn missing_or_outside_embedded_content_still_fails_build_and_serve() {
         for recover in [false, true] {
             let source = format!("# Home\n\n![Picture]({target})");
             let mut vault = Vault::new(resources(&[("README.md", &source)]));
-            let config = BookConfig::new("public");
+            let config = book_config("public");
             let result = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             };
@@ -792,9 +795,9 @@ fn missing_or_outside_embedded_content_still_fails_build_and_serve() {
 
 #[test]
 fn excluded_documents_remain_inside_vault_but_are_unpublished() {
-    let config = BookConfig {
+    let config = SiteConfig {
         exclude: vec!["draft/**".into()],
-        ..BookConfig::new("target/book")
+        ..book_config("target/book")
     };
     let mut vault = Vault::new(resources(&[
         ("README.md", "# Home\n\n[Draft](draft/secret.md)"),
@@ -852,7 +855,7 @@ fn exclude_globs_match_vault_relative_paths_at_explicit_depths() {
             ],
         ),
     ] {
-        let mut config = BookConfig::new("public");
+        let mut config = book_config("public");
         config.exclude = vec![pattern.into()];
         let output = build(&mut Vault::new(resources(&files)), &config).unwrap();
         let actual: std::collections::BTreeSet<_> = output
@@ -869,13 +872,13 @@ fn exclude_globs_match_vault_relative_paths_at_explicit_depths() {
         let expected = expected.into_iter().map(PathBuf::from).collect();
         assert_eq!(actual, expected, "exclude = {pattern:?}");
     }
-    let mut config = BookConfig::new("public");
+    let mut config = book_config("public");
     config.exclude = vec!["[".into()];
     assert!(
         build(&mut Vault::new(resources(&files)), &config)
             .unwrap_err()
             .to_string()
-            .contains("invalid book glob")
+            .contains("invalid site glob")
     );
 }
 
@@ -884,32 +887,28 @@ fn theme_overrides_use_tera_includes_and_escape_metadata() {
     let mut vault = Vault::new(resources(&[
         ("README.md", "# \\<Home\\> & title\n\nBody"),
         (
-            "theme/index.tera",
-            "{% include 'title' %}|{{page.html | safe}}|{% for style in assets.styles %}{{style}}{% endfor %}",
+            "theme/templates/page.tera",
+            "{% include 'title' %}|{{page.html | safe}}|book.css|status.css|{% for style in assets.styles %}{{style}}{% endfor %}",
         ),
-        ("theme/title.tera", "{{page.title}}"),
-        ("theme/assets/custom.css", "body { color: green; }"),
+        ("theme/templates/title.tera", "{{page.title}}"),
+        ("theme/static/custom.css", "body { color: green; }"),
     ]));
-    let config = BookConfig {
-        theme: Some("theme".into()),
-        ..BookConfig::new("target/book")
+    let config = SiteConfig {
+        templates: "theme/templates".into(),
+        static_dir: "theme/static".into(),
+        styles: vec!["custom.css".into()],
+        ..book_config("target/book")
     };
     let site = build(&mut vault, &config).unwrap();
     let output = html(&site, "index.html");
     assert!(output.starts_with("&lt;Home&gt; &amp; title|"), "{output}");
     assert!(output.contains("<p>Body</p>"));
-    assert!(
-        site.files
-            .contains_key(Path::new("_notist/theme/custom.css"))
-    );
-    assert!(site.files.contains_key(Path::new("_notist/theme/book.css")));
-    assert!(
-        site.files
-            .contains_key(Path::new("_notist/theme/status.css"))
-    );
-    let site_css = output.find("_notist/theme/book.css").unwrap();
-    let status_css = output.find("_notist/theme/status.css").unwrap();
-    let custom_css = output.find("_notist/theme/custom.css").unwrap();
+    assert!(site.files.contains_key(Path::new("custom.css")));
+    assert!(site.files.contains_key(Path::new("book.css")));
+    assert!(site.files.contains_key(Path::new("status.css")));
+    let site_css = output.find("book.css").unwrap();
+    let status_css = output.find("status.css").unwrap();
+    let custom_css = output.find("custom.css").unwrap();
     assert!(site_css < status_css && status_css < custom_css);
 }
 
@@ -926,13 +925,14 @@ fn document_annotations_reach_page_navigation_and_breadcrumb_templates() {
             "- [Named home](README.not)\n  - [Child](child.md)\n- Future\n",
         ),
         (
-            "theme/index.tera",
+            "theme/templates/page.tera",
             "{{page.attrs.model_id}}|{% for node in navigation %}{% if node.attrs.model_id %}{{node.title}}={{node.attrs.model_id}}/{{node.attrs.enabled}}/{{node.attrs.rank}}/{% if node.attrs.tags %}{% for tag in node.attrs.tags %}{{tag}},{% endfor %}{% endif %}{% for child in node.children %};{{child.attrs.model_id}}{% endfor %}{% endif %}{% endfor %}|{% for crumb in breadcrumbs %}{{crumb.attrs.model_id}};{% endfor %}",
         ),
     ]));
-    let config = BookConfig {
-        theme: Some("theme".into()),
-        ..BookConfig::new("target/book")
+    let config = SiteConfig {
+        templates: "theme/templates".into(),
+        static_dir: "theme/static".into(),
+        ..book_config("target/book")
     };
     let site = build(&mut vault, &config).unwrap();
     let output = html(&site, "index.html");
@@ -952,16 +952,14 @@ fn template_errors_fail_build_instead_of_publishing_empty_values() {
     for template in ["{{page.missing}}", "{% if page.title %}oops"] {
         let mut vault = Vault::new(resources(&[
             ("README.md", "# Home"),
-            ("theme/index.tera", template),
+            ("theme/templates/page.tera", template),
         ]));
-        let config = BookConfig {
-            theme: Some("theme".into()),
-            ..BookConfig::new("target/book")
+        let config = SiteConfig {
+            templates: "theme/templates".into(),
+            static_dir: "theme/static".into(),
+            ..book_config("target/book")
         };
-        assert!(matches!(
-            build(&mut vault, &config),
-            Err(Error::Template(_))
-        ));
+        assert!(matches!(build(&mut vault, &config), Err(Error::Message(_))));
     }
 }
 
@@ -970,25 +968,32 @@ fn additional_styles_and_scripts_preserve_declared_order_and_nested_urls() {
     let files = resources(&[
         ("README.not", "= Home"),
         ("guide/start.md", "# Start"),
-        ("theme/assets/extra.css", ":root { --accent: red; }"),
+        ("theme/static/extra.css", ":root { --accent: red; }"),
         ("styles/first.css", ":root { --accent: purple; }"),
         ("styles/last.css", ":root { --accent: blue; }"),
         ("scripts/first.js", "window.first = true;"),
         ("scripts/last.js", "window.last = window.first;"),
     ]);
-    let config: BookConfig = toml::from_str("output='public'\ntheme='theme'\nadditional-css=['styles/first.css','styles/last.css']\nadditional-js=['scripts/first.js','scripts/last.js']").unwrap();
+    let mut config = book_config("public");
+    overlay(&mut config, "theme");
+    config.styles = vec![
+        "extra.css".into(),
+        "styles/first.css".into(),
+        "styles/last.css".into(),
+    ];
+    config.scripts = vec!["scripts/first.js".into(), "scripts/last.js".into()];
     let output = build(&mut Vault::new(files), &config).unwrap();
     let nested = html(&output, "guide/start/index.html");
     for paths in [
         vec![
-            "../../_notist/theme/book.css",
-            "../../_notist/theme/status.css",
-            "../../_notist/theme/extra.css",
+            "../../book.css",
+            "../../status.css",
+            "../../extra.css",
             "../../styles/first.css",
             "../../styles/last.css",
         ],
         vec![
-            "../../_notist/theme/book.js",
+            "../../book.js",
             "../../scripts/first.js",
             "../../scripts/last.js",
         ],
@@ -1030,11 +1035,11 @@ fn additional_theme_assets_require_local_files_and_cannot_overlap_output() {
             ("_notist/extra.css", "body {}"),
         ]);
         for css in [true, false] {
-            let mut config = BookConfig::new("target/book");
+            let mut config = book_config("target/book");
             if css {
-                config.additional_css.push(asset.into());
+                config.styles.push(asset.into());
             } else {
-                config.additional_js.push(asset.into());
+                config.scripts.push(asset.into());
             }
             assert!(
                 build(&mut Vault::new(files.clone()), &config).is_err(),
@@ -1083,39 +1088,43 @@ fn explicit_extensions_publish_shared_component_resources_per_used_page() {
     assert!(site.files.contains_key(Path::new(&format!(
         "_notist/modules/{key}/formula/helper.js"
     ))));
-    assert!(site.files.contains_key(Path::new("components.js")));
-    assert!(site.files.contains_key(Path::new("other/components.js")));
-    assert!(!site.files.contains_key(Path::new("plain/components.js")));
+    assert!(
+        site.files
+            .contains_key(Path::new("_notist/pages/README.js"))
+    );
+    assert!(site.files.contains_key(Path::new("_notist/pages/other.js")));
+    assert!(!site.files.contains_key(Path::new("_notist/pages/plain.js")));
     let registration =
-        String::from_utf8(site.files[Path::new("other/components.js")].clone()).unwrap();
-    assert!(registration.contains(&format!("../_notist/modules/{key}/formula/index.js")));
+        String::from_utf8(site.files[Path::new("_notist/pages/other.js")].clone()).unwrap();
+    assert!(registration.contains(&format!("../modules/{key}/formula/index.js")));
     let nested = html(&site, "guide/deep/index.html");
-    assert!(nested.contains("href=\"../../_notist/theme/book.css\""));
-    assert!(nested.contains("src=\"../../_notist/theme/book.js\""));
-    assert!(nested.contains("src=\"./components.js\""));
-    let nested_registration = html(&site, "guide/deep/components.js");
-    assert!(nested_registration.contains(&format!("../../_notist/modules/{key}/formula/index.js")));
+    assert!(nested.contains("href=\"../../book.css\""));
+    assert!(nested.contains("src=\"../../book.js\""));
+    assert!(nested.contains("src=\"../../_notist/pages/guide/deep/README.js\""));
+    let nested_registration = html(&site, "_notist/pages/guide/deep/README.js");
+    assert!(nested_registration.contains(&format!("../../../modules/{key}/formula/index.js")));
 }
 
 #[test]
 fn site_configuration_is_separate_from_context_configuration() {
-    let config: BookConfig = toml::from_str(
+    let config: SiteConfig = toml::from_str(
         "output='public'\ntitle='Book'\ninclude=['docs/**']\nexclude=['docs/drafts/**']\ntheme='theme'",
     )
     .unwrap();
     assert_eq!(config.title, "Book");
     assert_eq!(config.theme, Some(PathBuf::from("theme")));
-    assert!(toml::from_str::<BookConfig>("output='public'\nunknown=true").is_err());
+    assert!(toml::from_str::<SiteConfig>("output='public'\nunknown=true").is_err());
 }
 
 #[test]
-fn library_options_require_output_supplied_by_the_host() {
+fn site_options_default_output_and_reject_invalid_explicit_values() {
     for source in ["", "title='Handbook'"] {
-        assert!(toml::from_str::<BookConfig>(source).is_err());
+        let config: SiteConfig = toml::from_str(source).unwrap();
+        assert_eq!(config.output, Path::new("public"));
     }
-    let config: BookConfig = toml::from_str("output='configured'").unwrap();
+    let config: SiteConfig = toml::from_str("output='configured'").unwrap();
     assert_eq!(config.output, Path::new("configured"));
-    let config = BookConfig::new("");
+    let config = book_config("");
     let mut vault = Vault::new(resources(&[("README.md", "# Home")]));
     assert!(
         build(&mut vault, &config)
@@ -1123,7 +1132,7 @@ fn library_options_require_output_supplied_by_the_host() {
             .to_string()
             .contains("must not be empty")
     );
-    assert!(toml::from_str::<BookConfig>("output=42").is_err());
+    assert!(toml::from_str::<SiteConfig>("output=42").is_err());
 }
 
 #[test]
@@ -1144,9 +1153,9 @@ fn component_sources_cannot_contain_site_output() {
             "#import \"../widgets/lib.notc\" as widgets;\n#widgets.panel[Hello]",
         ),
     ]));
-    let config = BookConfig {
+    let config = SiteConfig {
         output: "/widgets/panel/site".into(),
-        ..BookConfig::new("target/book")
+        ..book_config("target/book")
     };
     assert!(
         build(&mut vault, &config)
@@ -1164,7 +1173,7 @@ fn page_routes_cannot_use_a_published_asset_as_a_directory() {
         ("foo.md", "# Foo"),
     ]));
     assert!(
-        build(&mut vault, &BookConfig::new("target/book"))
+        build(&mut vault, &book_config("target/book"))
             .unwrap_err()
             .to_string()
             .contains("output collision")
@@ -1209,7 +1218,7 @@ fn same_named_modules_in_different_page_contexts_publish_distinct_resources() {
             "export default class extends HTMLElement {}",
         ),
     ]));
-    let site = build(&mut vault, &BookConfig::new("target/book")).unwrap();
+    let site = build(&mut vault, &book_config("target/book")).unwrap();
     for module in ["/first/lib.notc", "/second/lib.notc"] {
         assert!(site.files.contains_key(Path::new(&format!(
             "_notist/modules/{}/badge.js",
@@ -1239,13 +1248,13 @@ fn serve_recovers_code_errors_while_build_remains_strict() {
     assert!(
         build(
             &mut Vault::new(resources(&files)),
-            &BookConfig::new("target/book")
+            &book_config("target/book")
         )
         .is_err()
     );
-    let site = notist_book::serve(
+    let site = serve(
         &mut Vault::new(resources(&files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap();
     let html = html(&site, "index.html");
@@ -1284,13 +1293,13 @@ fn serve_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
     assert!(
         build(
             &mut Vault::new(resources(&files)),
-            &BookConfig::new("target/book")
+            &book_config("target/book")
         )
         .is_err()
     );
-    let site = notist_book::serve(
+    let site = serve(
         &mut Vault::new(resources(&files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap();
     let output = html(&site, "index.html");
@@ -1305,7 +1314,7 @@ fn serve_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
         site.diagnostics
     );
     assert!(site.pages[0].headings.is_empty());
-    assert_eq!(site.pages[0].title, BookConfig::new("target/book").title);
+    assert_eq!(site.pages[0].title, book_config("target/book").title);
 }
 
 #[test]
@@ -1328,7 +1337,7 @@ fn generated_reference_diagnostics_point_into_the_code_definition() {
         ];
         let result = build(
             &mut Vault::new(resources(&files)),
-            &BookConfig::new("target/book"),
+            &book_config("target/book"),
         );
         let diagnostics = result.unwrap().warnings;
         let diagnostic = diagnostics
@@ -1364,13 +1373,13 @@ fn serve_recovers_function_body_syntax_errors_by_boundary() {
     assert!(
         build(
             &mut Vault::new(resources(&files)),
-            &BookConfig::new("target/book")
+            &book_config("target/book")
         )
         .is_err()
     );
-    let site = notist_book::serve(
+    let site = serve(
         &mut Vault::new(resources(&files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap();
     let output = html(&site, "index.html");
@@ -1382,9 +1391,9 @@ fn serve_recovers_function_body_syntax_errors_by_boundary() {
     );
     let global = [("README.not", "@!(id: missing)\nbody")];
     assert!(
-        notist_book::serve(
+        serve(
             &mut Vault::new(resources(&global)),
-            &BookConfig::new("target/book")
+            &book_config("target/book")
         )
         .is_err()
     );

@@ -1,7 +1,6 @@
-[project]
+[package]
 name = "notist-site"
 
-[[site]]
-name = "notist-site"
+[site]
 title = "Notist Site"
 base_url = "/"

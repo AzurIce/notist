@@ -31,18 +31,58 @@ pub struct SiteContext<'a> {
 pub trait SiteExtension: Debug + Send + Sync {
     fn name(&self) -> &str;
     fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error>;
+
+    /// Add presentation data after compilation, using final titles and routes.
+    fn enrich(
+        &self,
+        _context: &SiteContext<'_>,
+        _pages: &[crate::Page],
+        _data: &mut BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
-/// Configuration of a site-level extension, distinct from document extensions.
+/// Named extensions. `builtins` is a reserved namespace, not an instance name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExtensionsConfig {
+    #[serde(default)]
+    pub builtins: BuiltinsConfig,
+    #[serde(flatten)]
+    pub commands: BTreeMap<String, CommandConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltinsConfig {
+    pub book: Option<crate::builtins::book::BookConfig>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-pub enum ExtensionConfig {
-    Command {
-        command: Vec<String>,
-        /// Paths relative to the site root, observed even if the command fails.
-        #[serde(default)]
-        watch: Vec<PathBuf>,
-    },
+#[serde(deny_unknown_fields)]
+pub struct CommandConfig {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub watch: Vec<PathBuf>,
+}
+
+impl ExtensionsConfig {
+    pub fn is_empty(&self) -> bool {
+        self.builtins.book.is_none() && self.commands.is_empty()
+    }
+
+    pub(crate) fn names(&self) -> BTreeSet<String> {
+        self.commands
+            .keys()
+            .cloned()
+            .chain(
+                self.builtins
+                    .book
+                    .as_ref()
+                    .map(|_| "builtins.book".to_owned()),
+            )
+            .collect()
+    }
 }
 
 pub(crate) fn valid_path(path: &Path) -> bool {
@@ -56,10 +96,12 @@ pub(crate) fn valid_path(path: &Path) -> bool {
 
 fn validate<R: Resources>(
     vault: &Vault<R>,
-    content: &Path,
+    config: &SiteConfig,
     input: &SiteInput,
 ) -> Result<Vec<Route>, Error> {
     let mut outputs = BTreeSet::new();
+    let content = vault.resources().resolve(&config.content);
+    let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
     let mut routes = Vec::with_capacity(input.documents.len());
     for path in input.documents.keys() {
         if !valid_path(path)
@@ -73,7 +115,8 @@ fn validate<R: Resources>(
                 path.display()
             )));
         }
-        let route = Route::new(content.join(path), content)?;
+        let mut route = Route::plan(content.join(path), &content, config.directory_urls)?;
+        route.source = mounts.resolve(&route.source);
         if !outputs.insert(route.output.clone()) {
             return Err(Error::Message(format!(
                 "route collision at `{}`",
@@ -90,8 +133,8 @@ fn validate<R: Resources>(
     Ok(routes)
 }
 
-fn contextualize(extension: &dyn SiteExtension, error: Error) -> Error {
-    let prefix = format!("site extension `{}` (prepare)", extension.name());
+fn contextualize(extension: &dyn SiteExtension, stage: &str, error: Error) -> Error {
+    let prefix = format!("site extension `{}` ({stage})", extension.name());
     match error {
         Error::Diagnostics(mut errors) => {
             for error in &mut errors {
@@ -106,19 +149,17 @@ fn contextualize(extension: &dyn SiteExtension, error: Error) -> Error {
 pub(crate) fn prepare<R: Resources>(
     vault: &Vault<R>,
     config: &SiteConfig,
-    native: &[Box<dyn SiteExtension>],
+    extensions: &[&dyn SiteExtension],
     input: &mut SiteInput,
 ) -> Result<Vec<Route>, Error> {
-    let content = vault.resources().resolve(&config.content);
     let context = SiteContext {
         resources: vault.resources(),
         config,
     };
     // Register external inputs before running hooks so failed builds still watch
     // files that can fix the command. Resources records observations for hosts.
-    for extension in &config.extensions {
-        let ExtensionConfig::Command { watch, .. } = extension;
-        for path in watch {
+    for extension in config.extensions.commands.values() {
+        for path in &extension.watch {
             vault.resources().kind(path)?;
         }
     }
@@ -127,35 +168,69 @@ pub(crate) fn prepare<R: Resources>(
         let mut candidate = input.clone();
         let routes = extension
             .prepare(&context, &mut candidate)
-            .and_then(|()| validate(vault, &content, &candidate))
-            .map_err(|error| contextualize(extension, error))?;
+            .and_then(|()| validate(vault, config, &candidate))
+            .map_err(|error| contextualize(extension, "prepare", error))?;
         *input = candidate;
         progress.finish();
         Ok::<_, Error>(routes)
     };
     let mut routes = None;
-    for extension in native {
-        routes = Some(run(extension.as_ref(), input)?);
-    }
-    for extension in &config.extensions {
-        let ExtensionConfig::Command { command, .. } = extension;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            routes = Some(run(
-                &super::command::CommandExtension::new(command.clone()),
-                input,
-            )?);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = command;
-            return Err(Error::Message(
-                "site command extensions are unavailable in this host".into(),
-            ));
-        }
+    for extension in extensions {
+        routes = Some(run(*extension, input)?);
     }
     match routes {
         Some(routes) => Ok(routes),
-        None => validate(vault, &content, input),
+        None => validate(vault, config, input),
     }
+}
+
+pub(crate) fn configured(config: &SiteConfig) -> Result<Vec<Box<dyn SiteExtension>>, Error> {
+    let names = if config.extension_order.is_empty() {
+        config.extensions.names().into_iter().collect()
+    } else {
+        config.extension_order.clone()
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            if name == "builtins.book" {
+                return Ok(Box::new(crate::builtins::book::Book::new(
+                    config.extensions.builtins.book.clone().unwrap(),
+                )) as Box<dyn SiteExtension>);
+            }
+            let command = &config.extensions.commands[&name];
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                Ok(Box::new(super::command::CommandExtension::named(
+                    name,
+                    command.command.clone(),
+                )) as Box<dyn SiteExtension>)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = command;
+                Err(Error::Message(
+                    "site command extensions are unavailable in this host".into(),
+                ))
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn enrich(
+    resources: &dyn Resources,
+    config: &SiteConfig,
+    extensions: &[&dyn SiteExtension],
+    pages: &[crate::Page],
+    data: &mut BTreeMap<String, serde_json::Value>,
+) -> Result<(), Error> {
+    let context = SiteContext { resources, config };
+    for extension in extensions {
+        let mut candidate = data.clone();
+        extension
+            .enrich(&context, pages, &mut candidate)
+            .map_err(|e| contextualize(*extension, "enrich", e))?;
+        *data = candidate;
+    }
+    Ok(())
 }

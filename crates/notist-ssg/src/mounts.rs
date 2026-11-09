@@ -1,5 +1,6 @@
-//! Source identities stay physical; book paths select chapters and locate output.
-use crate::{BookConfig, Error};
+//! Physical source identities mapped into a site's content namespace.
+use crate::Error;
+use crate::SiteConfig;
 use notist::{Resources, resources::ResourceKind};
 use std::path::{Component, Path, PathBuf};
 
@@ -14,8 +15,8 @@ pub(crate) struct Mounts {
 }
 
 impl Mounts {
-    pub fn new(resources: &impl Resources, config: &BookConfig) -> Result<Self, Error> {
-        let root = resources.root().to_path_buf();
+    pub fn new(resources: &(impl Resources + ?Sized), config: &SiteConfig) -> Result<Self, Error> {
+        let root = resources.resolve(&config.content);
         let output = resources.resolve(&config.output);
         let mut mappings = Vec::<Mapping>::new();
         for mount in &config.mounts {
@@ -27,19 +28,19 @@ impl Mounts {
                 || mount.path.starts_with("_notist")
             {
                 return Err(Error::Message(format!(
-                    "invalid book mount path `{}`: expected a nonempty relative directory outside _notist",
+                    "invalid site mount path `{}`: expected a nonempty relative directory outside _notist",
                     mount.path.display()
                 )));
             }
             let source = resources.resolve(&mount.source);
             if source.starts_with(&root) || root.starts_with(&source) {
                 return Err(Error::Message(
-                    "book mount source must be outside the Vault and cannot contain it".into(),
+                    "site mount source must be outside content and cannot contain it".into(),
                 ));
             }
             if source.starts_with(&output) || output.starts_with(&source) {
                 return Err(Error::Message(
-                    "book mount source and site output overlap".into(),
+                    "site mount source and output overlap".into(),
                 ));
             }
             if mappings.iter().any(|previous| {
@@ -49,28 +50,26 @@ impl Mounts {
                     || previous.path.starts_with(&mount.path)
             }) {
                 return Err(Error::Message(
-                    "book mounts have overlapping sources or paths".into(),
+                    "site mounts have overlapping sources or paths".into(),
                 ));
             }
             // A mount may create virtual parent directories, but cannot shadow
             // an existing Vault entry or traverse a file in its namespace.
             let destination = root.join(&mount.path);
             if destination.starts_with(&output) || output.starts_with(&destination) {
-                return Err(Error::Message(
-                    "book mount path and site output overlap".into(),
-                ));
+                return Err(Error::Message("site mount path and output overlap".into()));
             }
             for ancestor in destination.ancestors().take_while(|path| *path != root) {
                 match resources.kind(ancestor)? {
                     Some(_) if ancestor == destination => {
                         return Err(Error::Message(format!(
-                            "book mount path `{}` already exists in the Vault",
+                            "site mount path `{}` already exists in content",
                             mount.path.display()
                         )));
                     }
                     Some(ResourceKind::File) => {
                         return Err(Error::Message(format!(
-                            "book mount path traverses file `{}`",
+                            "site mount path traverses file `{}`",
                             ancestor.display()
                         )));
                     }
@@ -79,7 +78,7 @@ impl Mounts {
             }
             if resources.kind(&source)? != Some(ResourceKind::Directory) {
                 return Err(Error::Message(format!(
-                    "book mount source `{}` is not a directory",
+                    "site mount source `{}` is not a directory",
                     source.display()
                 )));
             }
@@ -99,7 +98,7 @@ impl Mounts {
         )
     }
 
-    /// Translate a real source identity into its book-relative path.
+    /// Translate a physical source identity into its content-relative path.
     pub fn path(&self, source: &Path) -> Option<PathBuf> {
         self.roots().find_map(|(root, path)| {
             source

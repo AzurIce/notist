@@ -994,21 +994,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notist-book"
-version = "0.1.0"
-dependencies = [
- "globset",
- "notist",
- "notist-html",
- "percent-encoding",
- "serde",
- "serde_json",
- "tempfile",
- "tera",
- "toml",
-]
-
-[[package]]
 name = "notist-cli"
 version = "0.1.0"
 dependencies = [
@@ -1017,7 +1002,6 @@ dependencies = [
  "indicatif",
  "notify",
  "notist",
- "notist-book",
  "notist-html",
  "notist-ssg",
  "percent-encoding",
@@ -1096,6 +1080,7 @@ dependencies = [
 name = "notist-ssg"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "grass",
  "notist",
  "notist-html",

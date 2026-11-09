@@ -5,3 +5,7 @@ The document extension API and stdio protocol are experimental and may change. T
 This paragraph is authored in the document. The extension appends package information read directly from the repository's Cargo.toml.
 
 Run `cargo run -p notist-cli -- html examples/extensions/README.not --out-dir target/extension-example` from the repository root. The command requires Python 3.11 or newer and runs relative to this directory.
+
+This is the module-only Notist package extension-example, a member of the repository workspace. It has no site: use check or html for the document, rather than build or serve. Workspace site builds skip this package.
+
+The html command writes to the explicit --out-dir above; the notist-output / package-name convention applies to site builds. The Python extension's working directory is this package directory, not the shell's working directory.

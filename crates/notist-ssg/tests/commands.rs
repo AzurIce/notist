@@ -24,7 +24,7 @@ fn setup(root: &Path, response: &str) -> SiteConfig {
         "cat > request.json\ncat response.json\n",
     )
     .unwrap();
-    toml::from_str("[[extensions]]\nkind='command'\ncommand=['sh','edit.sh']").unwrap()
+    toml::from_str("[extensions.edit]\ncommand=['sh','edit.sh']").unwrap()
 }
 
 #[derive(Debug)]
@@ -101,17 +101,24 @@ fn invalid_protocol_paths_sources_and_command_failures_abort_the_site_build() {
             .build(&mut Vault::new(FsResources::new(root.path())), &config)
             .unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
-        assert!(error.to_string().contains("site extension `sh`"));
+        assert!(error.to_string().contains("site extension `edit`"));
     }
     for (command, message) in [
         (vec!["./missing"], "cannot start command"),
         (vec!["sh", "-c", "exit 7"], "exit status: 7"),
     ] {
         let config = SiteConfig {
-            extensions: vec![notist_ssg::extensions::ExtensionConfig::Command {
-                command: command.into_iter().map(str::to_owned).collect(),
-                watch: vec![],
-            }],
+            extensions: notist_ssg::extensions::ExtensionsConfig {
+                commands: [(
+                    "edit".into(),
+                    notist_ssg::extensions::CommandConfig {
+                        command: command.into_iter().map(str::to_owned).collect(),
+                        watch: vec![],
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let error = Builder::default()
@@ -119,4 +126,38 @@ fn invalid_protocol_paths_sources_and_command_failures_abort_the_site_build() {
             .unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
     }
+}
+
+#[test]
+fn explicit_order_interleaves_commands_and_builtins() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(
+        root.path().join("generate.sh"),
+        "cat >/dev/null\ncat response.json\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("response.json"),
+        json!({"version": 1, "input": {
+            "documents": {"index.not": "= Generated", "SUMMARY.not": "- [Home](index.not)"},
+            "data": {}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let config: SiteConfig = toml::from_str("extension_order=['generate','builtins.book']\ntheme='builtins.book'\n[extensions.builtins.book]\n[extensions.generate]\ncommand=['sh','generate.sh']").unwrap();
+    let output = Builder::default()
+        .build(&mut Vault::new(FsResources::new(root.path())), &config)
+        .unwrap();
+    assert_eq!(output.pages.len(), 1);
+    assert_eq!(output.data["book"]["navigation"][0]["title"], "Home");
+    let mut wrong = config;
+    wrong.extension_order.reverse();
+    assert!(
+        Builder::default()
+            .build(&mut Vault::new(FsResources::new(root.path())), &wrong)
+            .unwrap_err()
+            .to_string()
+            .contains("book contains no selected documents")
+    );
 }

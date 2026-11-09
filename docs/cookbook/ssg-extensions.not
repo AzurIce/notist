@@ -44,16 +44,15 @@ fn main() {
 website/Notist.toml：
 
 ```toml
-[project]
+[package]
 name = "example-site"
 
-[[site]]
+[site]
 title = "Rust examples"
 content = "content"
 output = "public"
 
-[[site.extensions]]
-kind = "command"
+[site.extensions.examples]
 command = ["python3", "scripts/examples.py", "../Cargo.toml"]
 watch = ["scripts", "../Cargo.toml", "../examples"]
 ```
@@ -180,3 +179,4 @@ cargo run -p notist-cli -- build -p ssg-extensions
 ```
 
 该示例使用 ranim 的 example 目录布局。
+它是 Notist 仓库 workspace 的成员，通过 -p 按包名选择，默认输出到仓库根的 notist-output/ssg-extensions/。上面的 website/public/ 则来自教程清单中显式配置的 output = "public"。

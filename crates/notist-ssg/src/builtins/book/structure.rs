@@ -1,12 +1,12 @@
 //! Navigation structure shared by declared and directory-derived trees.
-use crate::routes::{Route, natural_cmp};
+use super::routes::{Route, natural_cmp};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Entry {
     pub kind: NavigationKind,
     pub label: Option<String>,
@@ -15,7 +15,7 @@ pub(crate) struct Entry {
     pub children: Vec<Entry>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NavigationKind {
     Chapter,
@@ -56,7 +56,13 @@ pub(crate) fn directory<'a>(base: &Path, routes: impl IntoIterator<Item = &'a Ro
     let mut root = Branch::default();
     for route in routes {
         let mut branch = &mut root;
-        for segment in route.output.parent().unwrap().strip_prefix(base).unwrap() {
+        let directory_page = route.output.file_name().is_some_and(|s| s == "index.html");
+        let parent = if directory_page {
+            route.output.parent().unwrap()
+        } else {
+            route.path.parent().unwrap()
+        };
+        for segment in parent.strip_prefix(base).unwrap() {
             let label = segment.to_string_lossy().into_owned();
             branch = branch
                 .children
@@ -65,6 +71,15 @@ pub(crate) fn directory<'a>(base: &Path, routes: impl IntoIterator<Item = &'a Ro
                     label: Some(label),
                     ..Branch::default()
                 });
+        }
+        if !directory_page {
+            branch = branch
+                .children
+                .entry(format!(
+                    "{}\0",
+                    route.path.file_stem().unwrap().to_string_lossy()
+                ))
+                .or_default();
         }
         branch.label = None; // Page titles are available after evaluation.
         branch.source = Some(route.source.clone());

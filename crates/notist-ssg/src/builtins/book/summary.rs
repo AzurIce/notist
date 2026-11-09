@@ -10,11 +10,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{
-    mounts::Mounts,
+use super::{
     routes::{self, Routes},
     structure::{self, NavigationKind},
 };
+use crate::mounts::Mounts;
 
 pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
 
@@ -400,7 +400,12 @@ pub(crate) fn resolve<R: Resources>(
                         Target::Label
                     } else if value.ends_with('/') {
                         let book_path = mounts.path(&path).unwrap();
-                        let kind = if mounts.is_virtual_directory(&book_path) {
+                        let kind = if mounts.is_virtual_directory(&book_path)
+                            || sources.iter().any(|source| {
+                                mounts
+                                    .path(source)
+                                    .is_some_and(|p| p != book_path && p.starts_with(&book_path))
+                            }) {
                             Ok(Some(ResourceKind::Directory))
                         } else {
                             resources.kind(&path)

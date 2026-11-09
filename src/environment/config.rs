@@ -51,6 +51,8 @@ struct Config {
     project: Option<toml::Value>,
     #[serde(default)]
     workspace: Option<toml::Value>,
+    #[serde(default)]
+    package: Option<toml::Value>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,11 +79,15 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
             e.message(),
         )]
     })?;
-    if config.ssg.is_some() || config.book.as_ref().is_some_and(toml::Value::is_table) {
+    if config.ssg.is_some()
+        || config.book.is_some()
+        || config.project.is_some()
+        || config.site.as_ref().is_some_and(toml::Value::is_array)
+    {
         return Err(vec![Diagnostic::new(
             Phase::Semantic,
             super::range(0..source.len()),
-            "legacy [book]/[ssg] configuration is no longer supported; add [project] and migrate to [[book]]/[[site]], then use notist build/serve",
+            "use [package] and optional [site]; project and publication target arrays are not supported",
         )]);
     }
     let _ = (
@@ -90,6 +96,7 @@ pub fn parse_config(source: &str) -> Result<Configuration, Vec<Diagnostic>> {
         config.site,
         config.project,
         config.workspace,
+        config.package,
     );
     let mut diagnostics = Vec::new();
     let extensions = config

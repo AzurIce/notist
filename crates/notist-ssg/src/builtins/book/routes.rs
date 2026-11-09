@@ -1,50 +1,11 @@
-use notist::publication::url::encode_path;
 use percent_encoding::percent_decode_str;
-use serde::Serialize;
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Route {
-    pub source: PathBuf,
-    /// Book-relative source path, including any mount prefix.
-    pub path: PathBuf,
-    pub url: String,
-    pub output: PathBuf,
-}
-impl Route {
-    pub fn new(source: PathBuf, path: PathBuf) -> Result<Self, String> {
-        if path.as_os_str().is_empty()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err("invalid page path".into());
-        }
-        let mut directory = path.with_extension("");
-        if path.file_stem().is_some_and(|stem| stem == "README") {
-            directory = path.parent().unwrap().into();
-        }
-        if directory.starts_with("_notist") {
-            return Err("_notist is reserved for generated site assets".into());
-        }
-        let output = directory.join("index.html");
-        let url = if directory.as_os_str().is_empty() {
-            "/".into()
-        } else {
-            format!("/{}/", encode_path(&directory))
-        };
-        Ok(Self {
-            source,
-            path,
-            url,
-            output,
-        })
-    }
-}
+pub use crate::Route;
 /// Complete source identities and their canonical directory URLs.
 #[derive(Debug, Clone, Default)]
 pub struct Routes {
@@ -66,9 +27,6 @@ impl Routes {
             entries.insert(route.source.clone(), route);
         }
         Ok(Self { entries })
-    }
-    pub fn get(&self, source: &Path) -> Option<&Route> {
-        self.entries.get(source)
     }
     pub fn iter(&self) -> impl Iterator<Item = &Route> {
         self.entries.values()

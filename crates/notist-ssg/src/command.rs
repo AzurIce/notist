@@ -30,19 +30,23 @@ pub struct Response {
 
 #[derive(Debug, Clone)]
 pub struct CommandExtension {
+    name: String,
     command: Vec<String>,
 }
 impl CommandExtension {
     pub fn new(command: Vec<String>) -> Self {
-        Self { command }
+        Self {
+            name: command.first().cloned().unwrap_or_else(|| "command".into()),
+            command,
+        }
+    }
+    pub fn named(name: String, command: Vec<String>) -> Self {
+        Self { name, command }
     }
 }
 impl SiteExtension for CommandExtension {
     fn name(&self) -> &str {
-        self.command
-            .first()
-            .map(String::as_str)
-            .unwrap_or("command")
+        &self.name
     }
     fn prepare(&self, context: &SiteContext<'_>, input: &mut SiteInput) -> Result<(), Error> {
         #[derive(Serialize)]

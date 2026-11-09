@@ -1,8 +1,5 @@
-//! Site target assembly; manifests and target selection belong to workspace.
-use crate::{
-    publication::publish,
-    workspace::{Options, Target},
-};
+//! Site assembly for one package manifest.
+use crate::{package::Package, publication::publish};
 use notist::Vault;
 use notist_ssg::{BuildOutput, Builder, Error};
 use std::{collections::BTreeSet, path::PathBuf, process::ExitCode};
@@ -13,18 +10,13 @@ pub(crate) struct Build {
     pub observed: BTreeSet<PathBuf>,
 }
 pub(crate) fn assemble(
-    target: &Target,
+    target: &Package,
     preview: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     notist::evict_caches(10);
     let prepared = notist::progress::run(|| "Load configuration".into(), || target.prepare())
         .map_err(|e| (Error::Message(e), target.inputs()))?;
-    let Options::Site(mut options) = prepared.options else {
-        return Err((
-            Error::Message("expected a Site target".into()),
-            target.inputs(),
-        ));
-    };
+    let mut options = prepared.options;
     if preview {
         options.base_url = "/".into();
     }
@@ -39,7 +31,12 @@ pub(crate) fn assemble(
         // Per-page data projections accumulate across a large generated site.
         .with_data_cache_limits(512 * 1024 * 1024, 65_536)
         .with_config(prepared.config);
-    let result = Builder::default().build(&mut vault, &options);
+    let builder = Builder::default();
+    let result = if preview {
+        builder.serve(&mut vault, &options)
+    } else {
+        builder.build(&mut vault, &options)
+    };
     let observed = vault.resources().observed();
     result
         .map(|artifact| Build {
@@ -49,9 +46,9 @@ pub(crate) fn assemble(
         })
         .map_err(|e| (e, observed))
 }
-pub(crate) fn build_target(target: &Target) -> ExitCode {
+pub(crate) fn build_package(target: &Package) -> ExitCode {
     let result = notist::progress::run(
-        || format!("Build {}/{}", target.project, target.name),
+        || format!("Build {}", target.name),
         || {
             let result = assemble(target, false).map_err(|(e, _)| e)?;
             notist::progress::run(

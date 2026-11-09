@@ -316,12 +316,15 @@ fn generated_documents_can_supply_all_content_and_report_their_own_source_errors
 
 #[test]
 fn site_extension_config_is_separate_from_document_extension_config() {
-    let config: SiteConfig = toml::from_str("[[extensions]]\nkind='command'\ncommand=['python3','examples.py']\nwatch=['../Cargo.toml']").unwrap();
-    assert_eq!(config.extensions.len(), 1);
+    let config: SiteConfig = toml::from_str(
+        "[extensions.examples]\ncommand=['python3','examples.py']\nwatch=['../Cargo.toml']",
+    )
+    .unwrap();
+    assert_eq!(config.extensions.commands.len(), 1);
     for config in [
-        "[[extensions]]\nkind='command'\ncommand=[]",
-        "[[extensions]]\nkind='unknown'\ncommand=['sh']",
-        "[[extensions]]\nkind='command'\ncommand=['sh']\nstages=['prepare']",
+        "[extensions.edit]\ncommand=[]",
+        "[extensions.builtins.unknown]\n",
+        "[extensions.edit]\ncommand=['sh']\nstages=['prepare']",
     ] {
         assert!(
             toml::from_str::<SiteConfig>(config)

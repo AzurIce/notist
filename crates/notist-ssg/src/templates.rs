@@ -1,9 +1,6 @@
 use crate::{Error, SiteConfig};
 use notist::{Resources, resources::ResourceKind};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use tera::{Kwargs, State, Tera};
 
 pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -36,19 +33,29 @@ pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathB
 }
 
 pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Tera, Error> {
-    let mut templates: BTreeMap<String, String> = BTreeMap::from([("page".into(), "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{{page.title}} · {{site.title}}</title><link rel=\"stylesheet\" href=\"{{assets.highlight}}\"></head><body><main>{{page.html | safe}}</main>{% if assets.components %}<script type=\"module\" src=\"{{assets.components}}\"></script>{% endif %}</body></html>".into())]);
+    let mounts = crate::mounts::Mounts::new(resources, config)?;
+    let mut templates =
+        crate::themes::templates("builtins.default").expect("bundled default theme");
     let mut directories = vec![];
     if let Some(theme) = &config.theme {
-        let theme = resources.resolve(theme);
-        if resources.kind(&theme)? != Some(ResourceKind::Directory) {
-            return Err(Error::Message(format!(
-                "theme directory `{}` does not exist",
-                theme.display()
-            )));
+        if crate::themes::is_builtin(theme) {
+            templates.extend(
+                crate::themes::templates(theme.to_str().unwrap()).ok_or_else(|| {
+                    Error::Message(format!("unknown builtin theme `{}`", theme.display()))
+                })?,
+            );
+        } else {
+            let theme = mounts.resolve(&resources.resolve(theme));
+            if resources.kind(&theme)? != Some(ResourceKind::Directory) {
+                return Err(Error::Message(format!(
+                    "theme directory `{}` does not exist",
+                    theme.display()
+                )));
+            }
+            directories.push(theme.join("templates"));
         }
-        directories.push(theme.join("templates"));
     }
-    directories.push(resources.resolve(&config.templates));
+    directories.push(mounts.resolve(&resources.resolve(&config.templates)));
     for directory in directories {
         for path in files(resources, &directory)? {
             if path.extension().is_some_and(|s| s == "tera") {
@@ -71,6 +78,19 @@ pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Te
             let path = args.must_get::<&str>("path")?;
             if !notist_html::is_safe_url(path) {
                 return Err(tera::Error::message("unsafe site URL"));
+            }
+            if let Some(from) = args.get::<&str>("relative_to")? {
+                if !path.starts_with("//") && !path.split('/').next().unwrap_or("").contains(':') {
+                    let target = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
+                        .decode_utf8()
+                        .map_err(|_| tera::Error::message("invalid UTF-8 in site URL"))?;
+                    return Ok(notist::publication::url::relative_url(
+                        Path::new(from),
+                        Path::new(target.as_ref()),
+                        path.ends_with('/'),
+                    ));
+                }
+                return Ok(path.into());
             }
             Ok(config.url(path))
         },

@@ -1,11 +1,10 @@
-[project]
+[package]
 name = "ssg-extensions"
 
-[[site]]
+[site]
 title = "Generated Rust examples"
 
 # Experimental site extension: source text and template data, once per build.
-[[site.extensions]]
-kind = "command"
+[site.extensions.examples]
 command = ["python3", "examples.py", "project/Cargo.toml"]
 watch = ["project"]

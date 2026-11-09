@@ -23,7 +23,6 @@ required-features = ["profiling"]
 [dependencies]
 notist = { path = "../.." }
 notist-html = { path = "../notist-html" }
-notist-book = { path = "../notist-book" }
 notist-ssg = { path = "../notist-ssg" }
 clap = { version = "4", features = ["derive"] }
 codespan-reporting = "0.12"

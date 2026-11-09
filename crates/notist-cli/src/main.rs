@@ -1,9 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
-mod book;
-#[cfg(not(target_arch = "wasm32"))]
 mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
+#[cfg(not(target_arch = "wasm32"))]
+mod package;
 #[cfg(not(target_arch = "wasm32"))]
 mod progress;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,8 +13,6 @@ mod query;
 mod serve;
 #[cfg(not(target_arch = "wasm32"))]
 mod ssg;
-#[cfg(not(target_arch = "wasm32"))]
-mod workspace;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -47,24 +45,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Build publication targets in the current project or workspace
+    /// Build the current package's site
     Build {
-        #[arg(long, conflicts_with = "project")]
-        workspace: bool,
-        #[arg(short = 'p', long = "project")]
-        project: Vec<String>,
+        /// Build every workspace package that declares a site
         #[arg(long)]
-        target: Option<String>,
-        /// Override output for exactly one selected target (relative to cwd)
+        workspace: bool,
+        /// Select workspace packages by name (repeatable)
+        #[arg(short = 'p', long = "package", conflicts_with = "workspace")]
+        packages: Vec<String>,
+        /// Override site output (relative to cwd)
         #[arg(long)]
         out_dir: Option<PathBuf>,
     },
-    /// Preview exactly one publication target
+    /// Preview the current package's site
     Serve {
-        #[arg(short = 'p', long = "project")]
-        project: Vec<String>,
-        #[arg(long)]
-        target: Option<String>,
+        /// Select a workspace package by name
+        #[arg(short = 'p', long = "package")]
+        package: Option<String>,
         #[command(flatten)]
         listen: ListenOptions,
         #[arg(long)]
@@ -116,24 +113,16 @@ fn run(cli: Cli) -> ExitCode {
     let evaluate = cli.eval;
     match cli.command {
         Command::Build {
-            workspace: all,
-            project,
-            target,
             out_dir,
-        } => workspace::build(config, all, &project, target.as_deref(), out_dir.as_deref()),
+            workspace,
+            packages,
+        } => package::build(config, out_dir.as_deref(), workspace, &packages),
         Command::Serve {
-            project,
-            target,
+            package,
             listen,
             no_clear_screen,
-        } => match workspace::select(config, false, &project, target.as_deref()) {
-            Ok(mut targets) if targets.len() == 1 => {
-                serve::serve_target(targets.remove(0), &listen, no_clear_screen, cli.verbose)
-            }
-            Ok(_) => {
-                eprintln!("serve requires exactly one target; select with -p and/or --target");
-                ExitCode::FAILURE
-            }
+        } => match package::Package::load(config, None, package.as_deref()) {
+            Ok(package) => serve::serve_package(package, &listen, no_clear_screen, cli.verbose),
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE

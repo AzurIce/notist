@@ -27,7 +27,14 @@ fn verbose_build_reports_nested_stages_without_changing_stdout() {
         write(
             root,
             "Notist.toml",
-            &format!("[project]\nname='test'\n[[{kind}]]\noutput='public'"),
+            &format!(
+                "[package]\nname='test'\n[site]\noutput='public'\n{}",
+                if kind == "book" {
+                    "content='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}"
+                } else {
+                    ""
+                }
+            ),
         );
         write(root, page, "# Home");
         let normal = command(root).arg("build").output().unwrap();
@@ -43,7 +50,7 @@ fn verbose_build_reports_nested_stages_without_changing_stdout() {
             assert!(result.status.success(), "{log}");
             assert_eq!(result.stdout, normal.stdout);
             for stage in [
-                "Build test/",
+                "Build test",
                 "├─",
                 "Load configuration",
                 "Parse and lower",
@@ -61,7 +68,7 @@ fn verbose_build_reports_nested_stages_without_changing_stdout() {
         let result = command(root).args(["build", "-v"]).output().unwrap();
         let log = String::from_utf8_lossy(&result.stderr);
         assert!(!result.status.success());
-        assert!(log.contains("✗ Build test/"), "{log}");
+        assert!(log.contains("✗ Build test"), "{log}");
         assert!(!log.contains('\x1b'), "{log}");
     }
 }
@@ -73,20 +80,20 @@ fn verbose_serve_reports_initial_build_and_watcher_rebuild() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(root, "README.md", "# Home");
     let server = Server::with_options(root, &["-v"]);
     let mut events = server.events();
     let ready = update(&mut events, |event| event["report"]["status"] == "ready");
-    let initial = server.wait_for_log("✓ Rebuild test/test-book");
+    let initial = server.wait_for_log("✓ Rebuild test");
     assert!(initial.contains("Parse and lower"));
     write(root, "README.md", "# Updated");
     update(&mut events, |event| {
         event["revision"].as_u64() > ready["revision"].as_u64()
     });
     let log = server.wait_for_log("Updated");
-    assert_eq!(log.matches("✓ Rebuild test/test-book").count(), 2, "{log}");
+    assert_eq!(log.matches("✓ Rebuild test").count(), 2, "{log}");
     assert_eq!(log.matches("… Parse and lower").count(), 2, "{log}");
     assert!(!log.contains('\x1b'), "{log}");
 }
@@ -98,7 +105,7 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\ntitle='Book'\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\ntitle='Book'\noutput='public'",
     );
     write(root, "README.not", "= Home\n\n[Guide](guide/README.md)");
     write(root, "guide/README.md", "# Guide\n\nContent");
@@ -146,8 +153,8 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
 #[test]
 fn book_build_defaults_output_and_resolves_cli_output_from_working_directory() {
     for config in [
-        "[project]\nname='manual'\n[[book]]",
-        "[project]\nname='manual'\n[[book]]\ntitle='Handbook'",
+        "[package]\nname='manual'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}",
+        "[package]\nname='manual'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\ntitle='Handbook'",
     ] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -162,7 +169,7 @@ fn book_build_defaults_output_and_resolves_cli_output_from_working_directory() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        assert!(root.join("vault/dist/manual-book/index.html").is_file());
+        assert!(root.join("vault/notist-output/manual/index.html").is_file());
 
         let result = command(root)
             .args([
@@ -191,7 +198,7 @@ fn book_build_publishes_mounted_assets_and_prunes_unreferenced_files() {
     write(
         root,
         "docs/Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='../public'\n[[site.mounts]]\nsource='../art'\npath='art'",
     );
     write(
         root,
@@ -247,7 +254,7 @@ fn book_mounts_reject_symlink_sources_and_resources() {
     write(
         root,
         "docs/Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='../public'\n[[site.mounts]]\nsource='../art'\npath='art'",
     );
     write(root, "real/README.md", "# Art");
     std::os::unix::fs::symlink(root.join("real"), root.join("art")).unwrap();
@@ -274,7 +281,11 @@ fn book_mounts_reject_symlink_sources_and_resources() {
 fn html_and_site_publication_reject_symlink_component_resources() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "Notist.toml", "[project]\nname='test'\n[[book]]");
+    write(
+        root,
+        "Notist.toml",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}",
+    );
     write(root, "lib.notc", "import \"widgets/lib.notc\" as widgets;");
     write(
         root,
@@ -312,7 +323,7 @@ fn html_export_is_independent_of_book_structure_and_theme() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\ntheme='missing-theme'\nadditional-css=['missing.css']",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='missing-theme'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\nstyles=['missing.css']",
     );
     write(root, "README.not", "= Standalone\n\nBody");
     write(root, "SUMMARY.not", "Not a valid book structure.");
@@ -449,7 +460,7 @@ fn serve_watches_mounted_pages_resources_and_new_subdirectories() {
     write(
         root,
         "docs/Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='../public'\n[[book.mounts]]\nsource='../art'\npath='art'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='../public'\n[[site.mounts]]\nsource='../art'\npath='art'",
     );
     write(root, "docs/README.md", "# Home");
     write(root, "art/README.md", "# Art\n\n![Image](image.png)");
@@ -488,7 +499,7 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(root, "README.md", "# Home");
     write(root, "guide/README.not", "= Guide");
@@ -504,11 +515,7 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     assert!(server.get("/guide").starts_with("HTTP/1.1 308"));
     assert!(server.get("/missing/").starts_with("HTTP/1.1 404"));
     assert!(server.get("/%2e%2e/private").starts_with("HTTP/1.1 400"));
-    assert!(
-        server
-            .get("/_notist/theme/book.css")
-            .contains("Content-Type: text/css")
-    );
+    assert!(server.get("/book.css").contains("Content-Type: text/css"));
     let mut events = server.events();
     let baseline = update(&mut events, |_| true);
     write(root, "README.md", "# Updated");
@@ -542,7 +549,7 @@ fn serve_recovers_when_target_configuration_is_repaired() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\nunknown=true",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\nunknown=true",
     );
     let server = Server::start(root);
     assert!(server.get("/").starts_with("HTTP/1.1 503"));
@@ -558,7 +565,7 @@ fn serve_recovers_when_target_configuration_is_repaired() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='published'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='published'",
     );
     update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
     assert!(server.get("/").contains("Home"));
@@ -572,7 +579,7 @@ fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings()
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(
         root,
@@ -695,7 +702,14 @@ fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
         write(
             root,
             "Notist.toml",
-            &format!("[project]\nname='test'\n[[{target}]]\noutput='public'"),
+            &format!(
+                "[package]\nname='test'\n[site]\noutput='public'\n{}",
+                if target == "book" {
+                    "content='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}"
+                } else {
+                    ""
+                }
+            ),
         );
         write(
             root,
@@ -750,7 +764,7 @@ fn serve_no_clear_screen_keeps_failed_and_resolved_build_output() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(root, "README.md", "# Home");
     let server = Server::with_options(root, &["--no-clear-screen"]);
@@ -784,7 +798,7 @@ fn summary_limits_build_output_and_served_pages() {
         write(
             root,
             "Notist.toml",
-            "[project]\nname='test'\n[[book]]\noutput='public'",
+            "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
         );
         write(root, "README.not", "= Home");
         write(root, "README.md", "# Unlisted route collision");
@@ -835,7 +849,7 @@ fn broken_hyperlinks_warn_without_failing_build_or_live_reload() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(
         root,
@@ -885,7 +899,7 @@ fn outside_hyperlinks_warn_and_stay_out_of_build_and_serve() {
     write(
         &root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'",
     );
     write(
         &root,
@@ -938,7 +952,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     write(
         &root,
         "Notist.toml",
-        "[project]\nname='test'\n[[book]]\noutput='public'\ntheme='theme'",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\noutput='public'\ntemplates='theme'",
     );
     write(
         &root,
@@ -950,7 +964,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
         "README.not",
         "#import \"../widgets/lib.notc\" as widgets;\n= Home\n\n#widgets.badge(\"Hello\")",
     );
-    write(&root, "theme/index.tera", "{{page.missing}}");
+    write(&root, "theme/page.tera", "{{page.missing}}");
     write(temp.path(), "widgets/Notist.toml", "");
     write(
         temp.path(),
@@ -968,7 +982,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     update(&mut events, |event| event["report"]["status"] == "failed");
     write(
         &root,
-        "theme/index.tera",
+        "theme/page.tera",
         "{{page.title}} {{page.html | safe}}",
     );
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
@@ -986,4 +1000,73 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
         event["revision"].as_u64() > good["revision"].as_u64()
     });
     assert!(server.get(&path).contains("after"));
+}
+
+#[test]
+fn serve_reloads_the_package_manifest_and_preserves_preview_on_identity_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let config = "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}\ntitle='Original title'";
+    write(root, "Notist.toml", config);
+    write(root, "README.md", "# Home");
+    let server = Server::start(root);
+    let mut events = server.events();
+    let initial = update(&mut events, |event| event["report"]["status"] == "ready");
+    let updated = config.replace("Original title", "Updated title");
+    write(root, "Notist.toml", &updated);
+    let ready = update(&mut events, |event| {
+        event["revision"].as_u64() > initial["revision"].as_u64()
+    });
+    assert!(server.get("/").contains("Updated title"));
+    write(
+        root,
+        "Notist.toml",
+        &updated.replace("name='test'", "name='other'"),
+    );
+    let failed = update(&mut events, |event| event["report"]["status"] == "failed");
+    assert!(
+        failed["report"]
+            .to_string()
+            .contains("package name changed")
+    );
+    assert!(server.get("/").contains("Updated title"));
+    write(root, "Notist.toml", config);
+    update(&mut events, |event| {
+        event["revision"].as_u64() > ready["revision"].as_u64()
+    });
+    assert!(server.get("/").contains("Original title"));
+    assert!(!root.join("public").exists());
+}
+
+#[test]
+fn member_preview_watches_workspace_configuration_and_recovers_without_disk_outputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "Notist.toml", "[workspace]\nmembers=['a']");
+    write(
+        root,
+        "a/Notist.toml",
+        "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={enable=true}",
+    );
+    write(root, "a/README.md", "# Member");
+    let server = Server::with_options(root, &["-p", "test"]);
+    let mut events = server.events();
+    let initial = update(&mut events, |event| event["report"]["status"] == "ready");
+    write(
+        root,
+        "Notist.toml",
+        "[workspace]\nmembers=['a']\noutput='artifacts'",
+    );
+    let ready = update(&mut events, |event| {
+        event["revision"].as_u64() > initial["revision"].as_u64()
+    });
+    write(root, "Notist.toml", "[workspace]\nmembers=['a']\noutput=''");
+    update(&mut events, |event| event["report"]["status"] == "failed");
+    assert!(server.get("/").contains("Member"));
+    write(root, "Notist.toml", "[workspace]\nmembers=['a']");
+    update(&mut events, |event| {
+        event["revision"].as_u64() > ready["revision"].as_u64()
+    });
+    assert!(!root.join("notist-output").exists());
+    assert!(!root.join("artifacts").exists());
 }

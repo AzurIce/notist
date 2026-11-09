@@ -1,5 +1,4 @@
 //! HTTP server for the same publication artifact produced by static builds.
-use crate::book;
 use notify::{RecursiveMode, Watcher};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,12 +15,6 @@ mod report;
 mod terminal;
 use report::Report;
 use terminal::Terminal;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
-    Book,
-    Site,
-}
 
 struct BuildOutput {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -52,56 +45,34 @@ struct Build {
     output: PathBuf,
     observed: BTreeSet<PathBuf>,
 }
-impl Kind {
-    fn assemble(
-        self,
-        target: &crate::workspace::Target,
-    ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-        match self {
-            Self::Book => book::assemble(target, true)
-                .map(|b| Build {
-                    artifact: BuildOutput {
-                        pages: b.artifact.pages.len(),
-                        home: b.artifact.pages.first().map(|p| p.route.url.clone()),
-                        files: b.artifact.files,
-                        diagnostics: b.artifact.diagnostics,
-                        warnings: b.artifact.warnings,
-                    },
-                    output: b.output,
-                    observed: b.observed,
-                })
-                .map_err(|(e, inputs)| {
-                    (
-                        match e {
-                            notist_book::Error::Diagnostics(d) => Error::Diagnostics(d),
-                            e => Error::Message(e.to_string()),
-                        },
-                        inputs,
-                    )
-                }),
-            Self::Site => crate::ssg::assemble(target, true)
-                .map(|b| Build {
-                    artifact: BuildOutput {
-                        pages: b.artifact.pages.len(),
-                        home: None,
-                        files: b.artifact.files,
-                        diagnostics: vec![],
-                        warnings: b.artifact.warnings,
-                    },
-                    output: b.output,
-                    observed: b.observed,
-                })
-                .map_err(|(e, inputs)| {
-                    (
-                        match e {
-                            notist_ssg::Error::Diagnostics(d) => Error::Diagnostics(d),
-                            e => Error::Message(e.to_string()),
-                        },
-                        inputs,
-                    )
-                }),
-        }
-    }
+fn assemble(target: &crate::package::Package) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
+    crate::ssg::assemble(target, true)
+        .map(|b| Build {
+            artifact: BuildOutput {
+                pages: b.artifact.pages.len(),
+                home: b
+                    .artifact
+                    .pages
+                    .iter()
+                    .find(|p| p.route.url == "/")
+                    .or_else(|| b.artifact.pages.first())
+                    .map(|p| p.route.url.clone()),
+                files: b.artifact.files,
+                diagnostics: b.artifact.diagnostics,
+                warnings: b.artifact.warnings,
+            },
+            output: b.output,
+            observed: b.observed,
+        })
+        .map_err(|(e, inputs)| {
+            (
+                match e {
+                    notist_ssg::Error::Diagnostics(d) => Error::Diagnostics(d),
+                    e => Error::Message(e.to_string()),
+                },
+                inputs,
+            )
+        })
 }
 
 struct Published {
@@ -113,8 +84,8 @@ struct Published {
 type State = Arc<RwLock<Published>>;
 const CLIENT: &str = include_str!("serve.js");
 
-pub(crate) fn serve_target(
-    target: crate::workspace::Target,
+pub(crate) fn serve_package(
+    target: crate::package::Package,
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
     verbose: bool,
@@ -168,7 +139,7 @@ mod listen_tests {
 }
 
 fn run(
-    target: crate::workspace::Target,
+    target: crate::package::Package,
     listen: &crate::ListenOptions,
     no_clear_screen: bool,
     verbose: bool,
@@ -270,7 +241,7 @@ fn rebuild(
     observed: &mut BTreeSet<PathBuf>,
     output: &mut Option<PathBuf>,
     terminal: &Terminal,
-    target: &crate::workspace::Target,
+    target: &crate::package::Package,
 ) {
     let (previous, has_preview) = {
         let mut published = state.write().unwrap();
@@ -280,10 +251,7 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = notist::progress::run(
-        || format!("Rebuild {}/{}", target.project, target.name),
-        || target.kind.assemble(target),
-    );
+    let result = notist::progress::run(|| format!("Rebuild {}", target.name), || assemble(target));
     let mut published = state.write().unwrap();
     published.event += 1;
     match result {

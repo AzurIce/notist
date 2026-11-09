@@ -42,7 +42,7 @@ fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[site]]\noutput='public'\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh','first-request.json','first-response.json']\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh','second-request.json','second-response.json']",
+        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.first]\ncommand=['sh','edit.sh','first-request.json','first-response.json']\n[site.extensions.second]\ncommand=['sh','edit.sh','second-request.json','second-response.json']",
     );
     write(
         root,
@@ -113,7 +113,7 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
     write(
         &root,
         "Notist.toml",
-        "[project]\nname='test'\n[[site]]\noutput='public'\n[[site.extensions]]\nkind='command'\ncommand=['sh','edit.sh']\nwatch=['../external']",
+        "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.edit]\ncommand=['sh','edit.sh']\nwatch=['../external']",
     );
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -193,7 +193,7 @@ fn preview_watches_concrete_hidden_data_inputs() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='hidden'\n[[site]]\noutput='public'",
+        "[package]\nname='hidden'\n[site]\noutput='public'",
     );
     write(
         root,
@@ -252,7 +252,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[site]]\noutput='public'",
+        "[package]\nname='test'\n[site]\noutput='public'",
     );
     write(root, "content/index.not", "= Home");
     write(root, "content/sub/page.md", "# Page");
@@ -316,7 +316,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
     write(
         root,
         "Notist.toml",
-        "[project]\nname='test'\n[[site]]\nbase_url='https://example.com/project/'",
+        "[package]\nname='test'\n[site]\nbase_url='https://example.com/project/'",
     );
     write(root, "content/index.not", "= Home");
     write(

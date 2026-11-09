@@ -1,10 +1,16 @@
+{% set book = site.data.book.pages[page.route.path] %}
+{% set navigation = site.data.book.navigation %}
+{% set breadcrumbs = book.breadcrumbs %}
+{% set previous = book.previous %}
+{% set next = book.next %}
+{% set outline = page.headings %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>{{page.title}} · {{book.title}}</title>
+  <title>{{page.title}} · {{site.title}}</title>
   <link rel="home" href="{{book.home}}">
   <script>
     document.documentElement.classList.add('js');
@@ -17,6 +23,10 @@
       if (Number.isFinite(width) && width > 0) root.style.setProperty('--navigation-user-width', `${width}px`);
     } catch (_) {}
   </script>
+  <link rel="stylesheet" href="{{url(path='book.css', relative_to=page.route.output)}}">
+  <link rel="stylesheet" href="{{url(path='status.css', relative_to=page.route.output)}}">
+  <link rel="stylesheet" href="{{assets.highlight}}">
+  <script src="{{url(path='book.js', relative_to=page.route.output)}}" defer></script>
   {% for style in assets.styles %}<link rel="stylesheet" href="{{style}}">{% endfor %}
   {% for script in assets.scripts %}<script src="{{script}}" defer></script>{% endfor %}
 </head>
@@ -25,7 +35,7 @@
   <div id="reading-progress" class="reading-progress" aria-hidden="true"><span></span></div>
   <header class="book-header">
     <div class="header-inner">
-      <a class="book-brand" href="{{book.home}}">{{book.title}}</a>
+      <a class="book-brand" href="{{book.home}}">{{site.title}}</a>
       <button id="nav-toggle" class="text-button" type="button" aria-label="Open contents" aria-controls="book-nav" aria-expanded="false">Contents</button>
       <button id="theme-toggle" class="text-button" type="button" aria-label="Toggle color theme" title="Toggle color theme"><span class="theme-label">Theme</span></button>
     </div>
@@ -34,9 +44,9 @@
   <div class="book-layout">
     <nav id="book-nav" class="book-navigation" aria-label="Contents">
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
-      <ul class="navigation-tree">{% include 'navigation' %}{% for node in navigation %}{{<book_navigation node={node}/>}}{% endfor %}</ul>
+      <ul class="navigation-tree">{% include 'navigation' %}{% for node in navigation %}{{<book_navigation node={node} current={page.route.output} ancestors={book.ancestors}/>}}{% endfor %}</ul>
     </nav>
-    <script>{{assets.navigation | safe}}</script>
+    <script>{% include 'navigation-script' %}</script>
     <div id="nav-resize" class="navigation-resize" role="separator" tabindex="0" aria-label="Resize contents" aria-orientation="vertical" aria-controls="book-nav" title="Drag or use arrow keys to resize contents; double-click or press Home to reset"></div>
     <main id="page-content" tabindex="-1">
       <nav class="breadcrumbs" aria-label="Breadcrumb"><ol>{% for crumb in breadcrumbs %}<li>{% if crumb.current %}<span aria-current="page">{{crumb.title}}</span>{% elif crumb.url %}<a href="{{crumb.url}}">{{crumb.title}}</a>{% else %}<span>{{crumb.title}}</span>{% endif %}</li>{% endfor %}</ol></nav>
@@ -61,7 +71,7 @@
       <nav id="page-outline" aria-label="Page outline"><p class="rail-label">On this page</p><ol class="outline-list">{% for heading in outline %}<li data-level="{{heading.level}}"><a data-outline-link href="#{{heading.anchor}}">{{heading.title}}</a></li>{% endfor %}</ol></nav>
     </aside>
     {% endif %}
-    <footer class="book-footer"><span>{{book.title}}</span><a href="#page-content">Back to top</a></footer>
+    <footer class="book-footer"><span>{{site.title}}</span><a href="#page-content">Back to top</a></footer>
   </div>
   {% if assets.components %}<script type="module" src="{{assets.components}}"></script>{% endif %}
 </body>

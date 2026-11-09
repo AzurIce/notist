@@ -21,8 +21,20 @@ pub struct SiteConfig {
     /// Top-level .scss/.sass files are compiled; partials remain inputs only.
     pub sass: PathBuf,
     pub template: String,
-    /// Experimental site input extensions, in execution order.
-    pub extensions: Vec<crate::extensions::ExtensionConfig>,
+    /// Named site extensions, with a reserved builtins namespace.
+    pub extensions: crate::extensions::ExtensionsConfig,
+    /// Explicit permutation of configured extension names; defaults to name order.
+    pub extension_order: Vec<String>,
+    /// Content-relative source filters, applied before site extensions.
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    /// Directory URLs map README and index sources to their parent directory.
+    pub directory_urls: bool,
+    pub mounts: Vec<Mount>,
+    /// Copy every non-document content file. Disable for mixed/private source trees.
+    pub copy_content_assets: bool,
+    pub styles: Vec<PathBuf>,
+    pub scripts: Vec<PathBuf>,
 }
 impl Default for SiteConfig {
     fn default() -> Self {
@@ -31,15 +43,30 @@ impl Default for SiteConfig {
             base_url: "/".into(),
             content: "content".into(),
             output: "public".into(),
-            theme: None,
+            theme: Some("builtins.default".into()),
             templates: "templates".into(),
             static_dir: "static".into(),
             data: "data".into(),
             sass: "sass".into(),
             template: "page".into(),
-            extensions: Vec::new(),
+            extensions: Default::default(),
+            extension_order: Vec::new(),
+            include: vec!["**".into()],
+            exclude: Vec::new(),
+            directory_urls: false,
+            mounts: Vec::new(),
+            copy_content_assets: true,
+            styles: Vec::new(),
+            scripts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mount {
+    pub source: PathBuf,
+    pub path: PathBuf,
 }
 impl SiteConfig {
     /// Validate typed target options; project manifests are parsed by the host.
@@ -60,11 +87,26 @@ impl SiteConfig {
         if config.template.is_empty() {
             return Err(Error::Message("site template must not be empty".into()));
         }
-        for extension in &config.extensions {
-            let crate::extensions::ExtensionConfig::Command { command, .. } = extension;
+        for (name, extension) in &config.extensions.commands {
+            if name.is_empty() || name.contains('.') || name == "builtins" {
+                return Err(Error::Message(format!(
+                    "invalid site extension name `{name}`"
+                )));
+            }
+            let command = &extension.command;
             if command.first().is_none_or(|program| program.is_empty()) {
                 return Err(Error::Message(
                     "site extension command requires a nonempty program".into(),
+                ));
+            }
+        }
+        if !config.extension_order.is_empty() {
+            let names = config.extensions.names();
+            let order: std::collections::BTreeSet<_> =
+                config.extension_order.iter().cloned().collect();
+            if names != order || order.len() != config.extension_order.len() {
+                return Err(Error::Message(
+                    "extension_order must list every configured extension exactly once".into(),
                 ));
             }
         }

@@ -1,15 +1,15 @@
 = Notist CLI
 
-`notist` 是发布与检查的统一入口。`build` / `serve` 在 project 或 workspace 的发布 target 上工作；`check` / `cst` / `core` / `json` / `query` / `html` 直接分析单个源码或渲染单页；`lsp` 提供 stdio 语言服务。
+notist 是发布与检查的统一入口。build / serve 构建或预览当前 package 的 site；check / cst / core / json / query / html 分析单个源码或渲染单页；lsp 提供 stdio 语言服务。
 
-target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模型见 [Workspace 与构建 Target](workspaces.not)。本页以下示例使用安装后的 `notist`；从源码运行时写成 `cargo run -p notist-cli -- <command>`。
+字段见 [Notist.toml 配置](configuration.not)，包组织见 [Package 与站点组织](packages.not)。从源码运行时使用 `cargo run -p notist-cli -- <command>`。
 
 == 命令总览
 
 | 命令 | 作用 | 选择方式 | 主要输出 |
 | --- | --- | --- | --- |
-| `build` | 构建一个或多个发布 target | project / target / workspace | 文件树与 stdout 摘要 |
-| `serve` | 预览一个发布 target | 必须唯一 | HTTP 服务与终端 / 浏览器诊断 |
+| `build` | 构建当前包或 workspace 站点 | 当前包、-p、--workspace | 文件树与 stdout 摘要 |
+| `serve` | 预览一个包的站点 | 当前包或 -p | HTTP 服务与终端 / 浏览器诊断 |
 | `check` | 解析并报告文档或模块的诊断 | 单文件或目录 | stderr 诊断 |
 | `cst` | 打印无损 CST | 单文件 | stdout 树 |
 | `core` | 打印降糖后的 core / IR | 单文件 | stdout 树 |
@@ -24,7 +24,7 @@ target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模
 
 | 选项 | 说明 |
 | --- | --- |
-| `--config <path>` | 显式指定 Notist.toml，跳过自动发现；相对当前工作目录。`build` / `serve` 接受项目或 workspace 清单；单文件命令用它提供文档扩展。 |
+| `--config <path>` | 显式指定 Notist.toml，跳过最近清单的自动发现；路径相对当前工作目录。成员清单仍使用所属 workspace 的共享输出根。单文件命令用它提供文档扩展。 |
 | `--eval` | 让 `core` / `json` / `query` 查看求值后的表示；`core` / `json` 只对文档生效，`.notc` 模块分析不经过文档求值。不影响 `build` / `serve` / `check` / `cst` / `html`。 |
 | `-v, --verbose` | 在 stderr 展示树状实时构建进度与各阶段耗时，包括配置、文档分析、模块加载、求值、HTML、资源和发布；可放在子命令前后。重定向、CI 或 dumb 终端使用无动画的纯文本。 |
 | `-h, --help` | 打印帮助。 |
@@ -32,67 +32,63 @@ target 与清单字段见 [Notist.toml 配置](configuration.not)，多项目模
 
 == 配置发现
 
-`build` / `serve` 从当前目录向上寻找最近的 Notist.toml。找到的 manifest 若声明 `[workspace]`，再读取成员；当前目录在成员内时，会继续向上寻找所属 workspace。单文件命令从被检查文件（或目录参数）所在目录向上寻找配置。
+build / serve 从当前目录向上寻找最近的 Notist.toml，并识别所属的祖先 workspace；成员不继承 workspace 的扩展或站点选项。单文件命令只使用最近的包配置。
 
-完整规则、成员归属和 `--config` 的作用域见 [Notist.toml 配置](configuration.not#文件发现)。
+路径与配置作用域见 [Notist.toml 配置](configuration.not#文件发现)。
+
+workspace 内使用 -p / --package 按包名选择成员。--config 的作用类似 Cargo 的 --manifest-path，用于显式定位清单，例如从 workspace 外调用；指定成员清单不改变共享输出根。从源码运行时，`cargo run -p notist-cli -- build -p notist-site` 中，-- 前的 -p 选择 Rust crate，之后的 -p 选择 Notist 包。
 
 == 发布：notist build
 
 ```sh
-notist build [--workspace | -p <project> ...] [--target <name>] [--out-dir <path>]
+notist build [-p <package> ... | --workspace] [--out-dir <path>]
 ```
 
 | 选项 | 说明 |
 | --- | --- |
-| `--workspace` | 构建 workspace 的所有成员；不能与 `-p` 同时使用。 |
-| `-p, --project <name>` | 只构建指定项目；可以重复。 |
-| `--target <name>` | 在选中的项目内按 target 名过滤。target 名在 workspace 内唯一。 |
-| `--out-dir <path>` | 覆盖唯一选中 target 的输出目录，相对当前工作目录。 |
+| `--workspace` | 构建当前 workspace 中所有声明 site 的包；没有 site 的模块包跳过。 |
+| `-p, --package <name>` | 按包名选择成员，可重复；与 --workspace 互斥。显式选择的包必须声明 site。 |
+| `--out-dir <path>` | 覆盖该包站点的输出目录，相对当前工作目录。 |
 
-默认选择：
-
-- 在独立项目或成员目录中：只构建当前项目。
-- 在纯 workspace 根（没有 `[project]`）：构建全部成员。
-- 在声明了 `[project]` 的 workspace 根：默认只构建根项目；`--workspace` 构建全部成员。
+普通包必须声明 site 才能直接 build / serve。纯 workspace 根默认构建所有站点；有 package 的根默认只构建根包，--workspace 构建全部成员。serve 需要包的 site；在纯 workspace 根通过 -p 指定成员。
 
 输出与发布：
 
-- 默认输出是 `<dist 根>/<target>/`。workspace 使用 `[workspace].dist`，独立项目使用项目目录下的 `dist/`；target 的 `output` 可以覆盖，`--out-dir` 最终覆盖。
-- `--out-dir` 要求本次只选中一个 target；整个 workspace 的构建不能共用一个输出目录。
-- 构建先预检所有选中 target 的配置与输出归属，再逐个暂存、发布。某个 target 失败会保留它的旧产物并停止后续 target；已经成功发布的其他 target 不回滚。
-- 成功时在 stdout 打印页数与绝对输出路径，例如 `22 pages → /path/dist/icy-bot-book`。
+- 默认输出为 workspace 根的 notist-output / package.name；独立包以自己的包根作为 workspace 根。site.output 和 --out-dir 指定最终目录，不追加包名。
+- 构建检查配置、资源与输出安全，再暂存并发布；失败保留该包的旧产物。
+- --out-dir 要求本次只选择一个站点。workspace 按包逐个发布，某个包失败会停止后续构建，不回滚已经成功发布的其他包。
+- 成功时打印页数与绝对输出路径，例如 `22 pages → /path/notist-output/manual`。
 
 ```sh
-# 当前项目或当前成员
+# 当前包
 notist build
 
-# 指定项目与 target
-notist build -p ranim-book
-notist build -p ranim-website --target ranim-website
-
-# 整个 workspace
+# 构建整个 workspace
 notist build --workspace
 
-# 单 target 临时改输出位置
-notist build -p my-book --out-dir target/preview
+# 按名称选择 workspace 成员
+notist build -p manual
+notist build -p website
+
+# 临时输出位置，相对调用者目录
+notist build -p manual --out-dir target/preview
 ```
 
 == 预览：notist serve
 
 ```sh
-notist serve [-p <project> ...] [--target <name>] [--host <host>] [--port <port>] [--no-clear-screen]
+notist serve [-p <package>] [--host <host>] [--port <port>] [--no-clear-screen]
 ```
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| `-p, --project <name>` | 当前项目 | 选择项目；可以重复。 |
-| `--target <name>` | 全部匹配 | 选择 target。 |
+| `-p, --package <name>` | 当前包 | 按包名选择一个 workspace 成员。 |
 | `--host <host>` | `127.0.0.1` | HTTP 监听主机名或 IP 地址，IPv6 直接写 `::1`。 |
 | `--port <port>` | 优先 `8000` | 显式指定时严格使用该端口；`0` 表示由系统分配空闲端口。 |
 | `--address <addr>` | 无 | 完整监听地址，如 `127.0.0.1:9000` 或 `[::1]:9000`；与 `--host`、`--port` 互斥。 |
 | `--no-clear-screen` | 关闭 | 保留每一轮构建的终端输出；重定向、管道和 CI 环境也会自动关闭清屏。 |
 
-选择规则与 `build` 相同，但结果必须恰好是一个 target；否则报 `serve requires exactly one target`。在纯 workspace 根使用 `-p` 或 `--target` 消歧。
+serve 与 build 使用同一份 package / site 配置，不需要额外选择发布目标。
 
 未指定端口时优先使用 `8000`，被占用则选择空闲端口；指定端口不可用时则报错。终端输出实际监听地址。
 
@@ -102,8 +98,8 @@ serve 在内存中生成与静态构建相同的产物，监听源文件、模�
 
 ```sh
 cd book && notist serve
-notist serve -p ranim-website --target ranim-website
-notist serve --config website/Notist.toml --host 127.0.0.1 --port 9000
+notist serve -p website
+notist serve -p website --host 127.0.0.1 --port 9000
 ```
 
 == 单文件命令
@@ -201,10 +197,10 @@ notist lsp
 
 ```sh
 # 构建并部署文档
-notist build -p my-book
+notist build --config docs/Notist.toml
 
 # 本地预览，指定端口
-notist serve -p my-book --port 9000
+notist serve --config docs/Notist.toml --port 9000
 
 # 检查一份文档或整个目录
 notist check docs/README.not

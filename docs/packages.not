@@ -1,0 +1,102 @@
+= Package 与站点组织
+
+一份 Notist.toml 可定义 package、workspace，或同时定义两者。每个 package 最多声明一个 site。package 是内容与模块的组织边界，site 是可选的发布配置；包名决定默认发布子目录，不决定站点标题。
+
+```toml
+[package]
+name = "handbook"
+
+[site]
+title = "Project Handbook"
+theme = "builtins.book"
+
+[site.extensions.builtins.book]
+enable = true
+```
+
+没有 site 的 package 可用于内容模块和单文件操作；build / serve 会明确报告没有站点。package 目前只定义 name，不预设版本、依赖、导出或包管理协议。
+
+清单可以像 Cargo.toml 一样放在仓库根，site.content 指向 docs；模块、样式和其他资源仍可位于同一个包内。Notist 仓库采用这种布局，根清单的站点发布 docs，直接在仓库根运行 build / serve 即可。
+
+== 多个站点
+
+同一 workspace 可以包含多个 package，例如：
+
+```text
+repository/
+├── Cargo.toml
+├── Notist.toml
+├── justfile
+├── book/
+│   ├── Notist.toml
+│   ├── SUMMARY.md
+│   └── README.md
+└── website/
+    ├── Notist.toml
+    ├── content/
+    ├── templates/
+    └── static/
+```
+
+book/Notist.toml：
+
+```toml
+[package]
+name = "manual"
+
+[site]
+content = "."
+theme = "builtins.book"
+directory_urls = true
+copy_content_assets = false
+extensions.builtins.book = { enable = true }
+```
+
+website/Notist.toml：
+
+```toml
+[package]
+name = "website"
+
+[site]
+title = "Website"
+
+[site.extensions.examples]
+command = ["cargo", "examples", "site"]
+watch = ["../Cargo.toml", "../examples"]
+```
+
+根 Notist.toml：
+
+```toml
+[workspace]
+members = ["book", "website"]
+```
+
+默认产物是 notist-output/manual/ 和 notist-output/website/，每个包名目录都是独立的网站根。从仓库根目录构建全部成员，或显式选择一个包：
+
+```sh
+notist build
+notist build -p manual
+notist build -p website
+```
+
+纯 workspace 根的 build 构建所有声明 site 的成员；在成员目录或同时声明 package 的根目录，默认只构建当前包。build --workspace 从任意成员统一构建所有站点，模块包跳过。一个包仍只有一个 site，不引入 target 层。Rust 的 Cargo workspace 与 Notist workspace 相互独立。
+
+== 配置与发布边界
+
+- 自动发现以最近的包清单选择当前包，并查找祖先 workspace 的成员关系；成员不继承其他包的扩展或站点配置。
+- --config 的参数相对调用者当前目录；清单内部路径以该清单目录为基准。选择成员清单不会改变 workspace 的共享输出根；--out-dir 仍相对调用者当前目录。
+- 文档扩展位于顶层 extensions，同时用于 build / serve 与单文件命令；站点扩展位于 site.extensions。
+- 每个包独立选择内容、扩展、主题与输出；共同构建不等于共同发布。跨站点链接使用部署后的 URL，发布兄弟包的文件需要显式 mounts。
+- 默认输出是 workspace 根的 notist-output / package.name；独立包在自己的包根使用相同布局。显式 site.output 或 --out-dir 是最终发布目录，不追加包名。
+- 包名与输出冲突按整个 workspace 校验，即使只构建一个成员也不能覆盖其他成员产物或输入。重复成员、未登记的包和嵌套 workspace 会报错。
+- 发布仍要求输出目录为空或具有 Notist 产物标识，禁止覆盖当前包的根目录、清单及内容输入；失败保留上次产物。
+
+字段见 [Notist.toml 配置](configuration.not)，命令见 [Notist CLI](cli.not)。
+
+== 仓库示例
+
+根 package notist 发布 docs；examples/site 中的 notist-site 和 examples/ssg-extensions 中的 ssg-extensions 分别发布普通站点与构建期生成页面。默认目录依次为 notist-output/notist/、notist-output/notist-site/ 和 notist-output/ssg-extensions/。examples/extensions 是没有 site 的模块包，使用单文件命令，workspace 构建跳过它。
+
+Notist.toml 不参与 Cargo 的 example 自动发现；Rust example 仍由 Cargo 的约定入口或显式 example 声明决定。

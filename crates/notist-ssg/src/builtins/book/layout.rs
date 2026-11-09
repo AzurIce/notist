@@ -1,7 +1,5 @@
-use crate::{
-    Page,
-    structure::{self, Entry, NavigationKind},
-};
+use super::structure::{self, Entry, NavigationKind};
+use crate::Page;
 use notist::publication::url::relative_url;
 use serde::Serialize;
 use std::{
@@ -9,8 +7,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+fn url(current: &Path, target: &Path) -> String {
+    if target.file_name().is_some_and(|s| s == "index.html") {
+        relative_url(current, target.parent().unwrap(), true)
+    } else {
+        relative_url(current, target, false)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Navigation {
+    pub id: usize,
+    pub output: Option<PathBuf>,
     pub kind: NavigationKind,
     pub title: String,
     pub attrs: BTreeMap<String, serde_json::Value>,
@@ -26,6 +34,7 @@ pub struct PageLink {
     pub url: String,
 }
 struct Node {
+    id: usize,
     kind: NavigationKind,
     title: String,
     attrs: BTreeMap<String, serde_json::Value>,
@@ -44,6 +53,7 @@ fn order(node: &Node, paths: &mut Vec<PathBuf>) {
 fn declared_node(entry: &Entry, pages: &BTreeMap<PathBuf, &Page>) -> Node {
     let page = entry.source.as_ref().map(|source| pages[source]);
     Node {
+        id: 0,
         kind: entry.kind,
         title: entry
             .label
@@ -90,7 +100,15 @@ impl Layout {
                 .collect(),
         )
     }
-    fn from_roots(roots: Vec<Node>) -> Self {
+    fn from_roots(mut roots: Vec<Node>) -> Self {
+        fn identify(nodes: &mut [Node], next: &mut usize) {
+            for node in nodes {
+                node.id = *next;
+                *next += 1;
+                identify(&mut node.children, next);
+            }
+        }
+        identify(&mut roots, &mut 0);
         let mut paths = vec![];
         for root in &roots {
             order(root, &mut paths);
@@ -114,13 +132,12 @@ impl Layout {
                 .collect();
             (
                 Navigation {
+                    id: node.id,
+                    output: node.output.clone(),
                     kind: node.kind,
                     title: node.title.clone(),
                     attrs: node.attrs.clone(),
-                    url: node
-                        .output
-                        .as_ref()
-                        .map(|path| relative_url(current, path.parent().unwrap(), true)),
+                    url: node.output.as_ref().map(|path| url(current, path)),
                     current: node.output.as_deref() == Some(current),
                     expanded: !node.collapsed || contains_current,
                     children,
@@ -154,13 +171,12 @@ impl Layout {
         trail
             .into_iter()
             .map(|node| Navigation {
+                id: node.id,
+                output: node.output.clone(),
                 kind: node.kind,
                 title: node.title.clone(),
                 attrs: node.attrs.clone(),
-                url: node
-                    .output
-                    .as_ref()
-                    .map(|path| relative_url(current, path.parent().unwrap(), true)),
+                url: node.output.as_ref().map(|path| url(current, path)),
                 current: node.output.as_deref() == Some(current),
                 expanded: true,
                 children: vec![],
@@ -168,7 +184,9 @@ impl Layout {
             .collect()
     }
     pub fn adjacent(&self, current: &Path, pages: &[Page]) -> (Option<PageLink>, Option<PageLink>) {
-        let index = self.order.iter().position(|path| path == current).unwrap();
+        let Some(index) = self.order.iter().position(|path| path == current) else {
+            return (None, None);
+        };
         let link = |path: &PathBuf| {
             let page = pages
                 .iter()
@@ -176,7 +194,7 @@ impl Layout {
                 .unwrap();
             PageLink {
                 title: page.title.clone(),
-                url: relative_url(current, path.parent().unwrap(), true),
+                url: url(current, path),
             }
         };
         (
@@ -185,16 +203,12 @@ impl Layout {
         )
     }
     pub fn home_url(&self, current: &Path) -> String {
-        relative_url(current, self.order[0].parent().unwrap(), true)
+        self.order.first().map_or_else(
+            || url(current, Path::new("index.html")),
+            |path| url(current, path),
+        )
     }
-    pub fn ordered_pages(&self, pages: Vec<Page>) -> Vec<Page> {
-        let mut pages: BTreeMap<_, _> = pages
-            .into_iter()
-            .map(|page| (page.route.output.clone(), page))
-            .collect();
-        self.order
-            .iter()
-            .map(|path| pages.remove(path).unwrap())
-            .collect()
+    pub fn order(&self) -> &[PathBuf] {
+        &self.order
     }
 }

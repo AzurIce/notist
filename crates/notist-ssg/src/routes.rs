@@ -12,7 +12,12 @@ pub struct Route {
     pub url: String,
 }
 impl Route {
+    #[cfg(test)]
     pub(crate) fn new(source: PathBuf, root: &Path) -> Result<Self, Error> {
+        Self::plan(source, root, false)
+    }
+
+    pub(crate) fn plan(source: PathBuf, root: &Path, directory_urls: bool) -> Result<Self, Error> {
         let path = source
             .strip_prefix(root)
             .map_err(|e| Error::Message(e.to_string()))?
@@ -27,7 +32,18 @@ impl Route {
                 path.display()
             )));
         }
-        let output = path.with_extension("html");
+        let output = if directory_urls {
+            if path
+                .file_stem()
+                .is_some_and(|s| s == "README" || s == "index")
+            {
+                path.parent().unwrap().join("index.html")
+            } else {
+                path.with_extension("").join("index.html")
+            }
+        } else {
+            path.with_extension("html")
+        };
         let public = if output.file_name().is_some_and(|s| s == "index.html") {
             let directory = encode_path(output.parent().unwrap());
             if directory.is_empty() {

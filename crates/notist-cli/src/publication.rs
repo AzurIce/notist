@@ -1,4 +1,4 @@
-//! Filesystem resources and safe publication shared by HTML and books.
+//! Filesystem resources and safe publication shared by HTML export and sites.
 use notist::{
     FsResources, InputError, InputRead, Resources,
     publication::Error,
@@ -13,24 +13,15 @@ use std::{
 pub(crate) struct Files {
     base: FsResources,
     observed: Arc<Mutex<BTreeSet<PathBuf>>>,
-    configuration: Option<(PathBuf, Vec<u8>)>,
 }
 impl Files {
     pub fn new(root: &Path) -> Self {
         Self {
             base: FsResources::new(root),
             observed: Arc::default(),
-            configuration: None,
         }
     }
-    /// An in-memory target configuration; never writes generated config to disk.
-    pub fn with_configuration(
-        mut self,
-        path: PathBuf,
-        source: String,
-        inputs: BTreeSet<PathBuf>,
-    ) -> Self {
-        self.configuration = Some((path, source.into_bytes()));
+    pub fn with_inputs(self, inputs: BTreeSet<PathBuf>) -> Self {
         self.observed.lock().unwrap().extend(inputs);
         self
     }
@@ -68,21 +59,9 @@ impl Resources for Files {
         self.base.root()
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        if let Some((config, source)) = &self.configuration
-            && &self.resolve(path) == config
-        {
-            return Ok(source.clone());
-        }
         self.base.read(&self.inspect(path)?)
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
-        if self
-            .configuration
-            .as_ref()
-            .is_some_and(|(config, _)| &self.resolve(path) == config)
-        {
-            return Ok(Some(ResourceKind::File));
-        }
         self.base.kind(&self.inspect(path)?)
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
@@ -94,7 +73,6 @@ impl Resources for Files {
             base: self.base.read_root(&root)?,
             root,
             observed: self.observed.clone(),
-            configuration: self.configuration.clone(),
         }))
     }
 }
@@ -103,21 +81,11 @@ struct ObservedReader {
     root: PathBuf,
     base: Arc<dyn ResourceReader>,
     observed: Arc<Mutex<BTreeSet<PathBuf>>>,
-    configuration: Option<(PathBuf, Vec<u8>)>,
 }
 impl ResourceReader for ObservedReader {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
         let absolute = self.root.join(path);
         self.observed.lock().unwrap().insert(absolute.clone());
-        if let Some((config, source)) = &self.configuration
-            && *config == absolute
-        {
-            return if source.len() <= limit {
-                InputRead::Ready(Arc::from(source.as_slice()))
-            } else {
-                InputRead::Failed(InputError::TooLarge)
-            };
-        }
         self.base.read_bounded(path, limit)
     }
 }

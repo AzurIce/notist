@@ -1,14 +1,16 @@
 use notist::{MemoryResources, Vault};
-use notist_book::{BookConfig, BuildOutput, Mount, build, serve};
+mod support;
+use notist_ssg::{BuildOutput, Mount, SiteConfig};
 use std::path::Path;
+use support::book::{book_config, build, overlay, serve};
 
-fn config() -> BookConfig {
-    BookConfig {
+fn config() -> SiteConfig {
+    SiteConfig {
         mounts: vec![Mount {
             source: "../art".into(),
             path: "art".into(),
         }],
-        ..BookConfig::new("../public")
+        ..book_config("../public")
     }
 }
 
@@ -70,7 +72,7 @@ fn typed_and_legacy_embed_identities_still_require_mount_authorization() {
         "{output}"
     );
     assert_eq!(site.files[Path::new("art/a?b#c%.svg")], b"mounted image");
-    assert!(build(&mut Vault::new(files), &BookConfig::new("../public")).is_err());
+    assert!(build(&mut Vault::new(files), &book_config("../public")).is_err());
 }
 
 #[test]
@@ -236,8 +238,8 @@ fn summary_supports_virtual_parent_directories_and_specific_mount_claims() {
 #[test]
 fn mounts_do_not_open_unregistered_paths_or_hide_missing_resources() {
     for (target, expected) in [
-        ("missing.png", "missing local resource"),
-        ("../../private/secret.png", "outside Vault"),
+        ("missing.png", "missing embedded resource"),
+        ("../../private/secret.png", "outside the content"),
     ] {
         let files = resources(&[
             ("../art/README.md", &format!("# Art\n\n![Image]({target})")),
@@ -259,14 +261,14 @@ fn mounts_do_not_open_unregistered_paths_or_hide_missing_resources() {
 #[test]
 fn mount_configuration_rejects_ambiguous_paths_and_source_output_overlap() {
     for (source, path, expected) in [
-        ("../art", "", "invalid book mount path"),
-        ("../art", "../escape", "invalid book mount path"),
-        ("../art", "/absolute", "invalid book mount path"),
-        ("../art", "_notist/art", "invalid book mount path"),
+        ("../art", "", "invalid site mount path"),
+        ("../art", "../escape", "invalid site mount path"),
+        ("../art", "/absolute", "invalid site mount path"),
+        ("../art", "_notist/art", "invalid site mount path"),
         ("../missing", "art", "not a directory"),
         ("../art/file.png", "art", "not a directory"),
-        (".", "art", "outside the Vault"),
-        ("..", "art", "outside the Vault"),
+        (".", "art", "outside content"),
+        ("..", "art", "outside content"),
         ("../art", "existing", "already exists"),
         ("../art", "file.png/art", "traverses file"),
     ] {
@@ -327,13 +329,13 @@ fn mount_configuration_rejects_ambiguous_paths_and_source_output_overlap() {
         build(&mut vault, &options)
             .unwrap_err()
             .to_string()
-            .contains("mount path and site output overlap")
+            .contains("mount path and output overlap")
     );
 }
 
 #[test]
 fn mounts_parse_without_changing_include_semantics() {
-    let options: BookConfig = toml::from_str(
+    let options: SiteConfig = toml::from_str(
         "output='public'\ninclude=['art/**']\n[[mounts]]\nsource='../art'\npath='art'",
     )
     .unwrap();
@@ -341,7 +343,7 @@ fn mounts_parse_without_changing_include_semantics() {
     assert_eq!(options.mounts.len(), 1);
     assert_eq!(options.mounts[0].source, Path::new("../art"));
     assert!(
-        toml::from_str::<BookConfig>(
+        toml::from_str::<SiteConfig>(
             "output='public'\n[[mounts]]\nsource='../art'\npath='art'\nunknown=true"
         )
         .is_err()
@@ -375,8 +377,8 @@ fn mounted_documents_keep_their_real_import_and_configuration_scope() {
         "_notist/modules/{key}/formula/helper.js"
     ))));
     assert!(
-        html(&site, "art/components.js")
-            .contains(&format!("../_notist/modules/{key}/formula/index.js"))
+        html(&site, "_notist/pages/art/README.js")
+            .contains(&format!("../../modules/{key}/formula/index.js"))
     );
     let environment = vault
         .environment_for("/repo/art/README.not", source)
@@ -390,12 +392,12 @@ fn mounted_documents_keep_their_real_import_and_configuration_scope() {
 #[test]
 fn mounted_themes_and_additional_files_use_the_same_namespace() {
     let mut options = config();
-    options.theme = Some("art/theme".into());
-    options.additional_css = vec!["art/extra.css".into()];
-    options.additional_js = vec!["../art/extra.js".into()];
+    overlay(&mut options, "art/theme");
+    options.styles = vec!["art/extra.css".into()];
+    options.scripts = vec!["../art/extra.js".into()];
     let mut vault = Vault::new(resources(&[
         ("README.md", "# Home"),
-        ("../art/theme/assets/custom.css", "body {}"),
+        ("../art/theme/static/custom.css", "body {}"),
         ("../art/theme/hidden.md", "![Missing](bad.png)"),
         ("../art/extra.css", "h1 {}"),
         ("../art/extra.js", "// custom script"),
@@ -403,10 +405,7 @@ fn mounted_themes_and_additional_files_use_the_same_namespace() {
     ]));
     let site = build(&mut vault, &options).unwrap();
     assert_eq!(site.pages.len(), 1);
-    assert!(
-        site.files
-            .contains_key(Path::new("_notist/theme/custom.css"))
-    );
+    assert!(site.files.contains_key(Path::new("custom.css")));
     assert_eq!(site.files[Path::new("art/extra.css")], b"h1 {}");
     assert!(html(&site, "index.html").contains("src=\"art/extra.js\""));
     assert!(!site.files.contains_key(Path::new("art/unused.png")));

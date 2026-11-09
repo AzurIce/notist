@@ -1,14 +1,14 @@
 = Notist Book
 
-Notist Book 将文档目录（Vault）中的 .not 与 Markdown 文档组织为 HTML 书籍，提供章节导航、跨页链接与内置主题。
+Notist Book 由 Site 的 builtins.book 扩展和同名内置主题组成。扩展提供章节数据，主题通过统一的 SSG 模板与静态资源机制呈现阅读界面；两者可独立替换。
 
-SUMMARY.not 或 SUMMARY.md 用来选择章节并安排阅读顺序；没有 SUMMARY 时，按目录结构组织符合 include / exclude 条件的文档。页面 URL 由源文件路径决定。
+SUMMARY.not 或 SUMMARY.md 安排阅读顺序；enable = true 时同时选择发布章节。没有 SUMMARY 时按目录组织导航。页面 URL 由 Site 路由配置与源文件路径决定。
 
 == 命令与配置
 
-Book 是统一项目模型中的一种 target。命令行选择与输出规则见 [Notist CLI](cli.not)；`[[book]]` 的字段、默认值与路径基准见 [Notist.toml 配置](configuration.not#book-target)。本页说明 Book 的阅读结构、内容规则与预览行为。
+Book 使用 package 的 `[site]`。命令行见 [Notist CLI](cli.not)，字段和路径基准见 [Notist.toml 配置](configuration.not#book-扩展与主题)。
 
-target 的 root 指定文档目录，默认为项目配置目录。`build` 生成书籍文件；`serve` 提供本地预览，文件变化后自动重建，失败时保留上次可用预览。
+包根就是 Notist.toml 所在目录，content 指定内容目录。build 生成站点文件；serve 提供本地预览，文件变化后自动重建，失败时保留上次可用预览。
 
 ```sh
 notist build
@@ -17,19 +17,25 @@ notist serve --port 8000
 
 预览中的错误和警告会显示在终端及浏览器诊断面板中。使用 `--no-clear-screen` 保留每轮终端输出。
 
-项目的 Notist.toml 声明 Book target。完整字段见 [Notist.toml 配置](configuration.not#book-target)，最小形状如下：
+项目的 Notist.toml 分别选择扩展和主题：
 
 #raw<BlockContent>(r#"""
-[project]
+[package]
 name = "my-docs"
 
-[[book]]
+[site]
 title = "My Book"
-root = "docs"
+content = "."
+theme = "builtins.book"
+directory_urls = true
+copy_content_assets = false
 exclude = ["drafts/**", "**/AGENTS.md"]
+
+[site.extensions.builtins.book]
+enable = true
 """#, lang: "toml")
 
-include 默认允许所有文档，exclude 默认为空；匹配对象是 Vault 相对路径，* 不跨目录，** 跨目录。过滤后的文档是候选范围，存在 SUMMARY 时再由结构声明选择发布页面。点开头的目录或文件、target、node_modules、输出目录及自定义主题目录不参与正文发现。theme 默认使用内置主题。
+include 默认允许所有文档，exclude 默认为空；匹配对象相对 content，* 不跨目录，** 跨目录。SUMMARY 的 enable 默认 false，只组织导航；上例显式启用章节选择。点开头的条目、target、node_modules、输出目录及主题输入不参与正文发现。
 
 include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md 匹配任意目录（包含根目录）。不使用 gitignore 的无斜杠简写或 ! 重新包含规则。无效 glob 使构建失败。
 
@@ -38,20 +44,25 @@ include / exclude 都使用 glob；AGENTS.md 只匹配根目录，**/AGENTS.md �
 通过 mounts 将 Vault 外的目录加入书籍，而不必将资产归档移进文档目录。例如项目的 docs/ 是 Vault，art/ 与它同级：
 
 #raw<BlockContent>(r#"""
-[project]
+[package]
 name = "my-book"
 
-[[book]]
+[site]
+content = "."
+theme = "builtins.book"
+directory_urls = true
+copy_content_assets = false
+extensions.builtins.book = { enable = true }
 output = "../build/book"
 include = ["**"]
 exclude = ["**/AGENTS.md", "art/**/source/**"]
 
-[[book.mounts]]
+[[site.mounts]]
 source = "../art"
 path = "art"
 """#, lang: "toml")
 
-source 相对于 Vault 根目录，也可使用绝对路径；path 是书籍内的相对目录。挂载后的 art/models/drill/README.md 对应源文件 ../art/models/drill/README.md，生成 art/models/drill/index.html。include / exclude、目录派生导航和模板中的 page.source 都使用带挂载前缀的书籍路径。
+source 相对于包根，也可使用绝对路径；path 是内容命名空间内的相对目录。挂载后的 art/models/drill/README.md 对应源文件 ../art/models/drill/README.md，生成 art/models/drill/index.html。include / exclude、目录派生导航和 page.route.path 使用挂载后的内容路径。
 
 挂载内容使用相同的 include / exclude 和 SUMMARY 规则。例如在 Vault 根目录的 SUMMARY 中写 `[模型](art/models/)` 选择整个目录，或写 `[钻头](art/models/drill/README.md)` 选择单页。
 
@@ -61,19 +72,19 @@ source 相对于 Vault 根目录，也可使用绝对路径；path 是书籍内�
 
 source 必须是现有目录，且不能位于 Vault 内或包含 Vault；不同挂载的源目录不能相同或相互包含。path 必须非空，不能是绝对路径、包含上级跳转或占用 _notist；挂载路径之间不能重叠，也不能遮盖 Vault 中已有的文件或目录。输出目录不得与挂载源目录或 Vault 内的挂载路径重叠。文件系统构建仍拒绝符号链接资源。
 
-挂载页面使用当前 Book target 的扩展配置。serve 同时监听挂载目录的文件变化。
+挂载页面使用当前包的扩展配置。serve 同时监听挂载目录的文件变化。
 
 挂载文档的相对 Path 按源文档目录解析，以 `/` 开头的 Path 从挂载源目录定位。Path 的用法见 [Path 字面量](code/path.not)。
 
 === 输出与配置作用域
 
-Book target 配置章节发现与展示；项目的顶层 extensions 和 book.extensions 通过独立 imports 选择文档输出实现，字段与路径基准见 [Notist.toml 配置](configuration.not#扩展)。文档沿自身的 `#import` 加载语义依赖，规则的绑定不进入文档作用域。--config 选择项目或 workspace 配置，不改变文档的导入绑定。
+Site 配置发现、路由与展示，顶层 extensions 配置包的文档扩展，字段见 [Notist.toml 配置](configuration.not#扩展)。文档沿自身的 `#import` 加载依赖，规则绑定不进入文档作用域。
 
 构建成功后更新输出目录并清理过期产物；失败时保留原有文件。输出目录的配置与安全限制见 [Notist.toml 配置](configuration.not#输出)。
 
 == 路由与导航
 
-以下源路径相对于 Vault 根目录：
+directory_urls = true 时，以下源路径相对于 content：
 
 | 源文件 | URL | 输出文件 |
 | --- | --- | --- |
@@ -221,25 +232,28 @@ Book 将 `![描述](assets/example.png "标题")`（Markdown 与 Markup 均支�
 
 代码块标注语言后即可在构建时生成高亮，支持 Rust、TypeScript / TSX、TOML、Dockerfile、Notist 等。未标注或未知语言按纯文本显示。`rust,ignore`、`rust,no_run` 等标签使用对应语言的高亮。
 
-默认的 _notist/theme/highlight.css 提供明暗配色，与页面主题同步；根元素未显式选择主题时跟随系统。可通过附加 CSS 覆盖 --notist-code-* 变量，或在 theme/assets/highlight.css 替换整个配色文件。高亮保留源码空白与末尾换行，语言标签和复制按钮继续显示、复制原始内容。
+共享的 _notist/highlight.css 提供明暗配色，与页面主题同步。通过 styles 中的附加 CSS 覆盖 --notist-code-* 变量。高亮保留源码空白与末尾换行，复制按钮复制原始内容。
 
 == Tera 主题
 
-主题支持三层定制：通过 CSS 变量调整配色、字体与阅读宽度；通过 additional-css / additional-js 追加文件；通过 theme 目录覆盖模板与默认资源。
+主题支持三层定制：通过 CSS 变量调整外观，通过 styles / scripts 追加资源，通过 templates / static_dir 覆盖同名模板和静态资源。
 
 ```toml
-[project]
+[package]
 name = "handbook"
 
-[[book]]
+[site]
 title = "Project Handbook"
-output = "public"
-additional-css = ["styles/palette.css", "styles/content.css"]
-additional-js = ["scripts/reader.js"]
-# theme = "theme"
+content = "."
+theme = "builtins.book"
+directory_urls = true
+copy_content_assets = false
+styles = ["styles/palette.css", "styles/content.css"]
+scripts = ["scripts/reader.js"]
+extensions.builtins.book = {}
 ```
 
-附加路径相对于 Vault 根目录，也可通过挂载路径或真实路径选择 mounts 内的文件；文件按书籍相对路径复制到发布目录。theme 目录同样可以来自挂载。CSS 在默认样式与主题目录样式之后按声明顺序加载，JS 在默认 book.js 之后按声明顺序以 defer 加载。预览监听这些文件的变化。源路径与输出目录不得重叠；依赖的图片、字体等资源可放入主题的 assets/ 中统一发布。不会自动追踪 CSS url()、JS import 或组件参数中的路径。
+附加路径相对 content，也可通过已授权挂载的真实路径选择文件。CSS 在内置样式后按声明顺序加载，JS 在 book.js 后以 defer 加载。static_dir 覆盖主题同名资源；不会自动追踪 CSS url()、JS import 或组件参数中的路径。
 
 轻量定制可只写一个样式表，例如 styles/palette.css：
 
@@ -257,38 +271,41 @@ additional-js = ["scripts/reader.js"]
 
 --navigation-width 设置侧栏默认宽度，--book-width 设置整体布局的最大宽度（默认 1440px）。读者保存的侧栏宽度优先于主题默认值；重置后重新使用 --navigation-width。
 
-自定义 index.tera 时，在 head 中保留默认主题的主题初始化代码，并在目录节点之后内联 assets.navigation，以恢复阅读位置与侧栏设置。
+自定义 page.tera 时，在 head 中保留主题初始化代码，并在目录节点后 include navigation-script，以恢复阅读位置与侧栏设置。
 
-模板引擎使用 Tera 2。自定义主题目录可以覆盖 index.tera、navigation.tera、navigation-label.tera，或添加其他 .tera 模板；模板名是相对路径去掉 .tera。局部模板通过 include 引用，也可使用 extends 与 block 组织布局。navigation.tera 定义 `book_navigation(node)` 模板组件，通过 `{{<book_navigation node={child}/>}}` 递归渲染；navigation-label.tera 以 node 访问当前节点。Tera 不允许循环 include。assets/ 中的文件覆盖同名默认资源，额外 CSS 在默认 book.css 后加载。未覆盖的模板与资源保留默认实现。
+模板引擎使用 Tera 2，模板名是 templates 目录相对路径去掉 .tera。局部模板通过 include 引用，也可通过 extends / block 组织布局。内置 navigation 定义 `book_navigation(node, current, ancestors)` 组件，递归调用时显式传递当前输出路径和祖先 ID。Tera 不允许循环 include。
 
 默认资源包含独立的 status.css，为 draft、staged 与 outdate 注解提供样式。主题可通过同名资源覆盖，规则见 [HTML 内容状态](html.not#内容状态)。
 
 ```text
 theme/
-├── index.tera
-├── title.tera
-└── assets/
+├── templates/
+│   ├── page.tera
+│   └── title.tera
+└── static/
     ├── book.css
     └── extra.css
 ```
 
-模板上下文固定包含以下字段；无目标时 url、previous、next、assets.components 使用 null，数组可以为空：
+Book 扩展的数据位于 site.data.book；普通页面上下文沿用 SSG，不增加 Book 专用顶层字段：
 
 | 字段 | 内容 |
 | --- | --- |
-| book | title、home（当前页面相对首页 URL） |
-| page | title、url（规范目录 URL）、source（Vault 相对源路径）、attrs（文档根注解）、html（渲染正文） |
-| navigation | 顶层节点数组，每个节点包含 kind（chapter / draft / part / separator）、title、attrs、url、current、expanded、children；expanded 结合默认设置与当前路径决定 |
-| breadcrumbs | 同样的节点字段组成的祖先序列；expanded 为 true，children 为空；分节与分隔线不进入此序列 |
-| outline | title、id、anchor（编码后的 fragment）、level 组成的标题序列 |
-| previous / next | title、url，或 null |
-| assets | styles（CSS URL 数组）、scripts（主题与附加脚本 URL 数组）、components（页面注册脚本 URL，或 null）、navigation（应在目录节点之后内联的初始化脚本） |
+| site.title | 站点标题 |
+| page | title、route、attrs、html、headings、directory、ancestors |
+| site.data.book.structure | SUMMARY 解析与解析目标后的结构；无 SUMMARY 时为 null |
+| site.data.book.navigation | 全站共享导航树：id、output、kind、title、attrs、url、current、expanded、children |
+| site.data.book.order | 阅读顺序对应的输出路径数组 |
+| site.data.book.pages[page.route.path] | 当前页的 home、ancestors（导航节点 ID）、breadcrumbs、previous、next |
+| assets | highlight、styles、scripts、components |
+
+导航树只存一份，current 不作为当前页状态使用；主题通过 node.output 与 page.route.output 比较选中状态，通过 expanded 或节点 ID 是否位于当前 ancestors 中决定展开。导航 URL 相对输出根，可用 `url(path=node.url, relative_to=page.route.output)` 转成当前页相对 URL。breadcrumbs 和相邻页 URL 已相对当前页面。
 
 attrs 来自目标文档根节点的模块注解（`@!`），不包含局部标题或正文注解；无目标文档的目录节点使用空对象。page、navigation 和 breadcrumbs 使用相同投影：字符串、布尔和数值为 JSON 标量，数组和字典递归转换，Some 展开，Unit、None 与非有限浮点数为 null。这是主题呈现数据，不使用组件的 typed JSON 协议；不参与章节排序或路由。模板默认转义输出，访问可选字段前使用 if 检查，例如在 navigation-label.tera 中用 `{% if node.attrs.subtitle %}<small>{{node.attrs.subtitle}}</small>{% endif %}`。
 
 ```tera
 <!doctype html>
-<html><head><meta charset="utf-8"><title>{{page.title}} · {{book.title}}</title>
+<html><head><meta charset="utf-8"><title>{{page.title}} · {{site.title}}</title>
 {% for style in assets.styles %}<link rel="stylesheet" href="{{style}}">{% endfor %}
 {% for script in assets.scripts %}<script src="{{script}}" defer></script>{% endfor %}
 </head><body>
@@ -304,18 +321,20 @@ title.tera 可使用 `{{page.title}}`。普通插值转义 HTML，渲染后的 p
 
 ```rust
 let mut vault = notist::Vault::new(resources);
-let config = notist_book::BookConfig::new("public");
-let output = notist_book::build(&mut vault, &config)?;
-// output.pages 按阅读顺序保存页面来源、路由、标题和 headings；
-// output.files 保存相对输出路径及完整字节，可交给任意发布宿主。
+let mut config = notist_ssg::SiteConfig::default();
+config.theme = Some("builtins.book".into());
+config.extensions.builtins.book = Some(Default::default());
+let output = notist_ssg::Builder::default().build(&mut vault, &config)?;
+// output.data.book 包含导航与阅读顺序，output.pages 保持站点页面顺序。
+// output.files 保存相对输出路径与完整字节，宿主负责发布。
 ```
 
 serve 使用与 build 相同的参数和返回类型，在内存中构建并将可恢复的 Code 错误呈现为诊断节点；HTTP 服务与文件监听由 CLI 提供。
 
-notist-book 通过 Resources 读取输入，返回包含完整文件字节的 BuildOutput。files 保存页面与资源，warnings 保存链接警告，diagnostics 保存预览中可恢复的内容错误。文件发布、HTTP 服务与文件监听由 CLI 提供。
+Book 扩展位于 notist_ssg::builtins::book，通过 SiteConfig 启用，或通过 Builder.with_extension 注册。files 保存页面与资源，data 保存扩展数据，warnings 保存链接警告，diagnostics 保存预览中可恢复的内容错误。
 
 == GitHub Pages
 
-仓库的 Documentation workflow 使用 flake.lock 固定的开发环境，先按 Grammar 模块的 recipe 构建 WASM，再运行 notist build -p notist，上传 dist/notist-book 并部署到 GitHub Pages。根 Notist.toml 声明 workspace，docs/Notist.toml 声明 notist 项目及 book target；docs/README.not 发布到 /。根目录 modules/ 提供模块与组件资源，模块文档链接指向 GitHub 源文件。wasm-bindgen-cli 的版本从 Grammar crate 的依赖读取，保持生成器与 WASM 协议一致。
+仓库的 Documentation workflow 使用 flake.lock 固定开发环境，先构建 Grammar WASM，再在仓库根运行 notist build，上传 notist-output/notist 并部署。根 Notist.toml 同时声明 workspace、包身份与发布 docs 内容的 site；docs/README.not 发布到 /。示例包拥有独立发布目录，modules/ 提供模块与组件资源。
 
 push 到 main 与手动运行会构建并部署；pull request 只构建并上传产物。Pages 的发布来源设置为 GitHub Actions，部署使用 github-pages environment。站点内部链接与资源使用相对 URL，可直接发布在仓库子路径下。

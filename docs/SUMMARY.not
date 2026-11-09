@@ -11,7 +11,7 @@
 
 - [Notist CLI](cli.not)
 - [Notist.toml 配置](configuration.not)
-- [Workspace 与构建 Target](workspaces.not)
+- [Package 与站点组织](packages.not)
 - [Notist Book](book.not)
 - [Notist SSG](ssg/README.not)
   - [Extension（Experimental）](ssg/extensions.not)

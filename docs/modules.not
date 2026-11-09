@@ -70,12 +70,14 @@ imports = { typst = "../modules/typst/lib.notc" }
 from = "notist.math"
 to = "typst.math"
 
-[project]
+[package]
 name = "notes"
 
-[[book]]
+[site]
 title = "My Notes"
-output = "public"
+content = "."
+theme = "builtins.book"
+extensions.builtins.book = {}
 ```
 
 每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析。上例让文档中的 math 使用 Typst 渲染；文档中仍可直接写 `$...$` 或 `#math(...)`。完整契约见 [函数映射](designs/extensions.not)。

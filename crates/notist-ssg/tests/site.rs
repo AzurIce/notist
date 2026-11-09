@@ -346,7 +346,7 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
         );
     }
     let config = SiteConfig {
-        output: "content/output".into(),
+        output: "content".into(),
         ..SiteConfig::default()
     };
     assert!(
@@ -467,4 +467,52 @@ fn default_template_loads_highlight_styles_relative_to_nested_pages() {
     let page = html(&site, "guide/start.html");
     assert!(page.contains("href=\"../_notist/highlight.css\""));
     assert!(page.contains("class=\"language-toml\"><span class="));
+}
+
+#[test]
+fn implicit_and_explicit_default_themes_are_identical() {
+    assert_eq!(
+        SiteConfig::default().theme.as_deref(),
+        Some(Path::new("builtins.default"))
+    );
+    let parsed: SiteConfig = toml::from_str("").unwrap();
+    assert_eq!(parsed.theme, SiteConfig::default().theme);
+    let mut input = vault(&[
+        ("content/index.not", "= Home"),
+        ("content/guide/start.md", "# Start"),
+    ]);
+    let implicit = Builder::default()
+        .build(&mut input, &SiteConfig::default())
+        .unwrap();
+    let config = SiteConfig {
+        theme: Some("builtins.default".into()),
+        ..Default::default()
+    };
+    let explicit = Builder::default().build(&mut input, &config).unwrap();
+    assert_eq!(implicit.files, explicit.files);
+    let nested = html(&explicit, "guide/start.html");
+    assert!(nested.contains("<title>Start · Site</title>"));
+    assert!(nested.contains("href=\"../_notist/highlight.css\""));
+}
+
+#[test]
+fn default_theme_templates_can_be_overridden_or_used_as_disk_theme_fallback() {
+    let mut input = vault(&[
+        ("content/index.md", "# Home"),
+        ("theme/templates/partial.tera", "Unrelated template"),
+        ("custom/page.tera", "Override: {{page.title}}"),
+    ]);
+    let config = SiteConfig {
+        theme: Some("theme".into()),
+        ..Default::default()
+    };
+    let fallback = Builder::default().build(&mut input, &config).unwrap();
+    assert!(html(&fallback, "index.html").contains("<main><section><h1"));
+    let config = SiteConfig {
+        theme: Some("builtins.default".into()),
+        templates: "custom".into(),
+        ..Default::default()
+    };
+    let custom = Builder::default().build(&mut input, &config).unwrap();
+    assert_eq!(html(&custom, "index.html"), "Override: Home");
 }

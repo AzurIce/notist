@@ -9,4 +9,5 @@ AGENTS.local.md
 test.typ
 test.pdf
 /dist/
+/notist-output/
 __pycache__

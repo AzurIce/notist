@@ -1,10 +1,19 @@
 use notist::{MemoryResources, Vault};
-use notist_book::{BookConfig, BuildOutput, Error, build};
+mod support;
+use notist_ssg::{BuildOutput, Error, SiteConfig};
 use std::path::Path;
+use support::book::{book_config, build, overlay, serve};
 
 fn resources(files: &[(&str, &str)]) -> MemoryResources {
     let mut resources = MemoryResources::new("/vault");
     for (path, source) in files {
+        let source = if path.ends_with("templates/page.tera") {
+            format!(
+                "{{% set book = site.data.book.pages[page.route.path] %}}{{% set navigation = site.data.book.navigation %}}{{% set breadcrumbs = book.breadcrumbs %}}{{% set previous = book.previous %}}{{% set next = book.next %}}{source}"
+            )
+        } else {
+            source.to_string()
+        };
         resources.insert(path, source.as_bytes().to_vec());
     }
     resources
@@ -12,14 +21,14 @@ fn resources(files: &[(&str, &str)]) -> MemoryResources {
 fn render(files: &[(&str, &str)]) -> BuildOutput {
     build(
         &mut Vault::new(resources(files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap()
 }
 fn fail(files: &[(&str, &str)]) -> Error {
     build(
         &mut Vault::new(resources(files)),
-        &BookConfig::new("target/book"),
+        &book_config("target/book"),
     )
     .unwrap_err()
 }
@@ -76,13 +85,13 @@ fn markdown_summary_discovers_directories_and_supports_collapsed_branches() {
 #[test]
 fn markdown_summary_is_loaded_outside_page_filters_in_build_and_serve() {
     for config in [
-        BookConfig {
+        SiteConfig {
             include: vec!["README.md".into()],
-            ..BookConfig::new("public")
+            ..book_config("public")
         },
-        BookConfig {
+        SiteConfig {
             exclude: vec!["SUMMARY.md".into()],
-            ..BookConfig::new("public")
+            ..book_config("public")
         },
     ] {
         for recover in [false, true] {
@@ -92,7 +101,7 @@ fn markdown_summary_is_loaded_outside_page_filters_in_build_and_serve() {
                 ("SUMMARY.md", "# Summary\n\n- [Declared title](README.md)"),
             ]));
             let site = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             }
@@ -117,12 +126,12 @@ fn two_root_summary_files_are_ambiguous_even_when_excluded() {
                 ("SUMMARY.not", "- [Home](README.md)"),
                 ("SUMMARY.md", "- [Home](README.md)"),
             ]));
-            let config = BookConfig {
+            let config = SiteConfig {
                 exclude: exclude.clone(),
-                ..BookConfig::new("public")
+                ..book_config("public")
             };
             let error = if recover {
-                notist_book::serve(&mut vault, &config)
+                serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
             }
@@ -303,8 +312,8 @@ fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
         .replace("= 目录", "# 目录")
         .replace("= 附录", "# 附录");
     for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
-        let mut config = BookConfig::new("public");
-        config.theme = Some("theme".into());
+        let mut config = book_config("public");
+        overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
             ("architecture.md", "# Architecture"),
             ("gameplay/demo.md", "# Demo"),
@@ -313,8 +322,8 @@ fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
             ("testing/check.md", "# Check"),
             ("components/widget.not", "= Widget"),
             (name, summary),
-            ("theme/index.tera", "{% for node in navigation %}{{<tree node={node}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
-            ("theme/tree.tera", "{% component tree(node) %}[{{node.kind}}:{{node.title}}:{{node.expanded}}{% for child in node.children %}{{<tree node={child}/>}}{% endfor %}]{% endcomponent tree %}"),
+            ("theme/templates/page.tera", "{% for node in navigation %}{{<tree node={node} ancestors={book.ancestors}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
+            ("theme/templates/tree.tera", "{% component tree(node, ancestors) %}[{{node.kind}}:{{node.title}}:{{node.expanded or node.id in ancestors}}{% for child in node.children %}{{<tree node={child} ancestors={ancestors}/>}}{% endfor %}]{% endcomponent tree %}"),
         ])), &config).unwrap();
         let architecture = html(&site, "architecture/index.html");
         assert!(architecture.starts_with("[chapter:架构:true][chapter:玩法设计:true[chapter:Demo 策划案:true][chapter:多层地形与物流规则:true]][chapter:资产与表现:true[chapter:模型:true[chapter:建筑模型管线:true]]][chapter:测试与发布:true[chapter:综合工厂验收:true]][separator::true][part:附录:true][chapter:Notist 组件:false[chapter:组件:true]][chapter:空章节:true][draft:草稿:true]"), "{name}: {architecture}");
@@ -353,16 +362,16 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
             vec!["Start body", "Home body", "Intro body", "Last body"],
         ),
     ] {
-        let mut config = BookConfig::new("public");
+        let mut config = book_config("public");
         config.title = "Book title".into();
-        config.theme = Some("theme".into());
+        overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
             ("README.not", "= Home body"),
             ("intro.not", "= Intro body"),
             ("guide/start.not", "= Start body"),
             ("last.not", "= Last body"),
             ("SUMMARY.not", summary),
-            ("theme/index.tera", "{% for node in navigation %}[{{node.title}}:{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% for node in navigation %}{% if node.url %}{{node.title}}={{node.expanded}};{% endif %}{% endfor %}"),
+            ("theme/templates/page.tera", "{% for node in navigation %}[{{node.title}}:{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% for node in navigation %}{% if node.url %}{{node.title}}={{node.expanded or node.id in book.ancestors}};{% endif %}{% endfor %}"),
         ])), &config).unwrap();
         assert_eq!(
             site.pages
@@ -393,8 +402,8 @@ fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
     let native = "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---";
     let markdown = native.replace("== ", "## ").replace("= ", "# ");
     for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
-        let mut config = BookConfig::new("public");
-        config.theme = Some("theme".into());
+        let mut config = book_config("public");
+        overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
         ("README.not", "= Introduction body"),
         ("preface.not", "= Preface body"),
@@ -405,7 +414,7 @@ fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
         ("thanks.not", "= Contributors body"),
         ("license.not", "= License body"),
         (name, summary),
-        ("theme/index.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}({{child.kind}}:{{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
+        ("theme/templates/page.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}({{child.kind}}:{{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
     ])), &config).unwrap();
         let home = html(&site, "index.html");
         let expected = "[chapter:Introduction][chapter:Preface][separator:][part:User guide][chapter:Installation][chapter:Guide(chapter:Advanced)(draft:Draft)][separator:][part:Reference guide][chapter:Reference][separator:][chapter:Contributors][chapter:License][separator:]";
@@ -439,8 +448,8 @@ fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
 
 #[test]
 fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
-    let mut config = BookConfig::new("public");
-    config.theme = Some("theme".into());
+    let mut config = book_config("public");
+    overlay(&mut config, "theme");
     let site = build(&mut Vault::new(resources(&[
         ("README.not", "= Introduction"),
         ("guide/README.not", "= Guide"),
@@ -448,7 +457,7 @@ fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
         ("guide/b.not", "= B"),
         ("end.not", "= End"),
         ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n\n= Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n= Reference\n\n- [End](end.not)"),
-        ("theme/index.tera", "{% for node in navigation %}[{{node.title}}{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}"),
+        ("theme/templates/page.tera", "{% for node in navigation %}[{{node.title}}{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}"),
     ])), &config).unwrap();
     assert_eq!(
         html(&site, "index.html"),
@@ -470,11 +479,11 @@ fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
                 "= Summary\n\n[Home](README.not)\n\n- [History](_logs/)\n- [Empty](empty/)\n- [After](after.not)",
             ),
             (
-                "theme/index.tera",
+                "theme/templates/page.tera",
                 "{% for node in navigation %}{{<tree node={node}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.kind}}:{{crumb.title}}]{% endfor %}",
             ),
             (
-                "theme/tree.tera",
+                "theme/templates/tree.tera",
                 "{% component tree(node) %}[{{node.kind}}:{{node.title}}:{% if node.url %}linked{% else %}unlinked{% endif %}{% for child in node.children %}{{<tree node={child}/>}}{% endfor %}]{% endcomponent tree %}",
             ),
         ];
@@ -484,8 +493,8 @@ fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
                 ("_logs/2026/README.not", "= 2026"),
             ]);
         }
-        let mut config = BookConfig::new("public");
-        config.theme = Some("theme".into());
+        let mut config = book_config("public");
+        overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&files)), &config).unwrap();
         let link = if has_home { "linked" } else { "unlinked" };
         let expected = format!(
@@ -568,9 +577,9 @@ fn summary_selects_pages_before_analysis_and_route_validation() {
     ];
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
-        let config = BookConfig::new("target/book");
+        let config = book_config("target/book");
         let site = if recover {
-            notist_book::serve(&mut vault, &config)
+            serve(&mut vault, &config)
         } else {
             build(&mut vault, &config)
         }
@@ -632,13 +641,13 @@ fn content_links_do_not_publish_unlisted_documents() {
 #[test]
 fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
     for config in [
-        BookConfig {
+        SiteConfig {
             include: vec!["README.not".into()],
-            ..BookConfig::new("public")
+            ..book_config("public")
         },
-        BookConfig {
+        SiteConfig {
             exclude: vec!["ai/**".into()],
-            ..BookConfig::new("public")
+            ..book_config("public")
         },
     ] {
         let mut vault = Vault::new(resources(&[
@@ -912,15 +921,15 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
             "- [Home](README.not)\n- [History](_logs/)\n- [Empty](_logs/excluded/)",
         ),
     ];
-    let config = BookConfig {
+    let config = SiteConfig {
         include: vec!["README.not".into(), "_logs/**".into()],
         exclude: vec!["_logs/excluded/**".into(), "_logs/skip.not".into()],
-        ..BookConfig::new("target/book")
+        ..book_config("target/book")
     };
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
         let site = if recover {
-            notist_book::serve(&mut vault, &config)
+            serve(&mut vault, &config)
         } else {
             build(&mut vault, &config)
         }
@@ -954,9 +963,9 @@ fn directory_entries_select_their_subtree_in_build_and_serve() {
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
         let site = if recover {
-            notist_book::serve(&mut vault, &BookConfig::new("target/book"))
+            serve(&mut vault, &book_config("target/book"))
         } else {
-            build(&mut vault, &BookConfig::new("target/book"))
+            build(&mut vault, &book_config("target/book"))
         }
         .unwrap();
         assert_eq!(

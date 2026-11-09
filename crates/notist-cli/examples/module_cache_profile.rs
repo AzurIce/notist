@@ -66,8 +66,7 @@ fn project(mode: &str, root: &Path, rounds: usize, output: Option<&Path>) {
     let root = root.canonicalize().unwrap();
     let text = std::fs::read_to_string(root.join("Notist.toml")).unwrap();
     let manifest: toml::Value = toml::from_str(&text).unwrap();
-    let mut table = manifest[mode][0].as_table().unwrap().clone();
-    table.remove("name");
+    let mut table = manifest["site"].as_table().unwrap().clone();
     table
         .entry("output")
         .or_insert_with(|| toml::Value::String("profile-output".into()));
@@ -82,17 +81,12 @@ fn project(mode: &str, root: &Path, rounds: usize, output: Option<&Path>) {
                 ..Default::default()
             })
             .with_config(root.join("Notist.toml"));
-        let (pages, files) = if mode == "site" {
+        let (pages, files) = {
             let config: notist_ssg::SiteConfig =
                 toml::Value::Table(table.clone()).try_into().unwrap();
             let output = notist_ssg::Builder::default()
                 .build(&mut vault, &config)
                 .unwrap();
-            (output.pages.len(), output.files)
-        } else {
-            let config: notist_book::BookConfig =
-                toml::Value::Table(table.clone()).try_into().unwrap();
-            let output = notist_book::build(&mut vault, &config).unwrap();
             (output.pages.len(), output.files)
         };
         report(

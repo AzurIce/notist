@@ -264,9 +264,9 @@ fn pure_module_source_snapshots_use_the_same_graph_loader() {
     );
 }
 #[test]
-fn old_qualification_and_package_manifests_are_rejected() {
+fn package_metadata_is_accepted_but_old_qualification_and_dependencies_are_rejected() {
+    assert!(notist::environment::parse_config("[package]\nname='content'\n[site]").is_ok());
     for source in [
-        "[package]\nname='old'",
         "[dependencies]\na={path='a'}",
         "[dev-dependencies]\na={path='a'}",
     ] {

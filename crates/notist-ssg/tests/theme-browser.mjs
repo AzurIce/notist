@@ -1,6 +1,6 @@
 // Real-browser smoke tests, without npm dependencies (Node 22+ and Chromium).
 // Build the grammar module WASM first (modules/grammar/justfile), then:
-// cargo build -p notist-cli && node crates/notist-book/tests/theme-browser.mjs
+// cargo build -p notist-cli && node crates/notist-ssg/tests/theme-browser.mjs
 // Optional: CHROMIUM, NOTIST_BIN, THEME_SCREENSHOT_DIR.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 await mkdir(join(repository, 'target'), { recursive: true });
-const temporary = await mkdtemp(join(repository, 'target/theme-browser-'));
+const temporary = await mkdtemp('/tmp/opencode/notist-theme-browser-');
 const vault = join(temporary, 'vault');
 const output = join(temporary, 'site');
 const screenshots = process.env.THEME_SCREENSHOT_DIR;
@@ -26,7 +26,7 @@ try {
   await mkdir(join(vault, 'notes'), { recursive: true });
   await mkdir(join(vault, '_logs'), { recursive: true });
   await mkdir(join(vault, 'empty'), { recursive: true });
-  await writeFile(join(vault, 'Notist.toml'), `[book]\ntitle = "Field Notes"\nadditional-css = ["custom/first.css", "custom/last.css"]\nadditional-js = ["custom/first.js", "custom/last.js"]\n`);
+  await writeFile(join(vault, 'Notist.toml'), `[package]\nname = "field-notes"\n[site]\ncontent = "."\ntitle = "Field Notes"\ntheme = "builtins.book"\ndirectory_urls = true\ncopy_content_assets = false\nextensions.builtins.book = { enable = true }\nstyles = ["custom/first.css", "custom/last.css"]\nscripts = ["custom/first.js", "custom/last.js"]\n`);
   await mkdir(join(vault, 'custom'), { recursive: true });
   await writeFile(join(vault, 'custom/first.css'), ':root[data-brand="custom"] { --accent: #6d28d9; }');
   await writeFile(join(vault, 'custom/last.css'), ':root[data-brand="custom"] { --accent: #7040b8; }');
@@ -171,7 +171,7 @@ syntax PlainText -> Token;
 - @(collapsed: true)[History](_logs/)
 - [Empty](empty/)
 `);
-  const build = spawnSync(process.env.NOTIST_BIN || join(repository, 'target/debug/notist'), ['book', 'build', vault, '--out-dir', output], { encoding: 'utf8' });
+  const build = spawnSync(process.env.NOTIST_BIN || join(repository, 'target/debug/notist'), ['build', '--config', join(vault, 'Notist.toml'), '--out-dir', output], { encoding: 'utf8' });
   assert.equal(build.status, 0, build.stderr || build.error?.message);
 
   // Serve the exact generated artifact on loopback, including nested clean URLs.

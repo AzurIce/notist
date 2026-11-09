@@ -21,7 +21,7 @@ Rust 扩展实现 `DocumentExtension`，通过 `Context.with_extension` 或 `Vau
 
 == 配置
 
-`[[extensions]]` 对项目内所有 target 生效；`[[book.extensions]]` 只追加到单个 Book target。
+顶层 `[[extensions]]` 定义包的文档扩展，build / serve 与单文件命令共用这些规则。站点扩展独立位于 site.extensions。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -34,7 +34,7 @@ Rust 扩展实现 `DocumentExtension`，通过 `Context.with_extension` 或 `Vau
 `replace` 不接受 `command` / `stages`；`command` 不接受 `imports` / `from` / `to`。
 
 ```toml
-[project]
+[package]
 name = "example"
 
 [[extensions]]
@@ -42,10 +42,9 @@ kind = "command"
 command = ["python3", "scripts/check_document.py"]
 stages = ["after_check"]
 
-[[book]]
-name = "example-book"
+[site]
 
-[[book.extensions]]
+[[extensions]]
 kind = "command"
 command = ["python3", "scripts/check_book.py"]
 stages = ["after_check"]

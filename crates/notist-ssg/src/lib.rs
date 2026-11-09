@@ -1,20 +1,23 @@
-//! Directory-preserving document publication with replaceable site templates.
+//! Shared static-site compilation, routing, extensions and replaceable themes.
 mod assets;
 mod build;
+pub mod builtins;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod command;
 mod config;
 mod document;
 pub mod extensions;
+mod mounts;
 mod routes;
 mod templates;
+mod themes;
 
 pub use build::BuildOutput;
-pub use config::SiteConfig;
+pub use config::{Mount, SiteConfig};
 pub use document::{Heading, Page};
 pub use routes::Route;
 
-/// Site build driver, with native extensions followed by configured commands.
+/// Site build driver, with native extensions followed by ordered configured extensions.
 #[derive(Debug, Default)]
 pub struct Builder {
     extensions: Vec<Box<dyn extensions::SiteExtension>>,
@@ -29,7 +32,16 @@ impl Builder {
         vault: &mut notist::Vault<R>,
         config: &SiteConfig,
     ) -> Result<BuildOutput, Error> {
-        build::build(vault, config, &self.extensions)
+        build::build(vault, config, &self.extensions, false)
+    }
+
+    /// Preview retains recoverable content errors, but never publishes fatal failures.
+    pub fn serve<R: notist::Resources>(
+        &self,
+        vault: &mut notist::Vault<R>,
+        config: &SiteConfig,
+    ) -> Result<BuildOutput, Error> {
+        build::build(vault, config, &self.extensions, true)
     }
 }
 

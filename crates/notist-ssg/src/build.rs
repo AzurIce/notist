@@ -179,25 +179,58 @@ fn discover<R: Resources>(
     directories: &mut Vec<PathBuf>,
 ) -> Result<(), Error> {
     let logical = mounts.path(path).unwrap();
-    if !logical.as_os_str().is_empty() && exclude.is_match(&logical) { return Ok(()); }
+    if !logical.as_os_str().is_empty() && exclude.is_match(&logical) {
+        return Ok(());
+    }
     directories.push(vault.resources().resolve(&config.content).join(&logical));
     for entry in vault.resources().entries(path)? {
-        if entry
-            .file_name()
-            .is_some_and(|s| s.to_string_lossy().starts_with('.') || s == "Notist.toml" || s == "target" || s == "node_modules")
+        if entry.file_name().is_some_and(|s| {
+            s.to_string_lossy().starts_with('.')
+                || s == "Notist.toml"
+                || s == "target"
+                || s == "node_modules"
+        }) {
+            continue;
+        }
+        let excluded_roots = [
+            &config.output,
+            &config.templates,
+            &config.static_dir,
+            &config.data,
+            &config.sass,
+        ];
+        if excluded_roots
+            .into_iter()
+            .any(|p| entry.starts_with(vault.resources().resolve(p)))
+            || config
+                .theme
+                .as_ref()
+                .filter(|p| !crate::themes::is_builtin(p))
+                .is_some_and(|p| entry.starts_with(vault.resources().resolve(p)))
         {
             continue;
         }
-        let excluded_roots = [&config.output, &config.templates, &config.static_dir, &config.data, &config.sass];
-        if excluded_roots.into_iter().any(|p| entry.starts_with(vault.resources().resolve(p)))
-            || config.theme.as_ref().filter(|p| !crate::themes::is_builtin(p)).is_some_and(|p| entry.starts_with(vault.resources().resolve(p))) {
+        let logical = mounts.path(&entry).unwrap();
+        if exclude.is_match(&logical) {
             continue;
         }
-        let logical = mounts.path(&entry).unwrap();
-        if exclude.is_match(&logical) { continue; }
         match vault.resources().kind(&entry)? {
-            Some(ResourceKind::Directory) => discover(vault, &entry, config, mounts, include, exclude, sources, assets, directories)?,
-            Some(ResourceKind::File) if vault.supports(&entry) => { if include.is_match(&logical) { sources.push(entry) } },
+            Some(ResourceKind::Directory) => discover(
+                vault,
+                &entry,
+                config,
+                mounts,
+                include,
+                exclude,
+                sources,
+                assets,
+                directories,
+            )?,
+            Some(ResourceKind::File) if vault.supports(&entry) => {
+                if include.is_match(&logical) {
+                    sources.push(entry)
+                }
+            }
             Some(ResourceKind::File) if !entry.extension().is_some_and(|s| s == "notc") => {
                 assets.push(entry)
             }
@@ -322,37 +355,61 @@ fn resolve_link(
     };
     let source = mounts.resolve(&source);
     let logical = mounts.path(&source).map(|p| content.join(p));
-    let destination_doc = documents.find(&source, content).or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
+    let destination_doc = documents
+        .find(&source, content)
+        .or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
     let destination = if let Some(destination) = destination_doc {
         if let Some(anchor) = anchor.filter(|a| !a.is_empty()) {
             let decoded = percent_encoding::percent_decode_str(anchor)
                 .decode_utf8()
                 .map_err(|_| "invalid UTF-8 in anchor")?;
             if !destination.ids.contains(decoded.as_ref()) {
-                warnings.push(issue(document, node, format!(
+                warnings.push(issue(
+                    document,
+                    node,
+                    format!(
                         "missing anchor `{anchor}` in `{}`",
                         destination.route.path.display()
-                )));
+                    ),
+                ));
             }
         }
         Cow::Borrowed(destination.route.output.as_path())
     } else {
         let Some(published) = mounts.path(&source) else {
-            let mut warning = issue(document, node, format!("reference `{target}` is outside the content directory and configured mounts"));
+            let mut warning = issue(
+                document,
+                node,
+                format!(
+                    "reference `{target}` is outside the content directory and configured mounts"
+                ),
+            );
             warning.diagnostic.code = Some(DiagnosticCode::OutsideVault);
             warnings.push(warning);
             return Ok(None);
         };
-        if published.starts_with("_notist") { return Err("_notist is reserved for generated resources".into()); }
+        if published.starts_with("_notist") {
+            return Err("_notist is reserved for generated resources".into());
+        }
         if outputs.contains(&published) {
             Cow::Owned(published)
         } else {
             let index = published.join("index.html");
             if !outputs.contains(&index) {
-                warnings.push(issue(document, node, format!("missing local reference `{target}` (not published)")));
+                warnings.push(issue(
+                    document,
+                    node,
+                    format!("missing local reference `{target}` (not published)"),
+                ));
                 if source.extension().is_some_and(|s| s == "not" || s == "md") {
-                    Cow::Owned(crate::Route::plan(content.join(&published), content, directory_urls).map_err(|e| e.to_string())?.output)
-                } else { Cow::Owned(published) }
+                    Cow::Owned(
+                        crate::Route::plan(content.join(&published), content, directory_urls)
+                            .map_err(|e| e.to_string())?
+                            .output,
+                    )
+                } else {
+                    Cow::Owned(published)
+                }
             } else {
                 Cow::Owned(index)
             }
@@ -362,8 +419,14 @@ fn resolve_link(
         String::new()
     } else {
         if directory_urls && destination.file_name().is_some_and(|s| s == "index.html") {
-            relative_url(&document.page.route.output, destination.parent().unwrap(), true)
-        } else { relative_url(&document.page.route.output, &destination, false) }
+            relative_url(
+                &document.page.route.output,
+                destination.parent().unwrap(),
+                true,
+            )
+        } else {
+            relative_url(&document.page.route.output, &destination, false)
+        }
     };
     if let Some(query) = query {
         url.push('?');
@@ -481,6 +544,10 @@ fn render_templates(
         let mut output = Vec::with_capacity(chunk.len());
         for (offset, page) in chunk.iter().enumerate() {
             let i = start + offset;
+            let timing = notist::progress::Span::stage("site.template.page", || {
+                format!("Template {}", page.route.path.display())
+            });
+            timing.attribute("source", || page.route.source.display().to_string());
             let template = page
                 .attrs
                 .get("template")
@@ -512,6 +579,7 @@ fn render_templates(
                 .render(template, &context)
                 .map_err(|e| Error::Message(format!("{}: {e}", page.route.path.display())))?;
             output.push(html.into_bytes());
+            timing.finish();
         }
         Ok::<_, Error>(output)
     };
@@ -533,455 +601,493 @@ pub(crate) fn build<R: Resources + Send>(
     recover: bool,
     executor: &notist::Executor,
 ) -> Result<BuildOutput, Error> {
-    let config = &{
-        let mut config = config.clone();
-        let mounts = crate::mounts::Mounts::new(vault.resources(), &config)?;
-        let content = vault.resources().resolve(&config.content);
-        for path in config.styles.iter_mut().chain(&mut config.scripts) {
-            let source = mounts.resolve(&normalize(&content.join(&*path)));
-            *path = mounts.path(&source).ok_or_else(|| {
-                Error::Message(
-                    "additional site assets must be within content or configured mounts".into(),
-                )
-            })?;
-        }
-        config
-    };
-    config.validate()?;
-    let mut extensions: Vec<_> = extensions.iter().map(|e| e.create()).collect();
-    extensions.extend(crate::extensions::configured(config)?);
-    let content = vault.resources().resolve(&config.content);
-    let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
-    let output = vault.resources().resolve(&config.output);
-    if content.starts_with(&output) || vault.resources().root().starts_with(&output) {
-        return Err(Error::Message(
-            "site output and content sources overlap".into(),
-        ));
-    }
-    let mut inputs = vec![
-        config.templates.clone(),
-        config.static_dir.clone(),
-        config.data.clone(),
-        config.sass.clone(),
-    ];
-    if let Some(theme) = &config.theme {
-        if !crate::themes::is_builtin(theme) {
-            inputs.push(theme.clone());
-        }
-    }
-    for input in inputs {
-        let input = vault.resources().resolve(&input);
-        if input.starts_with(&output) || output.starts_with(&input) || content.starts_with(&input) {
-            return Err(Error::Message(format!(
-                "site input `{}` overlaps content or output",
-                input.display()
-            )));
-        }
-    }
-    let content_kind = vault.resources().kind(&content)?;
-    let generated_only =
-        content_kind.is_none() && (!extensions.is_empty() || !config.extensions.is_empty());
-    if content_kind != Some(ResourceKind::Directory) && !generated_only {
-        return Err(Error::Message(format!(
-            "content directory `{}` does not exist",
-            content.display()
-        )));
-    }
-    let mut sources = vec![];
-    let discovery = notist::progress::Span::enter(|| "Discover documents".into());
-    let mut content_assets = vec![];
-    let mut source_dirs = vec![];
-    let globs = |patterns: &[String]| -> Result<globset::GlobSet, Error> {
-        let mut builder = globset::GlobSetBuilder::new();
-        for pattern in patterns {
-            builder.add(
-                globset::GlobBuilder::new(pattern)
-                    .literal_separator(true)
-                    .build()
-                    .map_err(|e| Error::Message(format!("invalid site glob `{pattern}`: {e}")))?,
-            );
-        }
-        builder.build().map_err(|e| Error::Message(e.to_string()))
-    };
-    let include = globs(&config.include)?;
-    let exclude = globs(&config.exclude)?;
-    if generated_only {
-        source_dirs.push(content.clone());
-    } else {
-        for (root, _) in mounts.roots() {
-            discover(
-                vault,
-                root,
-                config,
-                &mounts,
-                &include,
-                &exclude,
-                &mut sources,
-                &mut content_assets,
-                &mut source_dirs,
-            )?;
-        }
-    }
-    let mut input = crate::extensions::CompileInput {
-        documents: sources
-            .into_iter()
-            .map(|source| Ok((mounts.path(&source).unwrap(), vault.source(&source)?)))
-            .collect::<Result<_, Error>>()?,
-    };
-    discovery.finish();
-    let routes = notist::progress::run(
-        || "Run site extensions and plan routes".into(),
-        || crate::extensions::before_compile(vault, config, &mut extensions, &mut input),
-    )?;
-    let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
-    // Mounts may introduce virtual ancestors without documents of their own.
-    for directory in source_dirs.clone() {
-        for parent in directory.ancestors().skip(1) {
-            if !parent.starts_with(&content) {
-                break;
-            }
-            source_dirs.insert(parent.into());
-        }
-    }
-    for path in input.documents.keys() {
-        for parent in content.join(path).parent().unwrap().ancestors() {
-            source_dirs.insert(parent.into());
-            if parent == content {
-                break;
-            }
-        }
-    }
-    let source_dirs: Vec<_> = source_dirs.into_iter().collect();
-    let mut documents = vec![];
-    let mut errors = vec![];
-    let mut outputs: BTreeSet<_> = routes.iter().map(|route| route.output.clone()).collect();
-    let mut analyzed = Vec::new();
-    let analysis_stage = notist::progress::Span::enter(|| "Analyze documents".into());
-    for ((_, text), route) in input.documents.into_iter().zip(routes) {
-        let (analysis, handle) = vault.analyze_document_with_resource_root(
-            &route.source,
-            &text,
-            mounts
-                .roots()
-                .find(|(root, _)| route.source.starts_with(root))
-                .map(|(root, _)| root)
-                .unwrap_or(&content),
-        )?;
-        errors.extend(
-            analysis
-                .diagnostics()
-                .iter()
-                .filter(|d| d.code != Some(DiagnosticCode::OutsideVault))
-                .cloned()
-                .map(|d| diagnostic(&route.source, &text, d)),
-        );
-        analyzed.push((route, text, analysis, handle));
-    }
-    analysis_stage.finish();
-    // Fix every generated/edited document source in the shared input view before
-    // any page can consume another document as text, regardless of route order.
-    let mut handles = Vec::with_capacity(analyzed.len());
-    let evaluation_stage = notist::progress::Span::enter(|| "Evaluate documents".into());
-    let evaluation_start = std::time::Instant::now();
-    let parallel = if executor.jobs() > 1 && analyzed.len() > 128 {
-        let jobs: Vec<_> = analyzed
-            .iter()
-            .map(|(_, _, analysis, handle)| (handle, analysis))
-            .collect();
-        Some(vault.evaluate_documents(&jobs, executor)?)
-    } else {
-        None
-    };
-    let mut parallel = parallel.map(Vec::into_iter);
-    for (route, text, analysis, handle) in analyzed {
-        let document =
-            notist::progress::Span::enter(|| format!("Document {}", route.path.display()));
-        let evaluation = match &mut parallel {
-            Some(results) => results.next().unwrap()?,
-            None => vault.evaluate_document(&handle, &analysis)?,
-        };
-        errors.extend(
-            evaluation
-                .diagnostics
-                .into_iter()
-                .map(|d| diagnostic(&route.source, &text, d)),
-        );
-        let mut prepared = Document::new(route, evaluation.root, text, evaluation.sources)?;
-        if prepared.page.route.url == "/"
-            && prepared.page.headings.is_empty()
-            && !prepared.page.attrs.contains_key("title")
-        {
-            prepared.page.title = config.title.clone();
-        }
-        documents.push(prepared);
-        handles.push(handle);
-        document.finish();
-    }
-    let mut diagnostics = vec![];
-    if recover {
-        let (local, fatal): (Vec<_>, Vec<_>) =
-            errors.into_iter().partition(|e| e.diagnostic.recovered);
-        diagnostics = local;
-        errors = fatal;
-    }
-    if !errors.is_empty() {
-        return Err(Error::Diagnostics(errors));
-    }
-    evaluation_stage.finish();
-    if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
-        eprintln!(
-            "[eval-batch] seconds={:.9}",
-            evaluation_start.elapsed().as_secs_f64()
-        );
-    }
-    let asset_stage = notist::progress::Span::enter(|| "Prepare assets and Sass".into());
-    let mut assets = Assets::new(output);
-    for document in &documents {
-        assets.reserve_generated(document.page.route.output.clone())?;
-    }
-    outputs.extend(assets::prepare(
-        vault.resources(),
-        config,
-        &content_assets,
-        &mounts,
-        &mut assets,
-    )?);
-    let highlight_css = PathBuf::from("_notist/highlight.css");
-    assets.generated(
-        highlight_css.clone(),
-        notist_html::highlight::CSS.as_bytes().to_vec(),
-    )?;
-    for path in config.styles.iter().chain(&config.scripts) {
-        if !crate::extensions::valid_path(path) || path.starts_with("_notist") {
-            return Err(Error::Message(
-                "additional site assets must be content-relative paths outside _notist".into(),
-            ));
-        }
-        if !outputs.contains(path) {
-            let source = mounts.resolve(&content.join(path));
-            if source.starts_with(vault.resources().resolve(&config.output)) {
+    notist::progress::run_stage(
+        "site.build",
+        || "Assemble site".into(),
+        || {
+            let config = &{
+                let mut config = config.clone();
+                let mounts = crate::mounts::Mounts::new(vault.resources(), &config)?;
+                let content = vault.resources().resolve(&config.content);
+                for path in config.styles.iter_mut().chain(&mut config.scripts) {
+                    let source = mounts.resolve(&normalize(&content.join(&*path)));
+                    *path = mounts.path(&source).ok_or_else(|| {
+                        Error::Message(
+                            "additional site assets must be within content or configured mounts"
+                                .into(),
+                        )
+                    })?;
+                }
+                config
+            };
+            config.validate()?;
+            let mut extensions: Vec<_> = extensions.iter().map(|e| e.create()).collect();
+            extensions.extend(crate::extensions::configured(config)?);
+            let content = vault.resources().resolve(&config.content);
+            let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
+            let output = vault.resources().resolve(&config.output);
+            if content.starts_with(&output) || vault.resources().root().starts_with(&output) {
                 return Err(Error::Message(
-                    "additional site asset and output overlap".into(),
+                    "site output and content sources overlap".into(),
                 ));
             }
-            if vault.resources().kind(&source)? != Some(ResourceKind::File) {
+            let mut inputs = vec![
+                config.templates.clone(),
+                config.static_dir.clone(),
+                config.data.clone(),
+                config.sass.clone(),
+            ];
+            if let Some(theme) = &config.theme {
+                if !crate::themes::is_builtin(theme) {
+                    inputs.push(theme.clone());
+                }
+            }
+            for input in inputs {
+                let input = vault.resources().resolve(&input);
+                if input.starts_with(&output)
+                    || output.starts_with(&input)
+                    || content.starts_with(&input)
+                {
+                    return Err(Error::Message(format!(
+                        "site input `{}` overlaps content or output",
+                        input.display()
+                    )));
+                }
+            }
+            let content_kind = vault.resources().kind(&content)?;
+            let generated_only =
+                content_kind.is_none() && (!extensions.is_empty() || !config.extensions.is_empty());
+            if content_kind != Some(ResourceKind::Directory) && !generated_only {
                 return Err(Error::Message(format!(
-                    "additional site asset `{}` is not a file",
-                    path.display()
+                    "content directory `{}` does not exist",
+                    content.display()
                 )));
             }
-            assets.copy(vault.resources(), &source, path)?;
-            outputs.insert(path.clone());
-        }
-    }
-    asset_stage.finish();
-    let by_source = DocumentIndex::new(&documents);
-    let mut warnings = vec![];
-    let mut pages = vec![];
-    let mut components = BTreeMap::new();
-    let rendering = notist::progress::Span::enter(|| "Resolve links and render HTML".into());
-    for (document, handle) in documents.into_iter().zip(handles) {
-        let page_progress = notist::progress::Span::enter(|| {
-            format!("Render {}", document.page.route.path.display())
-        });
-        let mut resolved = BTreeMap::new();
-        let mut resource_urls = BTreeMap::new();
-        for node in notist::embed::references(&document.root) {
-            if node.is_error() {
-                continue;
+            let mut sources = vec![];
+            let discovery =
+                notist::progress::Span::stage("site.discover", || "Discover documents".into());
+            let mut content_assets = vec![];
+            let mut source_dirs = vec![];
+            let globs = |patterns: &[String]| -> Result<globset::GlobSet, Error> {
+                let mut builder = globset::GlobSetBuilder::new();
+                for pattern in patterns {
+                    builder.add(
+                        globset::GlobBuilder::new(pattern)
+                            .literal_separator(true)
+                            .build()
+                            .map_err(|e| {
+                                Error::Message(format!("invalid site glob `{pattern}`: {e}"))
+                            })?,
+                    );
+                }
+                builder.build().map_err(|e| Error::Message(e.to_string()))
+            };
+            let include = globs(&config.include)?;
+            let exclude = globs(&config.exclude)?;
+            if generated_only {
+                source_dirs.push(content.clone());
+            } else {
+                for (root, _) in mounts.roots() {
+                    discover(
+                        vault,
+                        root,
+                        config,
+                        &mounts,
+                        &include,
+                        &exclude,
+                        &mut sources,
+                        &mut content_assets,
+                        &mut source_dirs,
+                    )?;
+                }
             }
-            // Only explicit references publish files when bulk copying is disabled.
-            let referenced = match node.field("target") {
-                Some(Value::Path(path)) => Some(PathBuf::from(path.logical_path())),
-                Some(Value::Str(url)) if !notist::embed::is_embed(node) => {
-                    let origin = node
-                        .origin
-                        .as_ref()
-                        .and_then(|o| document.sources.name(o.source).ok())
-                        .map(Path::new)
-                        .unwrap_or(&document.page.route.source);
-                    let local = url.split(['?', '#']).next().unwrap_or("");
-                    if local.is_empty()
-                        || local.starts_with("//")
-                        || local.split('/').next().unwrap_or("").contains(':')
-                    {
-                        None
-                    } else {
-                        percent_encoding::percent_decode_str(local)
-                            .decode_utf8()
-                            .ok()
-                            .map(|p| {
-                                if p.starts_with('/') {
-                                    normalize(&content.join(p.trim_start_matches('/')))
-                                } else {
-                                    normalize(&origin.parent().unwrap().join(p.as_ref()))
-                                }
-                            })
+            let mut input = crate::extensions::CompileInput {
+                documents: sources
+                    .into_iter()
+                    .map(|source| Ok((mounts.path(&source).unwrap(), vault.source(&source)?)))
+                    .collect::<Result<_, Error>>()?,
+            };
+            discovery.finish();
+            let routes = notist::progress::run_stage(
+                "site.routes",
+                || "Run site extensions and plan routes".into(),
+                || crate::extensions::before_compile(vault, config, &mut extensions, &mut input),
+            )?;
+            let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
+            // Mounts may introduce virtual ancestors without documents of their own.
+            for directory in source_dirs.clone() {
+                for parent in directory.ancestors().skip(1) {
+                    if !parent.starts_with(&content) {
+                        break;
+                    }
+                    source_dirs.insert(parent.into());
+                }
+            }
+            for path in input.documents.keys() {
+                for parent in content.join(path).parent().unwrap().ancestors() {
+                    source_dirs.insert(parent.into());
+                    if parent == content {
+                        break;
                     }
                 }
-                _ => None,
+            }
+            let source_dirs: Vec<_> = source_dirs.into_iter().collect();
+            let mut documents = vec![];
+            let mut errors = vec![];
+            let mut outputs: BTreeSet<_> =
+                routes.iter().map(|route| route.output.clone()).collect();
+            let mut analyzed = Vec::new();
+            let analysis_stage =
+                notist::progress::Span::stage("site.analyze", || "Analyze documents".into());
+            for ((_, text), route) in input.documents.into_iter().zip(routes) {
+                let (analysis, handle) = vault.analyze_document_with_resource_root(
+                    &route.source,
+                    &text,
+                    mounts
+                        .roots()
+                        .find(|(root, _)| route.source.starts_with(root))
+                        .map(|(root, _)| root)
+                        .unwrap_or(&content),
+                )?;
+                errors.extend(
+                    analysis
+                        .diagnostics()
+                        .iter()
+                        .filter(|d| d.code != Some(DiagnosticCode::OutsideVault))
+                        .cloned()
+                        .map(|d| diagnostic(&route.source, &text, d)),
+                );
+                analyzed.push((route, text, analysis, handle));
+            }
+            analysis_stage.finish();
+            // Fix every generated/edited document source in the shared input view before
+            // any page can consume another document as text, regardless of route order.
+            let mut handles = Vec::with_capacity(analyzed.len());
+            let evaluation_stage =
+                notist::progress::Span::stage("site.evaluate", || "Evaluate documents".into());
+            let evaluation_start = std::time::Instant::now();
+            let parallel = if executor.jobs() > 1 && analyzed.len() > 128 {
+                let jobs: Vec<_> = analyzed
+                    .iter()
+                    .map(|(_, _, analysis, handle)| (handle, analysis))
+                    .collect();
+                Some(vault.evaluate_documents(&jobs, executor)?)
+            } else {
+                None
             };
-            if let Some(source) = referenced {
-                let source = mounts.resolve(&source);
-                if let Some(destination) = mounts.path(&source) {
-                    if destination.starts_with("_notist") {
-                        errors.push(issue(
-                            &document,
-                            node,
-                            "_notist is reserved for generated resources".into(),
+            let parallelized = parallel.is_some();
+            let mut parallel = parallel.map(Vec::into_iter);
+            for (route, text, analysis, handle) in analyzed {
+                let document = notist::progress::Span::stage(
+                    if parallelized {
+                        "site.document.prepare"
+                    } else {
+                        "site.document.evaluate"
+                    },
+                    || format!("Document {}", route.path.display()),
+                );
+                let evaluation = match &mut parallel {
+                    Some(results) => results.next().unwrap()?,
+                    None => vault.evaluate_document(&handle, &analysis)?,
+                };
+                errors.extend(
+                    evaluation
+                        .diagnostics
+                        .into_iter()
+                        .map(|d| diagnostic(&route.source, &text, d)),
+                );
+                let mut prepared = Document::new(route, evaluation.root, text, evaluation.sources)?;
+                if prepared.page.route.url == "/"
+                    && prepared.page.headings.is_empty()
+                    && !prepared.page.attrs.contains_key("title")
+                {
+                    prepared.page.title = config.title.clone();
+                }
+                documents.push(prepared);
+                handles.push(handle);
+                document.finish();
+            }
+            let mut diagnostics = vec![];
+            if recover {
+                let (local, fatal): (Vec<_>, Vec<_>) =
+                    errors.into_iter().partition(|e| e.diagnostic.recovered);
+                diagnostics = local;
+                errors = fatal;
+            }
+            if !errors.is_empty() {
+                return Err(Error::Diagnostics(errors));
+            }
+            evaluation_stage.finish();
+            if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
+                eprintln!(
+                    "[eval-batch] seconds={:.9}",
+                    evaluation_start.elapsed().as_secs_f64()
+                );
+            }
+            let asset_stage =
+                notist::progress::Span::stage("site.assets", || "Prepare assets and Sass".into());
+            let mut assets = Assets::new(output);
+            for document in &documents {
+                assets.reserve_generated(document.page.route.output.clone())?;
+            }
+            outputs.extend(assets::prepare(
+                vault.resources(),
+                config,
+                &content_assets,
+                &mounts,
+                &mut assets,
+            )?);
+            let highlight_css = PathBuf::from("_notist/highlight.css");
+            assets.generated(
+                highlight_css.clone(),
+                notist_html::highlight::CSS.as_bytes().to_vec(),
+            )?;
+            for path in config.styles.iter().chain(&config.scripts) {
+                if !crate::extensions::valid_path(path) || path.starts_with("_notist") {
+                    return Err(Error::Message(
+                        "additional site assets must be content-relative paths outside _notist"
+                            .into(),
+                    ));
+                }
+                if !outputs.contains(path) {
+                    let source = mounts.resolve(&content.join(path));
+                    if source.starts_with(vault.resources().resolve(&config.output)) {
+                        return Err(Error::Message(
+                            "additional site asset and output overlap".into(),
                         ));
+                    }
+                    if vault.resources().kind(&source)? != Some(ResourceKind::File) {
+                        return Err(Error::Message(format!(
+                            "additional site asset `{}` is not a file",
+                            path.display()
+                        )));
+                    }
+                    assets.copy(vault.resources(), &source, path)?;
+                    outputs.insert(path.clone());
+                }
+            }
+            asset_stage.finish();
+            let by_source = DocumentIndex::new(&documents);
+            let mut warnings = vec![];
+            let mut pages = vec![];
+            let mut components = BTreeMap::new();
+            let rendering = notist::progress::Span::stage("site.render", || {
+                "Resolve links and render HTML".into()
+            });
+            for (document, handle) in documents.into_iter().zip(handles) {
+                let page_progress = notist::progress::Span::stage("site.document.render", || {
+                    format!("Render {}", document.page.route.path.display())
+                });
+                page_progress.attribute("source", || {
+                    document.page.route.source.display().to_string()
+                });
+                let links = notist::progress::Span::stage("site.links", || {
+                    "Resolve document links and resources".into()
+                });
+                let mut resolved = BTreeMap::new();
+                let mut resource_urls = BTreeMap::new();
+                for node in notist::embed::references(&document.root) {
+                    if node.is_error() {
                         continue;
                     }
-                    if !outputs.contains(&destination)
-                        && !vault.supports(&source)
-                        && !source.extension().is_some_and(|s| s == "notc")
-                        && !destination
-                            .components()
-                            .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
-                        && vault.resources().kind(&source)? == Some(ResourceKind::File)
-                    {
-                        assets.copy(vault.resources(), &source, &destination)?;
-                        outputs.insert(destination);
+                    // Only explicit references publish files when bulk copying is disabled.
+                    let referenced = match node.field("target") {
+                        Some(Value::Path(path)) => Some(PathBuf::from(path.logical_path())),
+                        Some(Value::Str(url)) if !notist::embed::is_embed(node) => {
+                            let origin = node
+                                .origin
+                                .as_ref()
+                                .and_then(|o| document.sources.name(o.source).ok())
+                                .map(Path::new)
+                                .unwrap_or(&document.page.route.source);
+                            let local = url.split(['?', '#']).next().unwrap_or("");
+                            if local.is_empty()
+                                || local.starts_with("//")
+                                || local.split('/').next().unwrap_or("").contains(':')
+                            {
+                                None
+                            } else {
+                                percent_encoding::percent_decode_str(local)
+                                    .decode_utf8()
+                                    .ok()
+                                    .map(|p| {
+                                        if p.starts_with('/') {
+                                            normalize(&content.join(p.trim_start_matches('/')))
+                                        } else {
+                                            normalize(&origin.parent().unwrap().join(p.as_ref()))
+                                        }
+                                    })
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(source) = referenced {
+                        let source = mounts.resolve(&source);
+                        if let Some(destination) = mounts.path(&source) {
+                            if destination.starts_with("_notist") {
+                                errors.push(issue(
+                                    &document,
+                                    node,
+                                    "_notist is reserved for generated resources".into(),
+                                ));
+                                continue;
+                            }
+                            if !outputs.contains(&destination)
+                                && !vault.supports(&source)
+                                && !source.extension().is_some_and(|s| s == "notc")
+                                && !destination
+                                    .components()
+                                    .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
+                                && vault.resources().kind(&source)? == Some(ResourceKind::File)
+                            {
+                                assets.copy(vault.resources(), &source, &destination)?;
+                                outputs.insert(destination);
+                            }
+                        }
                     }
-                }
-            }
-            if notist::embed::is_embed(node) || matches!(node.field("target"), Some(Value::Path(_)))
-            {
-                if let Some(Value::Path(path)) = node.field("target") {
-                    match resolve_embed(
+                    if notist::embed::is_embed(node)
+                        || matches!(node.field("target"), Some(Value::Path(_)))
+                    {
+                        if let Some(Value::Path(path)) = node.field("target") {
+                            match resolve_embed(
+                                &document,
+                                path,
+                                node,
+                                &content,
+                                &by_source,
+                                &outputs,
+                                &mounts,
+                                config.directory_urls,
+                            ) {
+                                Ok(url) => {
+                                    resource_urls.insert(path.clone(), url);
+                                }
+                                Err(message) => errors.push(issue(&document, node, message)),
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(Value::Str(target)) = node.field("target") else {
+                        continue;
+                    };
+                    match resolve_link(
                         &document,
-                        path,
+                        target,
                         node,
                         &content,
                         &by_source,
                         &outputs,
                         &mounts,
                         config.directory_urls,
+                        &mut warnings,
                     ) {
-                        Ok(url) => {
-                            resource_urls.insert(path.clone(), url);
+                        Ok(Some(url)) => {
+                            resolved.insert(
+                                (node.origin.as_ref().map(|o| o.source), target.clone()),
+                                url,
+                            );
                         }
-                        Err(message) => errors.push(issue(&document, node, message)),
+                        Ok(None) => {}
+                        Err(message) => {
+                            let d = issue(&document, node, message);
+                            errors.push(d);
+                        }
                     }
                 }
-                continue;
-            }
-            let Some(Value::Str(target)) = node.field("target") else {
-                continue;
-            };
-            match resolve_link(
-                &document,
-                target,
-                node,
-                &content,
-                &by_source,
-                &outputs,
-                &mounts,
-                config.directory_urls,
-                &mut warnings,
-            ) {
-                Ok(Some(url)) => {
-                    resolved.insert(
-                        (node.origin.as_ref().map(|o| o.source), target.clone()),
-                        url,
-                    );
-                }
-                Ok(None) => {}
-                Err(message) => {
-                    let d = issue(&document, node, message);
-                    errors.push(d);
-                }
-            }
-        }
-        let lookup = |node: &Item, url: &str| {
-            resolved
-                .get(&(node.origin.as_ref().map(|o| o.source), url.into()))
-                .cloned()
-        };
-        let (registry, environment) = vault.html_registry_for_document(&handle, &document.root)?;
-        let rendered = notist_html::Renderer::from_registry(registry)
-            .with_sources(&document.sources)
-            .with_code_renderer(notist_html::highlight::code)
-            .with_url_resolver(lookup)
-            .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
-            .with_embed_renderer(|node| {
-                let base = match node.field("target")? {
-                    Value::Path(path) => resource_urls.get(path)?.as_str(),
-                    Value::Str(url) => url.as_str(),
-                    _ => return None,
+                links.finish();
+                let lookup = |node: &Item, url: &str| {
+                    resolved
+                        .get(&(node.origin.as_ref().map(|o| o.source), url.into()))
+                        .cloned()
                 };
-                let url = notist::embed::append_suffix(base, &node.fields()).ok()?;
-                image(node, &url)
+                let (registry, environment) =
+                    vault.html_registry_for_document(&handle, &document.root)?;
+                let rendered = notist_html::Renderer::from_registry(registry)
+                    .with_sources(&document.sources)
+                    .with_code_renderer(notist_html::highlight::code)
+                    .with_url_resolver(lookup)
+                    .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
+                    .with_embed_renderer(|node| {
+                        let base = match node.field("target")? {
+                            Value::Path(path) => resource_urls.get(path)?.as_str(),
+                            Value::Str(url) => url.as_str(),
+                            _ => return None,
+                        };
+                        let url = notist::embed::append_suffix(base, &node.fields()).ok()?;
+                        image(node, &url)
+                    })
+                    .render_with_diagnostics(&document.root);
+                errors.extend(
+                    rendered
+                        .diagnostics
+                        .into_iter()
+                        .map(|d| diagnostic(&document.page.route.source, &document.source, d)),
+                );
+                let component_path = PathBuf::from("_notist/pages")
+                    .join(&document.page.route.path)
+                    .with_extension("js");
+                let registrations = assets.components(
+                    vault.resources(),
+                    &environment,
+                    &rendered.used_components,
+                    &component_path,
+                )?;
+                if !registrations.is_empty() {
+                    components.insert(
+                        document.page.route.path.clone(),
+                        relative_url(&document.page.route.output, &component_path, false),
+                    );
+                    assets.generated(component_path, registrations.into_bytes())?;
+                }
+                let mut page = document.page;
+                page.html = rendered.html;
+                pages.push(page);
+                page_progress.finish();
+            }
+            if !errors.is_empty() {
+                return Err(Error::Diagnostics(errors));
+            }
+            rendering.finish();
+            let mut template_input = crate::extensions::TemplateInput {
+                pages: &pages,
+                data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
+            };
+            crate::extensions::before_template(
+                vault.resources(),
+                config,
+                &mut extensions,
+                &mut template_input,
+            )?;
+            let data = template_input.data;
+            crate::extensions::finish(&mut extensions)?;
+            let templates_stage = notist::progress::Span::stage("site.templates", || {
+                format!("Render templates ({} pages)", pages.len())
+            });
+            let engine = templates::load(vault.resources(), config)?;
+            let dirs = directories(&pages, &source_dirs, &content);
+            let values = TemplateContext::new(config, &pages, &dirs, &data)?;
+            let rendered = render_templates(
+                &engine,
+                config,
+                &pages,
+                &values,
+                &components,
+                &highlight_css,
+                executor,
+            )?;
+            for (page, bytes) in pages.iter().zip(rendered) {
+                assets.write_reserved(&page.route.output, bytes)?;
+            }
+            templates_stage.finish();
+            Ok(BuildOutput {
+                files: assets.finish()?,
+                pages,
+                warnings,
+                diagnostics,
+                data,
             })
-            .render_with_diagnostics(&document.root);
-        errors.extend(
-            rendered
-                .diagnostics
-                .into_iter()
-                .map(|d| diagnostic(&document.page.route.source, &document.source, d)),
-        );
-        let component_path = PathBuf::from("_notist/pages")
-            .join(&document.page.route.path)
-            .with_extension("js");
-        let registrations = assets.components(
-            vault.resources(),
-            &environment,
-            &rendered.used_components,
-            &component_path,
-        )?;
-        if !registrations.is_empty() {
-            components.insert(
-                document.page.route.path.clone(),
-                relative_url(&document.page.route.output, &component_path, false),
-            );
-            assets.generated(component_path, registrations.into_bytes())?;
-        }
-        let mut page = document.page;
-        page.html = rendered.html;
-        pages.push(page);
-        page_progress.finish();
-    }
-    if !errors.is_empty() {
-        return Err(Error::Diagnostics(errors));
-    }
-    rendering.finish();
-    let mut template_input = crate::extensions::TemplateInput {
-        pages: &pages,
-        data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
-    };
-    crate::extensions::before_template(
-        vault.resources(),
-        config,
-        &mut extensions,
-        &mut template_input,
-    )?;
-    let data = template_input.data;
-    crate::extensions::finish(&mut extensions)?;
-    let templates_stage =
-        notist::progress::Span::enter(|| format!("Render templates ({} pages)", pages.len()));
-    let engine = templates::load(vault.resources(), config)?;
-    let dirs = directories(&pages, &source_dirs, &content);
-    let values = TemplateContext::new(config, &pages, &dirs, &data)?;
-    let rendered = render_templates(
-        &engine,
-        config,
-        &pages,
-        &values,
-        &components,
-        &highlight_css,
-        executor,
-    )?;
-    for (page, bytes) in pages.iter().zip(rendered) {
-        assets.write_reserved(&page.route.output, bytes)?;
-    }
-    templates_stage.finish();
-    Ok(BuildOutput {
-        files: assets.finish()?,
-        pages,
-        warnings,
-        diagnostics,
-        data,
-    })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1152,16 +1258,35 @@ mod tests {
             &serial_executor,
         )
         .unwrap();
-        let parallel = render_templates(
-            &engine,
-            &config,
-            &pages,
-            &values,
-            &components,
-            highlight,
-            &parallel_executor,
-        )
-        .unwrap();
+        let (parallel, timings) = notist::timings::capture(|| {
+            let parent = notist::progress::Span::stage("site.templates", || "Templates".into());
+            let result = render_templates(
+                &engine,
+                &config,
+                &pages,
+                &values,
+                &components,
+                highlight,
+                &parallel_executor,
+            )
+            .unwrap();
+            parent.finish();
+            result
+        });
+        assert_eq!(timings.spans.len(), 522);
+        assert!(
+            timings.spans[1..]
+                .iter()
+                .all(|span| span.parent == Some(0) && span.status == "finished")
+        );
+        assert!(
+            timings.spans[1..]
+                .iter()
+                .map(|span| span.lane)
+                .collect::<BTreeSet<_>>()
+                .len()
+                <= parallel_executor.jobs()
+        );
         assert_eq!(serial, parallel);
         assert!(
             String::from_utf8(parallel[7].clone())

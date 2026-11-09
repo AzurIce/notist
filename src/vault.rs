@@ -349,7 +349,7 @@ impl<R: Resources> Vault<R> {
         resource_root: Option<&Path>,
         navigation: Option<&mut crate::SourceNavigation>,
     ) -> Result<(Analysis, notist_pipeline::Inspection, DocumentHandle), VaultError> {
-        let compilation = crate::progress::Span::enter(|| {
+        let compilation = crate::progress::Span::stage("host.document.analyze", || {
             format!(
                 "Analyze {}",
                 path.strip_prefix(self.resources.root())
@@ -357,8 +357,10 @@ impl<R: Resources> Vault<R> {
                     .display()
             )
         });
+        compilation.attribute("source", || path.display().to_string());
         let path = self.resources.resolve(path);
-        let output = crate::progress::run(
+        let output = crate::progress::run_stage(
+            "host.frontend",
             || "Parse and lower".into(),
             || {
                 self.pipeline.lower(
@@ -370,7 +372,8 @@ impl<R: Resources> Vault<R> {
                 )
             },
         )?;
-        let (text, environment) = crate::progress::run(
+        let (text, environment) = crate::progress::run_stage(
+            "host.environment",
             || "Load modules and environment".into(),
             || self.ensure_environment(&path, source, &output.imports),
         )?;
@@ -384,7 +387,8 @@ impl<R: Resources> Vault<R> {
             *navigation =
                 crate::SourceNavigation::from_lowered(&output, source, environment.context());
         }
-        let checking = crate::progress::Span::enter(|| "Check and materialize".into());
+        let checking =
+            crate::progress::Span::stage("host.document.check", || "Check and materialize".into());
         let (mut analysis, inspection) = self.pipeline.analyze_lowered(
             &path,
             text.clone(),
@@ -523,19 +527,37 @@ impl<R: Resources> Vault<R> {
         analysis: &Analysis,
         context: &crate::Context,
     ) -> Result<Evaluation, VaultError> {
-        let evaluation = crate::progress::Span::enter(|| "Evaluate Code and extensions".into());
-        let result = self.pipeline.evaluate_with_inputs_and_limits(
+        Self::evaluate_prepared(
+            &self.pipeline,
             analysis,
             context,
             &self.resources,
             self.evaluation_limits,
-        );
+        )
+    }
+
+    fn evaluate_prepared(
+        pipeline: &Pipeline,
+        analysis: &Analysis,
+        context: &crate::Context,
+        inputs: &dyn crate::EvaluationInputs,
+        limits: crate::Limits,
+    ) -> Result<Evaluation, VaultError> {
+        let evaluation = crate::progress::Span::stage("host.document.evaluate", || {
+            "Evaluate Code and extensions".into()
+        });
+        evaluation.attribute("source", || analysis.source().name().to_string());
+        let result = pipeline.evaluate_with_inputs_and_limits(analysis, context, inputs, limits);
         match result {
             crate::EvaluationOutcome::Complete(output) => {
                 evaluation.finish();
                 Ok(*output)
             }
-            crate::EvaluationOutcome::NeedResources(paths) => Err(VaultError::NeedResources(paths)),
+            crate::EvaluationOutcome::NeedResources(paths) => {
+                evaluation.attribute("outcome", || "need_resources".into());
+                evaluation.finish();
+                Err(VaultError::NeedResources(paths))
+            }
         }
     }
 

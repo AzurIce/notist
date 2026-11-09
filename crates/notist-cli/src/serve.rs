@@ -12,6 +12,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 mod report;
 mod terminal;
+mod timings;
 mod watch;
 use report::Report;
 use terminal::Terminal;
@@ -83,6 +84,7 @@ struct Published {
     revision: u64,
     event: u64,
     report: Report,
+    timings: Option<timings::History>,
 }
 type State = Arc<RwLock<Published>>;
 const CLIENT: &str = include_str!("serve.js");
@@ -93,8 +95,9 @@ pub(crate) fn serve_package(
     no_clear_screen: bool,
     verbose: bool,
     jobs: Option<std::num::NonZeroUsize>,
+    timings: bool,
 ) -> std::process::ExitCode {
-    match run(target, listen, no_clear_screen, verbose, jobs) {
+    match run(target, listen, no_clear_screen, verbose, jobs, timings) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -148,6 +151,7 @@ fn run(
     no_clear_screen: bool,
     verbose: bool,
     jobs: Option<std::num::NonZeroUsize>,
+    timings: bool,
 ) -> Result<(), Error> {
     // One pool for the initial build and every subsequent watcher rebuild.
     let executor = crate::ssg::executor(jobs).map_err(Error::Message)?;
@@ -164,10 +168,11 @@ fn run(
         revision: 0,
         event: 0,
         report: Report::default(),
+        timings: timings.then(timings::History::new),
     }));
     let (sender, receiver) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(event);
+        let _ = sender.send((Instant::now(), event));
     })
     .map_err(|error| Error::Message(error.to_string()))?;
     let mut observed = BTreeSet::new();
@@ -182,13 +187,14 @@ fn run(
         &terminal,
         &target,
         &executor,
+        None,
     );
     plan = watch::Plan::new(&target, &observed, output.as_deref());
     watches.sync(&mut watcher, &plan)?;
     let shared = state.clone();
     thread::spawn(move || {
         let mut watcher = watcher;
-        while let Ok(event) = receiver.recv() {
+        while let Ok((received, event)) = receiver.recv() {
             watches.observe(&event);
             let relevant = |event: &Result<notify::Event, notify::Error>| match event {
                 Ok(event) => {
@@ -200,11 +206,22 @@ fn run(
             if !relevant(&event) {
                 continue;
             }
+            let mut changes = BTreeSet::new();
+            if let Ok(event) = &event {
+                changes.extend(event.paths.iter().cloned());
+            }
             let deadline = Instant::now() + Duration::from_millis(200);
             while Instant::now() < deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 match receiver.recv_timeout(remaining) {
-                    Ok(event) => watches.observe(&event),
+                    Ok((_, event)) => {
+                        if relevant(&event)
+                            && let Ok(event) = &event
+                        {
+                            changes.extend(event.paths.iter().cloned());
+                        }
+                        watches.observe(&event);
+                    }
                     Err(_) => break,
                 }
             }
@@ -216,6 +233,7 @@ fn run(
                     &terminal,
                     &target,
                     &executor,
+                    Some((received, changes)),
                 );
             });
             plan = watch::Plan::new(&target, &observed, output.as_deref());
@@ -241,6 +259,7 @@ fn rebuild(
     terminal: &Terminal,
     target: &crate::package::Package,
     executor: &Arc<notist::Executor>,
+    trigger: Option<(Instant, BTreeSet<PathBuf>)>,
 ) {
     let (previous, has_preview) = {
         let mut published = state.write().unwrap();
@@ -250,29 +269,92 @@ fn rebuild(
     };
     terminal.render(&previous, has_preview);
     let started = Instant::now();
-    let result = notist::progress::run(
-        || format!("Rebuild {}", target.name),
-        || assemble(target, executor),
-    );
-    let mut published = state.write().unwrap();
-    published.event += 1;
-    match result {
-        Ok(result) => {
-            *observed = result.observed;
-            *output = Some(result.output);
-            published.report = previous.success(&result.artifact, started.elapsed());
-            published.site = Some(Arc::new(result.artifact));
-            published.revision += 1;
+    let enabled = state.read().unwrap().timings.is_some();
+    let mut build = || {
+        let span =
+            notist::progress::Span::stage("host.rebuild", || format!("Rebuild {}", target.name));
+        let result = assemble(target, executor);
+        let mut published = state.write().unwrap();
+        published.event += 1;
+        match result {
+            Ok(result) => {
+                *observed = result.observed;
+                *output = Some(result.output);
+                notist::progress::measure(
+                    "host.publish",
+                    || "Publish preview".into(),
+                    || {
+                        published.site = Some(Arc::new(result.artifact));
+                        published.revision += 1;
+                    },
+                );
+                published.report =
+                    previous.success(published.site.as_ref().unwrap(), started.elapsed());
+                span.finish();
+            }
+            Err((error, inputs)) => {
+                *observed = inputs;
+                published.report = previous.failure(&error, started.elapsed());
+            }
         }
-        Err((error, inputs)) => {
-            *observed = inputs;
-            published.report = previous.failure(&error, started.elapsed());
+        (published.report.clone(), published.site.is_some())
+    };
+    let ((report, has_preview), timing) = if enabled {
+        let (result, mut timing) = notist::progress::timings::capture(build);
+        timing
+            .attributes
+            .insert("package".into(), target.name.clone());
+        timing.attributes.insert(
+            "scope".into(),
+            "full rebuild; cached module results may be reused".into(),
+        );
+        timing
+            .attributes
+            .insert("pages".into(), result.0.pages.to_string());
+        timing.attributes.insert(
+            "status".into(),
+            serde_json::to_value(result.0.status)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+        );
+        timing.attributes.insert(
+            "trigger".into(),
+            if trigger.is_some() {
+                "file change / watcher notification"
+            } else {
+                "initial build"
+            }
+            .into(),
+        );
+        if let Some((received, changes)) = trigger {
+            timing.attributes.insert(
+                "update_latency_ms".into(),
+                format!("{:.3}", received.elapsed().as_secs_f64() * 1000.0),
+            );
+            timing.attributes.insert(
+                "changed_files".into(),
+                changes
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
+        (result, Some(timing))
+    } else {
+        (build(), None)
+    };
+    if let Some(timing) = timing {
+        let mut published = state.write().unwrap();
+        let history = published.timings.as_mut().unwrap();
+        timings::retain(history, report.build, timing);
     }
-    let report = published.report.clone();
-    let has_preview = published.site.is_some();
-    drop(published);
     terminal.render(&report, has_preview);
+    if enabled {
+        terminal.timings(report.build);
+    }
 }
 fn header(name: &str, value: &str) -> Header {
     Header::from_bytes(name, value).unwrap()
@@ -307,6 +389,10 @@ fn respond(request: Request, state: State) {
             .any(|part| !matches!(part, Component::Normal(_)))
     {
         simple(request, 400, b"Invalid URL".to_vec(), "text/plain");
+        return;
+    }
+    if path == Path::new("_notist/timings") || path.starts_with("_notist/timings") {
+        timings::respond(request, &state);
         return;
     }
     if path == Path::new("_notist/serve/events") && request.method() == &Method::Get {

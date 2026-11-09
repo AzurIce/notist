@@ -66,11 +66,14 @@ impl Executor {
         assert!(chunk_size > 0, "chunk size must be positive");
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let context = crate::timings::context();
             self.pool.install(|| {
                 input
                     .par_chunks(chunk_size)
                     .enumerate()
-                    .map(|(i, chunk)| map(i * chunk_size, chunk))
+                    .map(|(i, chunk)| {
+                        crate::timings::with_context(context.clone(), || map(i * chunk_size, chunk))
+                    })
                     .collect()
             })
         }
@@ -145,5 +148,28 @@ mod tests {
         let executor = Executor::new(NonZeroUsize::new(9).unwrap()).unwrap();
         assert_eq!(executor.jobs(), 9);
         assert_eq!(executor.pool.current_num_threads(), 9);
+    }
+
+    #[test]
+    fn timings_follow_each_submission_and_do_not_leak_between_builds() {
+        let executor = Executor::new(NonZeroUsize::new(2).unwrap()).unwrap();
+        for _ in 0..2 {
+            let (_, report) = crate::timings::capture(|| {
+                let parent = crate::progress::Span::stage("test.stage", || "Stage".into());
+                executor.map_chunks(&[0; 8], 1, |_, _| {
+                    crate::progress::Span::stage("test.task", || "Task".into()).finish();
+                });
+                parent.finish();
+            });
+            assert_eq!(report.spans.len(), 9);
+            assert!(
+                report.spans[1..]
+                    .iter()
+                    .all(|span| { span.parent == Some(0) && span.status == "finished" })
+            );
+            executor.map_chunks(&[0; 8], 1, |_, _| {
+                crate::progress::Span::enter(|| panic!("timings context leaked")).finish();
+            });
+        }
     }
 }

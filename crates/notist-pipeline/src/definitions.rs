@@ -36,7 +36,11 @@ pub(crate) fn compile_module(
     resource_root: &str,
     frontend: &dyn PipelineFrontend,
 ) -> Result<CodeModule, Vec<Diagnostic>> {
-    match frontend.cache_key() {
+    let timing =
+        crate::progress::Span::stage("core.module.cache", || format!("Module cache {module}"));
+    let probe = crate::progress::timings::CacheProbe::new("core.module.compile.work");
+    let enabled = frontend.cache_key().is_some() && cache_enabled();
+    let result = match frontend.cache_key() {
         Some(key) => compile_cached(
             module,
             path,
@@ -45,7 +49,14 @@ pub(crate) fn compile_module(
             ContentCompiler { key, frontend },
         ),
         None => compile_uncached(module, path, source, resource_root, frontend),
+    };
+    timing.attribute("cache", || {
+        if enabled { probe.outcome() } else { "bypass" }.into()
+    });
+    if result.is_ok() {
+        timing.finish();
     }
+    result
 }
 
 fn cache_enabled() -> bool {
@@ -220,103 +231,118 @@ fn compile_uncached(
     resource_root: &str,
     frontend: &dyn ContentLowering,
 ) -> Result<CodeModule, Vec<Diagnostic>> {
-    #[cfg(feature = "profiling")]
-    let _timer = crate::profiling::enter(crate::profiling::Stage::CompileWork);
-    let origin = notist_core::source::Source::in_namespace(
-        notist_core::source::SourceNamespace::named(resource_root),
-        path,
-        Some(source.into()),
+    crate::progress::run_stage(
+        "core.module.compile.work",
+        || format!("Compile module body {module}"),
+        || {
+            #[cfg(feature = "profiling")]
+            let _timer = crate::profiling::enter(crate::profiling::Stage::CompileWork);
+            let origin = notist_core::source::Source::in_namespace(
+                notist_core::source::SourceNamespace::named(resource_root),
+                path,
+                Some(source.into()),
+            )
+            .map_err(|error| {
+                vec![Diagnostic::new(
+                    Phase::Type,
+                    Default::default(),
+                    error.to_string(),
+                )]
+            })?;
+            let parsed = crate::progress::measure(
+                "core.parse",
+                || "Parse Code module".into(),
+                || notist_syntax::code::parse_module(source, frontend),
+            );
+            let lowering =
+                crate::progress::Span::stage("core.lower", || "Lower Code module".into());
+            let ast = Module::cast(parsed.syntax()).unwrap();
+            let mut diagnostics = Vec::new();
+            let identity =
+                notist_core::definitions::ModuleRef::try_new(module).map_err(|error| {
+                    let mut diagnostic =
+                        Diagnostic::new(Phase::Type, ast.range(), error.to_string());
+                    diagnostic.source = Some(origin.clone());
+                    vec![diagnostic]
+                })?;
+            let mut definitions = DefinitionModule {
+                module: identity,
+                functions: Vec::new(),
+                span: ast.range(),
+            };
+            definitions.span = ast.range();
+            let mut bodies = BTreeMap::new();
+            let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
+            let mut assigned = vec![false; parsed.diagnostics.len()];
+            for function in ast.functions() {
+                let body = function.body();
+                let body_range = body.as_ref().map(|n| n.text_range());
+                let mut body_diags = Vec::new();
+                for (i, d) in parsed.diagnostics.iter().enumerate() {
+                    if assigned[i] {
+                        continue;
+                    }
+                    let mut diagnostic = Diagnostic::new(Phase::Syntax, d.span, &d.message);
+                    diagnostic.source = Some(origin.clone());
+                    if body_range.is_some_and(|r| r.contains_inclusive(d.span.start())) {
+                        body_diags.push(diagnostic);
+                        assigned[i] = true;
+                    } else if function.range().contains_range(d.span) {
+                        diagnostics.push(diagnostic);
+                        assigned[i] = true;
+                    }
+                }
+                if let Some(definition) =
+                    lower_function(module, &function, resource_root, &origin, &mut diagnostics)
+                {
+                    let expr = body.and_then(|n| {
+                        expression(
+                            rowan::NodeOrToken::Node(n),
+                            Some(&parsed),
+                            Some(frontend),
+                            &mut body_diags,
+                        )
+                    });
+                    for d in &mut body_diags {
+                        d.source = Some(origin.clone());
+                    }
+                    if definition.implementation.is_code() {
+                        bodies.insert(
+                            definition.id.def_id(),
+                            CodeBody {
+                                definition: definition.id.clone(),
+                                expression: expr,
+                                diagnostics: body_diags,
+                                source: origin.clone(),
+                                resource_root: resource_root.into(),
+                            },
+                        );
+                    }
+                    definitions.functions.push(definition);
+                }
+            }
+            for (i, d) in parsed.diagnostics.iter().enumerate() {
+                if !assigned[i] {
+                    diagnostics.push(Diagnostic::new(Phase::Syntax, d.span, &d.message));
+                }
+            }
+            diagnostics.extend(validate_module(&definitions));
+            lowering.finish();
+            if diagnostics.is_empty() {
+                Ok(CodeModule {
+                    definitions: Arc::new(definitions),
+                    bodies: Arc::new(bodies),
+                    imports: imports.into(),
+                    source: origin,
+                })
+            } else {
+                for diagnostic in &mut diagnostics {
+                    diagnostic.source.get_or_insert_with(|| origin.clone());
+                }
+                Err(diagnostics)
+            }
+        },
     )
-    .map_err(|error| {
-        vec![Diagnostic::new(
-            Phase::Type,
-            Default::default(),
-            error.to_string(),
-        )]
-    })?;
-    let parsed = notist_syntax::code::parse_module(source, frontend);
-    let ast = Module::cast(parsed.syntax()).unwrap();
-    let mut diagnostics = Vec::new();
-    let identity = notist_core::definitions::ModuleRef::try_new(module).map_err(|error| {
-        let mut diagnostic = Diagnostic::new(Phase::Type, ast.range(), error.to_string());
-        diagnostic.source = Some(origin.clone());
-        vec![diagnostic]
-    })?;
-    let mut definitions = DefinitionModule {
-        module: identity,
-        functions: Vec::new(),
-        span: ast.range(),
-    };
-    definitions.span = ast.range();
-    let mut bodies = BTreeMap::new();
-    let imports = crate::lowering::imports::lower_imports(ast.imports(), &mut diagnostics);
-    let mut assigned = vec![false; parsed.diagnostics.len()];
-    for function in ast.functions() {
-        let body = function.body();
-        let body_range = body.as_ref().map(|n| n.text_range());
-        let mut body_diags = Vec::new();
-        for (i, d) in parsed.diagnostics.iter().enumerate() {
-            if assigned[i] {
-                continue;
-            }
-            let mut diagnostic = Diagnostic::new(Phase::Syntax, d.span, &d.message);
-            diagnostic.source = Some(origin.clone());
-            if body_range.is_some_and(|r| r.contains_inclusive(d.span.start())) {
-                body_diags.push(diagnostic);
-                assigned[i] = true;
-            } else if function.range().contains_range(d.span) {
-                diagnostics.push(diagnostic);
-                assigned[i] = true;
-            }
-        }
-        if let Some(definition) =
-            lower_function(module, &function, resource_root, &origin, &mut diagnostics)
-        {
-            let expr = body.and_then(|n| {
-                expression(
-                    rowan::NodeOrToken::Node(n),
-                    Some(&parsed),
-                    Some(frontend),
-                    &mut body_diags,
-                )
-            });
-            for d in &mut body_diags {
-                d.source = Some(origin.clone());
-            }
-            if definition.implementation.is_code() {
-                bodies.insert(
-                    definition.id.def_id(),
-                    CodeBody {
-                        definition: definition.id.clone(),
-                        expression: expr,
-                        diagnostics: body_diags,
-                        source: origin.clone(),
-                        resource_root: resource_root.into(),
-                    },
-                );
-            }
-            definitions.functions.push(definition);
-        }
-    }
-    for (i, d) in parsed.diagnostics.iter().enumerate() {
-        if !assigned[i] {
-            diagnostics.push(Diagnostic::new(Phase::Syntax, d.span, &d.message));
-        }
-    }
-    diagnostics.extend(validate_module(&definitions));
-    if diagnostics.is_empty() {
-        Ok(CodeModule {
-            definitions: Arc::new(definitions),
-            bodies: Arc::new(bodies),
-            imports: imports.into(),
-            source: origin,
-        })
-    } else {
-        for diagnostic in &mut diagnostics {
-            diagnostic.source.get_or_insert_with(|| origin.clone());
-        }
-        Err(diagnostics)
-    }
 }
 
 fn lower_type(

@@ -234,58 +234,64 @@ pub fn run<C: EvaluationContext + ?Sized>(
     limits: Limits,
     inputs: Option<&dyn EvaluationInputs>,
 ) -> EvaluationOutcome {
-    let mut source_view = sources
-        .clone()
-        .with_definitions(context.registry().identities());
-    if let Err(error) = source_view
-        .merge(&program.sources)
-        .and_then(|()| source_view.validate_node(root))
-        .and_then(|()| source_view.validate_program(program))
-    {
-        return EvaluationOutcome::Complete(Box::new(Evaluation {
-            root: Node::new(Ctor::Error(error.to_string()), root.span),
-            diagnostics: vec![Diagnostic::new(Phase::Type, root.span, error.to_string())],
-            dependencies: Default::default(),
-            sources: source_view,
-        }));
-    }
-    let mut e = Evaluator::new(
-        context,
-        program,
-        &source_view,
-        limits,
-        inputs,
-        EvaluationMode::Runtime,
-    );
-    let content = e.bind_content(
-        std::slice::from_ref(root),
-        &Scope::new(),
-        limits.content_nodes,
-    );
-    let mut nodes = Vec::with_capacity(content.pieces.len());
-    e.emit_content(
-        &content,
-        limits.content_nodes,
-        &SourceChain::default(),
-        &mut nodes,
-    );
-    if !e.needed.is_empty() {
-        return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
-    }
-    for diagnostic in &mut e.diagnostics {
-        diagnostic.recovered = true;
-    }
-    let root = if nodes.len() == 1 {
-        nodes.remove(0)
-    } else {
-        Node::new(Ctor::Group, root.span).with_children(nodes)
-    };
-    EvaluationOutcome::Complete(Box::new(Evaluation {
-        root,
-        diagnostics: e.diagnostics,
-        dependencies: e.dependencies,
-        sources: e.sources,
-    }))
+    notist_observe::measure(
+        "core.evaluate",
+        || "Evaluate".into(),
+        || {
+            let mut source_view = sources
+                .clone()
+                .with_definitions(context.registry().identities());
+            if let Err(error) = source_view
+                .merge(&program.sources)
+                .and_then(|()| source_view.validate_node(root))
+                .and_then(|()| source_view.validate_program(program))
+            {
+                return EvaluationOutcome::Complete(Box::new(Evaluation {
+                    root: Node::new(Ctor::Error(error.to_string()), root.span),
+                    diagnostics: vec![Diagnostic::new(Phase::Type, root.span, error.to_string())],
+                    dependencies: Default::default(),
+                    sources: source_view,
+                }));
+            }
+            let mut e = Evaluator::new(
+                context,
+                program,
+                &source_view,
+                limits,
+                inputs,
+                EvaluationMode::Runtime,
+            );
+            let content = e.bind_content(
+                std::slice::from_ref(root),
+                &Scope::new(),
+                limits.content_nodes,
+            );
+            let mut nodes = Vec::with_capacity(content.pieces.len());
+            e.emit_content(
+                &content,
+                limits.content_nodes,
+                &SourceChain::default(),
+                &mut nodes,
+            );
+            if !e.needed.is_empty() {
+                return EvaluationOutcome::NeedResources(e.needed.into_iter().collect());
+            }
+            for diagnostic in &mut e.diagnostics {
+                diagnostic.recovered = true;
+            }
+            let root = if nodes.len() == 1 {
+                nodes.remove(0)
+            } else {
+                Node::new(Ctor::Group, root.span).with_children(nodes)
+            };
+            EvaluationOutcome::Complete(Box::new(Evaluation {
+                root,
+                diagnostics: e.diagnostics,
+                dependencies: e.dependencies,
+                sources: e.sources,
+            }))
+        },
+    )
 }
 pub fn constant<C: EvaluationContext + ?Sized>(
     t: &TypedExpr,

@@ -97,6 +97,10 @@ pub(crate) fn prepare(
     }
     let fs = SassFs(resources);
     for (destination, source) in styles {
+        let timing = notist::progress::Span::stage("site.sass", || {
+            format!("Compile Sass {}", source.display())
+        });
+        timing.attribute("input", || source.display().to_string());
         if destination.starts_with("_notist") {
             return Err(Error::Message(
                 "_notist is reserved for generated resources".into(),
@@ -106,6 +110,7 @@ pub(crate) fn prepare(
             .map_err(|e| Error::Message(e.to_string()))?;
         assets.generated(destination.clone(), css.into_bytes())?;
         published.insert(destination);
+        timing.finish();
     }
     Ok(published)
 }

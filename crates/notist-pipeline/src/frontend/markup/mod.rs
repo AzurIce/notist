@@ -79,7 +79,12 @@ impl Frontend for NotistFrontend {
     }
 
     fn compile(&self, source: &str, options: FrontendOptions) -> FrontendOutput {
-        let parsed = markup::parse_document(source);
+        let parsed = crate::progress::measure(
+            "core.parse",
+            || "Parse Notist".into(),
+            || markup::parse_document(source),
+        );
+        let lowering = crate::progress::Span::stage("core.lower", || "Lower Notist".into());
         let syntax = parsed.syntax();
         let mut diagnostics = parsed
             .diagnostics
@@ -111,6 +116,7 @@ impl Frontend for NotistFrontend {
                 "imports are only valid at the document top level",
             ));
         }
+        lowering.finish();
         FrontendOutput {
             imports,
             forest,

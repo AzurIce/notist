@@ -83,17 +83,13 @@ impl<R: Resources + Send> Vault<R> {
             documents
                 .iter()
                 .map(|(handle, analysis)| {
-                    match pipeline.evaluate_with_inputs_and_limits(
+                    Self::evaluate_prepared(
+                        pipeline,
                         analysis,
                         handle.environment.context(),
                         &inputs,
                         limits,
-                    ) {
-                        crate::EvaluationOutcome::Complete(output) => Ok(*output),
-                        crate::EvaluationOutcome::NeedResources(paths) => {
-                            Err(VaultError::NeedResources(paths))
-                        }
-                    }
+                    )
                 })
                 .collect::<Vec<_>>()
         });

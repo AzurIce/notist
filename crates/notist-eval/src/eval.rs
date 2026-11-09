@@ -135,6 +135,33 @@ enum Runtime {
     Content(Type, Content),
 }
 
+/// A native constructor can be mounted without allocating a one-piece plan.
+/// Only callers which need a reusable value materialize that plan.
+enum Execution {
+    Runtime(Runtime),
+    Element { node: Node, children: Content },
+}
+impl Execution {
+    fn into_runtime(self, returns: &Type) -> Runtime {
+        match self {
+            Self::Runtime(value) => value,
+            Self::Element { node, children } => {
+                let nodes = 1 + children.nodes;
+                Runtime::Content(
+                    returns.clone(),
+                    Content::one(
+                        Piece {
+                            source: node,
+                            kind: Construction::Element(children),
+                        },
+                        nodes,
+                    ),
+                )
+            }
+        }
+    }
+}
+
 /// A content value is a reusable construction plan, not an execution-state
 /// tree. Calls and loops pair shared code with a lexical environment. Splices
 /// retain the value computed at binding time. Only mount emits public Nodes.
@@ -719,9 +746,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 }
             }
             Construction::Element(children) => {
-                let (children, mut summary) =
-                    self.present(children, limit.saturating_sub(1), expansion);
-                let mut node = item_with_content(
+                let node = item_with_content(
                     &piece.source,
                     ContentItem {
                         ctor: piece.source.ctor(),
@@ -730,22 +755,11 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                             .as_item()
                             .map(|i| i.fields.clone())
                             .unwrap_or_default(),
-                        children: children.into(),
+                        children: Default::default(),
                         instance: piece.source.as_item().and_then(|i| i.instance.clone()),
                     },
                 );
-                append_expansion(&mut node, expansion);
-                if !valid_structure(&node) {
-                    out.push(self.error(
-                        &piece.source,
-                        "evaluated content violated its checked structural role".into(),
-                        expansion,
-                    ));
-                    return ContentSummary::ERROR;
-                }
-                out.push(node);
-                summary.nodes += 1;
-                summary
+                self.present_element(node, children, limit, expansion, out)
             }
             Construction::Splice(content) => {
                 let (nodes, mut summary) =
@@ -796,6 +810,30 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             ),
             Construction::Error => unreachable!(),
         }
+    }
+    fn present_element(
+        &mut self,
+        mut node: Node,
+        children: &Content,
+        limit: usize,
+        expansion: &SourceChain,
+        out: &mut Vec<Node>,
+    ) -> ContentSummary {
+        let (children, mut summary) = self.present(children, limit.saturating_sub(1), expansion);
+        node.as_item_mut().expect("element payload").children = children.into();
+        // Structural errors refer to the unexpanded source, just like Element plans.
+        if !valid_structure(&node) {
+            out.push(self.error(
+                &node,
+                "evaluated content violated its checked structural role".into(),
+                expansion,
+            ));
+            return ContentSummary::ERROR;
+        }
+        append_expansion(&mut node, expansion);
+        out.push(node);
+        summary.nodes += 1;
+        summary
     }
     fn repeat(
         &mut self,
@@ -887,9 +925,21 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             self.depth += 1;
         }
         let previous_steps = std::mem::replace(&mut self.steps, 0);
-        let result = self.execute(call, environment, children.clone(), Some(source));
+        let result = self
+            .execute_inner(call, environment, children.clone(), Some(source))
+            .map(|result| {
+                if code {
+                    Execution::Runtime(result.into_runtime(&call.definition.returns))
+                } else {
+                    result
+                }
+            });
         let summary = match result {
-            Ok(Runtime::Content(_, content)) => {
+            Ok(Execution::Element { node, children }) => {
+                // The enclosing present retains aggregate budget checks and suffix rollback.
+                self.present_element(node, &children, limit, expansion, out)
+            }
+            Ok(Execution::Runtime(Runtime::Content(_, content))) => {
                 if code {
                     let mut chain = vec![location(call)];
                     if let Some(origin) = &source.origin {
@@ -1087,6 +1137,16 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         children: Content,
         source: Option<&Node>,
     ) -> Result<Runtime, Failure> {
+        self.execute_inner(call, scope, children, source)
+            .map(|result| result.into_runtime(&call.definition.returns))
+    }
+    fn execute_inner(
+        &mut self,
+        call: &Invocation,
+        scope: &Scope,
+        children: Content,
+        source: Option<&Node>,
+    ) -> Result<Execution, Failure> {
         self.tick()?;
         if let Some(message) = &call.invalid {
             return Err(message.clone().into());
@@ -1192,99 +1252,92 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             self.depth += 1;
         }
         // The closure ensures every early failure restores physical call depth.
-        let result = (|| match definition.implementation {
-            FunctionImpl::Native(NativeFunction::Str) => {
-                let text: notist_core::shared::Text = match fields.get("value") {
-                    Some(Value::Unit) => "()".into(),
-                    Some(Value::Bool(v)) => v.to_string().into(),
-                    Some(Value::Int(v)) => v.to_string().into(),
-                    Some(Value::Str(v)) => v.clone(),
-                    Some(Value::Float(v)) if v.is_nan() => "NaN".into(),
-                    Some(Value::Float(v)) if *v == f64::INFINITY => "Infinity".into(),
-                    Some(Value::Float(v)) if *v == f64::NEG_INFINITY => "-Infinity".into(),
-                    Some(Value::Float(v)) => v.to_string().into(),
-                    _ => {
-                        return Err(Failure::at(
-                            "str accepts only Unit, Bool, Int, Float or String",
-                            call,
-                        ));
+        let result = (|| {
+            let value = match definition.implementation {
+                FunctionImpl::Native(NativeFunction::Str) => {
+                    let text: notist_core::shared::Text = match fields.get("value") {
+                        Some(Value::Unit) => "()".into(),
+                        Some(Value::Bool(v)) => v.to_string().into(),
+                        Some(Value::Int(v)) => v.to_string().into(),
+                        Some(Value::Str(v)) => v.clone(),
+                        Some(Value::Float(v)) if v.is_nan() => "NaN".into(),
+                        Some(Value::Float(v)) if *v == f64::INFINITY => "Infinity".into(),
+                        Some(Value::Float(v)) if *v == f64::NEG_INFINITY => "-Infinity".into(),
+                        Some(Value::Float(v)) => v.to_string().into(),
+                        _ => {
+                            return Err(Failure::at(
+                                "str accepts only Unit, Bool, Int, Float or String",
+                                call,
+                            ));
+                        }
+                    };
+                    Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text))))
+                }
+                FunctionImpl::Native(NativeFunction::ArrayLen) => {
+                    let Some(Value::Array(values)) = fields.get("self") else {
+                        return Err(Failure::at("len requires an Array receiver", call));
+                    };
+                    let len = i64::try_from(values.len())
+                        .map_err(|_| Failure::at("array length exceeds Int", call))?;
+                    Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
+                }
+                FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
+                FunctionImpl::Native(NativeFunction::Data(kind)) => {
+                    self.data_native(kind, call, &fields)
+                }
+                FunctionImpl::Native(NativeFunction::Panic) => {
+                    let Some(Value::Str(message)) = fields.get("message") else {
+                        return Err(Failure::at("panic requires a String message", call));
+                    };
+                    Err(Failure::at(message.clone(), call))
+                }
+                FunctionImpl::Code => match &implementation.body {
+                    Some(body) => self.expr(body, &inputs.unwrap_or_default()),
+                    None => Err("missing checked body".into()),
+                },
+                FunctionImpl::Native(NativeFunction::Construct) => {
+                    if definition.returns.level().is_none() {
+                        return Err(format!(
+                            "native value function `{}` has no implementation",
+                            definition.id
+                        )
+                        .into());
                     }
-                };
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Str(text))))
-            }
-            FunctionImpl::Native(NativeFunction::ArrayLen) => {
-                let Some(Value::Array(values)) = fields.get("self") else {
-                    return Err(Failure::at("len requires an Array receiver", call));
-                };
-                let len = i64::try_from(values.len())
-                    .map_err(|_| Failure::at("array length exceeds Int", call))?;
-                Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
-            }
-            FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
-            FunctionImpl::Native(NativeFunction::Data(kind)) => {
-                self.data_native(kind, call, &fields)
-            }
-            FunctionImpl::Native(NativeFunction::Panic) => {
-                let Some(Value::Str(message)) = fields.get("message") else {
-                    return Err(Failure::at("panic requires a String message", call));
-                };
-                Err(Failure::at(message.clone(), call))
-            }
-            FunctionImpl::Code => match &implementation.body {
-                Some(body) => self.expr(body, &inputs.unwrap_or_default()),
-                None => Err("missing checked body".into()),
-            },
-            FunctionImpl::Native(NativeFunction::Construct) => {
-                if definition.returns.level().is_none() {
-                    return Err(format!(
-                        "native value function `{}` has no implementation",
-                        definition.id
-                    )
-                    .into());
-                }
-                self.require_runtime()?;
-                if definition.id.module == "notist" && definition.id.name == "embed" {
-                    notist_core::embed::normalize(
-                        &mut fields,
-                        call.resource_root
-                            .as_deref()
-                            .unwrap_or(self.context.resource_root()),
-                        self.sources
-                            .name(call.source)
-                            .map_err(|e| Failure::from(e.to_string()))?,
-                    )?;
-                }
-                let source = source.ok_or("missing content source")?;
-                let ctor = if definition.id.module == "notist" {
-                    Ctor::from_name(&definition.id.name).unwrap_or_else(|| source.ctor())
-                } else {
-                    Ctor::Extension(notist_core::item::ExtensionCtor {
-                        id: definition.id.def_id(),
-                        accepts: definition.children,
-                        level: source.level,
-                    })
-                };
-                let node = item_with_content(
-                    source,
-                    ContentItem {
-                        ctor,
-                        fields,
-                        children: Default::default(),
-                        instance: Some(target.clone().into()),
-                    },
-                );
-                let count = 1 + children.nodes;
-                Ok(Runtime::Content(
-                    call.definition.returns.clone(),
-                    Content::one(
-                        Piece {
-                            source: node,
-                            kind: Construction::Element(children),
+                    self.require_runtime()?;
+                    if definition.id.module == "notist" && definition.id.name == "embed" {
+                        notist_core::embed::normalize(
+                            &mut fields,
+                            call.resource_root
+                                .as_deref()
+                                .unwrap_or(self.context.resource_root()),
+                            self.sources
+                                .name(call.source)
+                                .map_err(|e| Failure::from(e.to_string()))?,
+                        )?;
+                    }
+                    let source = source.ok_or("missing content source")?;
+                    let ctor = if definition.id.module == "notist" {
+                        Ctor::from_name(&definition.id.name).unwrap_or_else(|| source.ctor())
+                    } else {
+                        Ctor::Extension(notist_core::item::ExtensionCtor {
+                            id: definition.id.def_id(),
+                            accepts: definition.children,
+                            level: source.level,
+                        })
+                    };
+                    let node = item_with_content(
+                        source,
+                        ContentItem {
+                            ctor,
+                            fields,
+                            children: Default::default(),
+                            instance: Some(target.clone().into()),
                         },
-                        count,
-                    ),
-                ))
-            }
+                    );
+                    return Ok(Execution::Element { node, children });
+                }
+            }?;
+            Ok(Execution::Runtime(value))
         })();
         if data_call {
             self.depth -= 1;
@@ -1301,9 +1354,14 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
             failure
         })?;
         let valid = match &result {
-            Runtime::Content(ty, _) => *ty == call.definition.returns,
-            Runtime::Value(ComptimeValue::Data(value)) => call.definition.returns.accepts(value),
-            Runtime::Value(ComptimeValue::Type(_)) => call.definition.returns == Type::Type,
+            Execution::Element { .. } => true, // Construct uses the checked call's return type.
+            Execution::Runtime(Runtime::Content(ty, _)) => *ty == call.definition.returns,
+            Execution::Runtime(Runtime::Value(ComptimeValue::Data(value))) => {
+                call.definition.returns.accepts(value)
+            }
+            Execution::Runtime(Runtime::Value(ComptimeValue::Type(_))) => {
+                call.definition.returns == Type::Type
+            }
         };
         if !valid {
             return Err(if data_call {
@@ -1552,6 +1610,271 @@ mod tests {
             None,
             EvaluationMode::Runtime,
         )
+    }
+    fn native_call(e: &mut Evaluator<'_, Context>, name: &str) -> Invocation {
+        let definition = e
+            .context
+            .registry()
+            .function("notist", name)
+            .unwrap()
+            .clone();
+        let instance = FunctionInstance {
+            function: definition.id.def_id(),
+            arguments: Vec::new(),
+        };
+        let signature = e
+            .context
+            .registry()
+            .signature(instance.function)
+            .unwrap()
+            .clone();
+        let checked = notist_core::signature::ComptimeBindings::new(signature)
+            .instantiate()
+            .unwrap();
+        let key = instance.key(e.sources.definitions()).unwrap();
+        Arc::make_mut(&mut e.program.instances).insert(
+            key,
+            Arc::new(InstanceRecord {
+                definition: checked,
+                inputs: Default::default(),
+                body: None,
+                diagnostics: Vec::new(),
+                checking: false,
+            }),
+        );
+        Invocation {
+            instance,
+            definition: definition.into(),
+            arguments: Vec::new(),
+            children: None,
+            attrs: Default::default(),
+            span: Default::default(),
+            source: Default::default(),
+            site: CallSite::Code,
+            resource_root: None,
+            invalid: None,
+        }
+    }
+
+    #[test]
+    fn immediate_native_matches_reusable_plan_for_budgets_structure_and_origins() {
+        let context = Context;
+        for name in ["strong", "table"] {
+            for limit in 1..=5 {
+                for children_count in 0..=3 {
+                    let mut direct = evaluator(&context, &CheckedProgram::default());
+                    direct.sources = direct
+                        .sources
+                        .with_definitions(context.registry().identities());
+                    let call = native_call(&mut direct, name);
+                    let mut planned = evaluator(&context, &direct.program);
+                    planned.sources = direct.sources.clone();
+                    let owner = notist_core::source::Source::metadata("native.not").unwrap();
+                    let mut source = Node::new(Ctor::Group, Default::default());
+                    source.attrs.insert("id", Value::Str("native".into()));
+                    source.origin = Some(Origin {
+                        source: owner.id(),
+                        start: 2,
+                        end: 8,
+                        expansion: vec![SourceLocation {
+                            source: owner.id(),
+                            start: 1,
+                            end: 9,
+                        }]
+                        .into(),
+                    });
+                    let chain = vec![SourceLocation {
+                        source: owner.id(),
+                        start: 0,
+                        end: 10,
+                    }]
+                    .into();
+                    let children = direct.bind_content(
+                        &vec![Node::text("child".into(), Default::default()); children_count],
+                        &Scope::new(),
+                        100,
+                    );
+                    let Runtime::Content(_, legacy) = planned
+                        .execute(&call, &Scope::new(), children.clone(), Some(&source))
+                        .unwrap()
+                    else {
+                        panic!()
+                    };
+                    let expected = planned.present(&legacy, limit, &chain);
+                    let content = Content::one(
+                        Piece {
+                            source,
+                            kind: Construction::Call {
+                                call: call.into(),
+                                environment: Scope::new(),
+                                children,
+                            },
+                        },
+                        1,
+                    );
+                    direct.steps = 17;
+                    let actual = direct.present(&content, limit, &chain);
+                    assert_eq!(
+                        actual.0, expected.0,
+                        "{name}, limit={limit}, children={children_count}"
+                    );
+                    assert_eq!(actual.1.nodes, expected.1.nodes);
+                    assert_eq!(actual.1.failed, expected.1.failed);
+                    assert_eq!(direct.diagnostics, planned.diagnostics);
+                    assert_eq!(direct.steps, 17);
+                    assert_eq!(direct.depth, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn immediate_native_rolls_back_only_its_suffix_and_keeps_following_siblings() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        e.sources = e.sources.with_definitions(context.registry().identities());
+        let call = native_call(&mut e, "strong");
+        let child = Node::text("child".into(), Default::default());
+        let children = e.bind_content(&[child.clone(), child], &Scope::new(), 100);
+        let ready = |text: &str| Piece {
+            source: Node::text(text.into(), Default::default()),
+            kind: Construction::Ready { nodes: 1 },
+        };
+        let content = Content {
+            pieces: vec![
+                ready("before"),
+                Piece {
+                    source: Node::new(Ctor::Group, Default::default()),
+                    kind: Construction::Call {
+                        call: call.into(),
+                        environment: Scope::new(),
+                        children,
+                    },
+                },
+                ready("after"),
+            ]
+            .into(),
+            nodes: 5,
+        };
+        let (nodes, summary) = e.present(&content, 2, &Default::default());
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].field("text"), Some(&Value::Str("before".into())));
+        assert!(nodes[1].is_error());
+        assert_eq!(nodes[2].field("text"), Some(&Value::Str("after".into())));
+        assert_eq!(summary.nodes, 2);
+        assert!(summary.failed);
+        // The child's budget diagnostic survives even when its parent is rolled back.
+        assert_eq!(e.diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn immediate_native_preserves_invalid_argument_and_implementation_error_order() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        e.sources = e.sources.with_definitions(context.registry().identities());
+        let mut call = native_call(&mut e, "text");
+        let key = call.instance.key(e.sources.definitions()).unwrap();
+        Arc::make_mut(
+            Arc::make_mut(&mut e.program.instances)
+                .get_mut(&key)
+                .unwrap(),
+        )
+        .diagnostics
+        .push(Diagnostic::new(
+            Phase::Type,
+            Default::default(),
+            "implementation error",
+        ));
+        let mut argument = TypedExpr {
+            ty: Some(Type::String),
+            known: None,
+            kind: ExprKind::Failure("argument error".into()),
+            span: Default::default(),
+            source: Default::default(),
+            shape: Default::default(),
+        };
+        for (invalid, argument_fails, expected) in [
+            (true, true, "invalid call"),
+            (false, true, "argument error"),
+            (false, false, "implementation error"),
+        ] {
+            call.invalid = invalid.then(|| "invalid call".into());
+            if !argument_fails {
+                argument.known = Some(ComptimeValue::Data(Value::Str("valid".into())));
+            }
+            call.arguments = vec![("text".into(), argument.clone())];
+            e.steps = 19;
+            let mut out = Vec::new();
+            let summary = e.present_call(
+                &Node::new(Ctor::Group, Default::default()),
+                &call,
+                &Scope::new(),
+                &Content::default(),
+                100,
+                &Default::default(),
+                &mut out,
+            );
+            assert!(summary.failed);
+            assert!(matches!(out[0].ctor(), Ctor::Error(message) if message.contains(expected)));
+            assert_eq!(e.steps, 19);
+            assert_eq!(e.depth, 0);
+        }
+    }
+
+    #[test]
+    fn immediate_native_reexecutes_captured_arguments_and_recovers_after_failure() {
+        let context = Context;
+        let mut e = evaluator(&context, &CheckedProgram::default());
+        e.sources = e.sources.with_definitions(context.registry().identities());
+        let mut call = native_call(&mut e, "text");
+        let x = e
+            .sources
+            .bindings_mut()
+            .declare(
+                "x",
+                &notist_core::source::Source::detached(),
+                Default::default(),
+            )
+            .unwrap();
+        call.arguments.push(("text".into(), input(x, Type::String)));
+        let mut scope = Scope::new();
+        scope.insert(
+            x,
+            Runtime::Value(ComptimeValue::Data(Value::Str("captured".into()))),
+        );
+        let content = Content::one(
+            Piece {
+                source: Node::new(Ctor::Group, Default::default()),
+                kind: Construction::Call {
+                    call: call.into(),
+                    environment: scope.clone(),
+                    children: Content::default(),
+                },
+            },
+            1,
+        );
+        scope.insert(
+            x,
+            Runtime::Value(ComptimeValue::Data(Value::Str("changed".into()))),
+        );
+        e.limits.steps = 1; // execute ticks, then the argument fails its own tick.
+        e.steps = 23;
+        let (failed, summary) = e.present(&content, 10, &Default::default());
+        assert!(summary.failed);
+        assert!(failed[0].is_error());
+        assert_eq!(e.steps, 23);
+        e.limits.steps = 2;
+        e.limits.call_depth = 0; // Native content does not consume Code depth.
+        e.active_loops = 1;
+        for mount in 1..=2 {
+            let (nodes, summary) = e.present(&content, 10, &Default::default());
+            assert!(!summary.failed);
+            assert_eq!(nodes[0].field("text"), Some(&Value::Str("captured".into())));
+            assert_eq!(e.steps, 23);
+            assert_eq!(e.depth, 0);
+            assert_eq!(e.loop_work, mount * 2, "each mount executes both ticks");
+        }
+        assert_eq!(e.diagnostics.len(), 1);
     }
     #[test]
     fn final_item_payload_preserves_source_metadata_without_source_fields_or_children() {

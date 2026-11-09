@@ -31,8 +31,8 @@ Context.with_scope 验证导入 ID 的拥有关系，Context.with_root 只选择
 - Registry 的定义和模块索引使用 DefId 与 ModuleId；名字索引只负责解析边界。
 - CodeProgram 的模块和作用域表使用 ModuleId，CodeModule 的函数体表使用 DefId。检查器的定义模块、Context 的根模块及已解析的链接目标均使用 ModuleId。
 - 模块绑定结果保留所需名称快照。绑定缓存只跟踪被查询的导出及其名称拥有关系，不因为无关导出变化而失效，也不缓存依赖实现。
-- 求值的实际目标映射、调用与局部实现缓存使用 DefId；缓存仍检查编译期实参，并遵守原有失败回退规则。
-- HtmlRegistry 和宿主 Environment 的已解析索引使用数字身份；浏览器组件标签和资源路径仍从规范名称生成。
+- 求值的实际目标映射、调用与局部实现缓存使用 DefId；缓存检查编译期实参，并遵守失败回退规则。
+- HtmlRegistry 和宿主 Environment 的已解析索引使用数字身份；浏览器组件标签和资源路径从规范名称生成。
 
 对外列表、诊断顺序和发布行为不使用编号分配顺序。名称遍历与稳定排序保留单独的文字投影，不把内部 BTreeMap 的数字顺序直接暴露给用户。
 
@@ -40,6 +40,6 @@ Context.with_scope 验证导入 ID 的拥有关系，Context.with_root 只选择
 
 数字 ID 不实现 serde。含有动态定义引用的 IR 使用 Sources.wire 生成显式名称投影；Sources.decode 只接受当前快照已有的名字，Sources.import 则在显式导入操作中创建并返回名称拥有关系。输入 DTO 在验证之前只保存文字，不因未知名字而隐式登记进程身份。
 
-函数仍序列化为 module 与 name，实例仍保存原有的编译期实参表示。定义的签名、构造类别、字段、来源和展开链不因数字化而丢失。缺少名称拥有关系时，序列化、查询、调试输出和验证会失败，不借用另一个 Context 或全局表补齐。
+函数序列化为 module 与 name，实例保存编译期实参表示。定义的签名、构造类别、字段、来源和展开链不因数字化而丢失。缺少名称拥有关系时，序列化、查询、调试输出和验证会失败，不借用另一个 Context 或全局表补齐。
 
 查询 select、内容 dump 和 JSON 输出接收伴随的 Sources。Renderer.with_sources 接收完整输出快照，HtmlRegistry 也保留绑定声明的名称；固定 builtin 构造的名称由其枚举语义直接确定。输出中的规范名字、组件协议和确定性排序不依赖进程编号。

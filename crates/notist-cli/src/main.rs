@@ -384,17 +384,13 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         };
     }
     let mut vault = load_vault(config);
-    let document = match vault.analyze(file, &src) {
+    let mut document = match vault.analyze(file, &src) {
         Ok(document) => document,
         Err(error) => return emit_vault_error(error),
     };
-    let (item, mut diagnostics, sources) = document.into_parts();
-    // id/tag 约定是 .not 的注解语义，只在该前端下检查
-    if file.extension().is_some_and(|ext| ext == "not") {
-        let index = notist::index::Index::build(&item, &sources, &mut diagnostics);
-        notist::vault_index::check_doc_links(&item, &sources, &index, &mut diagnostics);
-    }
-    emit_diagnostics(file, &src, &diagnostics);
+    notist::vault_index::check_document(file, &mut document);
+    let diagnostics = document.diagnostics();
+    emit_diagnostics(file, &src, diagnostics);
     if diagnostics.is_empty() {
         ExitCode::SUCCESS
     } else {

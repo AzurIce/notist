@@ -90,7 +90,7 @@ if 写作 `if condition { yes } else { no }`；match 写作 `match subject { pat
 
 == 词法、CST 与内容嵌入
 
-for 写作 `for element in array [内容体]` 或 `for element in array {代码体}`；两种正文前端使用 `#for` 入口。主体只接受静态 Array<E>，结果必须为同一类别的内容连接；详情见 [标量显示与有限遍历](loops.not)。集合表达式顶层紧随的方括号属于循环体；若集合计算自身需要内容实参，将整个调用括起来。代码块仍使用 let 加尾表达式，不隐式连接其他表达式或转换 Unit。
+for 写作 `for element in array [内容体]` 或 `for element in array {代码体}`；两种正文前端使用 `#for` 入口。主体只接受静态 Array<E>，结果必须为同一类别的内容连接；详情见 [标量显示与有限遍历](loops.not)。集合表达式顶层紧随的方括号属于循环体；若集合计算自身需要内容实参，将整个调用括起来。代码块使用 let 加尾表达式，不隐式连接其他表达式或转换 Unit。
 
 接收者方法使用 `expression.method()`，例如 `records.len()`、`make_records().len()`。模块成员仍按词法名称解析；方法按接收者静态类型选择标准库定义，不提供函数值、动态派发或自定义 extension method。
 

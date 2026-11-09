@@ -22,7 +22,7 @@ fn expect<T: Type>(value: Result<T, String>) -> T {
 }
 ```
 
-容器类型仍按完整类型区分。例如 `Result<Never, String>` 与 `Result<Int, String>` 不同型，前者只能构造 err。
+容器类型按完整类型区分。例如 `Result<Never, String>` 与 `Result<Int, String>` 不同型，前者只能构造 err。
 
 - Never 可用作编译期 Type 表达式和类型默认值。
 - `Option<Never>` 可有 none，`Array<Never>` 可为空，`Result<Never, E>` 可有 err；None、空数组与 err 本身都不是 Never 值。
@@ -59,6 +59,6 @@ fn unused() -> InlineContent {
 - 预览可以保留其他独立内容；严格发布仍因错误失败，不发布错误的部分构建结果。
 - Code 内容字面量支持 `#panic("message")` 插值；独立 Markup 中需调用一个返回 Content 的 Code 包装函数。
 
-已有的 `compile_error` 是检查期操作，要求已知消息，检查器访问到它就报告错误；panic 是求值期操作。显式 comptime 或必须计算的编译期实参执行到 panic 时，报告发生在该阶段，位置仍指向内部 panic 调用。
+`compile_error` 是检查期操作，要求已知消息，检查器访问到它就报告错误；panic 是求值期操作。显式 comptime 或必须计算的编译期实参执行到 panic 时，报告发生在该阶段，位置仍指向内部 panic 调用。
 
-Result 的 err 是普通可处理值，不会自动触发 panic。反过来，Result 的 match 也不能捕获 panic 或预算耗尽。输入未准备仍使用宿主 NeedResources 协议，不伪装成用户错误值。
+Result 的 err 是普通可处理值，不会自动触发 panic。反过来，Result 的 match 也不能捕获 panic 或预算耗尽。输入未准备使用宿主 NeedResources 协议，不伪装成用户错误值。

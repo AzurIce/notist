@@ -65,7 +65,7 @@ flavor(open, close) =
 
 仅一端留白或内部跨行不会自行声明 BlockContent；空 `[]` 为 InlineContent。
 
-在现行文档语法中，内容只通过调用后的 body 槽挂载；`#node[...]` 对应透明的 node 调用，渲染为内容本身，可承接注解。flank 空白不属于内容；inline 声明的内容不允许空行（诊断并按软换行吸收）。Code 的独立内容字面量解析入口见 [文档前端](../designs/frontends.not)，同样用于 .notc 函数体。
+内容只通过调用后的 body 槽挂载；`#node[...]` 对应透明的 node 调用，渲染为内容本身，可承接注解。flank 空白不属于内容；inline 声明的内容不允许空行（诊断并按软换行吸收）。Code 的独立内容字面量解析入口见 [文档前端](../designs/frontends.not)，同样用于 .notc 函数体。
 
 InlineContent 与 BlockContent 没有隐式转换。固定 BlockContent 参数需要块级字面量；类别多态的参数通过输入类型推导编译期类别。node 保持输入类别，callout、item、cell 接受两种输入并固定返回 BlockContent。
 

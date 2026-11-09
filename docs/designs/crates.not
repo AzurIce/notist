@@ -30,7 +30,7 @@ flowchart TB
 - `notist-core`：提供 Expr、RExpr、Item、Value、CheckedProgram、InstanceRecord、已检查表达式与待求值信息、函数定义、Registry、前端接口、DocumentExtension 阶段契约与诊断等共享语义模型，以及共同校验和单文档索引，不依赖其他 workspace crate。
 - `notist-syntax`：提供原生 Markup 与 Code 的词法、解析和 AST，共享 Rowan 基础，并定义内容字面量的 ContentParser 委托接口；不生成 IR，不依赖语义模型或具体前端。
 - `notist-pipeline`：依赖 core、syntax 与 eval，提供 Context（Registry、CodeProgram 与 ExtensionPlan）、静态 import lowering、共用 lowering、ContentLowering 接口、resolve / shape / materialize、Code lowering、具体实例检查及 Evaluate 编排。frontend.markup 组合原生解析与正文 lowering，frontend.markdown 使用 rushdown 解析并 lower Markdown；两者复用 Code 片段入口和共同转换。外部前端通过公开接口注册，pipeline 不静态依赖外部实现。
-- `notist-eval`：依赖 core，解释已检查的 Item / TypedExpr，负责内容绑定、挂载、原生与 Data 调用、编译期求值、逻辑预算及局部实例缓存。EvaluationContext 提供定义、执行映射和缺失实例的检查回调，由 pipeline 的 Context 实现；eval 不依赖检查器、语法、文件系统或输出后端。Pipeline 保留来源合并、文档扩展调度及原有 evaluate 入口。
+- `notist-eval`：依赖 core，解释已检查的 Item / TypedExpr，负责内容绑定、挂载、原生与 Data 调用、编译期求值、逻辑预算及局部实例缓存。EvaluationContext 提供定义、执行映射和缺失实例的检查回调，由 pipeline 的 Context 实现；eval 不依赖检查器、语法、文件系统或输出后端。Pipeline 保留来源合并、文档扩展调度及 evaluate 入口。
 - `notist-html`：在 workspace 内仅依赖 core，接收 Item 与渲染配置，生成 HTML 并处理组件绑定。
 - `notist`：依赖 core、syntax、pipeline 与 html，从 Markup / Code 的源码声明加载模块图，负责输出配置，将 Context 与配置、模块源码信息组合成 Environment，并提供 Vault、VaultIndex、查询、调试及内存 / 本地 / Worker 宿主接口，并通过 command_extension 将 stdio 外部命令适配为文档扩展。
 - `notist-ssg`：依赖 notist 与 html，负责站点编译、路由、链接检查、模板、资源、Sass 和完整构建产物。Book 通过内置 SiteExtension 提供 SUMMARY 与导航数据，通过独立的内置主题呈现。default 与 book 主题的模板均存放在 themes 目录。Builder 为每次构建创建扩展实例，在 before_compile 修改源码集合，在 before_template 根据最终 Pages 修改模板 data；命令扩展以同一进程处理两个 JSON Lines 事件。完整接口见 [SSG 站点扩展](../ssg/extensions.not)。

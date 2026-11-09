@@ -27,7 +27,8 @@ struct Link {
 }
 
 /// A link target after splitting the `#item` suffix.
-enum Target {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
     /// `https:`-style schemes never resolve.
     External,
     /// `[[#item]]`: an id in the current document.
@@ -35,6 +36,8 @@ enum Target {
     /// A normalized identity resolved relative to the linking document.
     Path { path: PathBuf, item: Option<String> },
 }
+
+use LinkTarget as Target;
 
 fn has_scheme(target: &str) -> bool {
     target.split_once(':').is_some_and(|(scheme, _)| {
@@ -64,22 +67,44 @@ fn parse_target(target: &str, file_dir: &Path) -> Target {
     }
 }
 
-fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
+/// Classify a source link using the same rules as workspace link checks.
+/// `path` is the owning document's absolute logical path, not an output URL.
+pub fn link_target(path: &Path, node: &Item) -> Option<LinkTarget> {
+    if node.ctor() != Ctor::Link {
+        return None;
+    }
+    match node.field("target") {
+        Some(Value::Path(target)) => Some(Target::Path {
+            path: PathBuf::from(target.logical_path()),
+            item: crate::embed::string(&node.fields(), "fragment").map(str::to_owned),
+        }),
+        Some(Value::Str(target)) => {
+            Some(parse_target(target, path.parent().unwrap_or(Path::new(""))))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve the innermost link containing a source byte offset, including its
+/// label's Text leaves. This performs no IO or document evaluation.
+pub fn link_at(path: &Path, item: &Item, offset: usize) -> Option<LinkTarget> {
+    if !item.span.contains((offset as u32).into()) {
+        return None;
+    }
+    item.children()
+        .iter()
+        .find_map(|child| link_at(path, child, offset))
+        .or_else(|| link_target(path, item))
+}
+
+fn collect_links(item: &Item, path: &Path) -> Vec<Link> {
     item.descendants()
         .filter(|item| item.ctor() == Ctor::Link)
-        .filter_map(|item| match item.field("target") {
-            Some(Value::Path(target)) => Some(Link {
+        .filter_map(|item| {
+            Some(Link {
                 span: item.span,
-                target: Target::Path {
-                    path: PathBuf::from(target.logical_path()),
-                    item: crate::embed::string(&item.fields(), "fragment").map(str::to_owned),
-                },
-            }),
-            Some(Value::Str(target)) => Some(Link {
-                span: item.span,
-                target: parse_target(target, file_dir),
-            }),
-            _ => None,
+                target: link_target(path, item)?,
+            })
         })
         .collect()
 }
@@ -87,7 +112,7 @@ fn collect_links(item: &Item, file_dir: &Path) -> Vec<Link> {
 /// Document paths needed by the host to complete a link graph. This performs
 /// no IO; schemes and same-document anchors do not request another resource.
 pub(crate) fn linked_paths(path: &Path, item: &Item) -> Vec<PathBuf> {
-    collect_links(item, path.parent().unwrap_or(Path::new("")))
+    collect_links(item, path)
         .into_iter()
         .filter_map(|link| match link.target {
             Target::Path { path, .. } => Some(path),
@@ -215,6 +240,23 @@ pub fn check_doc_links(
     }
 }
 
+/// Build the source index shared by single-file checks and editor tooling.
+/// The id/tag convention's diagnostics apply only to native Markup documents.
+pub fn check_document(path: &Path, analysis: &mut crate::Analysis) -> Index {
+    let mut diagnostics = Vec::new();
+    let index = Index::build(analysis.root(), analysis.sources(), &mut diagnostics);
+    if path.extension().is_some_and(|extension| extension == "not") {
+        check_doc_links(
+            analysis.root(),
+            analysis.sources(),
+            &index,
+            &mut diagnostics,
+        );
+        analysis.extend_diagnostics(diagnostics);
+    }
+    index
+}
+
 impl VaultIndex {
     /// Build from processed documents using an absolute logical root. Relative
     /// document paths resolve against that root; link identities are absolute
@@ -244,7 +286,7 @@ impl VaultIndex {
                 }
             }
             let index = Index::build(&item, &sources, &mut diagnostics);
-            let links = collect_links(&item, path.parent().unwrap_or(Path::new("")));
+            let links = collect_links(&item, &path);
             docs.insert(
                 normalize(&path),
                 Doc {

@@ -136,7 +136,7 @@ let (forest, module_attrs, annotations) =
     notist_pipeline::frontend::markup::lower_document(&parsed, &mut diagnostics);
 ```
 
-这里 diagnostics 收集 lowering 诊断；parsed.diagnostics 仍由解析调用者持有。前端承担源码处理的组合，lower_document 消费 Parse 中的 Document 与关联内容树。共享入口 call_header 同时接收调用 AST、所属 Parse 和 ContentLowering，以复用嵌套内容的解析产物；annotation_dict 与 literals 消费各自的语法节点。
+这里 diagnostics 收集 lowering 诊断；parsed.diagnostics 由解析调用者持有。前端承担源码处理的组合，lower_document 消费 Parse 中的 Document 与关联内容树。共享入口 call_header 同时接收调用 AST、所属 Parse 和 ContentLowering，以复用嵌套内容的解析产物；annotation_dict 与 literals 消费各自的语法节点。
 
 .notc 声明由 notist-syntax.code.parse_module 产生 Module AST，进入 Pipeline.compile_module → CodeModule → Context 的装配路径，见 [内容函数与输出绑定](content-functions.not)。该路径复用字面量转换，产物包含公开签名与函数体。
 
@@ -155,12 +155,12 @@ MarkdownFrontend 通过 rushdown 解析 Markdown AST，并将其 lower 成同一
 
 `[body]` 为行内内容槽；两端内侧均留空白或换行的 `[ body ]` 为块内容槽。`#node[body]` 是显式透明内容调用，正文仍使用所在前端的语法。`#f([body])` 这样的普通内容参数不支持，内容通过调用后的唯一 children 槽挂载；规则见 [Types](../code/types.not) 和 [Markdown Syntax](../markup/syntax.not)。
 
-参数字符串、代码和数学 payload 保持不透明；其中的调用与注解不会再次执行。Markdown 的普通文字与链接字段仍按其解码规则转换，显式调用的字面量按 Notist 字面量规则转换。
+参数字符串、代码和数学 payload 保持不透明；其中的调用与注解不会再次执行。Markdown 的普通文字与链接字段按其解码规则转换，显式调用的字面量按 Notist 字面量规则转换。
 
 @(id: "解析产物与调试")
 == 解析产物与调试
 
-FrontendOptions.capture_syntax 默认 false，控制解析产物是否随编译结果保留。正常 compile 仍会完成解析和 lowering，返回 IR₁、根属性及诊断；解析树在本次处理结束后释放。选项为 true 时，前端可把已生成的 CST / AST 放入 FrontendOutput.syntax，供工具继续读取。Code 阶段二只需要已 Lower 的 IR₁；前端内容语法树随 Parse 的生命周期保留，不随 CodeModule 保存。
+FrontendOptions.capture_syntax 默认 false，控制解析产物是否随编译结果保留。正常 compile 完成解析和 lowering，返回 IR₁、根属性及诊断；解析树在本次处理结束后释放。选项为 true 时，前端可把已生成的 CST / AST 放入 FrontendOutput.syntax，供工具继续读取。Code 阶段二只需要已 Lower 的 IR₁；前端内容语法树随 Parse 的生命周期保留，不随 CodeModule 保存。
 
 FrontendSyntax 是 Any + Debug 的不透明解析产物接口，具体 AST 类型由前端决定。现有实现保留：
 

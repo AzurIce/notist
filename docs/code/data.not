@@ -87,7 +87,7 @@ fn optional_title(source: Path) -> String {
 
 错误类别使用稳定字符串，如 not_found、access_denied、syntax、number_range、duplicate_key、unsupported_value、type_mismatch、missing_key、out_of_range、invalid_query。data_error_path 使用 RFC 6901 路径，根为空字符串。
 
-data_fail 保留实际数据文件范围、同版本源码和读取／调用展开链；无精确节点范围时使用数据文件的空范围。纯文本解析或来源已移除的 wire 视图降级到升级调用点，不把数据内部偏移套到 notc 源码上。普通 `panic(data_error_message(error))` 仍可用，但字符串化后不会恢复数据来源。
+data_fail 保留实际数据文件范围、同版本源码和读取／调用展开链；无精确节点范围时使用数据文件的空范围。纯文本解析或来源已移除的 wire 视图降级到升级调用点，不把数据内部偏移套到 notc 源码上。普通 `panic(data_error_message(error))` 可用，但字符串化后不会恢复数据来源。
 
 文件缺失、拒绝访问、非文件、普通 IO、UTF-8／格式和受检访问错误返回 err。Pending 仍是宿主 NeedResources，不能提前发布 fallback；缺少读取能力及文件／请求／缓存／解析／解码／求值的硬预算失败仍走宿主或求值失败通道，Result 不能捕获它们。
 

@@ -5,6 +5,7 @@ pub use code::{Evaluation, EvaluationOutcome, Limits};
 mod definitions;
 mod modules;
 mod navigation;
+pub use navigation::SourceNavigation;
 #[cfg(feature = "profiling")]
 pub mod profiling;
 pub mod progress;

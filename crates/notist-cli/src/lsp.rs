@@ -411,7 +411,10 @@ impl Backend {
             };
             pending.extend(diagnostics.into_iter().map(|d| (uri.clone(), d)));
         }
-        for (fallback, mut diagnostic) in pending {
+        let mut line_indexes = LineIndexes::default();
+        // Borrow pending diagnostics until every conversion finishes. Their
+        // pinned revisions (and the open-document snapshot) outlive the indexes.
+        for (fallback, diagnostic) in &mut pending {
             let uri = diagnostic
                 .source
                 .as_deref()
@@ -428,14 +431,15 @@ impl Backend {
                 }),
                 None => documents
                     .get(&uri)
-                    .or_else(|| documents.get(&fallback))
+                    .or_else(|| documents.get(&*fallback))
                     .map(String::as_str),
             };
             if let Some(source) = source {
-                published
-                    .entry(uri)
-                    .or_default()
-                    .push(lsp_diagnostic(source, &diagnostic));
+                published.entry(uri).or_default().push(lsp_diagnostic(
+                    source,
+                    diagnostic,
+                    line_indexes.get(source),
+                ));
             }
         }
         for diagnostics in published.values_mut() {
@@ -579,6 +583,22 @@ struct LineIndex {
     starts: Vec<usize>,
 }
 
+/// One diagnostic publication's indexes, keyed by immutable text storage rather
+/// than file name or SourceId (both can have multiple retained revisions).
+#[derive(Default)]
+struct LineIndexes<'a> {
+    entries: HashMap<(usize, usize), (&'a str, LineIndex)>,
+}
+impl<'a> LineIndexes<'a> {
+    fn get(&mut self, source: &'a str) -> &LineIndex {
+        &self
+            .entries
+            .entry((source.as_ptr() as usize, source.len()))
+            .or_insert_with(|| (source, LineIndex::new(source)))
+            .1
+    }
+}
+
 impl LineIndex {
     fn new(src: &str) -> Self {
         let mut starts = vec![0];
@@ -625,9 +645,9 @@ impl LineIndex {
     }
 }
 
-fn lsp_diagnostic(source: &str, diagnostic: &notist::Diagnostic) -> Diagnostic {
+fn lsp_diagnostic(source: &str, diagnostic: &notist::Diagnostic, lines: &LineIndex) -> Diagnostic {
     Diagnostic {
-        range: LineIndex::new(source).range(source, diagnostic.span),
+        range: lines.range(source, diagnostic.span),
         severity: Some(DiagnosticSeverity::ERROR),
         source: Some(format!("notist:{}", diagnostic.phase)),
         message: diagnostic.message.clone(),
@@ -638,6 +658,26 @@ fn lsp_diagnostic(source: &str, diagnostic: &notist::Diagnostic) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_indexes_share_text_storage_but_never_confuse_revisions() {
+        let old = notist::Source::new("same.not", "a\n😀中").unwrap();
+        let new = notist::Source::new("same.not", "😀\n中a").unwrap();
+        assert_eq!(old.id(), new.id());
+        let clone = old.clone();
+        let mut indexes = LineIndexes::default();
+        for source in [&old, &clone, &new] {
+            let text = source.text().unwrap();
+            let cached = indexes.get(text);
+            for offset in 0..=text.len() {
+                assert_eq!(
+                    cached.position(text, offset),
+                    LineIndex::new(text).position(text, offset)
+                );
+            }
+        }
+        assert_eq!(indexes.entries.len(), 2);
+    }
 
     #[test]
     fn smallest_at_finds_innermost() {

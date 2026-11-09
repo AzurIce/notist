@@ -1033,6 +1033,7 @@ name = "notist-eval"
 version = "0.1.0"
 dependencies = [
  "notist-core",
+ "notist-observe",
  "rowan",
  "smallvec",
 ]
@@ -1060,10 +1061,20 @@ name = "notist-html"
 version = "0.1.0"
 dependencies = [
  "notist-core",
+ "notist-observe",
  "notist-syntax",
  "serde_json",
  "syntect",
  "two-face",
+]
+
+[[package]]
+name = "notist-observe"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -1073,6 +1084,7 @@ dependencies = [
  "comemo",
  "notist-core",
  "notist-eval",
+ "notist-observe",
  "notist-syntax",
  "rowan",
  "rushdown",

@@ -13,6 +13,7 @@ mod query;
 mod serve;
 #[cfg(not(target_arch = "wasm32"))]
 mod ssg;
+mod timings;
 
 #[cfg(not(target_arch = "wasm32"))]
 use notist::Resources;
@@ -30,6 +31,10 @@ use codespan_reporting::term::{self, Config};
 #[derive(Parser)]
 #[command(name = "notist", version, about = "the Notist document toolchain", long_about = None)]
 struct Cli {
+    /// Record stage timings (html by default; use --timings=html,json)
+    #[arg(long, global = true, num_args = 0..=1, require_equals = true,
+        default_missing_value = "html", value_delimiter = ',', value_enum)]
+    timings: Vec<timings::Format>,
     /// Show detailed, tree-shaped build progress on stderr
     #[arg(short, long, global = true)]
     verbose: bool,
@@ -104,7 +109,32 @@ struct ListenOptions {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    progress::observe(cli.verbose, || run(cli))
+    progress::observe(cli.verbose, || {
+        if cli.timings.is_empty() || matches!(&cli.command, Command::Serve { .. }) {
+            return run(cli);
+        }
+        #[cfg(feature = "lsp")]
+        if matches!(&cli.command, Command::Lsp) {
+            eprintln!("--timings is not supported for the long-running language server");
+            return ExitCode::FAILURE;
+        }
+        let formats = cli.timings.clone();
+        let (result, mut report) = notist::progress::timings::capture(|| run(cli));
+        report.attributes.insert(
+            "status".into(),
+            if result == ExitCode::SUCCESS {
+                "success"
+            } else {
+                "failed"
+            }
+            .into(),
+        );
+        if let Err(error) = timings::write(&report, &formats) {
+            eprintln!("Failed to write timings: {error}");
+            return ExitCode::FAILURE;
+        }
+        result
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -122,7 +152,13 @@ fn run(cli: Cli) -> ExitCode {
             listen,
             no_clear_screen,
         } => match package::Package::load(config, None, package.as_deref()) {
-            Ok(package) => serve::serve_package(package, &listen, no_clear_screen, cli.verbose),
+            Ok(package) => serve::serve_package(
+                package,
+                &listen,
+                no_clear_screen,
+                cli.verbose,
+                !cli.timings.is_empty(),
+            ),
             Err(e) => {
                 eprintln!("{e}");
                 ExitCode::FAILURE

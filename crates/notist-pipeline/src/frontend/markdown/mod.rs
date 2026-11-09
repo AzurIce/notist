@@ -134,12 +134,14 @@ fn content_forest(forest: Vec<Expr>, inline: bool) -> Vec<Expr> {
 }
 
 fn parse_body(src: &str, inline: bool) -> MarkdownSyntax {
+    let parsing = crate::progress::Span::stage("core.parse", || "Parse Markdown".into());
     let (mut arena, mut root) = parser(None, inline).parse(&mut BasicReader::new(src));
     let positions = breaks::positions(&arena, root, src);
     if !positions.is_empty() {
         (arena, root) =
             parser(Some(breaks::Breaks(positions)), inline).parse(&mut BasicReader::new(src));
     }
+    parsing.finish();
     MarkdownSyntax {
         source: src.to_owned(),
         arena,
@@ -154,7 +156,11 @@ fn compile_body(
     capture_syntax: bool,
 ) -> FrontendOutput {
     let syntax = parse_body(src, inline);
-    let mut output = lower_parsed(src, &syntax.arena, syntax.root, allow_module);
+    let mut output = crate::progress::measure(
+        "core.lower",
+        || "Lower Markdown".into(),
+        || lower_parsed(src, &syntax.arena, syntax.root, allow_module),
+    );
     if capture_syntax {
         output.syntax = Some(Box::new(syntax));
     }

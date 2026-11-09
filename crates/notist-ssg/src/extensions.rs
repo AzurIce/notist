@@ -191,7 +191,10 @@ pub(crate) fn before_compile<R: Resources>(
         }
     }
     let run = |extension: &mut dyn SiteExtension, input: &mut CompileInput| {
-        let progress = notist::progress::Span::enter(|| format!("Extension {}", extension.name()));
+        let progress = notist::progress::Span::stage("site.extensions.before_compile", || {
+            format!("Extension {}", extension.name())
+        });
+        progress.attribute("extension", || extension.name().into());
         let mut candidate = input.clone();
         let routes = extension
             .before_compile(&context, &mut candidate)
@@ -252,6 +255,10 @@ pub(crate) fn before_template(
 ) -> Result<(), Error> {
     let context = SiteContext { resources, config };
     for extension in extensions {
+        let progress = notist::progress::Span::stage("site.extensions.before_template", || {
+            format!("Template extension {}", extension.name())
+        });
+        progress.attribute("extension", || extension.name().into());
         let mut candidate = TemplateInput {
             pages: input.pages,
             data: input.data.clone(),
@@ -261,15 +268,20 @@ pub(crate) fn before_template(
             .and_then(|()| validate_data(&candidate.data))
             .map_err(|e| contextualize(extension.as_ref(), "before_template", e))?;
         input.data = candidate.data;
+        progress.finish();
     }
     Ok(())
 }
 
 pub(crate) fn finish(extensions: &mut [Box<dyn SiteExtension>]) -> Result<(), Error> {
     for extension in extensions {
+        let progress = notist::progress::Span::stage("site.extensions.finish", || {
+            format!("Finish extension {}", extension.name())
+        });
         extension
             .finish()
             .map_err(|e| contextualize(extension.as_ref(), "finish", e))?;
+        progress.finish();
     }
     Ok(())
 }

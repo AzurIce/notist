@@ -7,6 +7,7 @@ edition = "2024"
 profiling = []
 
 [dependencies]
+notist-observe = { path = "../notist-observe" }
 comemo = "0.5.1"
 notist-core = { path = "../notist-core" }
 notist-eval = { path = "../notist-eval" }

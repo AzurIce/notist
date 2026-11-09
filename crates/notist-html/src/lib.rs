@@ -196,36 +196,42 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn render_with_diagnostics(&self, item: &Item) -> RenderResult {
-        let mut state = State {
-            renderer: self,
-            output: String::new(),
-            diagnostics: Vec::new(),
-            source_map: Vec::new(),
-            used_components: Vec::new(),
-        };
-        if self.source_map
-            && let Err(error) = self.sources.validate_node(item)
-        {
-            return RenderResult {
-                html: String::new(),
-                diagnostics: vec![Diagnostic::new(
-                    Phase::Semantic,
-                    item.span,
-                    error.to_string(),
-                )],
-                source_map: Vec::new(),
-                used_components: Vec::new(),
-                sources: self.sources.clone(),
-            };
-        }
-        state.node(item);
-        RenderResult {
-            html: state.output,
-            diagnostics: state.diagnostics,
-            source_map: state.source_map,
-            used_components: state.used_components,
-            sources: self.sources.clone(),
-        }
+        notist_observe::measure(
+            "core.render.html",
+            || "Render HTML".into(),
+            || {
+                let mut state = State {
+                    renderer: self,
+                    output: String::new(),
+                    diagnostics: Vec::new(),
+                    source_map: Vec::new(),
+                    used_components: Vec::new(),
+                };
+                if self.source_map
+                    && let Err(error) = self.sources.validate_node(item)
+                {
+                    return RenderResult {
+                        html: String::new(),
+                        diagnostics: vec![Diagnostic::new(
+                            Phase::Semantic,
+                            item.span,
+                            error.to_string(),
+                        )],
+                        source_map: Vec::new(),
+                        used_components: Vec::new(),
+                        sources: self.sources.clone(),
+                    };
+                }
+                state.node(item);
+                RenderResult {
+                    html: state.output,
+                    diagnostics: state.diagnostics,
+                    source_map: state.source_map,
+                    used_components: state.used_components,
+                    sources: self.sources.clone(),
+                }
+            },
+        )
     }
 }
 

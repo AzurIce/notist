@@ -15,6 +15,9 @@ pub(super) struct Terminal {
 }
 
 impl Terminal {
+    pub fn timings(&self, build: u64) {
+        eprintln!("Timings: {}_notist/timings/{build}", self.url);
+    }
     pub fn new(url: String, no_clear_screen: bool) -> Self {
         Self {
             url,

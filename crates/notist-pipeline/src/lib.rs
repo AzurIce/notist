@@ -123,14 +123,22 @@ impl Pipeline {
             .frontends
             .get(path)
             .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
-        let parsed = notist_syntax::code::parse_content_literal(source, frontend);
+        let parsed = progress::measure(
+            "core.parse",
+            || "Parse content literal".into(),
+            || notist_syntax::code::parse_content_literal(source, frontend),
+        );
         let mut diagnostics: Vec<_> = parsed
             .diagnostics
             .iter()
             .map(|d| Diagnostic::new(notist_core::diag::Phase::Syntax, d.span, d.message.clone()))
             .collect();
         let (lowered, body) = if let Some(content) = parsed.contents.first() {
-            let lowered = frontend.lower_content(content, &mut diagnostics);
+            let lowered = progress::measure(
+                "core.lower",
+                || "Lower content literal".into(),
+                || frontend.lower_content(content, &mut diagnostics),
+            );
             let body = match content.flavor {
                 notist_syntax::content::ContentFlavor::Inline => {
                     notist_core::expr::BodyFlavor::Inline
@@ -167,7 +175,11 @@ impl Pipeline {
             }
         };
         let mut checker = code::Checker::for_content(context, &origin);
-        let (forest, _) = checker.content(&lowered.forest, &lowered.annotations, body);
+        let (forest, _) = progress::measure(
+            "core.check",
+            || "Check content literal".into(),
+            || checker.content(&lowered.forest, &lowered.annotations, body),
+        );
         diagnostics.extend(checker.diagnostics);
         for diagnostic in &mut diagnostics {
             diagnostic.source.get_or_insert_with(|| origin.clone());
@@ -219,7 +231,10 @@ impl Pipeline {
         source: &str,
         resource_root: &str,
     ) -> Result<CodeModule, Vec<Diagnostic>> {
-        let progress = progress::Span::enter(|| format!("Compile module {module}"));
+        let progress =
+            progress::Span::stage("core.module.compile", || format!("Compile module {module}"));
+        progress.attribute("module", || module.into());
+        progress.attribute("source", || source_path.into());
         #[cfg(feature = "profiling")]
         let _timer = profiling::enter(profiling::Stage::Compile);
         let Some(frontend) = self.frontends.get(dialect_path.as_ref()) else {
@@ -239,14 +254,28 @@ impl Pipeline {
     /// Check all Code definitions whose compile-time parameters have defaults.
     /// Other generic instances are checked when called with concrete arguments.
     pub fn check(&self, context: &Context) -> Vec<Diagnostic> {
-        code::Checker::new(context, &notist_core::source::Source::detached()).check_definitions()
+        progress::measure(
+            "core.check",
+            || "Check definitions".into(),
+            || {
+                code::Checker::new(context, &notist_core::source::Source::detached())
+                    .check_definitions()
+            },
+        )
     }
 
     /// Check one module in its installed dependency context. Generic bodies
     /// retain syntax/lowering diagnostics before a concrete instance exists;
     /// environment-dependent content checking follows the selected concrete body.
     pub fn check_module(&self, module: &str, context: &Context) -> Vec<Diagnostic> {
-        code::Checker::new(context, &notist_core::source::Source::detached()).check_module(module)
+        progress::measure(
+            "core.check",
+            || format!("Check module {module}"),
+            || {
+                code::Checker::new(context, &notist_core::source::Source::detached())
+                    .check_module(module)
+            },
+        )
     }
 
     /// Evaluate pending calls and forest interpolations directly on the Item tree.
@@ -269,15 +298,21 @@ impl Pipeline {
             limits,
         );
         if analysis.extensions_valid {
-            context.extensions().after_evaluate(
-                &DocumentContext {
-                    path: &analysis.path,
-                    sources: &evaluation.sources,
-                    registry: context.registry(),
+            progress::measure(
+                "core.extensions.after_evaluate",
+                || "Extensions after evaluate".into(),
+                || {
+                    context.extensions().after_evaluate(
+                        &DocumentContext {
+                            path: &analysis.path,
+                            sources: &evaluation.sources,
+                            registry: context.registry(),
+                        },
+                        &mut evaluation.root,
+                        &mut evaluation.diagnostics,
+                        limits.content_nodes,
+                    )
                 },
-                &mut evaluation.root,
-                &mut evaluation.diagnostics,
-                limits.content_nodes,
             );
         }
         evaluation
@@ -312,15 +347,21 @@ impl Pipeline {
             EvaluationOutcome::NeedResources(paths) => EvaluationOutcome::NeedResources(paths),
             EvaluationOutcome::Complete(mut evaluation) => {
                 if analysis.extensions_valid {
-                    context.extensions().after_evaluate(
-                        &DocumentContext {
-                            path: &analysis.path,
-                            sources: &evaluation.sources,
-                            registry: context.registry(),
+                    progress::measure(
+                        "core.extensions.after_evaluate",
+                        || "Extensions after evaluate".into(),
+                        || {
+                            context.extensions().after_evaluate(
+                                &DocumentContext {
+                                    path: &analysis.path,
+                                    sources: &evaluation.sources,
+                                    registry: context.registry(),
+                                },
+                                &mut evaluation.root,
+                                &mut evaluation.diagnostics,
+                                limits.content_nodes,
+                            )
                         },
-                        &mut evaluation.root,
-                        &mut evaluation.diagnostics,
-                        limits.content_nodes,
                     );
                 }
                 EvaluationOutcome::Complete(evaluation)
@@ -367,7 +408,11 @@ impl Pipeline {
             .frontends
             .get(path)
             .ok_or_else(|| UnsupportedFormat { path: path.into() })?;
-        Ok(frontend.compile(src, options))
+        Ok(progress::measure(
+            "core.frontend",
+            || format!("Frontend {}", path.display()),
+            || frontend.compile(src, options),
+        ))
     }
 
     /// Run shared analysis on a frontend result after the host resolves imports.
@@ -379,145 +424,166 @@ impl Pipeline {
         context: &Context,
         capture: bool,
     ) -> (Analysis, Inspection) {
-        let mut diagnostics = output.diagnostics;
-        let path = path.to_string_lossy().into_owned();
-        let origin = match notist_core::source::Source::in_namespace(
-            notist_core::source::SourceNamespace::named(context.resource_root()),
-            path.as_str(),
-            Some(src.clone()),
-        ) {
-            Ok(source) => source,
-            Err(error) => {
-                let source = notist_core::source::Source::detached();
-                return (
-                    Analysis {
-                        root: Item::new(
-                            notist_core::item::Ctor::Error(error.to_string()),
-                            Default::default(),
-                        ),
-                        diagnostics: vec![Diagnostic::new(
-                            notist_core::diag::Phase::Type,
-                            Default::default(),
-                            error.to_string(),
-                        )],
-                        program: Default::default(),
-                        sources: source.clone().into(),
-                        source: source.id(),
-                        path,
-                        extensions_valid: false,
-                    },
-                    Inspection {
-                        syntax: output.syntax,
-                        lowered: Vec::new(),
-                        shaped: Vec::new(),
+        progress::measure(
+            "core.check",
+            || format!("Check and materialize {}", path.display()),
+            || {
+                let mut diagnostics = output.diagnostics;
+                let path = path.to_string_lossy().into_owned();
+                let origin = match notist_core::source::Source::in_namespace(
+                    notist_core::source::SourceNamespace::named(context.resource_root()),
+                    path.as_str(),
+                    Some(src.clone()),
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        let source = notist_core::source::Source::detached();
+                        return (
+                            Analysis {
+                                root: Item::new(
+                                    notist_core::item::Ctor::Error(error.to_string()),
+                                    Default::default(),
+                                ),
+                                diagnostics: vec![Diagnostic::new(
+                                    notist_core::diag::Phase::Type,
+                                    Default::default(),
+                                    error.to_string(),
+                                )],
+                                program: Default::default(),
+                                sources: source.clone().into(),
+                                source: source.id(),
+                                path,
+                                extensions_valid: false,
+                            },
+                            Inspection {
+                                syntax: output.syntax,
+                                lowered: Vec::new(),
+                                shaped: Vec::new(),
+                            },
+                        );
+                    }
+                };
+                let mut sources = context
+                    .program()
+                    .sources()
+                    .with_definitions(context.registry().identities());
+                if let Err(error) = sources.insert(origin.clone()) {
+                    let mut diagnostic = Diagnostic::new(
+                        notist_core::diag::Phase::Type,
+                        Default::default(),
+                        error.to_string(),
+                    );
+                    diagnostic.source = Some(origin.clone());
+                    let mut root = Item::new(notist_core::item::Ctor::Doc, Default::default());
+                    root.origin = Some(notist_core::item::Origin {
+                        source: origin.id(),
+                        start: 0,
+                        end: src.len() as u32,
+                        expansion: Default::default(),
+                    });
+                    return (
+                        Analysis {
+                            root,
+                            diagnostics: vec![diagnostic],
+                            program: Default::default(),
+                            source: origin.id(),
+                            sources: origin.into(),
+                            path,
+                            extensions_valid: false,
+                        },
+                        Inspection {
+                            syntax: output.syntax,
+                            lowered: Vec::new(),
+                            shaped: Vec::new(),
+                        },
+                    );
+                }
+                let extension_context = DocumentContext {
+                    path: &path,
+                    sources: &sources,
+                    registry: context.registry(),
+                };
+                let mut document = LoweredDocument {
+                    forest: output.forest,
+                    annotations: output.annotations,
+                    attrs: output.module_attrs,
+                };
+                let mut extensions_valid = progress::measure(
+                    "core.extensions.before_check",
+                    || "Extensions before check".into(),
+                    || {
+                        context.extensions().before_check(
+                            &extension_context,
+                            &mut document,
+                            &mut diagnostics,
+                        )
                     },
                 );
-            }
-        };
-        let mut sources = context
-            .program()
-            .sources()
-            .with_definitions(context.registry().identities());
-        if let Err(error) = sources.insert(origin.clone()) {
-            let mut diagnostic = Diagnostic::new(
-                notist_core::diag::Phase::Type,
-                Default::default(),
-                error.to_string(),
-            );
-            diagnostic.source = Some(origin.clone());
-            let mut root = Item::new(notist_core::item::Ctor::Doc, Default::default());
-            root.origin = Some(notist_core::item::Origin {
-                source: origin.id(),
-                start: 0,
-                end: src.len() as u32,
-                expansion: Default::default(),
-            });
-            return (
-                Analysis {
-                    root,
-                    diagnostics: vec![diagnostic],
-                    program: Default::default(),
-                    source: origin.id(),
-                    sources: origin.into(),
-                    path,
-                    extensions_valid: false,
-                },
-                Inspection {
+                let lowered = if capture {
+                    document.forest.clone()
+                } else {
+                    Vec::new()
+                };
+                let span = TextRange::new(0.into(), (src.len() as u32).into());
+                let (root, program, errors, shaped) = code::Checker::new(context, &origin)
+                    .document(
+                        &document.forest,
+                        &document.annotations,
+                        span,
+                        document.attrs,
+                    );
+                diagnostics.extend(errors);
+                sources.bindings_mut().merge(program.sources.bindings());
+                let extension_context = DocumentContext {
+                    path: &path,
+                    sources: &sources,
+                    registry: context.registry(),
+                };
+                if extensions_valid {
+                    extensions_valid = progress::measure(
+                        "core.extensions.after_check",
+                        || "Extensions after check".into(),
+                        || {
+                            context.extensions().after_check(
+                                &extension_context,
+                                &root,
+                                &mut diagnostics,
+                            )
+                        },
+                    );
+                }
+                if let Err(error) = sources
+                    .merge(&program.sources)
+                    .and_then(|()| sources.validate_node(&root))
+                {
+                    diagnostics.push(Diagnostic::new(
+                        notist_core::diag::Phase::Type,
+                        root.span,
+                        error.to_string(),
+                    ));
+                    extensions_valid = false;
+                }
+                for diagnostic in &mut diagnostics {
+                    diagnostic.source.get_or_insert_with(|| origin.clone());
+                }
+                let inspection = Inspection {
                     syntax: output.syntax,
-                    lowered: Vec::new(),
-                    shaped: Vec::new(),
-                },
-            );
-        }
-        let extension_context = DocumentContext {
-            path: &path,
-            sources: &sources,
-            registry: context.registry(),
-        };
-        let mut document = LoweredDocument {
-            forest: output.forest,
-            annotations: output.annotations,
-            attrs: output.module_attrs,
-        };
-        let mut extensions_valid =
-            context
-                .extensions()
-                .before_check(&extension_context, &mut document, &mut diagnostics);
-        let lowered = if capture {
-            document.forest.clone()
-        } else {
-            Vec::new()
-        };
-        let span = TextRange::new(0.into(), (src.len() as u32).into());
-        let (root, program, errors, shaped) = code::Checker::new(context, &origin).document(
-            &document.forest,
-            &document.annotations,
-            span,
-            document.attrs,
-        );
-        diagnostics.extend(errors);
-        sources.bindings_mut().merge(program.sources.bindings());
-        let extension_context = DocumentContext {
-            path: &path,
-            sources: &sources,
-            registry: context.registry(),
-        };
-        if extensions_valid {
-            extensions_valid =
-                context
-                    .extensions()
-                    .after_check(&extension_context, &root, &mut diagnostics);
-        }
-        if let Err(error) = sources
-            .merge(&program.sources)
-            .and_then(|()| sources.validate_node(&root))
-        {
-            diagnostics.push(Diagnostic::new(
-                notist_core::diag::Phase::Type,
-                root.span,
-                error.to_string(),
-            ));
-            extensions_valid = false;
-        }
-        for diagnostic in &mut diagnostics {
-            diagnostic.source.get_or_insert_with(|| origin.clone());
-        }
-        let inspection = Inspection {
-            syntax: output.syntax,
-            lowered,
-            shaped: if capture { shaped } else { Vec::new() },
-        };
-        (
-            Analysis {
-                root,
-                diagnostics,
-                program,
-                sources,
-                source: origin.id(),
-                path,
-                extensions_valid,
+                    lowered,
+                    shaped: if capture { shaped } else { Vec::new() },
+                };
+                (
+                    Analysis {
+                        root,
+                        diagnostics,
+                        program,
+                        sources,
+                        source: origin.id(),
+                        path,
+                        extensions_valid,
+                    },
+                    inspection,
+                )
             },
-            inspection,
         )
     }
 }

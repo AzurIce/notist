@@ -8,6 +8,7 @@ edition = "2024"
 test-support = []
 
 [dependencies]
+notist-observe = { path = "../notist-observe" }
 notist-core = { path = "../notist-core" }
 rowan = "0.17.0"
 smallvec = "1"

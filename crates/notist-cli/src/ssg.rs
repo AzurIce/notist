@@ -14,8 +14,12 @@ pub(crate) fn assemble(
     preview: bool,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
     notist::evict_caches(10);
-    let prepared = notist::progress::run(|| "Load configuration".into(), || target.prepare())
-        .map_err(|e| (Error::Message(e), target.inputs()))?;
+    let prepared = notist::progress::run_stage(
+        "host.configuration",
+        || "Load configuration".into(),
+        || target.prepare(),
+    )
+    .map_err(|e| (Error::Message(e), target.inputs()))?;
     let mut options = prepared.options;
     if preview {
         options.base_url = "/".into();
@@ -47,11 +51,13 @@ pub(crate) fn assemble(
         .map_err(|e| (e, observed))
 }
 pub(crate) fn build_package(target: &Package) -> ExitCode {
-    let result = notist::progress::run(
+    let result = notist::progress::run_stage(
+        "host.build",
         || format!("Build {}", target.name),
         || {
             let result = assemble(target, false).map_err(|(e, _)| e)?;
-            notist::progress::run(
+            notist::progress::run_stage(
+                "host.publish",
                 || "Publish files".into(),
                 || publish(&result.artifact.files, &result.output, &target.root),
             )?;

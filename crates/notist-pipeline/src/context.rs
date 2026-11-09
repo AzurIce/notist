@@ -52,6 +52,7 @@ impl Context {
         module: impl Into<Arc<CodeModule>>,
         targets: impl IntoIterator<Item = String>,
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
+        let timing = crate::progress::Span::stage("core.module.link", || "Link module".into());
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
         let code = CodeModule::linked_snapshot(module.into());
@@ -82,6 +83,7 @@ impl Context {
         }
         let spec = BindingSpec::new(code.imports.iter().zip(targets), Some(&code.definitions));
         let scope = bind_imports(&spec, self)?;
+        timing.finish();
         Ok(Arc::new(LinkedModule { code, scope }))
     }
     pub fn link_module_resolved(
@@ -89,6 +91,8 @@ impl Context {
         module: impl Into<Arc<CodeModule>>,
         targets: impl IntoIterator<Item = notist_core::definitions::ModuleId>,
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
+        let timing =
+            crate::progress::Span::stage("core.module.link", || "Link resolved module".into());
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
         let code = CodeModule::linked_snapshot(module.into());
@@ -125,6 +129,7 @@ impl Context {
             &BindingSpec::resolved(owners, Some(&code.definitions)),
             self,
         )?;
+        timing.finish();
         Ok(Arc::new(LinkedModule { code, scope }))
     }
     /// Install a linked file produced for this dependency view. The caller must
@@ -133,6 +138,10 @@ impl Context {
         mut self,
         module: Arc<LinkedModule>,
     ) -> Result<Self, Vec<Diagnostic>> {
+        let timing = crate::progress::Span::stage("core.module.install", || {
+            format!("Install module {}", module.code().id())
+        });
+        timing.attribute("module", || module.code().id().into());
         #[cfg(feature = "profiling")]
         let _timer = crate::profiling::enter(crate::profiling::Stage::Install);
         self.registry.register(module.code().definitions.clone())?;
@@ -148,6 +157,7 @@ impl Context {
                     error.to_string(),
                 )]
             })?;
+        timing.finish();
         Ok(self)
     }
     pub fn with_root(mut self, module: impl Into<String>) -> Result<Self, Vec<Diagnostic>> {

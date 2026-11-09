@@ -4,13 +4,13 @@ Notist SSG 将源文档渲染为正文，再套用模板，在输出目录的对
 
 == 构建与预览
 
-在 Notist.toml 中添加一个 Site target：
+在包的 Notist.toml 中声明 site：
 
 ```toml
-[project]
+[package]
 name = "example"
 
-[[site]]
+[site]
 title = "My Site"
 ```
 
@@ -21,9 +21,9 @@ notist build
 notist serve --port 8000
 ```
 
-`build` 默认输出到 `dist/<target>/`，上例为 `dist/example-site/`。`serve` 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
+build 默认输出到 workspace 根的 notist-output/example/；独立包则使用包根。serve 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
 
-目录与其他配置见 [Notist.toml 配置](../configuration.not#site-target)，命令行选项见 [Notist CLI](../cli.not)。
+目录与其他配置见 [Notist.toml 配置](../configuration.not#site)，命令行选项见 [Notist CLI](../cli.not)。
 
 == 源文件与输出
 

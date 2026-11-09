@@ -11,7 +11,7 @@ title = "Project Handbook"
 theme = "builtins.book"
 
 [site.extensions.builtins.book]
-enable = true
+select = true
 ```
 
 没有 site 的 package 可用于内容模块和单文件操作；build / serve 会明确报告没有站点。package 目前只定义 name，不预设版本、依赖、导出或包管理协议。
@@ -49,7 +49,7 @@ content = "."
 theme = "builtins.book"
 directory_urls = true
 copy_content_assets = false
-extensions.builtins.book = { enable = true }
+extensions.builtins.book = { select = true }
 ```
 
 website/Notist.toml：

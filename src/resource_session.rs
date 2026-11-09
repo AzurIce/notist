@@ -126,13 +126,13 @@ impl<R: Resources> ResourceSession<R> {
             Ok(())
         }
     }
-    fn grant(&self, path: &Path) -> Result<(&ReadRoot, PathBuf), InputError> {
+    fn grant<'a>(&self, path: &'a Path) -> Result<(&ReadRoot, &'a Path), InputError> {
         let root = self
             .roots
             .iter()
             .find(|root| path.starts_with(&root.path))
             .ok_or(InputError::AccessDenied)?;
-        Ok((root, path.strip_prefix(&root.path).unwrap().into()))
+        Ok((root, path.strip_prefix(&root.path).unwrap()))
     }
     fn cache(&self, mut read: InputRead) -> InputRead {
         let mut state = self.state.borrow_mut();
@@ -198,7 +198,7 @@ impl<R: Resources> ResourceSession<R> {
         if let Some(read) = root.inputs.borrow().get(&absolute) {
             return read.clone();
         }
-        let read = self.read_data(&absolute, root, &relative);
+        let read = self.read_data(&absolute, root, relative);
         root.inputs.borrow_mut().insert(absolute, read.clone());
         read
     }
@@ -230,12 +230,12 @@ impl<R: Resources> ResourceSession<R> {
             Err(error) => InputRead::Failed(error.clone()),
         }
     }
+    // Callers resolve once and retain that path for decoding and diagnostics.
     fn source_bytes(&self, path: &Path) -> InputRead {
-        let path = self.resources.resolve(path);
         if let Err(error) = self.request() {
             return InputRead::Failed(error);
         }
-        if let Some(cached) = self.state.borrow().files.get(&path) {
+        if let Some(cached) = self.state.borrow().files.get(path) {
             return cached.read.clone();
         }
         let rooted = self.roots.iter().find_map(|root| {
@@ -251,18 +251,18 @@ impl<R: Resources> ResourceSession<R> {
             )
         });
         match reader {
-            Ok(reader) => self.load(&path, &reader, &relative),
+            Ok(reader) => self.load(path, &reader, &relative),
             // Compatibility for source-only third-party backends. Data reads
             // never take this fallback, even when the source is already cached.
             Err(InputError::Unavailable) => {
-                let read = match self.resources.read(&path) {
+                let read = match self.resources.read(path) {
                     Ok(bytes) => InputRead::Ready(bytes.into()),
                     Err(ResourceError::NotFound(_)) => InputRead::Failed(InputError::NotFound),
                     Err(error) => InputRead::Failed(InputError::Io(error.to_string())),
                 };
-                self.store(&path, read, None)
+                self.store(path, read, None)
             }
-            Err(error) => self.store(&path, InputRead::Failed(error), None),
+            Err(error) => self.store(path, InputRead::Failed(error), None),
         }
     }
 }
@@ -282,18 +282,17 @@ impl<R: Resources> Resources for ResourceSession<R> {
         self.resources.resolve(path)
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        let read = self.source_bytes(path);
+        let path = self.resolve(path);
+        let read = self.source_bytes(&path);
         match read {
             InputRead::Ready(bytes) => Ok(bytes.to_vec()),
-            InputRead::Failed(InputError::NotFound) => {
-                Err(ResourceError::NotFound(self.resolve(path)))
-            }
+            InputRead::Failed(InputError::NotFound) => Err(ResourceError::NotFound(path)),
             InputRead::Failed(error) => Err(ResourceError::Access {
-                path: self.resolve(path),
+                path,
                 message: error.to_string(),
             }),
             InputRead::Pending => Err(ResourceError::Access {
-                path: self.resolve(path),
+                path,
                 message: "source input is not prepared".into(),
             }),
         }
@@ -301,8 +300,8 @@ impl<R: Resources> Resources for ResourceSession<R> {
     fn source_shared(&self, path: &Path) -> Result<Arc<str>, ResourceError> {
         // Charge every logical request, including text-cache hits. This cache
         // never supplies data grants or substitutes registered document inputs.
-        let read = self.source_bytes(path);
         let path = self.resolve(path);
+        let read = self.source_bytes(&path);
         let bytes = match read {
             InputRead::Ready(bytes) => bytes,
             InputRead::Failed(InputError::NotFound) => return Err(ResourceError::NotFound(path)),

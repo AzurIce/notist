@@ -33,6 +33,7 @@ struct Observed {
     reads: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
     limits: Arc<Mutex<Vec<usize>>>,
     kinds: Arc<AtomicUsize>,
+    resolutions: Arc<AtomicUsize>,
     responses: Arc<Mutex<BTreeMap<PathBuf, InputRead>>>,
 }
 impl Observed {
@@ -42,6 +43,7 @@ impl Observed {
             reads: Arc::default(),
             limits: Arc::default(),
             kinds: Arc::default(),
+            resolutions: Arc::default(),
             responses: Arc::default(),
         }
     }
@@ -49,6 +51,10 @@ impl Observed {
 impl Resources for Observed {
     fn root(&self) -> &Path {
         self.files.root()
+    }
+    fn resolve(&self, path: &Path) -> PathBuf {
+        self.resolutions.fetch_add(1, Ordering::Relaxed);
+        self.files.resolve(path)
     }
     fn read(&self, _: &Path) -> Result<Vec<u8>, ResourceError> {
         panic!("bounded hosts must not fall back to unbounded reads")
@@ -93,6 +99,47 @@ impl ResourceReader for Reader {
             .cloned()
             .unwrap_or_else(|| self.base.read_bounded(path, limit))
     }
+}
+
+#[test]
+fn cached_source_reads_resolve_once_including_errors_and_aliases() {
+    let mut resources = Observed::new();
+    resources.files.insert("source.notc", "shared source");
+    resources.files.insert("bad.notc", vec![0xff]);
+    let session = ResourceSession::new(&resources).with_read_root("/project");
+    let source = session.source_shared(Path::new("source.notc")).unwrap();
+    assert!(session.source_shared(Path::new("bad.notc")).is_err());
+    assert!(session.source_shared(Path::new("missing.notc")).is_err());
+
+    resources.resolutions.store(0, Ordering::Relaxed);
+    let alias = session
+        .source_shared(Path::new("nested/../source.notc"))
+        .unwrap();
+    assert!(Arc::ptr_eq(&source, &alias));
+    assert_eq!(resources.resolutions.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        session.read(Path::new("./source.notc")).unwrap(),
+        b"shared source"
+    );
+    assert_eq!(resources.resolutions.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        session.source_shared(Path::new("./bad.notc")),
+        Err(ResourceError::InvalidUtf8(path)) if path == Path::new("/project/bad.notc")
+    ));
+    assert_eq!(resources.resolutions.load(Ordering::Relaxed), 3);
+    for shared in [false, true] {
+        let error = if shared {
+            session
+                .source_shared(Path::new("./missing.notc"))
+                .unwrap_err()
+        } else {
+            session.read(Path::new("./missing.notc")).unwrap_err()
+        };
+        assert!(
+            matches!(error, ResourceError::NotFound(path) if path == Path::new("/project/missing.notc"))
+        );
+    }
+    assert_eq!(resources.resolutions.load(Ordering::Relaxed), 5);
 }
 
 #[test]

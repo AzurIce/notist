@@ -57,7 +57,11 @@ pub trait Resources {
         Err(InputError::Unavailable)
     }
     fn resolve(&self, path: &Path) -> PathBuf {
-        normalize(&self.root().join(path))
+        if path.is_absolute() {
+            normalize(path)
+        } else {
+            normalize(&self.root().join(path))
+        }
     }
     fn source(&self, path: &Path) -> Result<String, ResourceError> {
         String::from_utf8(self.read(path)?)
@@ -481,7 +485,9 @@ impl ResourceReader for OverlayReader {
 
 /// Normalize logical paths without reading the filesystem.
 pub fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
+    // Normalization removes components; reserve for the input instead of
+    // repeatedly growing a buffer while rebuilding the same logical path.
+    let mut out = PathBuf::with_capacity(path.as_os_str().len());
     for component in path.components() {
         match component {
             Component::ParentDir => {
@@ -496,4 +502,47 @@ pub fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn normalization_preserves_lexical_components() {
+        for (input, expected) in [
+            ("", ""),
+            (".", ""),
+            ("a//./b/../c/", "a/c"),
+            ("../../a/../b", "../../b"),
+            ("a/../../b", "../b"),
+            ("/../../a/../b", "/b"),
+            ("/a/./b/../../", "/"),
+        ] {
+            assert_eq!(normalize(Path::new(input)), Path::new(expected), "{input}");
+        }
+    }
+
+    #[test]
+    fn resolve_retains_absolute_and_relative_path_semantics() {
+        let resources = MemoryResources::new("/project");
+        for (input, expected) in [
+            ("nested/../file", "/project/file"),
+            ("../other/file", "/other/file"),
+            ("/other/./file", "/other/file"),
+            ("", "/project"),
+        ] {
+            assert_eq!(resources.resolve(Path::new(input)), Path::new(expected));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalization_preserves_non_utf8_components() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let input = Path::new(OsStr::from_bytes(b"/a/../\xff/./b"));
+        let expected = Path::new(OsStr::from_bytes(b"/\xff/b"));
+        assert_eq!(normalize(input), expected);
+    }
 }

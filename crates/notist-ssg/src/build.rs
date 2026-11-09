@@ -13,7 +13,8 @@ use notist::{
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -205,8 +206,8 @@ struct DocumentTarget {
 }
 struct DocumentIndex {
     targets: Vec<DocumentTarget>,
-    sources: BTreeMap<PathBuf, usize>,
-    outputs: BTreeMap<PathBuf, usize>,
+    sources: HashMap<PathBuf, usize>,
+    outputs: HashMap<PathBuf, usize>,
 }
 impl DocumentIndex {
     fn new(documents: &[Document]) -> Self {
@@ -224,7 +225,7 @@ impl DocumentIndex {
             .enumerate()
             .map(|(i, document)| (document.page.route.source.clone(), i))
             .collect();
-        let mut outputs = BTreeMap::new();
+        let mut outputs = HashMap::new();
         // Keep source-path precedence, including ambiguous aliases, exactly as
         // the former ordered sources.values().find lookup did.
         for &i in sources.values() {
@@ -236,7 +237,8 @@ impl DocumentIndex {
         }
         Self {
             targets,
-            sources,
+            // Ordering determines alias precedence above, not exact lookups.
+            sources: sources.into_iter().collect(),
             outputs,
         }
     }
@@ -291,13 +293,12 @@ fn resolve_link(
         .map_err(|e| e.to_string())?
         .unwrap_or(&document.page.route.source);
     let source = if path.is_empty() {
-        origin.into()
+        Cow::Borrowed(origin)
     } else if path.starts_with('/') {
-        normalize(&content.join(path.trim_start_matches('/')))
+        Cow::Owned(normalize(&content.join(path.trim_start_matches('/'))))
     } else {
-        normalize(&origin.parent().unwrap().join(path.as_ref()))
+        Cow::Owned(normalize(&origin.parent().unwrap().join(path.as_ref())))
     };
-    let published = source.strip_prefix(content).ok().map(Path::to_path_buf);
     let destination_doc = documents.find(&source, content);
     let destination = if let Some(destination) = destination_doc {
         if let Some(anchor) = anchor.filter(|a| !a.is_empty()) {
@@ -311,19 +312,23 @@ fn resolve_link(
                 ));
             }
         }
-        destination.route.output.clone()
+        Cow::Borrowed(destination.route.output.as_path())
     } else {
-        let published = published
+        let published = source
+            .strip_prefix(content)
+            .ok()
             .ok_or_else(|| format!("reference `{target}` is outside the content directory"))?;
-        if outputs.contains(&published) {
-            published
-        } else if outputs.contains(&published.join("index.html")) {
-            published.join("index.html")
+        if outputs.contains(published) {
+            Cow::Borrowed(published)
         } else {
-            return Err(format!("missing local reference `{target}`"));
+            let index = published.join("index.html");
+            if !outputs.contains(&index) {
+                return Err(format!("missing local reference `{target}`"));
+            }
+            Cow::Owned(index)
         }
     };
-    let mut url = if path.is_empty() && destination == document.page.route.output {
+    let mut url = if path.is_empty() && destination.as_ref() == document.page.route.output {
         String::new()
     } else {
         relative_url(&document.page.route.output, &destination, false)
@@ -354,7 +359,6 @@ fn resolve_embed(
     outputs: &BTreeSet<PathBuf>,
 ) -> Result<String, String> {
     let source = PathBuf::from(path.logical_path());
-    let published = source.strip_prefix(content).ok().map(Path::to_path_buf);
     let destination = documents.find(&source, content);
     let output = if let Some(destination) = destination {
         if let Some(anchor) =
@@ -366,23 +370,25 @@ fn resolve_embed(
                 destination.route.path.display()
             ));
         }
-        destination.route.output.clone()
+        Cow::Borrowed(destination.route.output.as_path())
     } else {
-        let published = published.ok_or_else(|| {
+        let published = source.strip_prefix(content).ok().ok_or_else(|| {
             format!(
                 "embedded resource `{}` is outside the content directory",
                 path.path()
             )
         })?;
-        if outputs.contains(&published) {
-            published
-        } else if outputs.contains(&published.join("index.html")) {
-            published.join("index.html")
+        if outputs.contains(published) {
+            Cow::Borrowed(published)
         } else {
-            return Err(format!("missing embedded resource `{}`", path.path()));
+            let index = published.join("index.html");
+            if !outputs.contains(&index) {
+                return Err(format!("missing embedded resource `{}`", path.path()));
+            }
+            Cow::Owned(index)
         }
     };
-    if output == document.page.route.output {
+    if output.as_ref() == document.page.route.output {
         Ok(String::new())
     } else {
         Ok(relative_url(&document.page.route.output, &output, false))
@@ -770,7 +776,7 @@ mod tests {
     #[test]
     fn destination_index_owns_only_metadata_and_preserves_alias_precedence() {
         let content = Path::new("/site/content");
-        let documents: Vec<_> = [
+        let mut documents: Vec<_> = [
             ("a.not", "not"),
             ("a.md", "markdown"),
             ("nested/index.not", "index"),
@@ -789,15 +795,19 @@ mod tests {
         })
         .collect();
         let index = DocumentIndex::new(&documents);
+        documents.reverse();
+        let reversed = DocumentIndex::new(&documents);
         drop(documents);
-        let alias = index.find(&content.join("a.html"), content).unwrap();
-        assert_eq!(alias.route.source, content.join("a.md"));
-        assert!(alias.ids.contains("markdown"));
-        let direct = index.find(&content.join("a.not"), content).unwrap();
-        assert!(direct.ids.contains("not"));
-        let directory = index.find(&content.join("nested"), content).unwrap();
-        assert_eq!(directory.route.output, Path::new("nested/index.html"));
-        assert!(directory.ids.contains("index"));
+        for index in [index, reversed] {
+            let alias = index.find(&content.join("a.html"), content).unwrap();
+            assert_eq!(alias.route.source, content.join("a.md"));
+            assert!(alias.ids.contains("markdown"));
+            let direct = index.find(&content.join("a.not"), content).unwrap();
+            assert!(direct.ids.contains("not"));
+            let directory = index.find(&content.join("nested"), content).unwrap();
+            assert_eq!(directory.route.output, Path::new("nested/index.html"));
+            assert!(directory.ids.contains("index"));
+        }
     }
 
     fn field<'a>(value: &'a tera::Value, key: &str) -> &'a tera::Value {

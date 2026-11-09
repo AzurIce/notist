@@ -110,15 +110,18 @@ impl Assets {
     fn insert(&mut self, path: PathBuf, bytes: Option<Vec<u8>>) -> Result<(), Error> {
         // Check exact/ancestor files, then the first possible descendant in the
         // ordered map. A full scan here makes publishing N pages quadratic.
-        let ancestor_exists = path
+        let collision = path
             .ancestors()
-            .any(|parent| self.files.contains_key(parent));
-        let descendant_exists = self
-            .files
-            .range(path.clone()..)
-            .next()
-            .is_some_and(|(previous, _)| previous.starts_with(&path));
-        if ancestor_exists || descendant_exists {
+            .any(|parent| self.files.contains_key(parent))
+            || self
+                .files
+                .range::<Path, _>((
+                    std::ops::Bound::Included(path.as_path()),
+                    std::ops::Bound::Unbounded,
+                ))
+                .next()
+                .is_some_and(|(previous, _)| previous.starts_with(&path));
+        if collision {
             return Err(Error::Message(format!(
                 "output collision at `{}`",
                 path.display()

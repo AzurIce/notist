@@ -37,6 +37,11 @@ pub fn is_embed(item: &Item) -> bool {
 /// Native embed outputs actually visited by presentation. Error boundaries hide
 /// their children; expanded wrappers expose only their resulting children.
 pub fn targets(root: &Item) -> impl Iterator<Item = &Item> {
+    references(root).filter(|item| is_embed(item))
+}
+
+/// Effective link and embed references, excluding hidden error subtrees.
+pub fn references(root: &Item) -> impl Iterator<Item = &Item> {
     let mut stack = vec![root];
     std::iter::from_fn(move || {
         while let Some(item) = stack.pop() {
@@ -44,7 +49,7 @@ pub fn targets(root: &Item) -> impl Iterator<Item = &Item> {
                 continue;
             }
             stack.extend(item.children().iter().rev());
-            if is_embed(item) {
+            if is_embed(item) || item.ctor() == Ctor::Link {
                 return Some(item);
             }
         }

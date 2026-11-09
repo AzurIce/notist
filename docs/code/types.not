@@ -43,7 +43,7 @@ String 由 Code、原生 Markup 与 Markdown 扩展参数共享的字面量扫�
 
 `p"./image.svg"` 产生 Path，按字面量所在源文件和宿主逻辑根绑定资源身份。Path 可转发、比较并保存在集合中，但不与 String 隐式转换，也不会自动读取或发布文件。语义和示例见 [Path 字面量](path.not)。
 
-ResourceTarget 是接受 Path 或 String 的输入类型，用于 embed 及转发它的函数；不新增运行期值种类。embed 将本地 URL 字符串兼容转换为已绑定的 Path，远程 URL 保持 String。普通 String 参数和 link 不接受 Path。
+ResourceTarget 是接受 Path 或 String 的输入类型，用于 embed 及转发它的函数；不新增运行期值种类。embed 将本地 URL 字符串兼容转换为已绑定的 Path，远程 URL 保持 String。普通 String 参数不接受 Path；link 通过泛型和 where 约束接受两者，不发生隐式转换。
 
 == 外部结构化数据
 

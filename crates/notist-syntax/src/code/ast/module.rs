@@ -33,6 +33,7 @@ node!(Parameter);
 node!(ChildrenDecl);
 node!(TypeRef);
 node!(DefaultValue);
+node!(WhereClause);
 
 fn ident(node: &SyntaxNode) -> Option<SyntaxToken> {
     node.children_with_tokens()
@@ -92,6 +93,10 @@ impl ImportMember {
 }
 
 impl FunctionDecl {
+    pub fn where_clause(&self) -> Option<WhereClause> {
+        self.0.children().find_map(WhereClause::cast)
+    }
+
     pub fn comptime_parameters(&self) -> impl Iterator<Item = Parameter> + '_ {
         self.0
             .children()
@@ -179,6 +184,21 @@ impl DefaultValue {
             !matches!(
                 el.kind(),
                 SyntaxKind::Eq
+                    | SyntaxKind::Whitespace
+                    | SyntaxKind::Newline
+                    | SyntaxKind::LineComment
+                    | SyntaxKind::BlockComment
+            )
+        })
+    }
+}
+
+impl WhereClause {
+    pub fn condition(&self) -> Option<NodeOrToken<SyntaxNode, SyntaxToken>> {
+        self.0.children_with_tokens().find(|el| {
+            !matches!(
+                el.kind(),
+                SyntaxKind::WhereKeyword
                     | SyntaxKind::Whitespace
                     | SyntaxKind::Newline
                     | SyntaxKind::LineComment

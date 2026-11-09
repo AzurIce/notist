@@ -262,6 +262,15 @@ impl LanguageServer for Backend {
         if target.ctor() != Ctor::Link {
             return Ok(None);
         }
+        if let Some(Value::Path(path)) = target.field("target") {
+            let Ok(uri) = Url::from_file_path(path.logical_path()) else {
+                return Ok(None);
+            };
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri,
+                range: Range::default(),
+            })));
+        }
         let Some(Value::Str(target_text)) = target.field("target") else {
             return Ok(None);
         };

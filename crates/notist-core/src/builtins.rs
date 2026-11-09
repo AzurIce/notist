@@ -241,6 +241,28 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
                 function.children = Accepts::Any;
             }
         }
+        if name == "link" {
+            let span = rowan::TextRange::empty(0.into());
+            function.comptime.push(ComptimeParameter {
+                name: "T".into(),
+                ty: Ty::Type,
+                constraint: ValueConstraint::Any,
+                default: None,
+                span,
+            });
+            let eq = |ty: &str| crate::expr::Expr::Binary {
+                op: "==".into(),
+                left: Box::new(crate::expr::Expr::reference("T", span)),
+                right: Box::new(crate::expr::Expr::reference(ty, span)),
+                span,
+            };
+            function.where_clause = Some(crate::expr::Expr::Binary {
+                op: "||".into(),
+                left: Box::new(eq("Path")),
+                right: Box::new(eq("String")),
+                span,
+            });
+        }
         let mut parameter = |name: &str, ty, mode, positional| {
             let mut parameter = ParameterDef::new(name, ty, mode);
             parameter.positional = positional;
@@ -256,8 +278,10 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
                 parameter("lang", Ty::String, Mode::Optional, false);
             }
             "link" => {
-                parameter("target", Ty::String, Mode::Required, true);
+                parameter("target", Ty::Parameter("T".into()), Mode::Required, true);
                 parameter("title", Ty::String, Mode::Optional, false);
+                parameter("query", Ty::String, Mode::Optional, false);
+                parameter("fragment", Ty::String, Mode::Optional, false);
             }
             "embed" => {
                 parameter("target", Ty::ResourceTarget, Mode::Required, true);
@@ -351,6 +375,9 @@ pub fn definitions() -> crate::definitions::DefinitionModule {
 
 /// Immutable standard signatures, installed through the shared atomic registry.
 pub fn registry() -> &'static crate::registry::Registry {
+    use crate::definitions::{
+        FunctionDef, FunctionId, ParameterDef, ParameterMode as Mode, Type as Ty,
+    };
     static REGISTRY: std::sync::OnceLock<crate::registry::Registry> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut registry = crate::registry::Registry::new();
@@ -374,6 +401,23 @@ pub fn registry() -> &'static crate::registry::Registry {
         registry
             .install(array, true)
             .expect("native array methods must be valid");
+        let mut path = crate::definitions::DefinitionModule::new("notist.path");
+        let mut join = FunctionDef::new(
+            FunctionId::new("notist.path", "join"),
+            Accepts::Nothing,
+            Ty::Path,
+        );
+        join.implementation =
+            crate::definitions::FunctionImpl::Native(crate::definitions::NativeFunction::PathJoin);
+        join.parameters
+            .push(ParameterDef::new("self", Ty::Path, Mode::Required));
+        let mut relative = ParameterDef::new("relative", Ty::String, Mode::Required);
+        relative.positional = true;
+        join.parameters.push(relative);
+        path.functions.push(join);
+        registry
+            .install(path, true)
+            .expect("native path methods must be valid");
         registry
     })
 }

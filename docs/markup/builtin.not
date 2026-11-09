@@ -327,7 +327,8 @@ math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，�
 === link
 
 ```signature
-link(target: String, title?: String)[children: InlineContent] -> InlineContent
+link<T: Type>(target: T, title?: String, query?: String, fragment?: String)[children: InlineContent] -> InlineContent
+where T == Path || T == String
 ```
 
 target 可使用第一个位置参数。

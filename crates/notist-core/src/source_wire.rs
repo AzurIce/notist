@@ -664,6 +664,7 @@ impl Input {
             children: definition.children,
             returns: definition.returns,
             comptime: definition.comptime,
+            where_clause: definition.where_clause,
             children_type: definition.children_type,
             code: definition.code,
             implementation: definition.implementation,

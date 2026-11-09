@@ -66,6 +66,20 @@ impl ResourcePath {
         &self.root
     }
 
+    /// Append a relative resource spelling without changing the logical root.
+    /// `self` is treated as a directory; this operation performs no IO.
+    pub fn join(&self, relative: &str) -> Result<Self, String> {
+        if relative.starts_with('/') || relative.is_empty() {
+            return Err("Path.join requires a nonempty relative path".into());
+        }
+        let source = if self.path.is_empty() {
+            format!("{}/__join__", self.root.trim_end_matches('/'))
+        } else {
+            format!("{}/{}/__join__", self.root.trim_end_matches('/'), self.path)
+        };
+        Self::resolve(&self.root, &source, relative)
+    }
+
     /// The normalized, root-relative path, without a leading slash.
     pub fn path(&self) -> &str {
         &self.path

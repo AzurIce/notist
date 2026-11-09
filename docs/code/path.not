@@ -63,7 +63,27 @@ Path 中的 `?`、`#` 和 `%` 都属于文件名，不拆分也不做 URL 解码
 `ResourceTarget` 是接受 Path 或 String 的输入类型，不是另一种运行期 Value，也不提供两者之间的转换。
 资源存在性、Vault／mount 授权和发布 URL 仍由宿主负责。独立 Renderer 需要 `with_resource_resolver` 选择本地资源的公开 URL；没有映射时诊断并省略链接，不直接输出 Path。
 
-link 仍接受 String，其目标分类与校验单独设计。
+== 链接与路径派生
+
+link 是泛型函数，其 where 约束只接受 Path 或 String。Path 保留创建位置绑定的资源身份，经组件转发也不重新解释；宿主将文档映射到页面路由，将其他资源映射到发布 URL。缺少发布映射时诊断并省略 href，不回退到路径字符串。String 保留 URL 链接规则。
+
+```not
+#link(p"./guide.not", fragment: "intro")[指南]
+#link(p"./model.glb")[下载模型]
+#link("https://example.com")[外部网站]
+```
+
+query 与 fragment 是独立字段；Path 文件名中的 ?、#、% 不拆分。
+
+Path.join(relative: String) -> Path 将接收者视为目录，追加非空相对路径并按词法规范化。结果保留同一个逻辑根，拒绝绝对路径、URL 及逃出根的路径；不读取文件，也不将 Path 转为 String。
+
+```notc
+fn download(directory: Path, name: String) -> InlineContent {
+    [#link(directory.join(name + ".glb"))[下载模型]]
+}
+```
+
+调用者传入 p"." 可明确选择调用文档所在目录。默认参数中的 p"." 仍绑定定义模块目录，不代表调用者目录。
 
 == 读取文本
 

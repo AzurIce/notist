@@ -134,6 +134,8 @@ syntax_kinds! {
     ForKeyword,
     InKeyword,
     ForExpr,
+    WhereKeyword,
+    WhereClause,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -4,7 +4,7 @@ use crate::{
     templates,
 };
 use notist::{
-    Ctor, Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, Value, Vault,
+    Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, Value, Vault,
     publication::{
         Assets,
         url::{fragment, relative_url},
@@ -330,8 +330,8 @@ fn resolve_link(
                 .map_err(|_| "invalid UTF-8 in anchor")?;
             if !destination.ids.contains(decoded.as_ref()) {
                 warnings.push(issue(document, node, format!(
-                    "missing anchor `{anchor}` in `{}`",
-                    destination.route.path.display()
+                        "missing anchor `{anchor}` in `{}`",
+                        destination.route.path.display()
                 )));
             }
         }
@@ -394,7 +394,9 @@ fn resolve_embed(
 ) -> Result<String, String> {
     let source = mounts.resolve(Path::new(&path.logical_path()));
     let logical = mounts.path(&source).map(|p| content.join(p));
-    let destination = documents.find(&source, content).or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
+    let destination = documents
+        .find(&source, content)
+        .or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
     let output = if let Some(destination) = destination {
         if let Some(anchor) =
             notist::embed::string(&node.fields(), "fragment").filter(|anchor| !anchor.is_empty())
@@ -426,9 +428,13 @@ fn resolve_embed(
     if output.as_ref() == document.page.route.output {
         Ok(String::new())
     } else {
-        Ok(if directory_urls && output.file_name().is_some_and(|s| s == "index.html") {
-            relative_url(&document.page.route.output, output.parent().unwrap(), true)
-        } else { relative_url(&document.page.route.output, &output, false) })
+        Ok(
+            if directory_urls && output.file_name().is_some_and(|s| s == "index.html") {
+                relative_url(&document.page.route.output, output.parent().unwrap(), true)
+            } else {
+                relative_url(&document.page.route.output, &output, false)
+            },
+        )
     }
 }
 
@@ -489,8 +495,16 @@ fn render_templates(
                 &PageAssets {
                     components: components.get(&page.route.path),
                     highlight: relative_url(&page.route.output, highlight_css, false),
-                    styles: config.styles.iter().map(|p| relative_url(&page.route.output, p, false)).collect(),
-                    scripts: config.scripts.iter().map(|p| relative_url(&page.route.output, p, false)).collect(),
+                    styles: config
+                        .styles
+                        .iter()
+                        .map(|p| relative_url(&page.route.output, p, false))
+                        .collect(),
+                    scripts: config
+                        .scripts
+                        .iter()
+                        .map(|p| relative_url(&page.route.output, p, false))
+                        .collect(),
                 },
             );
             let html = engine
@@ -535,7 +549,11 @@ pub(crate) fn build<R: Resources>(
         let content = vault.resources().resolve(&config.content);
         for path in config.styles.iter_mut().chain(&mut config.scripts) {
             let source = mounts.resolve(&normalize(&content.join(&*path)));
-            *path = mounts.path(&source).ok_or_else(|| Error::Message("additional site assets must be within content or configured mounts".into()))?;
+            *path = mounts.path(&source).ok_or_else(|| {
+                Error::Message(
+                    "additional site assets must be within content or configured mounts".into(),
+                )
+            })?;
         }
         config
     };
@@ -545,9 +563,7 @@ pub(crate) fn build<R: Resources>(
     let content = vault.resources().resolve(&config.content);
     let mounts = crate::mounts::Mounts::new(vault.resources(), config)?;
     let output = vault.resources().resolve(&config.output);
-    if content.starts_with(&output)
-        || vault.resources().root().starts_with(&output)
-    {
+    if content.starts_with(&output) || vault.resources().root().starts_with(&output) {
         return Err(Error::Message(
             "site output and content sources overlap".into(),
         ));
@@ -560,15 +576,12 @@ pub(crate) fn build<R: Resources>(
     ];
     if let Some(theme) = &config.theme {
         if !crate::themes::is_builtin(theme) {
-        inputs.push(theme.clone());
+            inputs.push(theme.clone());
         }
     }
     for input in inputs {
         let input = vault.resources().resolve(&input);
-        if input.starts_with(&output)
-            || output.starts_with(&input)
-            || content.starts_with(&input)
-        {
+        if input.starts_with(&output) || output.starts_with(&input) || content.starts_with(&input) {
             return Err(Error::Message(format!(
                 "site input `{}` overlaps content or output",
                 input.display()
@@ -591,7 +604,12 @@ pub(crate) fn build<R: Resources>(
     let globs = |patterns: &[String]| -> Result<globset::GlobSet, Error> {
         let mut builder = globset::GlobSetBuilder::new();
         for pattern in patterns {
-            builder.add(globset::GlobBuilder::new(pattern).literal_separator(true).build().map_err(|e| Error::Message(format!("invalid site glob `{pattern}`: {e}")))?);
+            builder.add(
+                globset::GlobBuilder::new(pattern)
+                    .literal_separator(true)
+                    .build()
+                    .map_err(|e| Error::Message(format!("invalid site glob `{pattern}`: {e}")))?,
+            );
         }
         builder.build().map_err(|e| Error::Message(e.to_string()))
     };
@@ -601,28 +619,23 @@ pub(crate) fn build<R: Resources>(
         source_dirs.push(content.clone());
     } else {
         for (root, _) in mounts.roots() {
-        discover(
-            vault,
-            root,
-            config,
-            &mounts,
-            &include,
-            &exclude,
-            &mut sources,
-            &mut content_assets,
-            &mut source_dirs,
-        )?;
+            discover(
+                vault,
+                root,
+                config,
+                &mounts,
+                &include,
+                &exclude,
+                &mut sources,
+                &mut content_assets,
+                &mut source_dirs,
+            )?;
         }
     }
     let mut input = crate::extensions::CompileInput {
         documents: sources
             .into_iter()
-            .map(|source| {
-                Ok((
-                    mounts.path(&source).unwrap(),
-                    vault.source(&source)?,
-                ))
-            })
+            .map(|source| Ok((mounts.path(&source).unwrap(), vault.source(&source)?)))
             .collect::<Result<_, Error>>()?,
     };
     discovery.finish();
@@ -655,8 +668,15 @@ pub(crate) fn build<R: Resources>(
     let mut analyzed = Vec::new();
     let analysis_stage = notist::progress::Span::enter(|| "Analyze documents".into());
     for ((_, text), route) in input.documents.into_iter().zip(routes) {
-        let (analysis, handle) =
-            vault.analyze_document_with_resource_root(&route.source, &text, mounts.roots().find(|(root, _)| route.source.starts_with(root)).map(|(root, _)| root).unwrap_or(&content))?;
+        let (analysis, handle) = vault.analyze_document_with_resource_root(
+            &route.source,
+            &text,
+            mounts
+                .roots()
+                .find(|(root, _)| route.source.starts_with(root))
+                .map(|(root, _)| root)
+                .unwrap_or(&content),
+        )?;
         errors.extend(
             analysis
                 .diagnostics()
@@ -682,13 +702,11 @@ pub(crate) fn build<R: Resources>(
                 .into_iter()
                 .map(|d| diagnostic(&route.source, &text, d)),
         );
-        let mut prepared = Document::new(
-            route,
-            evaluation.root,
-            text,
-            evaluation.sources,
-        )?;
-        if prepared.page.route.url == "/" && prepared.page.headings.is_empty() && !prepared.page.attrs.contains_key("title") {
+        let mut prepared = Document::new(route, evaluation.root, text, evaluation.sources)?;
+        if prepared.page.route.url == "/"
+            && prepared.page.headings.is_empty()
+            && !prepared.page.attrs.contains_key("title")
+        {
             prepared.page.title = config.title.clone();
         }
         documents.push(prepared);
@@ -697,7 +715,8 @@ pub(crate) fn build<R: Resources>(
     }
     let mut diagnostics = vec![];
     if recover {
-        let (local, fatal): (Vec<_>, Vec<_>) = errors.into_iter().partition(|e| e.diagnostic.recovered);
+        let (local, fatal): (Vec<_>, Vec<_>) =
+            errors.into_iter().partition(|e| e.diagnostic.recovered);
         diagnostics = local;
         errors = fatal;
     }
@@ -724,7 +743,9 @@ pub(crate) fn build<R: Resources>(
     )?;
     for path in config.styles.iter().chain(&config.scripts) {
         if !crate::extensions::valid_path(path) || path.starts_with("_notist") {
-            return Err(Error::Message("additional site assets must be content-relative paths outside _notist".into()));
+            return Err(Error::Message(
+                "additional site assets must be content-relative paths outside _notist".into(),
+            ));
         }
         if !outputs.contains(path) {
             let source = mounts.resolve(&content.join(path));
@@ -755,23 +776,38 @@ pub(crate) fn build<R: Resources>(
         });
         let mut resolved = BTreeMap::new();
         let mut resource_urls = BTreeMap::new();
-        let links = document
-            .root
-            .descendants()
-            .filter(|n| n.ctor() == Ctor::Link);
-        for node in links.chain(notist::embed::targets(&document.root)) {
-            if node.is_error() { continue; }
+        for node in notist::embed::references(&document.root) {
+            if node.is_error() {
+                continue;
+            }
             // Only explicit references publish files when bulk copying is disabled.
             let referenced = match node.field("target") {
                 Some(Value::Path(path)) => Some(PathBuf::from(path.logical_path())),
                 Some(Value::Str(url)) if !notist::embed::is_embed(node) => {
-                    let origin = node.origin.as_ref().and_then(|o| document.sources.name(o.source).ok()).map(Path::new).unwrap_or(&document.page.route.source);
+                    let origin = node
+                        .origin
+                        .as_ref()
+                        .and_then(|o| document.sources.name(o.source).ok())
+                        .map(Path::new)
+                        .unwrap_or(&document.page.route.source);
                     let local = url.split(['?', '#']).next().unwrap_or("");
-                    if local.is_empty() || local.starts_with("//") || local.split('/').next().unwrap_or("").contains(':') { None }
-                    else { percent_encoding::percent_decode_str(local).decode_utf8().ok().map(|p| {
-                        if p.starts_with('/') { normalize(&content.join(p.trim_start_matches('/'))) }
-                        else { normalize(&origin.parent().unwrap().join(p.as_ref())) }
-                    }) }
+                    if local.is_empty()
+                        || local.starts_with("//")
+                        || local.split('/').next().unwrap_or("").contains(':')
+                    {
+                        None
+                    } else {
+                        percent_encoding::percent_decode_str(local)
+                            .decode_utf8()
+                            .ok()
+                            .map(|p| {
+                                if p.starts_with('/') {
+                                    normalize(&content.join(p.trim_start_matches('/')))
+                                } else {
+                                    normalize(&origin.parent().unwrap().join(p.as_ref()))
+                                }
+                            })
+                    }
                 }
                 _ => None,
             };
@@ -779,21 +815,39 @@ pub(crate) fn build<R: Resources>(
                 let source = mounts.resolve(&source);
                 if let Some(destination) = mounts.path(&source) {
                     if destination.starts_with("_notist") {
-                        errors.push(issue(&document, node, "_notist is reserved for generated resources".into()));
+                        errors.push(issue(
+                            &document,
+                            node,
+                            "_notist is reserved for generated resources".into(),
+                        ));
                         continue;
                     }
-                    if !outputs.contains(&destination) && !vault.supports(&source)
+                    if !outputs.contains(&destination)
+                        && !vault.supports(&source)
                         && !source.extension().is_some_and(|s| s == "notc")
-                        && !destination.components().any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
-                        && vault.resources().kind(&source)? == Some(ResourceKind::File) {
+                        && !destination
+                            .components()
+                            .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
+                        && vault.resources().kind(&source)? == Some(ResourceKind::File)
+                    {
                         assets.copy(vault.resources(), &source, &destination)?;
                         outputs.insert(destination);
                     }
                 }
             }
-            if notist::embed::is_embed(node) {
+            if notist::embed::is_embed(node) || matches!(node.field("target"), Some(Value::Path(_)))
+            {
                 if let Some(Value::Path(path)) = node.field("target") {
-                    match resolve_embed(&document, path, node, &content, &by_source, &outputs, &mounts, config.directory_urls) {
+                    match resolve_embed(
+                        &document,
+                        path,
+                        node,
+                        &content,
+                        &by_source,
+                        &outputs,
+                        &mounts,
+                        config.directory_urls,
+                    ) {
                         Ok(url) => {
                             resource_urls.insert(path.clone(), url);
                         }
@@ -805,7 +859,17 @@ pub(crate) fn build<R: Resources>(
             let Some(Value::Str(target)) = node.field("target") else {
                 continue;
             };
-            match resolve_link(&document, target, node, &content, &by_source, &outputs, &mounts, config.directory_urls, &mut warnings) {
+            match resolve_link(
+                &document,
+                target,
+                node,
+                &content,
+                &by_source,
+                &outputs,
+                &mounts,
+                config.directory_urls,
+                &mut warnings,
+            ) {
                 Ok(Some(url)) => {
                     resolved.insert(
                         (node.origin.as_ref().map(|o| o.source), target.clone()),
@@ -930,7 +994,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(source, id)| {
-            let mut root = Item::new(Ctor::Doc, Default::default());
+            let mut root = Item::new(notist::Ctor::Doc, Default::default());
             root.attrs.insert("id", Value::Str(id.into()));
             Document::new(
                 Route::new(content.join(source), content).unwrap(),

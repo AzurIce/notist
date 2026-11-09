@@ -1221,6 +1221,20 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 Ok(Runtime::Value(ComptimeValue::Data(Value::Int(len))))
             }
             FunctionImpl::Native(NativeFunction::ReadText) => self.read_text(call, &fields),
+            FunctionImpl::Native(NativeFunction::PathJoin) => {
+                let (Some(Value::Path(base)), Some(Value::Str(relative))) =
+                    (fields.get("self"), fields.get("relative"))
+                else {
+                    return Err(Failure::at(
+                        "Path.join requires a Path receiver and String relative path",
+                        call,
+                    ));
+                };
+                let path = base
+                    .join(relative)
+                    .map_err(|error| Failure::at(error, call))?;
+                Ok(Runtime::Value(ComptimeValue::Data(Value::Path(path))))
+            }
             FunctionImpl::Native(NativeFunction::Data(kind)) => {
                 self.data_native(kind, call, &fields)
             }

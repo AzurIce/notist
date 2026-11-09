@@ -38,6 +38,36 @@ output = "dist/icexiv-db"
 command = ["python3", "scripts/items.py", "extension"]
 watch = ["scripts", "sources", "inputs/game-export/manifest.json", "inputs/game-export/items.json"]
 ''')
+    if args.event_protocol:
+        # The frozen generator predates build-scoped JSON Lines events. Adapt
+        # only its transport; keep its validation and document generation intact.
+        adapter = root / 'site/scripts/eval_parallel_events.py'
+        adapter.write_text('''import json
+import sys
+from items import ROOT, extend
+
+for line in sys.stdin:
+    request = json.loads(line)
+    event = request["event"]
+    response = {"version": 2, "event": event}
+    try:
+        if request["version"] != 2:
+            raise ValueError("unsupported event protocol")
+        if event == "before_compile":
+            catalog = json.loads((ROOT / "data/catalog.json").read_text())
+            previous = {"version": 1, "stage": "prepare", "input": {
+                "documents": request["documents"], "data": {"catalog": catalog}}}
+            result = extend(previous, ROOT / "inputs/game-export")
+            response["documents"] = result["input"]["documents"]
+        elif event != "before_template":
+            raise ValueError("unsupported event")
+    except Exception as error:
+        response["errors"] = [str(error)]
+    print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
+''')
+        manifest.write_text(manifest.read_text().replace(
+            '["python3", "scripts/items.py", "extension"]',
+            '["python3", "scripts/eval_parallel_events.py"]'))
     save(root / 'inputs.json', inventory(root / 'site'))
 
 
@@ -152,5 +182,6 @@ if __name__ == '__main__':
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--reference', type=Path)
     parser.add_argument('--rounds', type=int, default=5)
+    parser.add_argument('--event-protocol', action='store_true', help='adapt frozen generator to build-scoped event protocol')
     args = parser.parse_args()
     globals()[args.action](args)

@@ -693,12 +693,19 @@ pub(crate) fn build<R: Resources + Send>(
     let mut handles = Vec::with_capacity(analyzed.len());
     let evaluation_stage = notist::progress::Span::enter(|| "Evaluate documents".into());
     let evaluation_start = std::time::Instant::now();
-    let workers = std::env::var("NOTIST_EVAL_WORKERS").ok()
-        .map(|s| s.parse::<usize>().expect("NOTIST_EVAL_WORKERS must be an integer"));
+    let workers = std::env::var("NOTIST_EVAL_WORKERS").ok().map(|s| {
+        s.parse::<usize>()
+            .expect("NOTIST_EVAL_WORKERS must be an integer")
+    });
     let parallel = if let Some(workers) = workers {
-        let jobs: Vec<_> = analyzed.iter().map(|(_, _, analysis, handle)| (handle, analysis)).collect();
+        let jobs: Vec<_> = analyzed
+            .iter()
+            .map(|(_, _, analysis, handle)| (handle, analysis))
+            .collect();
         Some(vault.evaluate_documents_parallel(&jobs, workers)?)
-    } else { None };
+    } else {
+        None
+    };
     let mut parallel = parallel.map(Vec::into_iter);
     for (route, text, analysis, handle) in analyzed {
         let document =
@@ -736,7 +743,10 @@ pub(crate) fn build<R: Resources + Send>(
     }
     evaluation_stage.finish();
     if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
-        eprintln!("[eval-batch] seconds={:.9}", evaluation_start.elapsed().as_secs_f64());
+        eprintln!(
+            "[eval-batch] seconds={:.9}",
+            evaluation_start.elapsed().as_secs_f64()
+        );
     }
     let asset_stage = notist::progress::Span::enter(|| "Prepare assets and Sass".into());
     let mut assets = Assets::new(output);

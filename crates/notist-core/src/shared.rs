@@ -431,11 +431,11 @@ impl Dict {
     pub fn is_empty(&self) -> bool {
         self.0.entries.is_empty()
     }
-    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
-        let key = key.into();
+    pub fn insert(&mut self, key: impl AsRef<str>, value: Value) {
+        let key = key.as_ref();
         let data = Arc::make_mut(&mut self.0);
         data.metrics = OnceLock::new();
-        match data.position(key.as_str()) {
+        match data.position(key) {
             Some(i) => data.entries[i].1 = value,
             None => {
                 let key: Text = key.into();
@@ -583,6 +583,39 @@ mod tests {
                 .iter()
                 .map(|(key, value)| key.len() + 16 + value.metrics().resident)
                 .sum::<usize>()
+    }
+
+    #[test]
+    fn borrowed_dict_keys_keep_storage_order_and_cached_metrics_on_update() {
+        struct BorrowedKey<'a>(&'a str);
+        impl AsRef<str> for BorrowedKey<'_> {
+            fn as_ref(&self) -> &str {
+                self.0
+            }
+        }
+
+        for len in [1, 8, 9, 16] {
+            let mut dict: Dict = (0..len)
+                .map(|i| (format!("key-{i}"), Value::Int(i)))
+                .collect();
+            let retained = dict.clone();
+            let key = dict.0.entries[0].0.clone();
+            let before = dict.metrics();
+            dict.insert(BorrowedKey("key-0"), Value::Str("longer value".into()));
+            assert!(dict.0.entries[0].0.shares_storage(&key));
+            assert_eq!(dict.iter().next().unwrap().0, "key-0");
+            assert_eq!(retained.get("key-0"), Some(&Value::Int(0)));
+            assert_eq!(retained.metrics().resident, before.resident);
+            assert_eq!(
+                dict.metrics().resident,
+                reference_dict_resident(&dict.0.entries)
+            );
+            let name = String::from("new-key");
+            dict.insert(&name, Value::Bool(true));
+            dict.insert(Text::from("new-key"), Value::Bool(false));
+            assert_eq!(dict.iter().last(), Some(("new-key", &Value::Bool(false))));
+            assert_eq!(dict.0.entries.len(), len as usize + 1);
+        }
     }
 
     #[test]

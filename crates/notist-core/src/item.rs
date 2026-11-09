@@ -645,7 +645,7 @@ impl Node {
         Item::new(Ctor::Text, span).with_field("text", Value::Str(text.into()))
     }
 
-    pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
+    pub fn with_field(mut self, key: impl AsRef<str>, value: Value) -> Self {
         self.as_item_mut()
             .expect("content constructor")
             .fields

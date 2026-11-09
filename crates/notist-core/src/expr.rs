@@ -443,7 +443,7 @@ impl RExpr {
         }
     }
 
-    pub fn with_field(mut self, key: impl Into<String>, value: Value) -> Self {
+    pub fn with_field(mut self, key: impl AsRef<str>, value: Value) -> Self {
         self.fields.insert(key, value);
         self
     }

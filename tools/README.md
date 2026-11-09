@@ -22,3 +22,10 @@ node --test web/tests/*.test.mjs
 
 Full-workload experiments additionally need their documented frozen inputs and
 output inventories. These are not replaced by synthetic fixtures in CI.
+
+`profile_path_reuse.py` compares a frozen candidate with a `profile_hotspots`
+reference from the same base revision. Use a fresh external `--out` and pass
+`--reference` for each action: `prepare`, `build`, `measure`, `allocations`, then
+`verify`. It copies the workload independently, alternates clean A/B run order,
+and checks every output against the reference. Allocation probes are separate
+frame-pointer builds and do not contribute to clean timing results.

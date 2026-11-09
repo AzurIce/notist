@@ -76,6 +76,19 @@ pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Te
             if !notist_html::is_safe_url(path) {
                 return Err(tera::Error::message("unsafe site URL"));
             }
+            if let Some(from) = args.get::<&str>("relative_to")? {
+                if !path.starts_with("//") && !path.split('/').next().unwrap_or("").contains(':') {
+                    let target = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
+                        .decode_utf8()
+                        .map_err(|_| tera::Error::message("invalid UTF-8 in site URL"))?;
+                    return Ok(notist::publication::url::relative_url(
+                        Path::new(from),
+                        Path::new(target.as_ref()),
+                        path.ends_with('/'),
+                    ));
+                }
+                return Ok(path.into());
+            }
             Ok(config.url(path))
         },
     );

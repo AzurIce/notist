@@ -23,10 +23,10 @@
       if (Number.isFinite(width) && width > 0) root.style.setProperty('--navigation-user-width', `${width}px`);
     } catch (_) {}
   </script>
-  <link rel="stylesheet" href="{{url(path='book.css')}}">
-  <link rel="stylesheet" href="{{url(path='status.css')}}">
+  <link rel="stylesheet" href="{{url(path='book.css', relative_to=page.route.output)}}">
+  <link rel="stylesheet" href="{{url(path='status.css', relative_to=page.route.output)}}">
   <link rel="stylesheet" href="{{assets.highlight}}">
-  <script src="{{url(path='book.js')}}" defer></script>
+  <script src="{{url(path='book.js', relative_to=page.route.output)}}" defer></script>
   {% for style in assets.styles %}<link rel="stylesheet" href="{{style}}">{% endfor %}
   {% for script in assets.scripts %}<script src="{{script}}" defer></script>{% endfor %}
 </head>
@@ -44,7 +44,7 @@
   <div class="book-layout">
     <nav id="book-nav" class="book-navigation" aria-label="Contents">
       <div class="rail-heading"><p class="rail-label">Contents</p><button id="nav-close" class="text-button" type="button" aria-label="Close contents">Close</button></div>
-      <ul class="navigation-tree">{% include 'navigation' %}{% for node in navigation %}{{<book_navigation node={node}/>}}{% endfor %}</ul>
+      <ul class="navigation-tree">{% include 'navigation' %}{% for node in navigation %}{{<book_navigation node={node} page={page} book={book}/>}}{% endfor %}</ul>
     </nav>
     <script>{% include 'navigation-script' %}</script>
     <div id="nav-resize" class="navigation-resize" role="separator" tabindex="0" aria-label="Resize contents" aria-orientation="vertical" aria-controls="book-nav" title="Drag or use arrow keys to resize contents; double-click or press Home to reset"></div>

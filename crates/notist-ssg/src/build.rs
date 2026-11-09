@@ -157,6 +157,7 @@ fn directories(pages: &[Page], paths: &[PathBuf], content: &Path) -> BTreeMap<St
             .output
             .file_name()
             .is_some_and(|s| s == "index.html")
+            && page.route.output.parent() == page.route.path.parent()
         {
             dir.index = Some(i);
         } else {
@@ -631,6 +632,15 @@ pub(crate) fn build<R: Resources>(
         || crate::extensions::prepare(vault, config, &extensions, &mut input),
     )?;
     let mut source_dirs: BTreeSet<_> = source_dirs.into_iter().collect();
+    // Mounts may introduce virtual ancestors without documents of their own.
+    for directory in source_dirs.clone() {
+        for parent in directory.ancestors().skip(1) {
+            if !parent.starts_with(&content) {
+                break;
+            }
+            source_dirs.insert(parent.into());
+        }
+    }
     for path in input.documents.keys() {
         for parent in content.join(path).parent().unwrap().ancestors() {
             source_dirs.insert(parent.into());
@@ -719,6 +729,17 @@ pub(crate) fn build<R: Resources>(
         }
         if !outputs.contains(path) {
             let source = mounts.resolve(&content.join(path));
+            if source.starts_with(vault.resources().resolve(&config.output)) {
+                return Err(Error::Message(
+                    "additional site asset and output overlap".into(),
+                ));
+            }
+            if vault.resources().kind(&source)? != Some(ResourceKind::File) {
+                return Err(Error::Message(format!(
+                    "additional site asset `{}` is not a file",
+                    path.display()
+                )));
+            }
             assets.copy(vault.resources(), &source, path)?;
             outputs.insert(path.clone());
         }

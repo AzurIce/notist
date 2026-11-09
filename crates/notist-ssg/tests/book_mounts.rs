@@ -261,14 +261,14 @@ fn mounts_do_not_open_unregistered_paths_or_hide_missing_resources() {
 #[test]
 fn mount_configuration_rejects_ambiguous_paths_and_source_output_overlap() {
     for (source, path, expected) in [
-        ("../art", "", "invalid site mount path"),
-        ("../art", "../escape", "invalid site mount path"),
-        ("../art", "/absolute", "invalid site mount path"),
-        ("../art", "_notist/art", "invalid site mount path"),
+        ("../art", "", "invalid book mount path"),
+        ("../art", "../escape", "invalid book mount path"),
+        ("../art", "/absolute", "invalid book mount path"),
+        ("../art", "_notist/art", "invalid book mount path"),
         ("../missing", "art", "not a directory"),
         ("../art/file.png", "art", "not a directory"),
-        (".", "art", "outside content"),
-        ("..", "art", "outside content"),
+        (".", "art", "outside the Vault"),
+        ("..", "art", "outside the Vault"),
         ("../art", "existing", "already exists"),
         ("../art", "file.png/art", "traverses file"),
     ] {
@@ -329,7 +329,7 @@ fn mount_configuration_rejects_ambiguous_paths_and_source_output_overlap() {
         build(&mut vault, &options)
             .unwrap_err()
             .to_string()
-            .contains("mount path and output overlap")
+            .contains("mount path and site output overlap")
     );
 }
 

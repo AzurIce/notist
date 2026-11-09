@@ -26,7 +26,7 @@ try {
   await mkdir(join(vault, 'notes'), { recursive: true });
   await mkdir(join(vault, '_logs'), { recursive: true });
   await mkdir(join(vault, 'empty'), { recursive: true });
-  await writeFile(join(vault, 'Notist.toml'), `[package]\nname = "field-notes"\n[site]\ncontent = "."\ntitle = "Field Notes"\ntheme = "builtins.book"\ndirectory_urls = true\ncopy_content_assets = false\nextensions.builtins.book = { enable = true }\nstyles = ["custom/first.css", "custom/last.css"]\nscripts = ["custom/first.js", "custom/last.js"]\n`);
+  await writeFile(join(vault, 'Notist.toml'), `[package]\nname = "field-notes"\n[site]\ncontent = "."\ntitle = "Field Notes"\ntheme = "builtins.book"\ndirectory_urls = true\ncopy_content_assets = false\nextensions.builtins.book = { select = true }\nstyles = ["custom/first.css", "custom/last.css"]\nscripts = ["custom/first.js", "custom/last.js"]\n`);
   await mkdir(join(vault, 'custom'), { recursive: true });
   await writeFile(join(vault, 'custom/first.css'), ':root[data-brand="custom"] { --accent: #6d28d9; }');
   await writeFile(join(vault, 'custom/last.css'), ':root[data-brand="custom"] { --accent: #7040b8; }');

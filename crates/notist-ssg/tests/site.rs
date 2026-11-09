@@ -470,11 +470,8 @@ fn default_template_loads_highlight_styles_relative_to_nested_pages() {
 }
 
 #[test]
-fn implicit_and_explicit_default_themes_are_identical() {
-    assert_eq!(
-        SiteConfig::default().theme.as_deref(),
-        Some(Path::new("builtins.default"))
-    );
+fn no_theme_uses_the_minimal_page_template() {
+    assert_eq!(SiteConfig::default().theme, None);
     let parsed: SiteConfig = toml::from_str("").unwrap();
     assert_eq!(parsed.theme, SiteConfig::default().theme);
     let mut input = vault(&[
@@ -489,10 +486,11 @@ fn implicit_and_explicit_default_themes_are_identical() {
         ..Default::default()
     };
     let explicit = Builder::default().build(&mut input, &config).unwrap();
-    assert_eq!(implicit.files, explicit.files);
-    let nested = html(&explicit, "guide/start.html");
-    assert!(nested.contains("<title>Start · Site</title>"));
-    assert!(nested.contains("href=\"../_notist/highlight.css\""));
+    for output in [&implicit, &explicit] {
+        let nested = html(output, "guide/start.html");
+        assert!(nested.contains("<title>Start · Site</title>"));
+        assert!(nested.contains("href=\"../_notist/highlight.css\""));
+    }
 }
 
 #[test]

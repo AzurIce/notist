@@ -1,5 +1,5 @@
 {% if node.url %}
-<a href="{{url(path=node.url)}}"{% if node.output == page.route.output %} aria-current="page"{% endif %}><span class="nav-title">{{node.title}}</span></a>
+<a href="{{url(path=node.url, relative_to=page.route.output)}}"{% if node.output == page.route.output %} aria-current="page"{% endif %}><span class="nav-title">{{node.title}}</span></a>
 {% else %}
 <span class="nav-{{node.kind}}"{% if node.kind == "draft" %} role="link" aria-disabled="true"{% endif %}><span class="nav-title">{{node.title}}</span></span>
 {% endif %}

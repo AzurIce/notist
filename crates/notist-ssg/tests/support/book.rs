@@ -17,7 +17,7 @@ pub fn book_config(output: impl Into<PathBuf>) -> SiteConfig {
         ..Default::default()
     };
     config.extensions.builtins.book = Some(notist_ssg::builtins::book::BookConfig {
-        enable: true,
+        select: true,
         ..Default::default()
     });
     config

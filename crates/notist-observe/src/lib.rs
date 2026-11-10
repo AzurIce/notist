@@ -1,7 +1,7 @@
 //! Optional, thread-local build observation. No terminal or IO dependencies.
 //! Observers apply only to the current thread; worker tasks are reported by
 //! their enclosing stage rather than implicitly inheriting host state.
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{borrow::Cow, cell::RefCell, rc::Rc, time::Duration};
 use web_time::Instant;
 
 pub mod timings;
@@ -57,10 +57,20 @@ impl Span {
     /// Stable stage key, separate from its human-readable operation label.
     pub fn stage(stage: &'static str, label: impl FnOnce() -> String) -> Self {
         let observer = OBSERVER.with(|slot| slot.borrow().clone());
-        let label = (observer.is_some() || timings::enabled()).then(label);
-        let timing = label
-            .as_ref()
-            .and_then(|label| timings::enter(stage, label));
+        let enabled = timings::enabled();
+        let mut label = (observer.is_some() || enabled).then(label);
+        let timing = if enabled {
+            // The terminal observer needs its own label, but timings alone can
+            // take ownership without allocating a second copy for every span.
+            let label = if observer.is_some() {
+                label.as_ref().unwrap().clone()
+            } else {
+                label.take().unwrap()
+            };
+            timings::enter(stage, label)
+        } else {
+            None
+        };
         let state = observer.map(|observer| {
             let depth = DEPTH.with(|slot| {
                 let depth = *slot.borrow();
@@ -83,9 +93,9 @@ impl Span {
         }
     }
     /// Attributes are allocated only while timing collection is enabled.
-    pub fn attribute(&self, key: &str, value: impl FnOnce() -> String) {
+    pub fn attribute(&self, key: impl Into<Cow<'static, str>>, value: impl FnOnce() -> String) {
         if let Some(timing) = &self.timing {
-            timing.attribute(key, value());
+            timing.attribute(key.into(), value());
         }
     }
     pub fn finish(mut self) {

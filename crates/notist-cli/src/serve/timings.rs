@@ -75,10 +75,14 @@ if(latest)setInterval(async()=>{{try{{const response=await fetch('/_notist/timin
 </script>"#,
         ids = serde_json::to_string(&ids).unwrap()
     );
-    let html = report
-        .html()
-        .replace("</html>", &format!("{controls}</html>"));
-    simple(request, 200, html.into_bytes(), "text/html; charset=utf-8");
+    let mut html = Vec::new();
+    report.write_html(&mut html).unwrap();
+    let end = html
+        .windows(7)
+        .rposition(|part| part == b"</html>")
+        .unwrap();
+    html.splice(end..end, controls.bytes());
+    simple(request, 200, html, "text/html; charset=utf-8");
 }
 
 #[cfg(test)]

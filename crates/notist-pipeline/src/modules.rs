@@ -176,7 +176,6 @@ pub fn bind_imports(
     exports: &dyn ModuleExports,
 ) -> Result<Arc<ModuleScope>, Vec<Diagnostic>> {
     let timing = crate::progress::Span::stage("core.module.bind", || "Bind imports".into());
-    let probe = crate::progress::timings::CacheProbe::new("core.module.bind.work");
     #[cfg(feature = "profiling")]
     let _timer = crate::profiling::enter(crate::profiling::Stage::Bind);
     if cache_enabled() && spec.locals.is_empty() && spec.imports.is_empty() {
@@ -187,6 +186,7 @@ pub fn bind_imports(
         timing.finish();
         return Ok(EMPTY.clone());
     }
+    let probe = crate::progress::timings::CacheProbe::new("core.module.bind.work");
     let result = bind_cached(spec, exports.track());
     timing.attribute("cache", || {
         if cache_enabled() {

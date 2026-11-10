@@ -11,6 +11,192 @@ struct Lsp {
 }
 
 #[test]
+fn completions_follow_imports_and_unsaved_modules_with_utf16_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
+    let module = temp.path().join("lib.notc");
+    std::fs::write(&module, "fn panel(title: String) -> InlineContent;").unwrap();
+    let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
+    let uri = url::Url::from_file_path(temp.path().join("doc.not"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::new(temp.path());
+    let initialized = server.request(1, "initialize", json!({"capabilities": {}}));
+    assert_eq!(
+        initialized["result"]["capabilities"]["completionProvider"]["triggerCharacters"],
+        json!(["#", "."])
+    );
+    server.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    server.open(
+        &uri,
+        1,
+        "#import \"lib.notc\" as widgets;\n😀 #widgets.panel(\"Title\")",
+    );
+    let items = server.request(
+        2,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":1,"character":14}}),
+    );
+    let panel = items["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "panel")
+        .unwrap();
+    assert_eq!(panel["kind"], 3);
+    assert!(panel["detail"].as_str().unwrap().contains("title: string"));
+    assert_eq!(
+        panel["textEdit"],
+        json!({"range":{"start":{"line":1,"character":12},"end":{"line":1,"character":17}},"newText":"panel"})
+    );
+    server.change(&uri, 2, "#import \"lib.notc\" as widgets;\n#widgets.");
+    let members = server.request(
+        3,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":1,"character":9}}),
+    );
+    assert!(
+        members["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "panel")
+    );
+    assert!(
+        !members["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "text")
+    );
+    server.open(&module_uri, 1, "fn card() -> InlineContent;");
+    let updated = server.request(
+        4,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":1,"character":9}}),
+    );
+    assert!(
+        updated["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "card")
+    );
+    assert!(
+        !updated["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "panel")
+    );
+}
+
+#[test]
+fn code_completions_include_local_functions_aliases_and_nested_namespaces() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
+    std::fs::write(
+        temp.path().join("leaf.notc"),
+        "fn panel() -> InlineContent;",
+    )
+    .unwrap();
+    std::fs::write(
+        temp.path().join("lib.notc"),
+        "import \"leaf.notc\" as nested;",
+    )
+    .unwrap();
+    let uri = url::Url::from_file_path(temp.path().join("page.notc"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::initialized(temp.path());
+    let source = "import \"lib.notc\" as widgets;\nimport \"leaf.notc\": panel as alias;\nfn local() -> InlineContent;\nfn caller() -> InlineContent { widgets.nested.panel() }";
+    server.open(&uri, 1, source);
+    let nested = server.request(
+        2,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":3,"character":46}}),
+    );
+    assert!(
+        nested["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "panel"),
+        "{nested}"
+    );
+    let local = server.request(
+        3,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":3,"character":30}}),
+    );
+    for name in ["local", "alias", "widgets", "text", "self", "notist"] {
+        assert!(
+            local["result"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == name),
+            "{name}: {local}"
+        );
+    }
+    server.change(
+        &uri,
+        2,
+        "import \"leaf.notc\" as widgets;\nfn caller() -> InlineContent { widgets. }",
+    );
+    let incomplete = server.request(
+        4,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":1,"character":39}}),
+    );
+    assert!(
+        incomplete["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "panel"),
+        "{incomplete}"
+    );
+}
+
+#[test]
+fn completions_offer_builtins_but_not_in_prose_strings_or_raw_content() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("Notist.toml"), "").unwrap();
+    let uri = url::Url::from_file_path(temp.path().join("doc.not"))
+        .unwrap()
+        .to_string();
+    let mut server = Lsp::initialized(temp.path());
+    server.open(&uri, 1, "#te");
+    let builtins = server.request(
+        2,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":0,"character":3}}),
+    );
+    assert!(
+        builtins["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "text")
+    );
+    for (version, source, character) in [
+        (2, "text", 2),
+        (3, "`#te`", 4),
+        (4, "#text(\"#te\")", 10),
+        (5, "\\#te", 4),
+    ] {
+        server.change(&uri, version, source);
+        let result = server.request(
+            version + 2,
+            "textDocument/completion",
+            json!({"textDocument":{"uri":uri},"position":{"line":0,"character":character}}),
+        );
+        assert_eq!(result["result"], json!([]), "{source}");
+    }
+}
+
+#[test]
 fn language_server_reports_and_clears_outside_vault_references() {
     let temp = tempfile::tempdir().unwrap();
     let uri = url::Url::from_file_path(temp.path().join("page.md"))

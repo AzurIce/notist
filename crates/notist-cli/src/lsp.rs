@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, OneOf, Position, Range, ServerCapabilities, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    Location, MarkupContent, MarkupKind, OneOf, Position, Range, ServerCapabilities, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -60,6 +61,7 @@ struct DocumentSnapshot {
     analysis: Option<notist::Analysis>,
     index: Option<notist::index::Index>,
     declarations: Vec<Declaration>,
+    completion_exclusions: Vec<notist::TextRange>,
 }
 
 #[tower_lsp::async_trait]
@@ -73,6 +75,10 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec!["#".into(), ".".into()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -80,6 +86,20 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {}
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let position = params.text_document_position;
+        let Some(snapshot) = self.snapshot(&position.text_document.uri).await else {
+            return Ok(None);
+        };
+        let path = position.text_document.uri.path();
+        if !path.ends_with(".not") && !path.ends_with(".notc") {
+            return Ok(None);
+        }
+        Ok(Some(CompletionResponse::Array(
+            snapshot.complete(position.position, path.ends_with(".notc")),
+        )))
+    }
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
@@ -387,7 +407,7 @@ impl Backend {
         let mut snapshots = HashMap::new();
         for (uri, document) in &documents {
             let path = uri.to_file_path().unwrap_or_else(|_| uri.path().into());
-            let mut snapshot = DocumentSnapshot::new(document.source.clone());
+            let mut snapshot = DocumentSnapshot::new(document.source.clone(), &path);
             let diagnostics = match snapshot.analyze(&mut vault, &path) {
                 Ok(diagnostics) => diagnostics,
                 Err(error) => {
@@ -445,7 +465,7 @@ impl Backend {
             let Ok(source) = vault.source(&path) else {
                 continue;
             };
-            let mut snapshot = DocumentSnapshot::new(source);
+            let mut snapshot = DocumentSnapshot::new(source, &path);
             if snapshot.analyze(&mut vault, &path).is_ok() {
                 snapshots.insert(uri, Arc::new(snapshot));
             }
@@ -506,8 +526,123 @@ impl Backend {
 }
 
 impl DocumentSnapshot {
-    fn new(source: String) -> Self {
+    fn complete(&self, position: Position, code: bool) -> Vec<CompletionItem> {
+        let offset = self.lines.offset(&self.source, position);
+        if self
+            .completion_exclusions
+            .iter()
+            .any(|span| usize::from(span.start()) < offset && offset <= usize::from(span.end()))
+        {
+            return Vec::new();
+        }
+        let Some((start, end)) = completion_path(&self.source, offset, code) else {
+            return Vec::new();
+        };
+        let prefix = &self.source[start..offset];
+        let (namespace, partial) = prefix.rsplit_once('.').unwrap_or(("", prefix));
+        let fallback = notist::Context::default();
+        let context = self
+            .project
+            .as_ref()
+            .map(|p| p.context())
+            .unwrap_or(&fallback);
+        let mut module = context.root().map(str::to_owned);
+        if !namespace.is_empty() {
+            for (index, part) in namespace.split('.').enumerate() {
+                if index == 0 && part == "notist" {
+                    module = Some("notist".into());
+                    continue;
+                }
+                if index == 0 && part == "self" {
+                    continue;
+                }
+                let Some(notist::ImportBinding::Module(id)) = module
+                    .as_deref()
+                    .and_then(|name| context.public_bindings(name).get(part).cloned())
+                else {
+                    return Vec::new();
+                };
+                module = context
+                    .identities()
+                    .module(id)
+                    .ok()
+                    .map(|m| m.name().to_owned());
+            }
+        }
+        let mut bindings = if namespace.is_empty() {
+            context.public_bindings("notist")
+        } else {
+            Default::default()
+        };
+        if let Some(module) = module {
+            bindings.extend(context.public_bindings(&module));
+        }
+        let edit_start = offset - partial.len();
+        let range = self.lines.range(
+            &self.source,
+            notist::TextRange::new((edit_start as u32).into(), (end as u32).into()),
+        );
+        let mut items: Vec<_> = bindings
+            .into_iter()
+            .filter_map(|(name, binding)| {
+                if !name.starts_with(partial) {
+                    return None;
+                }
+                let (kind, detail) = match binding {
+                    notist::ImportBinding::Module(_) => (CompletionItemKind::MODULE, None),
+                    notist::ImportBinding::Function(id) => {
+                        let definition = context.registry().definition(id)?;
+                        let detail = format!(
+                            "{}({}) -> {}",
+                            name,
+                            definition
+                                .parameters
+                                .iter()
+                                .map(|p| format!("{}: {}", p.name, p.ty))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            definition.returns
+                        );
+                        (CompletionItemKind::FUNCTION, Some(detail))
+                    }
+                };
+                Some(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(kind),
+                    detail,
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: name,
+                    })),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        if namespace.is_empty() {
+            for name in ["notist", "self"] {
+                if name.starts_with(partial) && (name != "self" || context.root().is_some()) {
+                    items.push(CompletionItem {
+                        label: name.into(),
+                        kind: Some(CompletionItemKind::MODULE),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: name.into(),
+                        })),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        items
+    }
+
+    fn new(source: String, path: &std::path::Path) -> Self {
         Self {
+            completion_exclusions: completion_exclusions(
+                &source,
+                path.extension().is_some_and(|e| e == "notc"),
+            ),
             lines: LineIndex::new(&source),
             source,
             project: None,
@@ -574,6 +709,57 @@ impl DocumentSnapshot {
         };
         Ok(diagnostics)
     }
+}
+
+/// Cache syntax-only exclusion ranges; editor queries never parse or evaluate.
+fn completion_exclusions(source: &str, code: bool) -> Vec<notist::TextRange> {
+    use notist::syntax::tree::SyntaxKind as K;
+    let parse = if code {
+        notist::syntax::code::parse_module(source, &notist::syntax::markup::MarkupContentParser)
+    } else {
+        notist::syntax::markup::parse_document(source)
+    };
+    parse
+        .syntax()
+        .descendants_with_tokens()
+        .filter(|element| {
+            matches!(
+                element.kind(),
+                K::Str
+                    | K::PathLiteral
+                    | K::LineComment
+                    | K::BlockComment
+                    | K::Raw
+                    | K::RawInline
+                    | K::Math
+            )
+        })
+        .map(|element| element.text_range())
+        .collect()
+}
+
+/// Preserve the namespace and replace the entire final identifier, even when
+/// completion is requested mid-word.
+fn completion_path(source: &str, offset: usize, code: bool) -> Option<(usize, usize)> {
+    let is_name = |c: char| c.is_alphanumeric() || c == '_';
+    let before = source.get(..offset)?;
+    let start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_name(*c) || *c == '.')
+        .last()
+        .map_or(offset, |(i, _)| i);
+    if !code
+        && (start == 0 || !source[..start].ends_with('#') || source[..start - 1].ends_with('\\'))
+    {
+        return None;
+    }
+    let end = source[offset..]
+        .char_indices()
+        .take_while(|(_, c)| is_name(*c))
+        .last()
+        .map_or(offset, |(i, c)| offset + i + c.len_utf8());
+    Some((start, end))
 }
 
 fn source_errors(uri: &Url, error: notist::VaultError) -> Vec<notist::SourceDiagnostic> {

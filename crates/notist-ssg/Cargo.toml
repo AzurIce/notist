@@ -14,6 +14,7 @@ grass = { version = "0.13", default-features = false }
 percent-encoding = "2"
 url = "2"
 globset = "0.4"
+relative-path = "2"
 
 [dev-dependencies]
 tempfile = "3"

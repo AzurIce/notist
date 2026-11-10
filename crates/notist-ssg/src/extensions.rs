@@ -10,6 +10,8 @@ use std::{
 
 /// Complete editable site input. Document paths are canonical content-relative
 /// paths; values are source text in the format selected by the path's extension.
+/// Keys use `/` separators on every platform, including after filesystem discovery.
+/// Native filesystem paths must be converted before entering this map.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompileInput {

@@ -704,7 +704,18 @@ pub(crate) fn build<R: Resources + Send>(
             let mut input = crate::extensions::CompileInput {
                 documents: sources
                     .into_iter()
-                    .map(|source| Ok((mounts.path(&source).unwrap(), vault.source(&source)?)))
+                    .map(|source| {
+                        let relative = mounts.path(&source).unwrap();
+                        let path = relative_path::RelativePathBuf::from_path(&relative).map_err(
+                            |error| {
+                                Error::Message(format!(
+                                    "invalid site document path `{}`: {error}",
+                                    relative.display()
+                                ))
+                            },
+                        )?;
+                        Ok((PathBuf::from(path.into_string()), vault.source(&source)?))
+                    })
                     .collect::<Result<_, Error>>()?,
             };
             discovery.finish();

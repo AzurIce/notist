@@ -1,0 +1,10 @@
+{
+    "notist.server.path": "cargo",
+    "notist.server.args": [
+        "run",
+        "-p",
+        "notist-cli",
+        "--",
+        "lsp"
+    ]
+}

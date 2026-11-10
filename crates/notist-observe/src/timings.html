@@ -30,6 +30,12 @@ body{max-width:1200px;margin:32px auto;padding:0 20px}h1{font-size:1.8rem;margin
 .slow-table col:last-child{width:8rem}
 .tools input{min-width:0;max-width:100%;box-sizing:border-box}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--bar);outline-offset:2px}
+.timeline-scroll{max-height:560px;overflow-anchor:none;position:relative}
+.timeline-table thead{position:sticky;top:0;z-index:1;background:var(--panel)}
+.timeline-table tr{height:38px}
+.timeline-table tbody td{height:38px;box-sizing:border-box;padding:0 12px}
+.timeline-table .operation{height:37px}
+.timeline-table .spacer,.timeline-table .spacer td{height:0;padding:0;border:0}
 @media(max-width:760px){body{margin:20px auto;padding:0 12px}.timeline-table th,.timeline-table td{padding:8px}}
 </style>
 <h1>Notist timings</h1>
@@ -38,7 +44,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <p class="muted">Wall time is elapsed build time. Inclusive includes children; self subtracts the union of direct child intervals. Summed span times may exceed wall time with nesting or parallel execution. These are not CPU measurements.</p>
 <h2>Timeline</h2>
 <div class="tools"><input id="filter" type="search" placeholder="Filter labels, stages, attributes" aria-label="Filter spans"><button id="expand">Expand all</button><button id="collapse">Collapse all</button></div>
-<div class="scroll"><table class="timeline-table"><colgroup><col class="operation-col"><col class="stage-col"><col class="lane-col"><col class="elapsed-col"><col></colgroup><thead><tr><th>Operation</th><th>Stage</th><th>Lane</th><th class="num">Elapsed</th><th id="axis"></th></tr></thead><tbody id="timeline"></tbody></table></div>
+<div class="scroll timeline-scroll"><table class="timeline-table"><colgroup><col class="operation-col"><col class="stage-col"><col class="lane-col"><col class="elapsed-col"><col></colgroup><thead><tr><th>Operation</th><th>Stage</th><th>Lane</th><th class="num">Elapsed</th><th id="axis"></th></tr></thead><tbody id="timeline"></tbody></table></div>
+<p id="visible-count" class="muted" aria-live="polite"></p>
 <h2>Stage totals <span class="badge">summed across calls</span></h2>
 <div class="tools"><label>Sort by <select id="metric"><option value="self">Self</option><option value="inclusive">Inclusive</option></select></label></div>
 <div class="scroll"><table class="summary-table"><colgroup><col><col><col><col></colgroup><thead><tr><th>Stage</th><th class="num">Calls</th><th class="num">Inclusive</th><th class="num">Self</th></tr></thead><tbody id="summary"></tbody></table></div>
@@ -49,8 +56,21 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 const report=/*REPORT*/null;
 const ms=n=>(n/1e6).toFixed(3)+' ms';
 const cell=(row,text,cls='')=>{const td=document.createElement('td');td.textContent=text;if(text!=='')td.title=String(text);td.className=cls;row.append(td);return td};
-const children=new Map(),byId=new Map(report.spans.map(s=>[s.id,s])),depth=new Map(),self=new Map(),totals=new Map(),collapsed=new Set();
-for(const s of report.spans){if(!children.has(s.parent))children.set(s.parent,[]);children.get(s.parent).push(s);depth.set(s.id,s.parent==null?0:(depth.get(s.parent)||0)+1);if(depth.get(s.id)>=2)collapsed.add(s.id)}
+const children=new Map(),depth=new Map(),self=new Map(),totals=new Map(),collapsed=new Set();
+for(const s of report.spans){if(!children.has(s.parent))children.set(s.parent,[]);children.get(s.parent).push(s)}
+// Worker spans can be interleaved in the recording. Index a proper preorder once,
+// so collapsing a branch can jump over its entire subtree without scanning it.
+const ordered=[],subtreeEnd=[],ancestors=[],pending=[];
+for(const s of (children.get(null)||[]).slice().reverse())pending.push([s,0]);
+while(pending.length){
+    const [s,d]=pending.pop(),index=ordered.length;
+    while(ancestors.length&&ancestors.at(-1).depth>=d)subtreeEnd[ancestors.pop().index]=index;
+    ordered.push(s);depth.set(s.id,d);ancestors.push({index,depth:d});
+    if(d>=2&&children.has(s.id))collapsed.add(s.id);
+    const nested=children.get(s.id)||[];
+    for(let i=nested.length-1;i>=0;i--)pending.push([nested[i],d+1]);
+}
+while(ancestors.length)subtreeEnd[ancestors.pop().index]=ordered.length;
 for(const s of report.spans){let edge=s.start_ns,covered=0;const intervals=(children.get(s.id)||[]).map(c=>[Math.max(c.start_ns,s.start_ns),Math.min(c.end_ns,s.end_ns)]).filter(([a,b])=>b>a).sort((a,b)=>a[0]-b[0]);for(const[a,b]of intervals){covered+=Math.max(0,b-Math.max(edge,a));edge=Math.max(edge,b)}self.set(s.id,Math.max(0,s.end_ns-s.start_ns-covered));const t=totals.get(s.stage)||{calls:0,inclusive:0,self:0};t.calls++;t.inclusive+=s.end_ns-s.start_ns;t.self+=self.get(s.id);totals.set(s.stage,t)}
 document.querySelector('#total').textContent=ms(report.elapsed_ns)+' wall time · '+report.spans.length+' spans · '+new Set(report.spans.map(s=>s.lane)).size+' lanes';
 document.querySelector('#meta').textContent=Object.entries(report.attributes).map(([k,v])=>k+': '+v).join('\n');
@@ -79,14 +99,42 @@ new ResizeObserver(drawAxis).observe(axis);
 drawAxis();
 function summary(){const body=document.querySelector('#summary');body.replaceChildren();const metric=document.querySelector('#metric').value;for(const[stage,t]of [...totals].sort((a,b)=>b[1][metric]-a[1][metric])){const row=document.createElement('tr');cell(row,stage);cell(row,t.calls,'num');cell(row,ms(t.inclusive),'num');cell(row,ms(t.self),'num');body.append(row)}}
 const color=stage=>{let n=0;for(const c of stage)n=(n*31+c.charCodeAt(0))>>>0;return `hsl(${n%360} 35% 48%)`};
-function timeline(){
-    const body=document.querySelector('#timeline');
-    body.replaceChildren();
-    const filter=document.querySelector('#filter').value.toLowerCase();
-    const hidden=new Set();
-    for(const s of report.spans){
-        if(!filter&&(hidden.has(s.parent)||collapsed.has(s.parent))){hidden.add(s.id);continue}
-        if(filter&&!JSON.stringify(s).toLowerCase().includes(filter))continue;
+const viewport=document.querySelector('.timeline-scroll'),body=document.querySelector('#timeline');
+const rowHeight=38,overscan=8,searchText=new Map();
+let visible=[],filter='',firstRendered=-1,lastRendered=-1,scrollFrame=0,filterTimer;
+function timeline(resetScroll=false){
+    visible=[];
+    for(let i=0;i<ordered.length;){
+        const s=ordered[i];
+        if(filter){
+            if(!searchText.has(s.id))searchText.set(s.id,JSON.stringify(s).toLowerCase());
+            if(searchText.get(s.id).includes(filter))visible.push(s);
+            i++;
+        }else{
+            visible.push(s);
+            i=collapsed.has(s.id)?subtreeEnd[i]:i+1;
+        }
+    }
+    document.querySelector('#visible-count').textContent=visible.length+' of '+report.spans.length+' spans · scroll to view more';
+    // Clamp before drawing: collapsing near the bottom must not leave a blank viewport.
+    viewport.scrollTop=resetScroll?0:Math.min(viewport.scrollTop,Math.max(0,(visible.length+1)*rowHeight-viewport.clientHeight));
+    firstRendered=lastRendered=-1;
+    drawTimeline();
+}
+function drawTimeline(){
+    const first=Math.max(0,Math.floor(viewport.scrollTop/rowHeight)-overscan);
+    const last=Math.min(visible.length,first+Math.ceil((viewport.clientHeight||560)/rowHeight)+2*overscan);
+    if(first===firstRendered&&last===lastRendered)return;
+    firstRendered=first;lastRendered=last;
+    const fragment=document.createDocumentFragment();
+    const spacer=height=>{
+        const row=document.createElement('tr'),td=document.createElement('td');
+        row.className='spacer';row.setAttribute('aria-hidden','true');td.colSpan=5;
+        td.style.height=height+'px';row.append(td);fragment.append(row);
+    };
+    spacer(first*rowHeight);
+    for(let i=first;i<last;i++){
+        const s=visible[i];
         const row=document.createElement('tr'),label=cell(row,'','label');
         // Keep both the toggle and an ellipsized name visible even for deep trees.
         const operation=document.createElement('div');
@@ -115,10 +163,17 @@ function timeline(){
         bar.style.setProperty('--color',s.status==='failed'?'#bd5948':color(s.stage));
         track.append(bar);td.append(track);
         row.title=[s.label,`Status: ${s.status}`,`Start: ${ms(s.start_ns)} · End: ${ms(s.end_ns)}`,`Self: ${ms(self.get(s.id))}`,...Object.entries(s.attributes).map(([k,v])=>k+': '+v)].join('\n');
-        body.append(row);
+        fragment.append(row);
     }
+    spacer((visible.length-last)*rowHeight);
+    body.replaceChildren(fragment);
 }
-document.querySelector('#metric').onchange=summary;document.querySelector('#filter').oninput=timeline;document.querySelector('#expand').onclick=()=>{collapsed.clear();timeline()};document.querySelector('#collapse').onclick=()=>{for(const id of children.keys())if(id!=null)collapsed.add(id);timeline()};
+viewport.addEventListener('scroll',()=>{if(!scrollFrame)scrollFrame=requestAnimationFrame(()=>{scrollFrame=0;drawTimeline()})},{passive:true});
+new ResizeObserver(()=>drawTimeline()).observe(viewport);
+document.querySelector('#metric').onchange=summary;
+document.querySelector('#filter').oninput=()=>{clearTimeout(filterTimer);filterTimer=setTimeout(()=>{filter=document.querySelector('#filter').value.toLowerCase();timeline(true)},120)};
+document.querySelector('#expand').onclick=()=>{collapsed.clear();timeline(true)};
+document.querySelector('#collapse').onclick=()=>{for(const id of children.keys())if(id!=null)collapsed.add(id);timeline(true)};
 for(const s of report.spans.filter(s=>s.attributes.source||s.attributes.module).sort((a,b)=>(b.end_ns-b.start_ns)-(a.end_ns-a.start_ns)).slice(0,20)){const row=document.createElement('tr');cell(row,s.label);cell(row,s.stage);cell(row,ms(s.end_ns-s.start_ns),'num');document.querySelector('#slow').append(row)}
 summary();timeline();
 </script>

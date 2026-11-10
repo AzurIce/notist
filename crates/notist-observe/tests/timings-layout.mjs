@@ -28,7 +28,7 @@ for (const width of [1440, 1024, 800, 390]) {
         const boxes = [...document.querySelectorAll('.scroll')];
         const axis = document.querySelector('.axis').getBoundingClientRect();
         const ticks = [...document.querySelectorAll('.axis span')].map(t => t.getBoundingClientRect());
-        const name = document.querySelectorAll('.operation-name')[119];
+        const name = [...document.querySelectorAll('.operation-name')].at(-1);
         const result = {
             viewport: innerWidth,
             pageWidth: document.documentElement.scrollWidth,

@@ -65,13 +65,22 @@ pub(crate) fn token(src: &str, i: usize) -> (SyntaxKind, usize) {
             (SyntaxKind::Whitespace, len)
         }
         _ => {
-            let len = rest
+            // Prose runs across interior spaces and tabs so a sentence is one
+            // token, not one per word. Whitespace that carries structure stays
+            // separate: at a token start, after a marker, and before a newline
+            // or another delimiter.
+            let stop = rest
                 .find([
                     '=', '`', '/', '*', '_', '~', '\\', '[', ']', '(', ')', '|', '#', '$', '-', '+',
-                    '@', '!', ' ', '\t', '\n', '\r',
+                    '@', '!', '\n', '\r',
                 ])
                 .unwrap_or(rest.len());
-            (SyntaxKind::Text, len)
+            let len = rest[..stop].trim_end_matches([' ', '\t']).len();
+            if len == 0 {
+                (SyntaxKind::Whitespace, stop.max(1))
+            } else {
+                (SyntaxKind::Text, len)
+            }
         }
     }
 }

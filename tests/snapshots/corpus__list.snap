@@ -70,9 +70,7 @@ Document@0..150
   Newline@132..133 "\n"
   Newline@133..134 "\n"
   Minus@134..135 "-"
-  Text@135..136 "x"
-  Whitespace@136..137 " "
-  Text@137..149 "不是列表"
+  Text@135..149 "x 不是列表"
   Newline@149..150 "\n"
 
 === core ===

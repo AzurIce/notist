@@ -6,9 +6,7 @@ Document@0..144
   Heading@0..15
     Eq@0..1 "="
     Whitespace@1..2 " "
-    Text@2..8 "Notist"
-    Whitespace@8..9 " "
-    Text@9..15 "巡览"
+    Text@2..15 "Notist 巡览"
   Newline@15..16 "\n"
   Newline@16..17 "\n"
   Heading@17..26

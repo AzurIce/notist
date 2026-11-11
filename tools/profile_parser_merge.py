@@ -5,6 +5,7 @@ Clean release runs are interleaved; frame-pointer CPU samples and --timings
 are separate diagnostics. Never builds or publishes in the consumer checkout.
 """
 import argparse
+from collections import defaultdict
 import json
 import os
 from pathlib import Path
@@ -87,9 +88,6 @@ def build(a):
             m['binaries'][label] = digest(a.out / 'bin' / label)
             save(a.out / 'manifest.json', m)
             print('built', label, flush=True)
-    subprocess.run(['cc', '-shared', '-O2', '-fPIC', str(a.out / 'reproducer/hotspot_cpu_guard.c'),
-                    str(PROFILER), '-Wl,-rpath,' + str(PROFILER.parent), '-o',
-                    str(a.out / 'bin/cpu-guard.so')], check=True)
 
 
 def run(a, kind, label, variant='release', diagnostic=None):
@@ -103,6 +101,13 @@ def run(a, kind, label, variant='release', diagnostic=None):
     if diagnostic == 'cpu':
         env.update(LD_PRELOAD=str(a.out / 'bin/cpu-guard.so'), HOTSPOT_CPU_TARGET=str(binary),
                    HOTSPOT_CPU_OUTPUT=str(a.out / f'{label}.prof'), CPUPROFILE_FREQUENCY='499')
+    if diagnostic == 'perf':
+        command = ['perf', 'record', '-e', 'cycles:u', '-F', '499',
+                   '--call-graph', 'fp', '-o', str(a.out / f'{label}.data'), '--', *command]
+    if diagnostic == 'stat':
+        command = ['perf', 'stat', '--json-output', '-o', str(a.out / f'{label}-stat.json'),
+                   '-e', 'cycles:u,instructions:u,cache-references:u,cache-misses:u,branches:u,branch-misses:u',
+                   '--', *command]
     # wait4 reports the command's own high-water RSS and CPU (incl. children),
     # unlike cumulative RUSAGE_CHILDREN.ru_maxrss in a long-lived driver.
     with (a.out / 'logs' / f'{label}.stdout').open('wb') as stdout, (a.out / 'logs' / f'{label}.stderr').open('wb') as stderr:
@@ -113,7 +118,7 @@ def run(a, kind, label, variant='release', diagnostic=None):
         elapsed = time.perf_counter() - start
         if proc.returncode:
             raise RuntimeError(f'{label} failed: see logs')
-    actual = inventory(a.out / 'site/dist/icexiv-db')
+    actual = inventory(a.out / 'site/notist-output/icexiv-db')
     expected = a.out / 'output-inventory.json'
     if expected.exists():
         assert actual == json.loads(expected.read_text()), f'output mismatch: {label}'
@@ -149,6 +154,9 @@ def measure(a):
 
 
 def profile(a):
+    subprocess.run(['cc', '-shared', '-O2', '-fPIC', str(a.out / 'reproducer/hotspot_cpu_guard.c'),
+                    str(PROFILER), '-Wl,-rpath,' + str(PROFILER.parent), '-o',
+                    str(a.out / 'bin/cpu-guard.so')], check=True)
     rows = []
     for kind in ['before', 'after']:
         rows.append(run(a, kind, f'{kind}-timings', diagnostic='timings'))
@@ -166,6 +174,78 @@ def profile(a):
     save(a.out / 'diagnostics.json', rows)
 
 
+def perf(a):
+    """Hardware-event diagnostics, separate from clean release measurements."""
+    rows = []
+    for kind in ['before', 'after']:
+        rows.append(run(a, kind, f'{kind}-timings', diagnostic='timings'))
+        for i in range(2):
+            label = f'{kind}-perf-{i}'
+            if (a.out / f'{label}.data').exists():
+                raise ValueError('never overwrite perf evidence')
+            rows.append(run(a, kind, label, 'frames', 'perf'))
+            for name, flags in [('self', ['--no-children']), ('cumulative', ['--children'])]:
+                with (a.out / f'{label}-{name}.txt').open('wb') as log:
+                    subprocess.run(['perf', 'report', '--stdio', '--call-graph', 'none',
+                                    '--percent-limit', '0.2', '--sort', 'dso,symbol', *flags,
+                                    '-i', str(a.out / f'{label}.data')],
+                                   stdout=log, stderr=subprocess.STDOUT, check=True)
+            with (a.out / f'{label}-stacks.txt').open('wb') as log:
+                subprocess.run(['perf', 'script', '-i', str(a.out / f'{label}.data')],
+                               stdout=log, stderr=subprocess.STDOUT, check=True)
+            with (a.out / f'{label}-flat.txt').open('wb') as log:
+                subprocess.run(['perf', 'report', '--stdio', '--no-children', '--no-inline',
+                                '-g', 'none', '--sort', 'dso,symbol', '--percent-limit', '0.2',
+                                '-i', str(a.out / f'{label}.data')],
+                               stdout=log, stderr=subprocess.STDOUT, check=True)
+            rows.append(run(a, kind, f'{kind}-stat-{i}', diagnostic='stat'))
+    save(a.out / 'perf-diagnostics.json', rows)
+    m = json.loads((a.out / 'manifest.json').read_text())
+    m['perf'] = {'version': subprocess.check_output(['perf', 'version'], text=True).strip(),
+                 'paranoid': Path('/proc/sys/kernel/perf_event_paranoid').read_text().strip(),
+                 'event': 'cycles:u', 'frequency': 499, 'call_graph': 'fp',
+                 'scope': 'Rust parent, worker threads and inherited children; user mode only'}
+    save(a.out / 'manifest.json', m)
+    extra = []
+    for i in [1, 2]:
+        for kind in (['before', 'after'] if i == 1 else ['after', 'before']):
+            extra.append(run(a, kind, f'{kind}-timings-{i}', diagnostic='timings'))
+            save(a.out / 'extra-timings-samples.json', extra)
+
+
+def timing_summary(report):
+    groups = defaultdict(list)
+    for span in report['spans']:
+        groups[span['stage']].append((span['start_ns'], span['end_ns']))
+    result = {}
+    for stage, intervals in groups.items():
+        union = 0
+        right = 0
+        for start, end in sorted(intervals):
+            union += max(0, end - max(start, right))
+            right = max(right, end)
+        result[stage] = {'calls': len(intervals),
+                         'inclusive_s': sum(end - start for start, end in intervals) / 1e9,
+                         'interval_union_s': union / 1e9}
+    return result
+
+
+def report(a):
+    samples = {kind: [timing_summary(json.loads(path.read_text()))
+                      for path in sorted(a.out.glob(f'{kind}-timings*.json'))]
+               for kind in ['before', 'after']}
+    stages = {
+        kind: {stage: {key: statistics.median(sample[stage][key] for sample in runs)
+                       for key in runs[0][stage]}
+               for stage in runs[0]}
+        for kind, runs in samples.items()
+    }
+    save(a.out / 'stage-samples.json', samples)
+    save(a.out / 'stage-summary.json', stages)
+    print(json.dumps(json.loads((a.out / 'summary.json').read_text()), indent=2))
+    print(json.dumps(stages, indent=2))
+
+
 def verify(a):
     m = json.loads((a.out / 'manifest.json').read_text())
     for kind, expected in m['sources'].items():
@@ -173,18 +253,18 @@ def verify(a):
     for label, expected in m['binaries'].items():
         assert digest(a.out / 'bin' / label) == expected
     inputs = {k: v for k, v in inventory(a.out / 'site').items()
-              if not k.startswith(('dist/', 'target/'))}
+              if not k.startswith(('notist-output/', 'target/'))}
     assert inputs == m['inputs'], 'frozen inputs changed'
-    assert inventory(a.out / 'site/dist/icexiv-db') == json.loads((a.out / 'output-inventory.json').read_text())
+    assert inventory(a.out / 'site/notist-output/icexiv-db') == json.loads((a.out / 'output-inventory.json').read_text())
     with (a.out / 'logs/check-site.log').open('wb') as log:
-        subprocess.run(['python3', 'scripts/check_site.py', 'dist/icexiv-db'], cwd=a.out / 'site',
+        subprocess.run(['python3', 'scripts/check_site.py', 'notist-output/icexiv-db'], cwd=a.out / 'site',
                        stdout=log, stderr=subprocess.STDOUT, check=True)
     print('Verified sources, binaries, frozen inputs, byte-identical full outputs and check_site.', flush=True)
 
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=['prepare', 'build', 'measure', 'profile', 'verify', 'all'])
+    p.add_argument('action', choices=['prepare', 'build', 'measure', 'profile', 'perf', 'report', 'verify', 'all'])
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--consumer', type=Path, default=Path('/home/azurice/Files/_ffxiv/icexiv-db'))
     p.add_argument('--before', default='119c17d')
@@ -192,5 +272,5 @@ if __name__ == '__main__':
     p.add_argument('--rounds', type=int, default=5)
     a = p.parse_args()
     a.out = a.out.resolve()
-    for action in (['prepare', 'build', 'measure', 'profile', 'verify'] if a.action == 'all' else [a.action]):
+    for action in (['prepare', 'build', 'measure', 'perf', 'verify', 'report'] if a.action == 'all' else [a.action]):
         globals()[action](a)

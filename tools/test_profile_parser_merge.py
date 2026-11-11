@@ -10,6 +10,16 @@ import profile_parser_merge as profile
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_stage_time_distinguishes_overlapping_worker_intervals(self):
+        report = {'spans': [
+            {'stage': 'parse', 'start_ns': 0, 'end_ns': 2_000_000_000},
+            {'stage': 'parse', 'start_ns': 1_000_000_000, 'end_ns': 3_000_000_000},
+            {'stage': 'parse', 'start_ns': 4_000_000_000, 'end_ns': 5_000_000_000},
+        ]}
+        self.assertEqual(profile.timing_summary(report), {
+            'parse': {'calls': 3, 'inclusive_s': 5, 'interval_union_s': 4},
+        })
+
     def test_run_checks_complete_outputs_outside_timing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -19,7 +29,7 @@ class ComparisonTests(unittest.TestCase):
             binary.write_text(
                 f'#!{sys.executable}\n'
                 'from pathlib import Path\n'
-                'p = Path("dist/icexiv-db/index.html")\n'
+                'p = Path("notist-output/icexiv-db/index.html")\n'
                 'p.parent.mkdir(parents=True, exist_ok=True)\n'
                 'p.write_text("page")\n'
             )
@@ -29,7 +39,7 @@ class ComparisonTests(unittest.TestCase):
             self.assertEqual(row['files'], 1)
             self.assertGreater(row['max_rss_kib'], 0)
             expected = json.loads((root / 'output-inventory.json').read_text())
-            self.assertEqual(expected, profile.inventory(root / 'site/dist/icexiv-db'))
+            self.assertEqual(expected, profile.inventory(root / 'site/notist-output/icexiv-db'))
             binary.write_text(binary.read_text().replace('"page"', '"changed"'))
             with self.assertRaisesRegex(AssertionError, 'output mismatch'):
                 profile.run(args, 'before', 'changed')

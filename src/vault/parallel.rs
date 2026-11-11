@@ -1,5 +1,6 @@
-//! Batch evaluation. Only input/cache operations serialize; evaluation
-//! and output construction run outside the lock. No input snapshots are copied.
+//! Batch evaluation. File reads, parsing and cached projections serialize;
+//! direct view/scalar decoding, evaluation and output construction run outside
+//! the lock. No input snapshots are copied.
 use super::*;
 use crate::{EvaluationInputs, InputRead, ParsedDataCache, ResourcePath, ResourceSession};
 use notist_core::{

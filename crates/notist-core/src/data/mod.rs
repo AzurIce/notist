@@ -6,7 +6,7 @@ mod parse;
 mod retention;
 #[cfg(feature = "serde")]
 mod wire;
-pub use cache::{DataCache, DataCacheStats, ParsedDataCache};
+pub use cache::{DataCache, DataCacheStats, ParsedDataCache, direct_decode_target};
 pub use functions::{DataFunction, definitions};
 pub use parse::parse;
 pub use retention::DataRetention;

@@ -12,7 +12,20 @@ pub trait ParsedDataCache {
         bytes: Arc<[u8]>,
         limits: DataLimits,
     ) -> Result<Data, DataFailure>;
+    /// The evaluator bypasses this callback for [`direct_decode_target`] types.
     fn decode(&self, data: &Data, target: &Type, limits: DataLimits) -> Result<Value, DataFailure>;
+}
+
+/// Targets decoded directly before consulting a host's shared projection cache.
+/// Data must preserve the caller's exact source-bound view without retaining an
+/// owning cycle inside Document. Scalars (including nested Options) share their
+/// backing strings and must not retain one memo entry per record.
+pub fn direct_decode_target(target: &Type) -> bool {
+    match target {
+        Type::Data | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String => true,
+        Type::Option(element) => direct_decode_target(element),
+        _ => false,
+    }
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DataCacheStats {
@@ -114,20 +127,7 @@ impl ParsedDataCache for DataCache {
         result
     }
     fn decode(&self, data: &Data, target: &Type, limits: DataLimits) -> Result<Value, DataFailure> {
-        // Data targets must return the caller's exact view, never a cached
-        // source from another document or an owning cycle inside Document.
-        // Scalar views and optional scalar views cost O(depth), share their
-        // backing strings, and must not retain one memo entry per record.
-        fn cheap(target: &Type) -> bool {
-            match target {
-                Type::Data | Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String => {
-                    true
-                }
-                Type::Option(element) => cheap(element),
-                _ => false,
-            }
-        }
-        if cheap(target) {
+        if direct_decode_target(target) {
             return data.decode(target, limits);
         }
         let key = (
@@ -180,6 +180,61 @@ impl ParsedDataCache for DataCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_targets_never_borrow_or_reserve_cache_state() {
+        let cache = DataCache::new(0, 0);
+        let limits = DataLimits::default();
+        // Holding the state borrow makes any accidental cache access fail.
+        let state = cache.state.borrow_mut();
+        for (text, target) in [
+            ("{\"x\":1}", Type::Data),
+            ("null", Type::Unit),
+            ("true", Type::Bool),
+            ("7", Type::Int),
+            ("1.5", Type::Float),
+            ("\"shared\"", Type::String),
+        ] {
+            let data = super::super::parse(DataFormat::Json, text.as_bytes(), limits).unwrap();
+            let mut target = target;
+            for _ in 0..3 {
+                assert_eq!(
+                    cache.decode(&data, &target, limits),
+                    data.decode(&target, limits)
+                );
+                for strict in [
+                    DataLimits { nodes: 0, ..limits },
+                    DataLimits { depth: 0, ..limits },
+                    DataLimits {
+                        value_bytes: 0,
+                        ..limits
+                    },
+                ] {
+                    let result = cache.decode(&data, &target, strict);
+                    assert!(matches!(result, Err(DataFailure::Limit(_))));
+                    assert_eq!(result, data.decode(&target, strict));
+                }
+                // Plain views/scalars have no owned resident storage; strings
+                // and non-null Options do. Preserve both working-set outcomes.
+                let strict = DataLimits {
+                    working_bytes: 0,
+                    ..limits
+                };
+                assert_eq!(
+                    cache.decode(&data, &target, strict),
+                    data.decode(&target, strict)
+                );
+                target = Type::Option(Box::new(target));
+            }
+        }
+        let data = super::super::parse(DataFormat::Json, b"7", limits).unwrap();
+        assert!(matches!(
+            cache.decode(&data, &Type::String, limits),
+            Err(DataFailure::Error(error)) if error.kind() == DataErrorKind::TypeMismatch
+        ));
+        assert_eq!(state.stats, DataCacheStats::default());
+    }
+
     #[test]
     fn dropping_the_input_batch_releases_documents_even_for_data_projections() {
         let cache = DataCache::default();

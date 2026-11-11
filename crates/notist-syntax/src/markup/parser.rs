@@ -97,7 +97,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                 _ if self.at_table_at(self.state.pos) => self.table(),
                 SyntaxKind::Whitespace if self.at_blank_line() => self.eat_blank_line(),
                 SyntaxKind::LineComment | SyntaxKind::BlockComment => self.eat(),
-                SyntaxKind::At => self.annotation(),
+                SyntaxKind::At => self.annotation(true),
                 SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
@@ -254,7 +254,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                         || (self.peek(1) == Some(SyntaxKind::Bang)
                             && self.peek(2) == Some(SyntaxKind::LParen)) =>
                 {
-                    self.annotation()
+                    self.annotation(false)
                 }
                 Some(_) => self.eat(),
             }
@@ -354,7 +354,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                     || (self.peek(1) == Some(SyntaxKind::Bang)
                         && self.peek(2) == Some(SyntaxKind::LParen)) =>
             {
-                self.annotation()
+                self.annotation(false)
             }
             Some(_) => self.eat(),
             None => {}
@@ -795,7 +795,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                 Some(SyntaxKind::Whitespace) if self.at_blank_line() => self.eat_blank_line(),
                 Some(SyntaxKind::Whitespace) if self.block_indent > 0 => self.eat(),
                 Some(SyntaxKind::LineComment) | Some(SyntaxKind::BlockComment) => self.eat(),
-                Some(SyntaxKind::At) => self.annotation(),
+                Some(SyntaxKind::At) => self.annotation(true),
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
@@ -896,7 +896,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                     self.list_at(self.column_at(self.state.pos))
                 }
                 _ if self.at_table_at(self.state.pos) => self.table(),
-                SyntaxKind::At => self.annotation(),
+                SyntaxKind::At => self.annotation(true),
                 SyntaxKind::Backslash if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.parbreak()
                 }
@@ -1044,8 +1044,9 @@ impl Parser<'_, '_> {
     }
 
     /// `@(dict)` and `@!(dict)`. The payload is parsed in place; the node kind
-    /// depends on where the line ends, so the node is attached retroactively.
-    fn annotation(&mut self) {
+    /// depends on the block context and where the line ends, so the node is
+    /// attached retroactively. An inline annotation stays inline at line end.
+    fn annotation(&mut self, at_block_boundary: bool) {
         let checkpoint = self.state.builder.checkpoint();
         let outer = self.state.lexed.mode();
         self.state.set_mode(crate::lexed::Mode::Module);
@@ -1059,10 +1060,11 @@ impl Parser<'_, '_> {
         while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
             i += 1;
         }
-        let block = matches!(
-            self.kind_at(i),
-            None | Some(SyntaxKind::Newline | SyntaxKind::LineComment)
-        );
+        let block = at_block_boundary
+            && matches!(
+                self.kind_at(i),
+                None | Some(SyntaxKind::Newline | SyntaxKind::LineComment)
+            );
         self.state.builder.start_node_at(
             checkpoint,
             if block {

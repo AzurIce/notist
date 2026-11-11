@@ -3,6 +3,31 @@
 
 use notist_syntax::{code, markup};
 
+#[test]
+fn annotation_flavor_respects_its_starting_context() {
+    use notist_syntax::tree::SyntaxKind;
+    for (source, expected) in [
+        ("text @!(id: \"x\")\nnext", SyntaxKind::Annotation),
+        ("text @(id: \"x\")", SyntaxKind::Annotation),
+        ("@(id: \"x\")\nnext", SyntaxKind::BlockAnnotation),
+        ("@(id: \"x\") *next*", SyntaxKind::Annotation),
+    ] {
+        let parsed = markup::parse_document(source);
+        assert_eq!(parsed.syntax().text().to_string(), source);
+        let annotation = parsed
+            .syntax()
+            .descendants()
+            .find(|node| {
+                matches!(
+                    node.kind(),
+                    SyntaxKind::Annotation | SyntaxKind::BlockAnnotation
+                )
+            })
+            .expect("annotation");
+        assert_eq!(annotation.kind(), expected, "{source:?}");
+    }
+}
+
 /// Deterministic xorshift so a failure reproduces exactly.
 struct Rng(u64);
 

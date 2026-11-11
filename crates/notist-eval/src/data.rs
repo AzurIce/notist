@@ -1,7 +1,9 @@
 //! Structured-data implementations use the same native call/result machinery.
 use crate::EvaluationContext;
 use crate::eval::*;
-use notist_core::data::{Data, DataError, DataErrorKind, DataFailure, DataFormat, DataFunction};
+use notist_core::data::{
+    Data, DataError, DataErrorKind, DataFailure, DataFormat, DataFunction, direct_decode_target,
+};
 
 impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
     pub(super) fn data_native(
@@ -54,11 +56,17 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                 call,
             );
         }
-        let decode =
-            |data: &Data, t: &Type| match self.inputs.and_then(EvaluationInputs::data_cache) {
+        let decode = |data: &Data, t: &Type| {
+            // These targets never use cache state. Bypass the host callback too:
+            // a parallel input adapter may lock the entire resource session.
+            if direct_decode_target(t) {
+                return data.decode(t, limits);
+            }
+            match self.inputs.and_then(EvaluationInputs::data_cache) {
                 Some(cache) => cache.decode(data, t, limits),
                 None => data.decode(t, limits),
-            };
+            }
+        };
         let result = match kind {
             ReadJson | ReadToml => return self.read_data(kind, call, fields),
             ParseJson | ParseToml => {

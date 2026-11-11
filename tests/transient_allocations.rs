@@ -80,6 +80,29 @@ fn measure<T>(run: impl FnOnce() -> T) -> (T, Allocations) {
 }
 
 #[test]
+fn allocation_counter_observes_allocation_and_growth() {
+    let (mut buffer, counts) = measure(|| black_box(Vec::<u8>::with_capacity(32)));
+    assert_eq!(
+        counts,
+        Allocations {
+            allocations: 1,
+            reallocations: 0
+        }
+    );
+    let (_, counts) = measure(|| {
+        buffer.reserve_exact(128);
+        black_box(&buffer);
+    });
+    assert_eq!(
+        counts,
+        Allocations {
+            allocations: 0,
+            reallocations: 1
+        }
+    );
+}
+
+#[test]
 fn string_token_scanning_does_not_allocate() {
     for source in [
         format!("\"{}\" trailing", "中文🙂a".repeat(1024)),
@@ -87,8 +110,12 @@ fn string_token_scanning_does_not_allocate() {
         format!("\"\"\"{}\"\"\" trailing", "中文\r\n\\🙂\"\"".repeat(1024)),
         format!("r##\"\"\"{}", "中文\n🙂\"\"\"#".repeat(1024)),
     ] {
-        let (_, counts) =
-            measure(|| notist_syntax::code::lexer::literal_token(black_box(&source), 0));
+        let (_, counts) = measure(|| {
+            black_box(notist_syntax::code::lexer::literal_token(
+                black_box(&source),
+                0,
+            ))
+        });
         assert_eq!(counts, Allocations::default());
     }
 }
@@ -128,10 +155,43 @@ fn borrowed_attributes_and_word_arrays_add_no_temporary_allocations() {
     // Initialize any renderer metadata before entering the measured scopes.
     black_box(renderer.render(&plain));
     black_box(renderer.render(&attributed));
-    let (_, plain_counts) = measure(|| renderer.render(black_box(&plain)));
+    let (_, plain_counts) = measure(|| black_box(renderer.render(black_box(&plain))));
     let (html, attributed_counts) = measure(|| renderer.render(black_box(&attributed)));
     assert!(html.contains("class=\"notist-math word word"));
     assert!(html.contains("data-notist-tags=\"word word"));
     // Output growth may reallocate; attributes must not create other buffers.
     assert_eq!(attributed_counts.allocations, plain_counts.allocations);
+}
+
+#[test]
+fn path_encoding_and_relative_urls_only_allocate_the_result() {
+    use notist::publication::url::{encode_path, relative_url};
+    use std::path::Path;
+
+    for depth in [1, 8, 128] {
+        let target = format!("{}page.html", "segment/".repeat(depth));
+        let (_, counts) = measure(|| black_box(encode_path(black_box(Path::new(&target)))));
+        assert_eq!(
+            counts,
+            Allocations {
+                allocations: 1,
+                reallocations: 0
+            }
+        );
+        let current = format!("{}index.html", "other/".repeat(depth));
+        let (_, counts) = measure(|| {
+            black_box(relative_url(
+                black_box(Path::new(&current)),
+                black_box(Path::new(&target)),
+                false,
+            ))
+        });
+        assert_eq!(
+            counts,
+            Allocations {
+                allocations: 1,
+                reallocations: 0
+            }
+        );
+    }
 }

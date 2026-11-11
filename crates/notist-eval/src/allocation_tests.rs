@@ -62,6 +62,28 @@ fn empty_content_construction_clone_and_drop_do_not_allocate() {
 }
 
 #[test]
+fn ready_leaf_expansion_does_not_allocate_child_storage() {
+    let owner = notist_core::source::Source::metadata("leaf.not").unwrap();
+    let suffix: SourceChain = vec![SourceLocation {
+        source: owner.id(),
+        start: 1,
+        end: 3,
+    }]
+    .into();
+    let mut leaf = Node::new(Ctor::Divider, Default::default());
+    leaf.origin = Some(Origin {
+        source: owner.id(),
+        start: 0,
+        end: 1,
+        expansion: Default::default(),
+    });
+    let retained = leaf.clone();
+    assert_eq!(allocations(|| expand_ready(&mut leaf, &suffix)), 0);
+    assert!(retained.origin.as_ref().unwrap().expansion.is_empty());
+    assert_eq!(leaf.origin.as_ref().unwrap().expansion, suffix);
+}
+
+#[test]
 fn single_content_has_one_allocation_and_replays_shared_storage() {
     let node = Node::text("one".into(), Default::default());
     let piece = Piece {

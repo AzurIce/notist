@@ -1225,8 +1225,11 @@ fn expand_ready(node: &mut Node, expansion: &SourceChain) {
         return;
     }
     append_expansion(node, expansion);
-    for child in node.children_mut().into_iter().flatten() {
-        expand_ready(child, expansion);
+    // Leaf origins still expand, but their empty child storage need not detach.
+    if !node.children().is_empty() {
+        for child in node.children_mut().into_iter().flatten() {
+            expand_ready(child, expansion);
+        }
     }
 }
 fn error_content(source: &NodeMetadata, message: String) -> Node {
@@ -1624,6 +1627,64 @@ mod tests {
         append_expansion(&mut first, &suffix);
         assert_eq!(first.origin.as_ref().unwrap().expansion.len(), 2);
         assert_eq!(second.origin.as_ref().unwrap().expansion.len(), 1);
+    }
+    #[test]
+    fn ready_expansion_updates_all_origins_without_detaching_leaf_children() {
+        let owner = notist_core::source::Source::metadata("definition.notc").unwrap();
+        let caller = notist_core::source::Source::metadata("caller.not").unwrap();
+        let location = SourceLocation {
+            source: caller.id(),
+            start: 5,
+            end: 9,
+        };
+        let suffix: SourceChain = vec![location.clone()].into();
+        let mut leaf = Node::new(Ctor::Divider, Default::default());
+        leaf.origin = Some(Origin {
+            source: owner.id(),
+            start: 1,
+            end: 3,
+            expansion: suffix.clone(),
+        });
+        let original = Node::new(Ctor::Doc, Default::default())
+            .with_children(vec![leaf, Node::new(Ctor::Node, Default::default())]);
+        let mut expanded = original.clone();
+        expand_ready(&mut expanded, &SourceChain::default());
+        assert!(
+            expanded
+                .as_item()
+                .unwrap()
+                .children
+                .shares_storage(&original.as_item().unwrap().children,)
+        );
+        expand_ready(&mut expanded, &suffix);
+        assert_eq!(
+            original.children()[0]
+                .origin
+                .as_ref()
+                .unwrap()
+                .expansion
+                .len(),
+            1
+        );
+        assert_eq!(
+            expanded.children()[0]
+                .origin
+                .as_ref()
+                .unwrap()
+                .expansion
+                .as_slice(),
+            [location.clone(), location,]
+        );
+        assert!(expanded.children()[1].origin.is_none());
+        for (changed, original) in expanded.children().iter().zip(original.children()) {
+            assert!(
+                changed
+                    .as_item()
+                    .unwrap()
+                    .children
+                    .shares_storage(&original.as_item().unwrap().children,)
+            );
+        }
     }
     #[test]
     fn both_result_payloads_count_towards_the_value_limit() {

@@ -53,6 +53,8 @@ struct Parser<'a> {
     in_body: bool,
     /// Emphasis openers, innermost last. Cleared when an inline run ends.
     opens: Vec<Open>,
+    /// The header/delimiter plan produced by the probe that selected a table.
+    plan: std::cell::RefCell<Option<(usize, table::Row, table::Row)>>,
     /// Index of the first opener visible to the current inline run. A closer
     /// outside the run's scope cannot pair across a finished node.
     floor: usize,
@@ -72,6 +74,7 @@ impl<'a> Parser<'a> {
             block_start: None,
             in_body: false,
             opens: Vec::new(),
+            plan: std::cell::RefCell::new(None),
             floor: 0,
             scans: Scans::default(),
         }
@@ -1218,7 +1221,7 @@ struct Extent {
 /// a bracket inside them does not close the literal. Callers then parse only
 /// the literal's own text, so a literal never costs more than that text.
 fn content_extent(src: &str, open: usize) -> Extent {
-    let tape = crate::lexed::Lexed::new(src, open, crate::lexed::Mode::Markup);
+    let tape = crate::lexed::Lexed::bounded(src, open, crate::lexed::Mode::Markup);
     let mut depth = 0usize;
     let mut i = 0usize;
     while let Some(kind) = tape.kind(i) {
@@ -1308,7 +1311,9 @@ pub(crate) fn parse_content(source: &str, open: TextSize) -> ParsedContent {
         source.as_bytes().get(open_at + 1),
         None | Some(b' ' | b'\t' | b'\r' | b'\n')
     );
-    let mut parser = Parser::at(source, open_at);
+    // The tape only needs the literal's own text: offsets stay absolute
+    // because the same source is passed, just bounded.
+    let mut parser = Parser::at(&source[..extent.end], open_at);
     parser.state.pos = 1;
     parser.state.limit = extent.close;
     parser.in_body = true;

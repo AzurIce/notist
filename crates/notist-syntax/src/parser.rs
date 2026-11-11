@@ -59,10 +59,12 @@ impl<'src> State<'src> {
     /// Consume the current token. At the end of the bounded region this is a
     /// no-op, so callers that consume an expected closer still finish the node.
     pub fn eat(&mut self) {
-        let Some(kind) = self.kind_at(self.pos) else {
+        if self.limit.is_some_and(|limit| self.pos >= limit) {
+            return;
+        }
+        let Some((kind, text)) = self.lexed.peek(self.pos) else {
             return;
         };
-        let text = self.lexed.text(self.pos);
         let unclosed = if kind == SyntaxKind::BlockComment
             && !crate::code::lexer::block_comment_closed(text)
         {

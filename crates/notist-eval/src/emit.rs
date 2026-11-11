@@ -147,7 +147,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
         let mut node = source.node(ContentItem {
             ctor: spec.ctor,
             fields: spec.fields,
-            children: nodes.into(),
+            children: Shared::from_nodes(nodes),
             instance: spec.instance,
         });
         append_expansion(&mut node, expansion);

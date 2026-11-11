@@ -212,6 +212,10 @@ impl Document {
 }
 
 #[cfg(test)]
+#[path = "document_allocation_tests.rs"]
+mod allocation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -239,7 +243,7 @@ mod tests {
         headings(&mut root, None, &mut ids, &mut out);
         assert_eq!(
             out.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
-            ["section-id", "same-title", "same-title-2",]
+            ["section-id", "same-title", "same-title-2"]
         );
         assert!(out.iter().all(|h| h.title == "Same title" && h.level == 2));
         assert!(root.children()[0].children()[0].attrs.is_empty());
@@ -252,7 +256,7 @@ mod tests {
                         .as_item()
                         .unwrap()
                         .children
-                        .shares_storage(&original.as_item().unwrap().children,)
+                        .shares_storage(&original.as_item().unwrap().children)
                 );
             }
         }

@@ -1236,7 +1236,7 @@ fn error_content(source: &NodeMetadata, message: String) -> Node {
     source.node(ContentItem {
         ctor: Ctor::Error(message),
         fields: Dict::default(),
-        children: Default::default(),
+        children: Shared::empty_nodes(),
         instance: None,
     })
 }
@@ -1291,7 +1291,7 @@ fn emit_mount(source: &NodeMetadata, start: usize, expansion: &SourceChain, out:
         let mut group = source.node(ContentItem {
             ctor: Ctor::Group,
             fields: Dict::default(),
-            children: nodes.into(),
+            children: Shared::from_nodes(nodes),
             instance: None,
         });
         append_expansion(&mut group, expansion);
@@ -1654,7 +1654,7 @@ mod tests {
                 .as_item()
                 .unwrap()
                 .children
-                .shares_storage(&original.as_item().unwrap().children,)
+                .shares_storage(&original.as_item().unwrap().children)
         );
         expand_ready(&mut expanded, &suffix);
         assert_eq!(
@@ -1673,7 +1673,7 @@ mod tests {
                 .unwrap()
                 .expansion
                 .as_slice(),
-            [location.clone(), location,]
+            [location.clone(), location]
         );
         assert!(expanded.children()[1].origin.is_none());
         for (changed, original) in expanded.children().iter().zip(original.children()) {
@@ -1682,7 +1682,7 @@ mod tests {
                     .as_item()
                     .unwrap()
                     .children
-                    .shares_storage(&original.as_item().unwrap().children,)
+                    .shares_storage(&original.as_item().unwrap().children)
             );
         }
     }

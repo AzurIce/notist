@@ -1,4 +1,5 @@
 use super::*;
+use notist_core::shared::DictBuilder;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -81,6 +82,54 @@ fn ready_leaf_expansion_does_not_allocate_child_storage() {
     assert_eq!(allocations(|| expand_ready(&mut leaf, &suffix)), 0);
     assert!(retained.origin.as_ref().unwrap().expansion.is_empty());
     assert_eq!(leaf.origin.as_ref().unwrap().expansion, suffix);
+}
+
+#[test]
+fn emitting_empty_elements_and_mounts_does_not_allocate_empty_storage() {
+    let context = Context;
+    let mut node = Node::new(Ctor::Node, Default::default());
+    node.attrs.insert("id", Value::Str("mount".into()));
+    let source = NodeMetadata::from(&node);
+    let program = CheckedProgram::default();
+    let sources = Default::default();
+    let mut e = Evaluator::new(
+        &context,
+        &program,
+        &sources,
+        Limits::default(),
+        None,
+        EvaluationMode::Runtime,
+    );
+    let mut out = Vec::with_capacity(1);
+    let empty = Shared::empty_nodes();
+    assert_eq!(
+        allocations(|| {
+            let summary = e.emit_element(
+                &source,
+                ElementSpec {
+                    ctor: Ctor::Node,
+                    fields: DictBuilder::default().finish(),
+                    instance: None,
+                },
+                &Content::default(),
+                100,
+                &SourceChain::default(),
+                &mut out,
+            );
+            assert_eq!(summary.nodes, 1);
+        }),
+        0
+    );
+    assert!(out[0].as_item().unwrap().children.shares_storage(&empty));
+    out.clear();
+    assert_eq!(
+        allocations(|| emit_mount(&source, 0, &SourceChain::default(), &mut out)),
+        0
+    );
+    assert_eq!(out[0].ctor(), Ctor::Group);
+    assert!(out[0].as_item().unwrap().children.shares_storage(&empty));
+    let error = error_content(&source, "error".into());
+    assert!(error.as_item().unwrap().children.shares_storage(&empty));
 }
 
 #[test]

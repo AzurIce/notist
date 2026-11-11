@@ -5,6 +5,7 @@ use notist_core::annotation::{AnnotationKind, ResolvedAnnotation as Annotation};
 use notist_core::diag::{Diagnostic, Phase};
 use notist_core::expr::{BodyFlavor, RExpr};
 use notist_core::item::{Ctor, Item, NodeContent, Origin};
+use notist_core::shared::Shared;
 use notist_core::source::{Source, SourceId};
 use rowan::{TextRange, TextSize};
 
@@ -45,7 +46,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
         let data = item.as_item_mut().expect("new content node");
         data.ctor = Ctor::Error(message.clone());
         data.fields = expr.fields.clone();
-        data.children = children.into();
+        data.children = Shared::from_nodes(children);
     } else if let Some(expression) = &expr.expression {
         use notist_core::evaluation::{ExprKind, TypedExpr};
         let value = match &expression.kind {
@@ -56,7 +57,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
                         ty: call.definition().children_type.clone(),
                         known: None,
                         shape: notist_core::evaluation::ContentShape::of_items(&children),
-                        kind: ExprKind::Content(children.into()),
+                        kind: ExprKind::Content(Shared::from_nodes(children)),
                         span: expr.span,
                         source: *source,
                     }));
@@ -80,7 +81,7 @@ fn build_item(expr: &RExpr, source: &SourceId) -> Item {
         let data = item.as_item_mut().expect("new content node");
         data.instance = expr.instance.clone().map(Into::into);
         data.fields = expr.fields.clone();
-        data.children = children.into();
+        data.children = Shared::from_nodes(children);
     }
     item.attrs = expr.attrs.clone();
     item.level = if is_block_element(expr) {
@@ -272,6 +273,13 @@ mod source_tests {
             assert_eq!(origin.source, source.id());
             assert_eq!(root.source, origin.source);
             assert_eq!((origin.start, origin.end), (0, 3));
+            assert!(
+                child
+                    .as_item()
+                    .unwrap()
+                    .children
+                    .shares_storage(&Shared::empty_nodes())
+            );
         }
     }
 }

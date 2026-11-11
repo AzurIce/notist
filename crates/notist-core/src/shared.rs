@@ -333,8 +333,10 @@ impl PartialEq for Array {
     }
 }
 
+/// Ordered fields with copy-on-write storage; capacity-free empties allocate
+/// nothing while retaining the conservative resident budget of an owned Dict.
 #[derive(Clone, Default)]
-pub struct Dict(Arc<DictStorage>);
+pub struct Dict(Option<Arc<DictStorage>>);
 
 /// Field operations shared by semantic dictionaries and their owned construction phase.
 pub trait Fields {
@@ -363,13 +365,7 @@ impl DictBuilder {
         }
     }
     pub fn finish(self) -> Dict {
-        let index = DictStorage::make_index(&self.entries);
-        Dict(Arc::new(DictStorage {
-            entries: self.entries,
-            index,
-            budget_capacity: self.budget_capacity,
-            metrics: OnceLock::new(),
-        }))
+        Dict::from_entries(self.entries, self.budget_capacity)
     }
 }
 impl Fields for DictBuilder {
@@ -478,18 +474,50 @@ impl DictStorage {
 }
 
 impl Dict {
+    fn from_entries(entries: Vec<(Text, Value)>, budget_capacity: usize) -> Self {
+        if entries.is_empty() && budget_capacity == 0 {
+            return Self::default();
+        }
+        let index = DictStorage::make_index(&entries);
+        Self(Some(Arc::new(DictStorage {
+            entries,
+            index,
+            budget_capacity,
+            metrics: OnceLock::new(),
+        })))
+    }
+    fn storage(&self) -> &DictStorage {
+        // Empty dictionaries need neither an allocation nor a shared Arc
+        // refcount. Accounting still charges the previous conservative layout.
+        static EMPTY: DictStorage = DictStorage {
+            entries: Vec::new(),
+            index: None,
+            budget_capacity: 0,
+            metrics: OnceLock::new(),
+        };
+        self.0.as_deref().unwrap_or(&EMPTY)
+    }
     pub(crate) fn weak_identity(&self) -> (usize, std::sync::Weak<DictStorage>) {
-        (Arc::as_ptr(&self.0) as usize, Arc::downgrade(&self.0))
+        // Storage-free empties cannot contain Data and are never entered in
+        // DataRetention's weak-identity table. Do not make an immortal weak Arc.
+        self.0.as_ref().map_or_else(
+            || (0, std::sync::Weak::new()),
+            |storage| (Arc::as_ptr(storage) as usize, Arc::downgrade(storage)),
+        )
     }
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.0.position(key).map(|i| &self.0.entries[i].1)
+        let data = self.storage();
+        data.position(key).map(|i| &data.entries[i].1)
     }
     pub fn is_empty(&self) -> bool {
-        self.0.entries.is_empty()
+        self.storage().entries.is_empty()
     }
     pub fn insert(&mut self, key: impl AsRef<str>, value: Value) {
         let key = key.as_ref();
-        let data = Arc::make_mut(&mut self.0);
+        let data = Arc::make_mut(
+            self.0
+                .get_or_insert_with(|| Arc::new(DictStorage::default())),
+        );
         data.metrics = OnceLock::new();
         match data.position(key) {
             Some(i) => data.entries[i].1 = value,
@@ -519,7 +547,7 @@ impl Dict {
         }
     }
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
-        self.0.entries.iter().map(|(k, v)| (k.as_str(), v))
+        self.storage().entries.iter().map(|(k, v)| (k.as_str(), v))
     }
     pub fn extend(&mut self, other: Dict) {
         for (k, v) in other.iter() {
@@ -530,16 +558,20 @@ impl Dict {
         std::mem::take(self)
     }
     pub fn shares_storage(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
     }
     pub(crate) fn metrics(&self) -> Metrics {
-        *self.0.metrics.get_or_init(|| {
+        let data = self.storage();
+        *data.metrics.get_or_init(|| {
             let mut result = Metrics {
-                resident: self
-                    .0
+                resident: data
                     .budget_capacity
                     .saturating_mul(std::mem::size_of::<(Text, Value)>())
-                    .saturating_add(self.0.index_entries_for_budget().saturating_mul(128))
+                    .saturating_add(data.index_entries_for_budget().saturating_mul(128))
                     .saturating_add(DictStorage::budget_bytes() + 16),
                 ..Default::default()
             };
@@ -563,12 +595,14 @@ impl FromIterator<(String, Value)> for Dict {
 }
 impl fmt::Debug for Dict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Dict").field(&self.0.entries).finish()
+        f.debug_tuple("Dict")
+            .field(&self.storage().entries)
+            .finish()
     }
 }
 impl PartialEq for Dict {
     fn eq(&self, other: &Self) -> bool {
-        self.0.entries == other.0.entries
+        self.storage().entries == other.storage().entries
     }
 }
 
@@ -608,19 +642,14 @@ mod wire {
     }
     impl Serialize for Dict {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            self.0.entries.serialize(s)
+            self.storage().entries.serialize(s)
         }
     }
     impl<'de> Deserialize<'de> for Dict {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             let entries: Vec<(Text, Value)> = Vec::deserialize(d)?;
-            let index = DictStorage::make_index(&entries);
-            Ok(Self(Arc::new(DictStorage {
-                budget_capacity: entries.capacity(),
-                entries,
-                index,
-                ..Default::default()
-            })))
+            let budget_capacity = entries.capacity();
+            Ok(Self::from_entries(entries, budget_capacity))
         }
     }
 }
@@ -628,6 +657,113 @@ mod wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_dictionaries_detach_and_keep_the_conservative_budget() {
+        assert_eq!(std::mem::size_of::<Dict>(), std::mem::size_of::<usize>());
+        let empty = Dict::default();
+        for mut dict in [
+            Dict::default(),
+            DictBuilder::default().finish(),
+            std::iter::empty::<(String, Value)>().collect(),
+            empty.clone(),
+        ] {
+            assert!(dict.shares_storage(&empty));
+            assert_eq!(dict.metrics().resident, DictStorage::budget_bytes() + 16);
+            assert_eq!(dict.metrics().bytes, 0);
+            assert!(!dict.metrics().data && !dict.metrics().path);
+            let (id, weak) = dict.weak_identity();
+            assert_eq!(id, 0);
+            assert!(weak.upgrade().is_none());
+            dict.insert("x", Value::Int(1));
+            assert!(!dict.shares_storage(&empty));
+            assert_eq!(dict.storage().entries.capacity(), 1);
+            assert_eq!(dict.storage().budget_capacity, 4);
+            assert!(empty.get("x").is_none());
+            assert_eq!(dict.take().get("x"), Some(&Value::Int(1)));
+            assert!(dict.shares_storage(&empty));
+        }
+    }
+
+    #[test]
+    fn nonempty_dictionary_weak_identity_expires_and_mutation_still_detaches() {
+        let mut dict = Dict::default();
+        dict.insert("x", Value::Int(1));
+        let (id, weak) = dict.weak_identity();
+        assert_ne!(id, 0);
+        let retained = dict.clone();
+        dict.insert("x", Value::Int(2));
+        assert_ne!(dict.weak_identity().0, id);
+        assert_eq!(retained.get("x"), Some(&Value::Int(1)));
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+        let (_, weak) = dict.weak_identity();
+        dict.insert("x", Value::Int(3));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(dict.get("x"), Some(&Value::Int(3)));
+        let (_, weak) = dict.weak_identity();
+        drop(dict);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn empty_dictionary_observation_cannot_hide_later_data_retention() {
+        use crate::data::{DataFormat, DataLimits, DataRetention};
+        let mut retention = DataRetention::default();
+        let empty = Dict::default();
+        retention.observe(&Value::Dict(empty.clone()), 0).unwrap();
+        assert!(retention.is_empty());
+        let data = crate::data::parse(DataFormat::Json, b"123", DataLimits::default()).unwrap();
+        let mut changed = empty.clone();
+        changed.insert("data", Value::Data(data));
+        assert!(retention.observe(&Value::Dict(changed.clone()), 0).is_err());
+        retention
+            .observe(&Value::Dict(changed.clone()), usize::MAX)
+            .unwrap();
+        let remaining = retention.remaining(usize::MAX);
+        assert!(remaining < usize::MAX);
+        retention
+            .observe(&Value::Dict(changed), usize::MAX)
+            .unwrap();
+        assert_eq!(retention.remaining(usize::MAX), remaining);
+        assert!(!empty.metrics().data);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn empty_dictionary_wire_and_deserializer_capacity_keep_their_budgets() {
+        use serde::Deserialize;
+        let empty = Dict::default();
+        let decoded: Dict = serde_json::from_str("[]").unwrap();
+        assert!(empty.shares_storage(&decoded));
+        assert_eq!(serde_json::to_string(&empty).unwrap(), "[]");
+
+        // SeqAccess can reserve slots even if it ultimately yields no entries.
+        // Such a value must retain its previous conservative capacity charge.
+        struct ReservedEmpty;
+        impl<'de> serde::de::SeqAccess<'de> for ReservedEmpty {
+            type Error = serde::de::value::Error;
+            fn next_element_seed<T: serde::de::DeserializeSeed<'de>>(
+                &mut self,
+                _: T,
+            ) -> Result<Option<T::Value>, Self::Error> {
+                Ok(None)
+            }
+            fn size_hint(&self) -> Option<usize> {
+                Some(4)
+            }
+        }
+        let decoded =
+            Dict::deserialize(serde::de::value::SeqAccessDeserializer::new(ReservedEmpty)).unwrap();
+        assert!(decoded.is_empty());
+        assert!(!decoded.shares_storage(&empty));
+        assert_eq!(decoded.storage().budget_capacity, 4);
+        assert_eq!(
+            decoded.metrics().resident,
+            reference_dict_resident(&decoded.storage().entries)
+        );
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), "[]");
+    }
 
     #[test]
     fn owned_dictionary_construction_shares_keys_and_preserves_budget_and_updates() {
@@ -647,7 +783,7 @@ mod tests {
             assert_eq!(dict, reference);
             assert_eq!(dict.metrics().bytes, reference.metrics().bytes);
             assert_eq!(dict.metrics().resident, reference.metrics().resident);
-            for ((stored, _), key) in dict.0.entries.iter().zip(&keys) {
+            for ((stored, _), key) in dict.storage().entries.iter().zip(&keys) {
                 assert!(stored.shares_storage(key));
             }
             for key in &keys {
@@ -685,22 +821,22 @@ mod tests {
                 .map(|i| (format!("key-{i}"), Value::Int(i)))
                 .collect();
             let retained = dict.clone();
-            let key = dict.0.entries[0].0.clone();
+            let key = dict.storage().entries[0].0.clone();
             let before = dict.metrics();
             dict.insert(BorrowedKey("key-0"), Value::Str("longer value".into()));
-            assert!(dict.0.entries[0].0.shares_storage(&key));
+            assert!(dict.storage().entries[0].0.shares_storage(&key));
             assert_eq!(dict.iter().next().unwrap().0, "key-0");
             assert_eq!(retained.get("key-0"), Some(&Value::Int(0)));
             assert_eq!(retained.metrics().resident, before.resident);
             assert_eq!(
                 dict.metrics().resident,
-                reference_dict_resident(&dict.0.entries)
+                reference_dict_resident(&dict.storage().entries)
             );
             let name = String::from("new-key");
             dict.insert(&name, Value::Bool(true));
             dict.insert(Text::from("new-key"), Value::Bool(false));
             assert_eq!(dict.iter().last(), Some(("new-key", &Value::Bool(false))));
-            assert_eq!(dict.0.entries.len(), len as usize + 1);
+            assert_eq!(dict.storage().entries.len(), len as usize + 1);
         }
     }
 
@@ -709,8 +845,8 @@ mod tests {
         assert!(std::mem::size_of::<DictStorage>() <= DictStorage::budget_bytes());
         let mut dict = Dict::default();
         dict.insert("key-0", Value::Int(0));
-        assert_eq!(dict.0.entries.capacity(), 1);
-        assert_eq!(dict.0.budget_capacity, 4);
+        assert_eq!(dict.storage().entries.capacity(), 1);
+        assert_eq!(dict.storage().budget_capacity, 4);
         for len in 0..66 {
             let mut dict = Dict::default();
             let mut reference = Vec::new();
@@ -733,7 +869,7 @@ mod tests {
                 let key = format!("key-{i}");
                 dict.insert(key.clone(), Value::Int(i));
                 reference.push((Text::from(key), Value::Int(i)));
-                assert_eq!(dict.0.budget_capacity, reference.capacity());
+                assert_eq!(dict.storage().budget_capacity, reference.capacity());
                 assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
             }
         }
@@ -751,7 +887,7 @@ mod tests {
             );
             let reference = Vec::<(Text, Value)>::deserialize(wire.clone()).unwrap();
             let dict = Dict::deserialize(wire.clone()).unwrap();
-            assert_eq!(dict.0.budget_capacity, reference.capacity());
+            assert_eq!(dict.storage().budget_capacity, reference.capacity());
             assert_eq!(dict.metrics().resident, reference_dict_resident(&reference));
             assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
             let mut changed = dict.clone();
@@ -783,7 +919,10 @@ mod tests {
                 assert_eq!(dict.get(key), Some(value));
             }
             assert_eq!(dict.get("missing"), None);
-            assert_eq!(dict.0.index.is_none(), expected.len() <= DICT_LINEAR_LIMIT);
+            assert_eq!(
+                dict.storage().index.is_none(),
+                expected.len() <= DICT_LINEAR_LIMIT
+            );
             let mut changed = dict.clone();
             assert!(dict.shares_storage(&changed));
             changed.insert("clé-00", Value::Int(-1));
@@ -802,7 +941,7 @@ mod tests {
             for i in 0..len {
                 reference.push((format!("key-{i}").into(), Value::Int(i)));
             }
-            assert_eq!(dict.0.budget_capacity, reference.capacity());
+            assert_eq!(dict.storage().budget_capacity, reference.capacity());
             let old_resident = reference.capacity() * std::mem::size_of::<(Text, Value)>()
                 + len as usize * 128
                 + DictStorage::budget_bytes()
@@ -812,7 +951,7 @@ mod tests {
                     .map(|(key, value)| key.len() + 16 + value.metrics().resident)
                     .sum::<usize>();
             assert_eq!(dict.metrics().resident, old_resident);
-            assert_eq!(dict.0.index_entries_for_budget(), len as usize);
+            assert_eq!(dict.storage().index_entries_for_budget(), len as usize);
         }
     }
 
@@ -828,7 +967,7 @@ mod tests {
             let mut dict: Dict = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(dict.get("key-0"), Some(&Value::Int(0)));
             assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
-            assert_eq!(dict.0.index_entries_for_budget(), 2);
+            assert_eq!(dict.storage().index_entries_for_budget(), 2);
             dict.insert("key-0", Value::Int(42));
             wire[0][1] = serde_json::json!({"Int": 42});
             assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
@@ -838,7 +977,7 @@ mod tests {
                 .push(serde_json::json!(["new", {"Bool": true}]));
             assert_eq!(serde_json::to_value(&dict).unwrap(), wire);
             assert_eq!(dict.get("new"), Some(&Value::Bool(true)));
-            assert_eq!(dict.0.index_entries_for_budget(), 3);
+            assert_eq!(dict.storage().index_entries_for_budget(), 3);
         }
     }
 

@@ -420,6 +420,32 @@ pub struct ContentItem {
     pub instance: Option<crate::shared::Shared<crate::definitions::ResolvedInstance>>,
 }
 
+impl crate::shared::Shared<Vec<Node>> {
+    /// Per-thread empty child storage. Mutable access still detaches normally.
+    /// Keep this concrete: other Shared values retain their owned construction.
+    pub fn empty_nodes() -> Self {
+        // Avoid a single process-wide refcount on parallel construction paths.
+        // Values moved to another thread retain their ordinary Arc ownership.
+        thread_local! {
+            static EMPTY: crate::shared::Shared<Vec<Node>> =
+                crate::shared::Shared::new(Vec::new());
+        }
+        // Construction can also happen in another thread-local's destructor.
+        EMPTY
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| Self::new(Vec::new()))
+    }
+
+    /// Reuse empty child storage without discarding a caller's reserved capacity.
+    pub fn from_nodes(nodes: Vec<Node>) -> Self {
+        if nodes.capacity() == 0 {
+            Self::empty_nodes()
+        } else {
+            Self::new(nodes)
+        }
+    }
+}
+
 /// Transitional spelling for public content-tree callers.
 pub type Item = Node;
 
@@ -632,7 +658,7 @@ impl Node {
             content: NodeContent::Item(ContentItem {
                 ctor,
                 fields: Dict::default(),
-                children: Vec::new().into(),
+                children: crate::shared::Shared::empty_nodes(),
                 instance: None,
             }),
             origin: None,
@@ -655,7 +681,8 @@ impl Node {
     }
 
     pub fn with_children(mut self, children: Vec<Item>) -> Self {
-        self.as_item_mut().expect("content constructor").children = children.into();
+        self.as_item_mut().expect("content constructor").children =
+            crate::shared::Shared::from_nodes(children);
         self.infer_level();
         self
     }
@@ -820,6 +847,122 @@ mod traversal_tests {
 #[cfg(test)]
 mod source_tests {
     use super::*;
+
+    #[test]
+    fn empty_children_share_storage_and_mutation_detaches() {
+        use crate::shared::Shared;
+        assert_eq!(
+            std::mem::size_of::<Shared<Vec<Node>>>(),
+            std::mem::size_of::<usize>()
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<Node>(), 104);
+        let mut original = Item::new(Ctor::Node, Default::default());
+        let empty = Shared::empty_nodes();
+        assert!(original.as_item().unwrap().children.shares_storage(&empty));
+        let mut changed = original.clone().with_children(Vec::new());
+        assert!(changed.as_item().unwrap().children.shares_storage(&empty));
+        changed
+            .children_mut()
+            .unwrap()
+            .push(Item::new(Ctor::Divider, Default::default()));
+        assert!(original.children().is_empty());
+        assert!(!changed.as_item().unwrap().children.shares_storage(&empty));
+        original.children_mut().unwrap().reserve_exact(2);
+        assert!(empty.is_empty());
+        assert_eq!(empty.capacity(), 0);
+        assert!(original.children().is_empty());
+        assert_eq!(original.as_item().unwrap().children.capacity(), 2);
+
+        let reserved = Shared::from_nodes(Vec::with_capacity(4));
+        assert_eq!(reserved.capacity(), 4);
+        assert!(!reserved.shares_storage(&empty));
+        let nodes = Shared::from_nodes(vec![changed]);
+        let mut copy = nodes.clone();
+        assert!(copy.shares_storage(&nodes));
+        copy[0].children_mut().unwrap().clear();
+        assert_eq!(nodes[0].children().len(), 1);
+        assert!(copy[0].children().is_empty());
+    }
+
+    #[test]
+    fn empty_children_cross_thread_clones_keep_identity_and_mutation_isolation() {
+        use crate::shared::Shared;
+        let original = Item::new(Ctor::Node, Default::default());
+        let empty = original.as_item().unwrap().children.clone();
+        let changed = std::thread::spawn(move || {
+            let mut copy = original.clone();
+            assert!(copy.as_item().unwrap().children.shares_storage(&empty));
+            let local = Shared::empty_nodes();
+            assert!(
+                Item::new(Ctor::Node, Default::default())
+                    .as_item()
+                    .unwrap()
+                    .children
+                    .shares_storage(&local)
+            );
+            copy.children_mut()
+                .unwrap()
+                .push(Item::new(Ctor::Divider, Default::default()));
+            assert!(original.children().is_empty());
+            (copy, local)
+        })
+        .join()
+        .unwrap();
+        // The thread-local owner has dropped; escaped values remain valid.
+        assert_eq!(changed.0.children().len(), 1);
+        assert!(changed.1.is_empty());
+        assert!(changed.1.clone().shares_storage(&changed.1));
+    }
+
+    #[test]
+    fn empty_children_construction_during_thread_local_teardown_is_valid() {
+        struct OnDrop;
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                let node = Item::new(Ctor::Node, Default::default());
+                assert!(node.children().is_empty());
+            }
+        }
+        thread_local! {
+            static EARLIER: OnDrop = const { OnDrop };
+        }
+        std::thread::spawn(|| {
+            EARLIER.with(|_| ());
+            // Initialized later, hence dropped before EARLIER.
+            drop(crate::shared::Shared::empty_nodes());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn empty_children_wire_roundtrip_reuses_storage_and_keeps_origins() {
+        let owner = crate::source::Source::metadata("empty.not").unwrap();
+        let sources = crate::source::Sources::from(owner.clone());
+        let mut original = Item::new(Ctor::Node, Default::default());
+        original.origin = Some(Origin {
+            source: owner.id(),
+            start: 0,
+            end: 0,
+            expansion: Default::default(),
+        });
+        let wire = serde_json::to_value(sources.wire(&original)).unwrap();
+        assert_eq!(wire["content"]["Item"]["children"], serde_json::json!([]));
+        assert_eq!(wire["content"]["Item"]["fields"], serde_json::json!([]));
+        assert_eq!(wire["attrs"], serde_json::json!([]));
+        let decoded: Item = sources.decode(wire.clone()).unwrap();
+        assert_eq!(decoded, original);
+        assert!(
+            decoded
+                .as_item()
+                .unwrap()
+                .children
+                .shares_storage(&original.as_item().unwrap().children)
+        );
+        assert_eq!(serde_json::to_value(sources.wire(&decoded)).unwrap(), wire);
+    }
 
     #[test]
     fn item_instance_sharing_preserves_independent_identity_and_mounts() {

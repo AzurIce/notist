@@ -115,13 +115,16 @@ fn headings(
     } else {
         None
     };
-    for (n, child) in item.children_mut().into_iter().flatten().enumerate() {
-        headings(
-            child,
-            if n == 0 { section_id.clone() } else { None },
-            ids,
-            out,
-        );
+    // Mutable child access detaches shared storage, even for an empty Vec.
+    if !item.children().is_empty() {
+        for (n, child) in item.children_mut().into_iter().flatten().enumerate() {
+            headings(
+                child,
+                if n == 0 { section_id.clone() } else { None },
+                ids,
+                out,
+            );
+        }
     }
 }
 
@@ -209,8 +212,55 @@ impl Document {
 }
 
 #[cfg(test)]
+#[path = "document_allocation_tests.rs"]
+mod allocation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headings_keep_leaf_storage_and_inherited_and_generated_targets() {
+        let heading = || {
+            Item::new(Ctor::Heading, Default::default())
+                .with_field("level", Value::Int(2))
+                .with_children(vec![Item::text("Same title".into(), Default::default())])
+        };
+        let mut section =
+            Item::new(Ctor::Section, Default::default()).with_children(vec![heading()]);
+        section.attrs.insert("id", Value::Str("section-id".into()));
+        let mut root = Item::new(Ctor::Doc, Default::default()).with_children(vec![
+            section,
+            heading(),
+            heading(),
+            Item::new(Ctor::Error("ignored".into()), Default::default())
+                .with_children(vec![heading()]),
+            Item::new(Ctor::Divider, Default::default()),
+        ]);
+        let original = root.clone();
+        let mut ids = BTreeSet::from(["section-id".into()]);
+        let mut out = Vec::new();
+        headings(&mut root, None, &mut ids, &mut out);
+        assert_eq!(
+            out.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["section-id", "same-title", "same-title-2"]
+        );
+        assert!(out.iter().all(|h| h.title == "Same title" && h.level == 2));
+        assert!(root.children()[0].children()[0].attrs.is_empty());
+        assert!(original.children()[1].attrs.is_empty());
+        for (changed, original) in root.descendants().zip(original.descendants()) {
+            assert_eq!(changed.origin, original.origin);
+            if original.children().is_empty() {
+                assert!(
+                    changed
+                        .as_item()
+                        .unwrap()
+                        .children
+                        .shares_storage(&original.as_item().unwrap().children)
+                );
+            }
+        }
+    }
 
     #[test]
     fn result_variants_survive_template_projection() {

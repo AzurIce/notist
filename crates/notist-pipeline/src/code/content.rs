@@ -9,6 +9,7 @@ use notist_core::{
     definitions::ParameterMode,
     expr::{BodyFlavor, Expr},
     item::{Ctor, ExtensionCtor, Value},
+    shared::Shared,
 };
 impl Checker<'_> {
     pub(super) fn compile_call(&mut self, expression: &Expr) -> TypedExpr {
@@ -35,7 +36,7 @@ impl Checker<'_> {
                 call.children = call.definition().children_type.as_ref().map(|ty| {
                     Box::new(self.typed(
                         Some(ty.clone()),
-                        ExprKind::Content(children.into()),
+                        ExprKind::Content(Shared::from_nodes(children)),
                         None,
                         span,
                     ))
@@ -284,7 +285,7 @@ impl Checker<'_> {
         let child = if *body != BodyFlavor::None || !children.is_empty() {
             Some(Box::new(self.typed(
                 Some(content_type(flavor)),
-                ExprKind::Content(Vec::new().into()),
+                ExprKind::Content(Shared::empty_nodes()),
                 None,
                 span,
             )))

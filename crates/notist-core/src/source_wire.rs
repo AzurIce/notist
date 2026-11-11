@@ -873,12 +873,12 @@ impl DeserializeWithSources for Node {
                         }
                     },
                     fields: i.fields,
-                    children: i
-                        .children
-                        .into_iter()
-                        .map(|n| Node::decode(n, s))
-                        .collect::<Result<Vec<_>, _>>()?
-                        .into(),
+                    children: Shared::from_nodes(
+                        i.children
+                            .into_iter()
+                            .map(|n| Node::decode(n, s))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    ),
                     instance: i
                         .instance
                         .map(|value| s.instance(value).map(Shared::new))
@@ -1004,12 +1004,11 @@ impl DeserializeWithSources for TypedExpr {
                     .collect::<Result<_, SourceError>>()?,
             },
             KindIn::Call(v) => ExprKind::Call(Invocation::decode(v, s)?.into()),
-            KindIn::Content(v) => ExprKind::Content(
+            KindIn::Content(v) => ExprKind::Content(Shared::from_nodes(
                 v.into_iter()
                     .map(|v| Node::decode(v, s))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-            ),
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
             KindIn::For {
                 binding,
                 subject,

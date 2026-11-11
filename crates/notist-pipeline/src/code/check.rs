@@ -238,7 +238,8 @@ impl<'a> Checker<'a> {
         let mut doc = Item::new(Ctor::Doc, span);
         doc.attrs = self.resolve_attributes(&attrs);
         doc.origin = Some(self.origin(span));
-        doc.as_item_mut().expect("document").children = children.into();
+        doc.as_item_mut().expect("document").children =
+            notist_core::shared::Shared::from_nodes(children);
         for diagnostic in &mut self.diagnostics {
             diagnostic.recovered = true;
         }
@@ -443,7 +444,7 @@ impl<'a> Checker<'a> {
                 let (forest, _) = self.content(forest, annotations, *body);
                 self.typed(
                     Some(content_type(*body)),
-                    ExprKind::Content(forest.into()),
+                    ExprKind::Content(notist_core::shared::Shared::from_nodes(forest)),
                     None,
                     span,
                 )

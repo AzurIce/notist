@@ -5,7 +5,7 @@ pub fn item_shell(item: &Node) -> Node {
     NodeMetadata::from(item).node(ContentItem {
         ctor: item.ctor(),
         fields: item.as_item().map(|i| i.fields.clone()).unwrap_or_default(),
-        children: Default::default(),
+        children: notist_core::shared::Shared::empty_nodes(),
         instance: item.as_item().and_then(|i| i.instance.clone()),
     })
 }

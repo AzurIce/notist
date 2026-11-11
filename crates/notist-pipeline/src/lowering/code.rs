@@ -10,8 +10,7 @@ use notist_core::{
     item::{Dict, Value},
 };
 use notist_syntax::{
-    Parse,
-    content::ContentFlavor,
+    content::{ContentFlavor, ParsedContent},
     tree::{SyntaxKind as K, SyntaxNode, SyntaxToken},
 };
 use rowan::NodeOrToken;
@@ -40,7 +39,7 @@ fn expressions(node: &SyntaxNode) -> Vec<Element> {
 
 pub fn arguments(
     node: &SyntaxNode,
-    parsed: Option<&Parse>,
+    contents: Option<&[ParsedContent]>,
     frontend: Option<&dyn ContentLowering>,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<CallArg> {
@@ -53,17 +52,17 @@ pub fn arguments(
                 let entry = notist_syntax::code::ast::Entry::cast(n.clone())?;
                 return Some(CallArg::Named {
                     name: key_text(&entry.key_token()?, diags)?,
-                    value: expression(entry.value()?, parsed, frontend, diags)?,
+                    value: expression(entry.value()?, contents, frontend, diags)?,
                 });
             }
-            Some(CallArg::Positional(expression(e, parsed, frontend, diags)?))
+            Some(CallArg::Positional(expression(e, contents, frontend, diags)?))
         })
         .collect()
 }
 
 pub fn expression(
     el: Element,
-    parsed: Option<&Parse>,
+    contents: Option<&[ParsedContent]>,
     frontend: Option<&dyn ContentLowering>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Expr> {
@@ -85,7 +84,7 @@ pub fn expression(
         None
     };
     let parts = expressions(node);
-    let child = |e: Element, d: &mut Vec<Diagnostic>| expression(e, parsed, frontend, d);
+    let child = |e: Element, d: &mut Vec<Diagnostic>| expression(e, contents, frontend, d);
     let at = |i: usize, d: &mut Vec<Diagnostic>| child(parts.get(i)?.clone(), d);
     Some(match node.kind() {
         K::Path => {
@@ -113,20 +112,27 @@ pub fn expression(
             }
         }
         K::ContentLiteral => {
-            let Some(parsed) = parsed else {
-                diags.push(Diagnostic::new(
-                    Phase::Type,
-                    span,
-                    "content is mounted after the call, not passed as a data argument",
-                ));
-                return None;
+            let literal = notist_syntax::code::ast::ContentLiteral::cast(node.clone())?;
+            let frontend = frontend?;
+            let lowered = match literal.document() {
+                Some(document) => frontend.lower_native(&document, literal.flavor(), diags),
+                None => {
+                    let Some(contents) = contents else {
+                        diags.push(Diagnostic::new(
+                            Phase::Type,
+                            span,
+                            "content is mounted after the call, not passed as a data argument",
+                        ));
+                        return None;
+                    };
+                    let content = contents.iter().find(|c| c.range == span)?;
+                    frontend.lower_content(content, diags)
+                }
             };
-            let content = parsed.contents.iter().find(|c| c.range == span)?;
-            let lowered = frontend?.lower_content(content, diags);
             Expr::Content {
                 forest: lowered.forest,
                 annotations: lowered.annotations,
-                body: if content.flavor == ContentFlavor::Inline {
+                body: if literal.flavor() == ContentFlavor::Inline {
                     BodyFlavor::Inline
                 } else {
                     BodyFlavor::Block
@@ -254,14 +260,12 @@ pub fn expression(
             let mut body = BodyFlavor::None;
             for n in node.children().skip(1) {
                 match n.kind() {
-                    K::ArgumentList => args = arguments(&n, parsed, frontend, diags),
-                    K::ComptimeArguments => comptime = arguments(&n, parsed, frontend, diags),
+                    K::ArgumentList => args = arguments(&n, contents, frontend, diags),
+                    K::ComptimeArguments => comptime = arguments(&n, contents, frontend, diags),
                     K::ContentLiteral => {
-                        let content = parsed?
-                            .contents
-                            .iter()
-                            .find(|c| c.range == n.text_range())?;
-                        body = if content.flavor == ContentFlavor::Inline {
+                        let literal =
+                            notist_syntax::code::ast::ContentLiteral::cast(n.clone())?;
+                        body = if literal.flavor() == ContentFlavor::Inline {
                             BodyFlavor::Inline
                         } else {
                             BodyFlavor::Block

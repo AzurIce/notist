@@ -33,9 +33,10 @@ pub fn lower_document(
     diags: &mut Vec<Diagnostic>,
 ) -> (Vec<Expr>, LiteralDict, Vec<Annotation>) {
     let document = Document::cast(parsed.syntax()).expect("native content has a Document root");
+    let contents = &parsed.contents;
     let elements: Vec<_> = document.elements().collect();
     let mut annotations = Vec::new();
-    let (forest, module_attrs) = lower_blocks(&elements, parsed, diags, &mut annotations);
+    let (forest, module_attrs) = lower_blocks(&elements, contents, diags, &mut annotations);
     (forest, module_attrs, annotations)
 }
 
@@ -44,15 +45,28 @@ pub(crate) fn lower_content(
     flavor: notist_syntax::content::ContentFlavor,
     diags: &mut Vec<Diagnostic>,
 ) -> crate::lowering::content::Lowered {
-    let document = Document::cast(parsed.syntax()).expect("native content has a Document root");
+    lower_document_content(parsed.syntax(), &parsed.contents, flavor, diags)
+}
+
+/// Lower a content body. `contents` carries the external-dialect literals of
+/// the enclosing parse when the body is a separate tree; an in-place body is
+/// part of the enclosing tree, so any literal it contains is found in the tree
+/// itself and no side table is needed.
+pub(crate) fn lower_document_content(
+    root: SyntaxNode,
+    contents: &[notist_syntax::content::ParsedContent],
+    flavor: notist_syntax::content::ContentFlavor,
+    diags: &mut Vec<Diagnostic>,
+) -> crate::lowering::content::Lowered {
+    let document = Document::cast(root).expect("native content has a Document root");
     let elements: Vec<_> = document.elements().collect();
     let mut annotations = Vec::new();
     let forest = match flavor {
         notist_syntax::content::ContentFlavor::Inline => {
-            lower_inline(elements.into_iter(), parsed, diags, &mut annotations)
+            lower_inline(elements.into_iter(), contents, diags, &mut annotations)
         }
         notist_syntax::content::ContentFlavor::Block => {
-            lower_blocks(&elements, parsed, diags, &mut annotations).0
+            lower_blocks(&elements, contents, diags, &mut annotations).0
         }
     };
     for node in document.syntax().descendants() {
@@ -88,7 +102,7 @@ pub(crate) fn lower_content(
 #[allow(unused_assignments)] // seen_content is loop-carried across match arms
 fn lower_blocks(
     elements: &[NodeOrToken<SyntaxNode, SyntaxToken>],
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> (Vec<Expr>, LiteralDict) {
@@ -101,7 +115,7 @@ fn lower_blocks(
         () => {
             if !run.is_empty() {
                 let span = run_span(&run);
-                let children = lower_inline(run.drain(..), parsed, diags, annotations);
+                let children = lower_inline(run.drain(..), contents, diags, annotations);
                 if !children.is_empty() {
                     seen_content = true;
                     forest.push(Expr::fragment(children, span));
@@ -165,7 +179,7 @@ fn lower_blocks(
                     seen_content = true;
                     let heading = Heading::cast(node.clone()).unwrap();
                     let level = heading.level() as i64;
-                    let children = lower_inline(heading.content(), parsed, diags, annotations);
+                    let children = lower_inline(heading.content(), contents, diags, annotations);
                     forest.push(
                         Expr::call("notist.heading", heading.range())
                             .with_comptime(
@@ -180,7 +194,7 @@ fn lower_blocks(
                     seen_content = true;
                     forest.push(lower_list(
                         &List::cast(node.clone()).unwrap(),
-                        parsed,
+                        contents,
                         diags,
                         annotations,
                     ));
@@ -190,7 +204,7 @@ fn lower_blocks(
                     seen_content = true;
                     forest.push(lower_table(
                         &Table::cast(node.clone()).unwrap(),
-                        parsed,
+                        contents,
                         diags,
                         annotations,
                     ));
@@ -314,7 +328,7 @@ fn lower_raw_block(node: &SyntaxNode) -> Expr {
 
 fn lower_list(
     list: &List,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Expr {
@@ -324,14 +338,14 @@ fn lower_list(
         .with_literal_arg("start", Value::Int(1))
         .with_children(
             list.items()
-                .map(|item| lower_list_item(&item, parsed, diags, annotations))
+                .map(|item| lower_list_item(&item, contents, diags, annotations))
                 .collect(),
         )
 }
 
 fn lower_table(
     table: &Table,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Expr {
@@ -344,7 +358,7 @@ fn lower_table(
                 .cells()
                 .take(width)
                 .map(|cell| {
-                    let inline = lower_inline(cell.content(), parsed, diags, annotations);
+                    let inline = lower_inline(cell.content(), contents, diags, annotations);
                     let children = if inline.is_empty() {
                         Vec::new()
                     } else {
@@ -379,23 +393,29 @@ fn lower_table(
 
 fn lower_list_item(
     item: &ListItem,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Expr {
     let elements: Vec<_> = item.content().collect();
-    let (children, _) = lower_blocks(&elements, parsed, diags, annotations);
+    let (children, _) = lower_blocks(&elements, contents, diags, annotations);
     Expr::call("notist.item", item.range()).with_children(children)
 }
 
 fn lower_code_call(
     call: &CodeCall,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Vec<Expr> {
-    let mut expr = call_header(call, call.has_body(), parsed, &super::NotistFrontend, diags);
-    let (content, flavor) = call_body(call, parsed, diags, annotations);
+    let mut expr = call_header(
+        call,
+        call.has_body(),
+        contents,
+        &super::NotistFrontend,
+        diags,
+    );
+    let (content, flavor) = call_body(call, contents, diags, annotations);
     if let Expr::Call { children, body, .. } = &mut expr {
         *children = content;
         *body = flavor;
@@ -418,21 +438,21 @@ fn is_block_content(elements: &[NodeOrToken<SyntaxNode, SyntaxToken>]) -> bool {
 /// Desugar a bracketed content region with its derived flavor.
 fn content_children(
     elements: &[NodeOrToken<SyntaxNode, SyntaxToken>],
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Vec<Expr> {
     if is_block_content(elements) {
-        lower_blocks(elements, parsed, diags, annotations).0
+        lower_blocks(elements, contents, diags, annotations).0
     } else {
-        lower_inline(elements.iter().cloned(), parsed, diags, annotations)
+        lower_inline(elements.iter().cloned(), contents, diags, annotations)
     }
 }
 
 /// The `[..]` body of a call as desugared children plus its derived flavor.
 fn call_body(
     call: &CodeCall,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> (Vec<Expr>, BodyFlavor) {
@@ -446,7 +466,7 @@ fn call_body(
         BodyFlavor::Inline
     };
     (
-        content_children(&elements, parsed, diags, annotations),
+        content_children(&elements, contents, diags, annotations),
         flavor,
     )
 }
@@ -588,7 +608,7 @@ fn strip_indent(line: &str, indent: usize) -> String {
 
 fn lower_inline(
     elements: impl Iterator<Item = NodeOrToken<SyntaxNode, SyntaxToken>>,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     diags: &mut Vec<Diagnostic>,
     annotations: &mut Vec<Annotation>,
 ) -> Vec<Expr> {
@@ -700,7 +720,7 @@ fn lower_inline(
                         elements.len()
                     };
                     let children =
-                        lower_inline(elements[1..end].iter().cloned(), parsed, diags, annotations);
+                        lower_inline(elements[1..end].iter().cloned(), contents, diags, annotations);
                     let expr = Expr::call(&format!("notist.{name}"), node.text_range())
                         .with_children(children);
                     items.push(expr);
@@ -710,7 +730,7 @@ fn lower_inline(
                     run.flush_at_element(&mut items);
                     let embed = Embed::cast(node.clone()).unwrap();
                     let (target, title) = embed.destination();
-                    let content = lower_inline(embed.content(), parsed, diags, annotations);
+                    let content = lower_inline(embed.content(), contents, diags, annotations);
                     let mut description = String::new();
                     for expr in &content {
                         append_description(expr, &mut description);
@@ -730,13 +750,13 @@ fn lower_inline(
                         let link = Link::cast(node.clone()).unwrap();
                         (
                             link.target(),
-                            lower_inline(link.content(), parsed, diags, annotations),
+                            lower_inline(link.content(), contents, diags, annotations),
                         )
                     } else {
                         let link = WikiLink::cast(node.clone()).unwrap();
                         (
                             tokens_text(&link.target_tokens()),
-                            lower_inline(link.content(), parsed, diags, annotations),
+                            lower_inline(link.content(), contents, diags, annotations),
                         )
                     };
                     let expr = Expr::call("notist.link", node.text_range())
@@ -749,7 +769,7 @@ fn lower_inline(
                     run.flush_at_element(&mut items);
                     if let Some(expr) = crate::lowering::code::expression(
                         node.clone().into(),
-                        Some(parsed),
+                        Some(contents),
                         Some(&super::NotistFrontend),
                         diags,
                     ) {
@@ -761,7 +781,7 @@ fn lower_inline(
                     run.flush_at_element(&mut items);
                     items.extend(lower_code_call(
                         &CodeCall::cast(node.clone()).unwrap(),
-                        parsed,
+                        contents,
                         diags,
                         annotations,
                     ));

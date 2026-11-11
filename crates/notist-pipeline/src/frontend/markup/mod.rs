@@ -27,6 +27,10 @@ use notist_syntax::markup;
 pub struct NotistFrontend;
 
 impl notist_syntax::content::ContentParser for NotistFrontend {
+    fn is_native_markup(&self) -> bool {
+        true
+    }
+
     fn parse_content(
         &self,
         source: &str,
@@ -41,6 +45,17 @@ impl notist_syntax::content::ContentParser for NotistFrontend {
 }
 
 impl crate::lowering::content::ContentLowering for NotistFrontend {
+    fn lower_native(
+        &self,
+        document: &notist_syntax::tree::SyntaxNode,
+        flavor: notist_syntax::content::ContentFlavor,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> crate::lowering::content::Lowered {
+        // The document is already part of the enclosing tree, so its spans are
+        // absolute and nothing needs shifting.
+        lowering::lower_document_content(document.clone(), &[], flavor, diagnostics)
+    }
+
     fn lower_content(
         &self,
         content: &notist_syntax::content::ParsedContent,

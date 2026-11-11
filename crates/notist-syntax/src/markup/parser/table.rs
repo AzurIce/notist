@@ -3,17 +3,36 @@ use std::ops::Range;
 use super::Parser;
 use crate::tree::SyntaxKind;
 
-struct Row {
+pub(super) struct Row {
     cells: Vec<Range<usize>>,
     end: usize,
     has_pipe: bool,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// A header and delimiter must have the same number of cells. Requiring
     /// an actual pipe in the pair avoids interpreting a plain `---` divider
     /// as a one-column table. Headers start at a container's block boundary.
     pub(super) fn at_table_at(&self, start: usize) -> bool {
+        // The same line is asked about by both the block-end check and block
+        // dispatch, under the same context.
+        let key = (start, self.state.limit, self.block_indent);
+        if let Some((at, limit, indent, answer)) = *self.table_probe.borrow()
+            && (at, limit, indent) == key
+        {
+            return answer;
+        }
+        let answer = self.probe_table(start);
+        *self.table_probe.borrow_mut() = Some((start, key.1, key.2, answer));
+        answer
+    }
+
+    fn probe_table(&self, start: usize) -> bool {
+        // A table needs a pipe in its two leading lines. Checking bytes first
+        // keeps ordinary prose from tokenizing a line twice or allocating.
+        if !self.line_has_pipe(start) {
+            return false;
+        }
         if !self.at_block_start(start) {
             return false;
         }
@@ -35,14 +54,35 @@ impl Parser<'_> {
         if !header.has_pipe && !delimiter.has_pipe {
             return false;
         }
-        header.cells.len() == delimiter.cells.len()
-            && delimiter.cells.iter().all(|cell| {
-                let text: String = cell.clone().map(|i| self.state.lexed.text(i)).collect();
-                let text = text.trim();
-                let marker = text.strip_prefix(':').unwrap_or(text);
-                let marker = marker.strip_suffix(':').unwrap_or(marker);
-                !marker.is_empty() && marker.bytes().all(|c| c == b'-')
-            })
+        if header.cells.len() != delimiter.cells.len()
+            || !delimiter.cells.iter().all(|cell| self.is_align_cell(cell))
+        {
+            return false;
+        }
+        // The consuming call reuses this plan instead of scanning the same two
+        // lines again.
+        *self.plan.borrow_mut() = Some((start, header, delimiter));
+        true
+    }
+
+    /// An alignment cell is `-`+ with optional surrounding colons, trimmed.
+    fn is_align_cell(&self, cell: &Range<usize>) -> bool {
+        let start = usize::from(self.state.offset(cell.start));
+        let end = usize::from(self.state.offset(cell.end));
+        let text = self.state.source[start..end].trim();
+        let text = text.strip_prefix(':').unwrap_or(text);
+        let text = text.strip_suffix(':').unwrap_or(text);
+        !text.is_empty() && text.bytes().all(|byte| byte == b'-')
+    }
+
+    /// Whether the line starting at token `start` contains a pipe byte. A pipe
+    /// inside an opaque payload still counts here: this only rejects lines
+    /// that cannot possibly start a table.
+    fn line_has_pipe(&self, start: usize) -> bool {
+        let offset = usize::from(self.state.offset(start));
+        let rest = &self.state.source[offset..];
+        let line = rest.find(['\r', '\n']).map_or(rest, |end| &rest[..end]);
+        line.as_bytes().contains(&b'|')
     }
 
     fn table_row_at(&self, start: usize) -> Option<Row> {
@@ -58,7 +98,7 @@ impl Parser<'_> {
             // Strings and comments are already opaque tokens. Complete calls
             // and raw/math payloads own their internal separators as well.
             if kind == SyntaxKind::Hash
-                && let Some(call_end) = self.code_call_at(end).and_then(|call| call.end())
+                && let Some(call_end) = self.call_end(end)
             {
                 end = call_end;
                 continue;
@@ -108,11 +148,27 @@ impl Parser<'_> {
     }
 
     pub(super) fn table(&mut self) {
+        // Both rows are planned before any node is opened: a half-built table
+        // must not swallow the header line as prose. The probe that selected
+        // this table already planned them, so reuse that plan.
+        let planned = self.plan.borrow_mut().take();
+        let (header, delimiter) = match planned {
+            Some((start, header, delimiter)) if start == self.state.pos => (header, delimiter),
+            _ => {
+                let Some(header) = self.table_row_at(self.state.pos) else {
+                    self.eat();
+                    return;
+                };
+                let Some(delimiter) = self.table_row_at(header.end + 1) else {
+                    self.eat();
+                    return;
+                };
+                (header, delimiter)
+            }
+        };
         self.state.builder.start_node(SyntaxKind::Table.into());
-        let header = self.table_row_at(self.state.pos).unwrap();
         self.table_row(header, false);
         self.eat(); // newline between header and delimiter
-        let delimiter = self.table_row_at(self.state.pos).unwrap();
         self.table_row(delimiter, true);
         while self.cur() == Some(SyntaxKind::Newline) {
             let start = self.state.pos + 1;

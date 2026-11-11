@@ -84,8 +84,9 @@ impl Annotation {
 
 pub struct CodeCall(pub(crate) SyntaxNode);
 
-/// A content literal's frame. Its dialect-specific syntax is retained in
-/// `Parse::contents`, independently of this Code syntax node.
+/// A content literal's frame. A native dialect parses its body in place as a
+/// `Document` child; an external dialect keeps the payload opaque and its tree
+/// in `Parse::contents`.
 pub struct ContentLiteral(pub(crate) SyntaxNode);
 
 impl ContentLiteral {
@@ -93,18 +94,48 @@ impl ContentLiteral {
         (node.kind() == SyntaxKind::ContentLiteral).then_some(Self(node))
     }
 
-    pub fn body(&self) -> SyntaxToken {
+    /// The in-place body, when the literal was parsed by a native dialect.
+    pub fn document(&self) -> Option<SyntaxNode> {
+        self.0
+            .children()
+            .find(|node| node.kind() == SyntaxKind::Document)
+    }
+
+    /// The opaque body of an external dialect's literal.
+    pub fn body(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()
             .filter_map(|element| element.into_token())
             .find(|token| token.kind() == SyntaxKind::ContentText)
-            .expect("content literal syntax contains an opaque payload")
     }
 
     pub fn has_closer(&self) -> bool {
         self.0
             .children_with_tokens()
             .any(|element| element.kind() == SyntaxKind::RBracket)
+    }
+
+    /// Whether the body is block-level. Whitespace just inside the opening
+    /// bracket decides it, so the flavor is a property of the literal itself.
+    pub fn flavor(&self) -> crate::content::ContentFlavor {
+        // An in-place body keeps its leading token inside the `Document`; an
+        // opaque body is a single text token, so its own text decides.
+        let padded = match self.document() {
+            Some(document) => document.first_child_or_token().is_some_and(|element| {
+                matches!(
+                    element.kind(),
+                    SyntaxKind::Whitespace | SyntaxKind::Newline
+                )
+            }),
+            None => self
+                .body()
+                .is_some_and(|token| token.text().starts_with([' ', '\t', '\r', '\n'])),
+        };
+        if padded {
+            crate::content::ContentFlavor::Block
+        } else {
+            crate::content::ContentFlavor::Inline
+        }
     }
 
     pub fn range(&self) -> TextRange {

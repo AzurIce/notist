@@ -1,332 +1,93 @@
-//! Native Markup tokenization and transitions into shared literal syntax.
+//! Native Markup tokenization.
+//!
+//! A scanner here is a pure function of the source and a byte offset: it never
+//! consults the grammar, never keeps state between tokens, and never invokes a
+//! parser. Lexical mode is chosen by the parser, which commits to a mode at a
+//! token boundary; see [`crate::lexed`].
 use crate::code::lexer::literal_token;
-use crate::lexed::Lexed;
 use crate::tree::SyntaxKind;
 
-/// Lexical states within Markup calls and annotations. These are not a
-/// language switch; a call body uses the surrounding Markup token rules.
-#[derive(Clone, Copy)]
-enum CallPhase {
-    /// Just after `#`: expecting an identifier, `(`.
-    Start,
-    /// After a path segment: expecting `.`, `(` or `[`.
-    AfterIdent,
-    /// After `.`: expecting another adjacent identifier.
-    PathSegment,
-    /// Inside the argument group.
-    Args {
-        depth: usize,
-    },
-    /// After the argument group: expecting `[` or exit.
-    AfterArgs,
-    Comptime {
-        depth: usize,
-        grouped: usize,
-    },
-}
-
-pub fn lex(src: &str) -> Lexed<'_> {
-    let mut lexer = Lexer {
-        src,
-        stack: Vec::new(),
-        embedded: Default::default(),
-        opaque_until: 0,
-        math_failed_until: [0; 2],
-    };
-    let mut lexed = Lexed::scan(src, |offset| {
-        if lexer.stack.is_empty() {
-            lexer.lex_markup(offset)
-        } else {
-            lexer.lex_call(offset)
+/// Scan one Markup token at a char boundary.
+pub(crate) fn token(src: &str, i: usize) -> (SyntaxKind, usize) {
+    let rest = &src[i..];
+    let ch = rest.chars().next().unwrap_or('\0');
+    match ch {
+        '@' => (SyntaxKind::At, 1),
+        '#' => (SyntaxKind::Hash, 1),
+        '=' => {
+            let len = rest.len() - rest.trim_start_matches('=').len();
+            (SyntaxKind::Eq, len)
         }
-    });
-    lexed.embedded = lexer.embedded;
-    lexed
-}
-
-struct Lexer<'a> {
-    src: &'a str,
-    stack: Vec<CallPhase>,
-    embedded: std::collections::BTreeMap<usize, crate::Parse>,
-    opaque_until: usize,
-    math_failed_until: [usize; 2],
-}
-impl Lexer<'_> {
-    fn lex_literal_token(&self, offset: usize) -> (SyntaxKind, usize) {
-        literal_token(self.src, offset)
-    }
-    // ── markup mode ─────────────────────────────────────────────
-
-    fn lex_markup(&mut self, i: usize) -> (SyntaxKind, usize) {
-        let src = self.src;
-        let rest = &src[i..];
-        match rest.chars().next().unwrap() {
-            '@' => {
-                // Annotation literal state only on `@(` / `@!(`.
-                let mut j = i + 1;
-                if self.src[j..].starts_with('!') {
-                    j += 1;
+        '`' => {
+            let len = rest.len() - rest.trim_start_matches('`').len();
+            (SyntaxKind::Backtick, len)
+        }
+        '/' => {
+            if rest[1..].starts_with('/') && src[..i].chars().next_back() != Some(':') {
+                let mut len = rest.find('\n').unwrap_or(rest.len());
+                if rest[..len].ends_with('\r') {
+                    len -= 1;
                 }
-                if self.src[j..].starts_with('(') {
-                    self.stack.push(CallPhase::Args { depth: 0 });
-                }
-                (SyntaxKind::At, 1)
+                (SyntaxKind::LineComment, len)
+            } else if rest[1..].starts_with('*') {
+                (SyntaxKind::BlockComment, literal_token(src, i).1)
+            } else {
+                (SyntaxKind::Text, 1)
             }
-            '#' => {
-                if i >= self.opaque_until && crate::code::is_markup_for(rest) {
-                    let parsed =
-                        crate::code::parse_for_prefix(rest, &crate::markup::MarkupContentParser);
-                    let len = usize::from(parsed.consumed());
-                    self.embedded.insert(i, parsed);
-                    // A loop is opaque to enclosing Markup delimiter scans.
-                    // The parser imports its real CST, never this marker token.
-                    return (SyntaxKind::Hash, len);
-                }
-                let next = self.src[i + 1..].chars().next();
-                match next {
-                    Some(c) if c.is_alphabetic() || c == '_' => self.stack.push(CallPhase::Start),
-                    Some('(') => self.stack.push(CallPhase::Start),
-                    _ => {}
-                }
-                (SyntaxKind::Hash, 1)
+        }
+        '*' => (SyntaxKind::Star, 1),
+        '_' => (SyntaxKind::Underscore, 1),
+        '~' => (SyntaxKind::Tilde, 1),
+        '\\' => {
+            // `\`+escapable is one Escape token, so no scan ever sees an
+            // escaped delimiter as a delimiter.
+            match rest[1..].chars().next() {
+                Some(c) if is_escapable(c) => (SyntaxKind::Escape, 1 + c.len_utf8()),
+                _ => (SyntaxKind::Backslash, 1),
             }
-            '=' => {
-                let len = rest.len() - rest.trim_start_matches('=').len();
-                (SyntaxKind::Eq, len)
-            }
-            '`' => {
-                let len = rest.len() - rest.trim_start_matches('`').len();
-                if i >= self.opaque_until {
-                    let block = len >= 3
-                        && src[..i]
-                            .rsplit('\n')
-                            .next()
-                            .unwrap_or_default()
-                            .trim()
-                            .is_empty();
-                    let mut at = i + len;
-                    while at < src.len() {
-                        if !block && matches!(src.as_bytes()[at], b'\r' | b'\n') {
-                            break;
-                        }
-                        if src.as_bytes()[at] == b'`' {
-                            let run = src[at..].bytes().take_while(|b| *b == b'`').count();
-                            if run == len || block && run >= len {
-                                self.opaque_until = at + run;
-                                break;
-                            }
-                            at += run;
-                        } else {
-                            at += 1;
-                        }
-                    }
-                    if block && self.opaque_until <= i {
-                        self.opaque_until = src.len();
-                    }
-                }
-                (SyntaxKind::Backtick, len)
-            }
-            '/' => {
-                let prev_char = self.src[..i].chars().next_back();
-                if rest[1..].starts_with('/') && prev_char != Some(':') {
-                    let mut len = rest.find('\n').unwrap_or(rest.len());
-                    if rest[..len].ends_with('\r') {
-                        len -= 1;
-                    }
-                    (SyntaxKind::LineComment, len)
-                } else if rest[1..].starts_with('*') {
-                    (SyntaxKind::BlockComment, literal_token(self.src, i).1)
-                } else {
-                    (SyntaxKind::Text, 1)
-                }
-            }
-            '*' => (SyntaxKind::Star, 1),
-            '_' => (SyntaxKind::Underscore, 1),
-            '~' => (SyntaxKind::Tilde, 1),
-            '\\' => {
-                // `\`+escapable is assembled into a single Escape token here,
-                // so parser lookahead scans never see an escaped delimiter.
-                match rest[1..].chars().next() {
-                    Some(c) if is_escapable(c) => (SyntaxKind::Escape, 1 + c.len_utf8()),
-                    _ => (SyntaxKind::Backslash, 1),
-                }
-            }
-            '[' => (SyntaxKind::LBracket, 1),
-            ']' => (SyntaxKind::RBracket, 1),
-            '(' => (SyntaxKind::LParen, 1),
-            ')' => (SyntaxKind::RParen, 1),
-            '|' => (SyntaxKind::Pipe, 1),
-            '$' => {
-                if i >= self.opaque_until {
-                    let block = rest[1..].chars().next().is_some_and(char::is_whitespace);
-                    let mut failure_end = src.len();
-                    if i >= self.math_failed_until[usize::from(block)] {
-                        for (offset, c) in rest[1..].char_indices() {
-                            let end = i + 1 + offset;
-                            if !block
-                                && c == '\n'
-                                && src[end + 1..]
-                                    .trim_start_matches([' ', '\t', '\r'])
-                                    .starts_with('\n')
-                            {
-                                failure_end = end;
-                                break;
-                            }
-                            if c == '$'
-                                && src[..end]
-                                    .chars()
-                                    .next_back()
-                                    .is_some_and(char::is_whitespace)
-                                    == block
-                                && !src[i + 1..end].trim().is_empty()
-                            {
-                                self.opaque_until = end + 1;
-                                break;
-                            }
-                        }
-                        if self.opaque_until <= i {
-                            self.math_failed_until[usize::from(block)] = failure_end;
-                        }
-                    }
-                }
-                (SyntaxKind::Dollar, 1)
-            }
-            '-' => (SyntaxKind::Minus, 1),
-            '+' => (SyntaxKind::Plus, 1),
-            '!' => (SyntaxKind::Bang, 1),
-            '\n' => (SyntaxKind::Newline, 1),
-            '\r' => {
-                let len = if rest[1..].starts_with('\n') { 2 } else { 1 };
-                (SyntaxKind::Newline, len)
-            }
-            ' ' | '\t' => {
-                let len = rest.len() - rest.trim_start_matches([' ', '\t']).len();
-                (SyntaxKind::Whitespace, len)
-            }
-            _ => {
-                let len = rest
-                    .find([
-                        '=', '`', '/', '*', '_', '~', '\\', '[', ']', '(', ')', '|', '#', '$', '-',
-                        '+', '@', '!', ' ', '\t', '\n', '\r',
-                    ])
-                    .unwrap_or(rest.len());
+        }
+        '[' => (SyntaxKind::LBracket, 1),
+        ']' => (SyntaxKind::RBracket, 1),
+        '(' => (SyntaxKind::LParen, 1),
+        ')' => (SyntaxKind::RParen, 1),
+        '|' => (SyntaxKind::Pipe, 1),
+        '$' => (SyntaxKind::Dollar, 1),
+        '-' => (SyntaxKind::Minus, 1),
+        '+' => (SyntaxKind::Plus, 1),
+        '!' => (SyntaxKind::Bang, 1),
+        '\n' => (SyntaxKind::Newline, 1),
+        '\r' => {
+            let len = if rest[1..].starts_with('\n') { 2 } else { 1 };
+            (SyntaxKind::Newline, len)
+        }
+        ' ' | '\t' => {
+            let len = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+            (SyntaxKind::Whitespace, len)
+        }
+        _ => {
+            // Prose runs across interior spaces and tabs so a sentence is one
+            // token, not one per word. Whitespace that carries structure stays
+            // separate: at a token start, after a marker, and before a newline
+            // or another delimiter.
+            let stop = rest
+                .find([
+                    '=', '`', '/', '*', '_', '~', '\\', '[', ']', '(', ')', '|', '#', '$', '-', '+',
+                    '@', '!', '\n', '\r',
+                ])
+                .unwrap_or(rest.len());
+            let len = rest[..stop].trim_end_matches([' ', '\t']).len();
+            if len == 0 {
+                (SyntaxKind::Whitespace, stop.max(1))
+            } else {
                 (SyntaxKind::Text, len)
             }
         }
-    }
-
-    // ── Markup call states ──────────────────────────────────────
-
-    fn lex_call(&mut self, i: usize) -> (SyntaxKind, usize) {
-        let src = self.src;
-        let rest = &src[i..];
-        let phase = *self.stack.last().unwrap();
-        let ch = rest.chars().next().unwrap();
-
-        // Phase boundaries: call-form slots only trigger when adjacent;
-        // anything else pops back to markup.
-        match phase {
-            CallPhase::Start => match ch {
-                '(' => {}
-                c if c.is_alphabetic() || c == '_' => {}
-                _ => {
-                    self.stack.pop();
-                    return self.lex_markup(i);
-                }
-            },
-            CallPhase::PathSegment => {
-                if !ch.is_alphabetic() && ch != '_' {
-                    self.stack.pop();
-                    return self.lex_markup(i);
-                }
-            }
-            CallPhase::AfterIdent if rest.starts_with(".") => {
-                self.stack.pop();
-                self.stack.push(CallPhase::PathSegment);
-                return (SyntaxKind::Dot, 1);
-            }
-            CallPhase::AfterIdent | CallPhase::AfterArgs => match ch {
-                '<' => {
-                    self.stack.pop();
-                    self.stack.push(CallPhase::Comptime {
-                        depth: 0,
-                        grouped: 0,
-                    });
-                }
-                '(' => {
-                    self.stack.pop();
-                    self.stack.push(CallPhase::Args { depth: 0 });
-                }
-                '[' => {
-                    self.stack.pop();
-                    return (SyntaxKind::LBracket, 1);
-                }
-                _ => {
-                    self.stack.pop();
-                    return self.lex_markup(i);
-                }
-            },
-            _ => {}
-        }
-
-        let token = self.lex_literal_token(i);
-        if let Some(CallPhase::Comptime { grouped, .. }) = self.stack.last_mut() {
-            match token.0 {
-                SyntaxKind::LParen | SyntaxKind::LBrace => *grouped += 1,
-                SyntaxKind::RParen | SyntaxKind::RBrace => *grouped = grouped.saturating_sub(1),
-                _ => {}
-            }
-        }
-        match token.0 {
-            SyntaxKind::Less => {
-                if let Some(CallPhase::Comptime { depth, grouped }) = self.stack.last_mut()
-                    && *grouped == 0
-                {
-                    *depth += 1;
-                }
-            }
-            SyntaxKind::Greater => {
-                if let Some(CallPhase::Comptime { depth, grouped }) = self.stack.last_mut() {
-                    if *grouped > 0 {
-                        return token;
-                    }
-                    *depth -= 1;
-                    if *depth == 0 {
-                        self.stack.pop();
-                        self.stack.push(CallPhase::AfterArgs);
-                    }
-                }
-            }
-            SyntaxKind::LParen => match self.stack.last_mut() {
-                Some(CallPhase::Start) => {
-                    self.stack.pop();
-                    self.stack.push(CallPhase::Args { depth: 1 });
-                }
-                Some(CallPhase::Args { depth }) => *depth += 1,
-                _ => {}
-            },
-            SyntaxKind::RParen => {
-                if let Some(CallPhase::Args { depth }) = self.stack.last_mut() {
-                    *depth -= 1;
-                    if *depth == 0 {
-                        self.stack.pop();
-                        self.stack.push(CallPhase::AfterArgs);
-                    }
-                }
-            }
-            SyntaxKind::Ident if matches!(phase, CallPhase::Start | CallPhase::PathSegment) => {
-                self.stack.pop();
-                self.stack.push(CallPhase::AfterIdent);
-            }
-            _ => {}
-        }
-        token
     }
 }
 
 /// Chars whose special meaning `\` cancels. `\`+newline is not among them:
 /// it is the explicit paragraph break, which the parser decides.
-fn is_escapable(c: char) -> bool {
+pub(crate) fn is_escapable(c: char) -> bool {
     matches!(
         c,
         '=' | '*' | '_' | '~' | '\\' | '[' | ']' | '(' | ')' | '|' | '#' | '$' | '`' | '!'

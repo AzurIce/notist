@@ -19,6 +19,7 @@ pub mod content;
 pub mod lexed;
 pub mod markup;
 mod parse;
+pub(crate) mod parser;
 pub mod tree;
 
 pub use parse::{Diagnostic, Parse};

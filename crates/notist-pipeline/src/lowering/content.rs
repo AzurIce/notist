@@ -1,7 +1,8 @@
 //! Environment-independent Markup lowering for documents and Code literals.
 //! The resulting IR₁ is the input to the shared content backend.
 use notist_core::{annotation::Annotation, diag::Diagnostic, expr::Expr};
-use notist_syntax::content::{ContentParser, ParsedContent};
+use notist_syntax::content::{ContentFlavor, ContentParser, ParsedContent};
+use notist_syntax::tree::SyntaxNode;
 
 /// A frontend's lowered content literal: expressions plus source-positioned
 /// annotations, both in the literal's local coordinates.
@@ -15,4 +16,17 @@ pub trait ContentLowering: ContentParser {
     /// Lower the tree produced by this frontend, using the original source
     /// coordinates in `content`. No document root is introduced.
     fn lower_content(&self, content: &ParsedContent, diagnostics: &mut Vec<Diagnostic>) -> Lowered;
+
+    /// Lower a content literal that was parsed in place: `document` is the
+    /// `Document` subtree inside the enclosing tree, and its spans are already
+    /// absolute. Frontends that opt into `is_native_markup` implement this.
+    fn lower_native(
+        &self,
+        document: &SyntaxNode,
+        flavor: ContentFlavor,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Lowered {
+        let _ = (document, flavor, diagnostics);
+        unreachable!("this frontend parses content literals through its own tree")
+    }
 }

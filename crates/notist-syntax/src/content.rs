@@ -39,4 +39,11 @@ pub struct ParsedContent {
 /// receive source coordinates, never a Code token cursor or tree builder.
 pub trait ContentParser: Send + Sync {
     fn parse_content(&self, source: &str, open: TextSize) -> ParsedContent;
+
+    /// Emit a content literal as a subtree of the enclosing native tree instead
+    /// of a separate tree with a side table. Only implementations whose grammar
+    /// is exactly the native Markup grammar may opt in.
+    fn is_native_markup(&self) -> bool {
+        false
+    }
 }

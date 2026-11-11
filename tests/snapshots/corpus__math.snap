@@ -39,9 +39,7 @@ Document@0..115
       Text@43..58 "两侧有空格"
       Dollar@58..59 "$"
       Whitespace@59..60 " "
-      Text@60..66 "不是"
-      Whitespace@66..67 " "
-      Text@67..71 "math"
+      Text@60..71 "不是 math"
     Newline@71..72 "\n"
     ListItem@72..99
       Minus@72..73 "-"
@@ -49,9 +47,7 @@ Document@0..115
       Text@74..83 "未闭合"
       Whitespace@83..84 " "
       Dollar@84..85 "$"
-      Text@85..86 "x"
-      Whitespace@86..87 " "
-      Text@87..99 "只是文本"
+      Text@85..99 "x 只是文本"
     Newline@99..100 "\n"
     ListItem@100..114
       Minus@100..101 "-"

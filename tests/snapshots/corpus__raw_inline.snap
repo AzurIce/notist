@@ -26,9 +26,7 @@ Document@0..180
   Text@57..69 "未闭合的"
   Whitespace@69..70 " "
   Backtick@70..71 "`"
-  Text@71..80 "反引号"
-  Whitespace@80..81 " "
-  Text@81..93 "只是文本"
+  Text@71..93 "反引号 只是文本"
   Newline@93..94 "\n"
   Newline@94..95 "\n"
   RawInline@95..98

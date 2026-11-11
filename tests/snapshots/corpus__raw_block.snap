@@ -7,9 +7,7 @@ Document@0..200
     Backtick@0..3 "```"
     Text@3..7 "rust"
     Newline@7..8 "\n"
-    Text@8..10 "fn"
-    Whitespace@10..11 " "
-    Text@11..15 "main"
+    Text@8..15 "fn main"
     LParen@15..16 "("
     RParen@16..17 ")"
     Whitespace@17..18 " "
@@ -21,9 +19,7 @@ Document@0..200
   Raw@26..63
     Backtick@26..29 "```"
     Newline@29..30 "\n"
-    Text@30..39 "无语言"
-    Whitespace@39..40 " "
-    Text@40..58 "tag，闭合更长"
+    Text@30..58 "无语言 tag，闭合 ..."
     Newline@58..59 "\n"
     Backtick@59..63 "````"
   Newline@63..64 "\n"
@@ -64,9 +60,7 @@ Document@0..200
     Raw@173..200
       Backtick@173..176 "```"
       Newline@176..177 "\n"
-      Text@177..195 "未闭合，直到"
-      Whitespace@195..196 " "
-      Text@196..199 "EOF"
+      Text@177..199 "未闭合，直到 EOF"
       Newline@199..200 "\n"
 
 === core ===

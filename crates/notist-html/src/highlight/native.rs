@@ -29,8 +29,9 @@ fn write(parsed: &Parse, html: &mut String) {
         .descendants_with_tokens()
         .filter_map(|e| e.into_token())
     {
-        // Code retains frontend content trees beside its opaque ContentText
-        // tokens. Descend into those trees to highlight embedded Markup too.
+        // A native content literal is a subtree of this tree already, so its
+        // tokens are visited directly. An external dialect keeps its payload
+        // opaque, so descend into the tree retained beside it.
         if token.kind() == K::ContentText
             && let Some(content) = parsed
                 .contents

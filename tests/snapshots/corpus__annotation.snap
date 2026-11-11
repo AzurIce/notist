@@ -101,11 +101,7 @@ Document@0..196
       Colon@171..172 ":"
       RParen@172..173 ")"
   Newline@173..174 "\n"
-  Text@174..177 "空"
-  Whitespace@177..178 " "
-  Text@178..182 "dict"
-  Whitespace@182..183 " "
-  Text@183..195 "注解合法"
+  Text@174..195 "空 dict 注解合法"
   Newline@195..196 "\n"
 
 === core ===

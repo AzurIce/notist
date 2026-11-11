@@ -108,11 +108,19 @@ impl Parser<'_> {
     }
 
     pub(super) fn table(&mut self) {
+        // Both rows are planned before any node is opened: a half-built table
+        // must not swallow the header line as prose.
+        let Some(header) = self.table_row_at(self.state.pos) else {
+            self.eat();
+            return;
+        };
+        let Some(delimiter) = self.table_row_at(header.end + 1) else {
+            self.eat();
+            return;
+        };
         self.state.builder.start_node(SyntaxKind::Table.into());
-        let header = self.table_row_at(self.state.pos).unwrap();
         self.table_row(header, false);
         self.eat(); // newline between header and delimiter
-        let delimiter = self.table_row_at(self.state.pos).unwrap();
         self.table_row(delimiter, true);
         while self.cur() == Some(SyntaxKind::Newline) {
             let start = self.state.pos + 1;

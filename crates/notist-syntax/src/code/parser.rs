@@ -107,8 +107,12 @@ impl<'a> ParserState<'a> {
         }
     }
 
+    /// Consume the current token; a no-op at the end of the source so recovery
+    /// can keep building the enclosing node.
     fn eat(&mut self) {
-        let kind = self.lexed.kind(self.pos).unwrap();
+        let Some(kind) = self.lexed.kind(self.pos) else {
+            return;
+        };
         let text = self.lexed.text(self.pos);
         let unclosed = if kind == SyntaxKind::BlockComment
             && !crate::code::lexer::block_comment_closed(text)

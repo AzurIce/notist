@@ -34,8 +34,12 @@ impl<'a> State<'a> {
         }
     }
 
+    /// Consume the current token. At the end of the bounded region this is a
+    /// no-op: callers that consume an expected closer still finish the node.
     pub fn eat(&mut self) {
-        let kind = self.kind_at(self.pos).unwrap();
+        let Some(kind) = self.kind_at(self.pos) else {
+            return;
+        };
         let text = self.lexed.text(self.pos);
         if kind == SyntaxKind::BlockComment && !crate::code::lexer::block_comment_closed(text) {
             self.diagnostics.push(Diagnostic {

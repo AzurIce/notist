@@ -181,6 +181,8 @@ impl Lexer<'_> {
         }
         let mut n = j;
         let closer_len = 1 + hashes + if multiline { 2 } else { 0 };
+        let quotes = if multiline { "\"\"\"" } else { "\"" };
+        let hash_closer = &rest[1..1 + hashes];
         while let Some(ch) = rest[n..].chars().next() {
             if matches!(ch, '\n' | '\r') && !multiline {
                 break;
@@ -196,9 +198,7 @@ impl Lexer<'_> {
                 }
                 continue;
             }
-            if rest[n..].starts_with(&"\"".repeat(1 + if multiline { 2 } else { 0 }))
-                && rest[n + 1 + if multiline { 2 } else { 0 }..].starts_with(&"#".repeat(hashes))
-            {
+            if rest[n..].starts_with(quotes) && rest[n + quotes.len()..].starts_with(hash_closer) {
                 n += closer_len;
                 return (SyntaxKind::Str, n);
             }

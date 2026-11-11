@@ -171,7 +171,10 @@ mod tests {
                     .iter()
                     .all(|old| !old.shares_storage(&descriptor))
             );
-            assert_eq!(descriptor == again, target == target);
+            assert_eq!(
+                descriptor == again,
+                !matches!(value, Value::Float(value) if value.is_nan())
+            );
             if let Value::Float(expected) = value {
                 let ComptimeValue::Data(Value::Float(actual)) = &descriptor.arguments[0] else {
                     panic!("float descriptor")

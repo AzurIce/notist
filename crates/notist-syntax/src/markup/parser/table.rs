@@ -9,7 +9,7 @@ pub(super) struct Row {
     has_pipe: bool,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// A header and delimiter must have the same number of cells. Requiring
     /// an actual pipe in the pair avoids interpreting a plain `---` divider
     /// as a one-column table. Headers start at a container's block boundary.

@@ -133,23 +133,53 @@ impl Pipeline {
             .iter()
             .map(|d| Diagnostic::new(notist_core::diag::Phase::Syntax, d.span, d.message.clone()))
             .collect();
-        let (lowered, body) = if let Some(content) = parsed.contents.first() {
-            let lowered = progress::measure(
-                "core.lower",
-                || "Lower content literal".into(),
-                || frontend.lower_content(content, &mut diagnostics),
-            );
-            let body = match content.flavor {
-                notist_syntax::content::ContentFlavor::Inline => {
-                    notist_core::expr::BodyFlavor::Inline
-                }
-                notist_syntax::content::ContentFlavor::Block => {
-                    notist_core::expr::BodyFlavor::Block
-                }
-            };
-            (lowered, body)
-        } else {
-            (Lowered::default(), notist_core::expr::BodyFlavor::None)
+        // A native literal is already part of the parsed tree; an external one
+        // keeps its tree beside the Code CST.
+        let native = notist_syntax::code::ast::ContentLiteral::cast(parsed.syntax())
+            .or_else(|| {
+                parsed
+                    .syntax()
+                    .children()
+                    .find_map(notist_syntax::code::ast::ContentLiteral::cast)
+            });
+        let in_place = native
+            .as_ref()
+            .and_then(|literal| literal.document())
+            .map(|document| (document, native.as_ref().unwrap().flavor()));
+        let (lowered, body) = match (in_place, parsed.contents.first()) {
+            (Some((document, flavor)), _) => {
+                let lowered = progress::measure(
+                    "core.lower",
+                    || "Lower content literal".into(),
+                    || frontend.lower_native(&document, flavor, &mut diagnostics),
+                );
+                let body = match flavor {
+                    notist_syntax::content::ContentFlavor::Inline => {
+                        notist_core::expr::BodyFlavor::Inline
+                    }
+                    notist_syntax::content::ContentFlavor::Block => {
+                        notist_core::expr::BodyFlavor::Block
+                    }
+                };
+                (lowered, body)
+            }
+            (None, Some(content)) => {
+                let lowered = progress::measure(
+                    "core.lower",
+                    || "Lower content literal".into(),
+                    || frontend.lower_content(content, &mut diagnostics),
+                );
+                let body = match content.flavor {
+                    notist_syntax::content::ContentFlavor::Inline => {
+                        notist_core::expr::BodyFlavor::Inline
+                    }
+                    notist_syntax::content::ContentFlavor::Block => {
+                        notist_core::expr::BodyFlavor::Block
+                    }
+                };
+                (lowered, body)
+            }
+            (None, None) => (Lowered::default(), notist_core::expr::BodyFlavor::None),
         };
         let origin = match notist_core::source::Source::in_namespace(
             notist_core::source::SourceNamespace::named(context.resource_root()),

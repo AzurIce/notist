@@ -14,7 +14,6 @@ use notist_core::expr::{BodyFlavor, CallArg, Expr};
 use notist_core::item::Dict;
 use notist_syntax::tree::SyntaxKind;
 use notist_syntax::{
-    Parse,
     code::ast::{Annotation, CodeCall, Entry},
 };
 use rowan::NodeOrToken;
@@ -49,7 +48,7 @@ pub fn annotation_dict(annotation: &Annotation, diags: &mut Vec<Diagnostic>) -> 
 pub fn call_header(
     call: &CodeCall,
     has_body: bool,
-    parsed: &Parse,
+    contents: &[notist_syntax::content::ParsedContent],
     frontend: &dyn ContentLowering,
     diags: &mut Vec<Diagnostic>,
 ) -> Expr {
@@ -63,21 +62,21 @@ pub fn call_header(
             if let (Some(key), Some(value)) = (entry.key_token(), entry.value())
                 && let (Some(name), Some(value)) = (
                     key_text(&key, diags),
-                    code::expression(value, Some(parsed), Some(frontend), diags),
+                    code::expression(value, Some(contents), Some(frontend), diags),
                 )
             {
                 args.push(CallArg::Named { name, value });
             }
             continue;
         }
-        if let Some(value) = code::expression(el, Some(parsed), Some(frontend), diags) {
+        if let Some(value) = code::expression(el, Some(contents), Some(frontend), diags) {
             args.push(CallArg::Positional(value));
         }
     }
     let mut callee = call
         .callee()
         .and_then(|node| {
-            code::expression(NodeOrToken::Node(node), Some(parsed), Some(frontend), diags)
+            code::expression(NodeOrToken::Node(node), Some(contents), Some(frontend), diags)
         })
         .unwrap_or_else(|| Expr::reference("<anonymous>", span));
     if !has_body
@@ -101,7 +100,7 @@ pub fn call_header(
         .syntax()
         .children()
         .find(|n| n.kind() == SyntaxKind::ComptimeArguments)
-        .map(|n| code::arguments(&n, Some(parsed), Some(frontend), diags))
+        .map(|n| code::arguments(&n, Some(contents), Some(frontend), diags))
         .unwrap_or_default();
     Expr::Call {
         callee: Box::new(callee),

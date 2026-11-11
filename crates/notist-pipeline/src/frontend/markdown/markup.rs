@@ -426,7 +426,7 @@ impl Markup {
             let mut exprs = Vec::new();
             if let Some(mut expr) = crate::lowering::code::expression(
                 parsed.syntax().into(),
-                Some(&parsed),
+                Some(&parsed.contents),
                 Some(&super::MarkdownFrontend),
                 &mut local_diags,
             ) {
@@ -501,7 +501,7 @@ impl Markup {
             let mut expr = crate::lowering::call_header(
                 &call,
                 construct.body.is_some(),
-                &parse,
+                &parse.contents,
                 &super::MarkdownFrontend,
                 &mut local_diags,
             );

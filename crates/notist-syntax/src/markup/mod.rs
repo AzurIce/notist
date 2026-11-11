@@ -11,6 +11,10 @@ pub use parser::parse_document;
 pub struct MarkupContentParser;
 
 impl crate::content::ContentParser for MarkupContentParser {
+    fn is_native_markup(&self) -> bool {
+        true
+    }
+
     fn parse_content(&self, source: &str, open: rowan::TextSize) -> crate::content::ParsedContent {
         parser::parse_content(source, open)
     }

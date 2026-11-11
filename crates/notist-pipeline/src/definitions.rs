@@ -298,7 +298,7 @@ fn compile_uncached(
                     let expr = body.and_then(|n| {
                         expression(
                             rowan::NodeOrToken::Node(n),
-                            Some(&parsed),
+                            Some(&parsed.contents),
                             Some(frontend),
                             &mut body_diags,
                         )

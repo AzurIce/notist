@@ -28,6 +28,10 @@ impl Parser<'_, '_, '_> {
             self.eat();
             return;
         };
+        if frontend.is_native_markup() {
+            crate::markup::parser::content_literal_in_place(self.state);
+            return;
+        }
         let open = self.state.offset(self.state.pos);
         let parsed = frontend.parse_content(self.state.source, open);
         let end = parsed.range.end();

@@ -43,11 +43,13 @@ struct Scans {
 
 /// Parse a native Markup document without IO.
 pub fn parse_document(src: &str) -> Parse {
-    Parser::new(src).run()
+    let mut state = State::new(src, 0, crate::lexed::Mode::Markup);
+    Parser::new(&mut state).run_document();
+    state.finish()
 }
 
-struct Parser<'a> {
-    state: State<'a>,
+struct Parser<'state, 'src> {
+    state: &'state mut State<'src>,
     block_indent: usize,
     block_start: Option<usize>,
     in_body: bool,
@@ -61,15 +63,10 @@ struct Parser<'a> {
     scans: Scans,
 }
 
-impl<'a> Parser<'a> {
-    fn new(src: &'a str) -> Self {
-        Self::at(src, 0)
-    }
-
-    /// A parser whose first token starts at byte `start` of `src`.
-    fn at(src: &'a str, start: usize) -> Self {
+impl<'state, 'src> Parser<'state, 'src> {
+    fn new(state: &'state mut State<'src>) -> Self {
         Self {
-            state: State::new(src, start, crate::lexed::Mode::Markup),
+            state,
             block_indent: 0,
             block_start: None,
             in_body: false,
@@ -84,7 +81,7 @@ impl<'a> Parser<'a> {
     ///
     /// Block-level trivia (blank lines, standalone comment lines) belongs to
     /// `Document` directly, so a block's span is exactly its content.
-    fn run(mut self) -> Parse {
+    fn run_document(&mut self) {
         self.state.builder.start_node(SyntaxKind::Document.into());
         while let Some(kind) = self.cur() {
             match kind {
@@ -104,7 +101,6 @@ impl<'a> Parser<'a> {
             }
         }
         self.state.builder.finish_node();
-        self.state.finish()
     }
 
     /// Entry: at `=` followed by whitespace, at a line start. The marker and
@@ -679,11 +675,15 @@ impl<'a> Parser<'a> {
             self.eat();
             return;
         }
-        self.state.set_mode(crate::lexed::Mode::Literal);
+        // Arguments follow the Code grammar: keywords are reserved and `->` is
+        // an arrow there.
+        let outer = self.state.lexed.mode();
+        self.state.set_mode(crate::lexed::Mode::Module);
         self.state.in_markup_args = true;
         parse_fragment(&mut self.state, &MarkupContentParser, Fragment::CallHeader);
         self.state.in_markup_args = false;
         self.state.set_mode(crate::lexed::Mode::Markup);
+        let _ = outer;
         // The body, when present, is part of the same call node.
         if self.cur() == Some(SyntaxKind::LBracket) {
             self.bracket_body();
@@ -1024,7 +1024,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     fn kind_at(&self, i: usize) -> Option<SyntaxKind> {
         self.state.kind_at(i)
     }
@@ -1042,13 +1042,14 @@ impl Parser<'_> {
     /// depends on where the line ends, so the node is attached retroactively.
     fn annotation(&mut self) {
         let checkpoint = self.state.builder.checkpoint();
-        self.state.set_mode(crate::lexed::Mode::Literal);
+        let outer = self.state.lexed.mode();
+        self.state.set_mode(crate::lexed::Mode::Module);
         parse_fragment(
             &mut self.state,
             &MarkupContentParser,
             Fragment::AnnotationBody,
         );
-        self.state.set_mode(crate::lexed::Mode::Markup);
+        self.state.set_mode(outer);
         let mut i = self.state.pos;
         while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
             i += 1;
@@ -1070,7 +1071,7 @@ impl Parser<'_> {
     }
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// Token index just past a complete call starting at `start`, if the prefix
     /// forms one. Used by row planning, which must not split a cell inside a
     /// call's arguments or body.
@@ -1282,6 +1283,54 @@ fn content_extent(src: &str, open: usize) -> Extent {
     }
 }
 
+/// Parse a `[...]` content literal in place: the literal's body becomes a
+/// `Document` subtree of the enclosing tree, so its tokens keep absolute source
+/// offsets and no separate tree or side table is needed.
+///
+/// Returns the flavor and whether the closing bracket was present.
+pub(crate) fn content_literal_in_place(state: &mut State<'_>) -> (ContentFlavor, bool) {
+    let outer = state.lexed.mode();
+    state
+        .builder
+        .start_node(SyntaxKind::ContentLiteral.into());
+    state.eat(); // [
+    state.set_mode(crate::lexed::Mode::Markup);
+    let block = matches!(
+        state.lexed.kind(state.pos),
+        Some(SyntaxKind::Whitespace | SyntaxKind::Newline)
+    );
+    let mut parser = Parser::new(state);
+    parser.in_body = true;
+    parser.state.builder.start_node(SyntaxKind::Document.into());
+    if block {
+        parser.block_body();
+    } else {
+        parser.inline_in_body();
+    }
+    parser.state.builder.finish_node();
+    parser.in_body = false;
+    let closed = parser.cur() == Some(SyntaxKind::RBracket);
+    parser.state.set_mode(outer);
+    if closed {
+        parser.state.eat();
+    } else {
+        let point = parser.state.offset(parser.state.pos);
+        parser.state.diagnostics.push(Diagnostic {
+            span: TextRange::empty(point),
+            message: "unclosed content literal".into(),
+        });
+    }
+    parser.state.builder.finish_node();
+    (
+        if block {
+            ContentFlavor::Block
+        } else {
+            ContentFlavor::Inline
+        },
+        closed,
+    )
+}
+
 /// Parse native content without embedding its tree into the Code CST.
 ///
 /// The literal is delimited before parsing, and the resulting tree keeps
@@ -1298,7 +1347,8 @@ pub(crate) fn parse_content(source: &str, open: TextSize) -> ParsedContent {
     );
     // The tape only needs the literal's own text: offsets stay absolute
     // because the same source is passed, just bounded.
-    let mut parser = Parser::at(&source[..extent.end], open_at);
+    let mut state = State::new(&source[..extent.end], open_at, crate::lexed::Mode::Markup);
+    let mut parser = Parser::new(&mut state);
     parser.state.pos = 1;
     parser.state.limit = extent.close;
     parser.in_body = true;
@@ -1307,13 +1357,14 @@ pub(crate) fn parse_content(source: &str, open: TextSize) -> ParsedContent {
         parser.block_body();
     } else {
         parser.diagnose_inline_parbreak(0, extent.close.unwrap_or(usize::MAX));
-        parser.inline_run(&|_: &Parser<'_>| false);
+        parser.inline_run(&|_: &Parser<'_, '_>| false);
     }
     while parser.cur().is_some() {
         parser.eat();
     }
     parser.state.builder.finish_node();
-    let mut parsed = parser.state.finish();
+    drop(parser);
+    let mut parsed = state.finish();
     let mut diagnostics = std::mem::take(&mut parsed.diagnostics);
     if extent.close.is_none() {
         diagnostics.push(Diagnostic {

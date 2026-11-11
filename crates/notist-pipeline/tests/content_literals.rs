@@ -24,8 +24,16 @@ fn host_selects_content_syntax_and_compiles_items_without_a_document_root() {
         assert_eq!(lowered.forest.len(), 1);
         assert_eq!(lowered.forest[0].ctor(), target);
         assert_eq!(parsed.syntax().kind(), SyntaxKind::ContentLiteral);
-        assert!(parsed.syntax().children().next().is_none());
-        assert_eq!(parsed.contents.len(), 1);
+        if path.ends_with(".not") {
+            // Native content parses in place: the body is a Document subtree of
+            // this literal, with no separate tree beside it.
+            let document = parsed.syntax().children().next().unwrap();
+            assert_eq!(document.kind(), SyntaxKind::Document);
+            assert!(parsed.contents.is_empty());
+        } else {
+            assert!(parsed.syntax().children().next().is_none());
+            assert_eq!(parsed.contents.len(), 1);
+        }
         let end = source.find("] remaining").unwrap() + 1;
         assert_eq!(usize::from(parsed.consumed()), end);
         let text = &lowered.forest[0].children()[0];
@@ -61,10 +69,13 @@ fn frontends_keep_their_own_trees_and_literal_delimiter_rules() {
             usize::from(parsed.consumed()),
             source.find("] next").unwrap() + 1
         );
-        let syntax = parsed.contents[0].syntax.as_ref().as_any();
         if path.ends_with(".not") {
-            assert!(syntax.is::<notist_syntax::Parse>());
+            // A native literal owns its body in the same tree.
+            let document = parsed.syntax().children().next().unwrap();
+            assert_eq!(document.kind(), SyntaxKind::Document);
+            assert!(parsed.contents.is_empty());
         } else {
+            let syntax = parsed.contents[0].syntax.as_ref().as_any();
             assert!(syntax.is::<notist_pipeline::frontend::markdown::MarkdownSyntax>());
         }
         assert!(!lowered.forest.is_empty());
@@ -85,7 +96,7 @@ fn block_literals_keep_blocks_and_annotations_without_a_literal_wrapper() {
             "{path}: {:?}",
             lowered.diagnostics
         );
-        assert_eq!(lowered.body, BodyFlavor::Block);
+        assert_eq!(lowered.body, BodyFlavor::Block, "{path}");
         assert_eq!(lowered.forest.len(), 1);
         assert_eq!(lowered.forest[0].ctor(), Ctor::Paragraph);
         assert_eq!(
@@ -472,7 +483,7 @@ fn first_stage_content_expression_contains_ir1_and_annotation_side_list() {
     let mut diagnostics = Vec::new();
     let expr = notist_pipeline::lowering::code::expression(
         rowan::NodeOrToken::Node(parsed.syntax()),
-        Some(&parsed),
+        Some(&parsed.contents),
         Some(&frontend),
         &mut diagnostics,
     )

@@ -57,6 +57,9 @@ struct Parser<'state, 'src> {
     opens: Vec<Open>,
     /// The header/delimiter plan produced by the probe that selected a table.
     plan: std::cell::RefCell<Option<(usize, table::Row, table::Row)>>,
+    /// The last table probe, keyed by the context it ran under. Block-end
+    /// checks and block dispatch ask the same question about the same line.
+    table_probe: std::cell::RefCell<Option<(usize, Option<usize>, usize, bool)>>,
     /// Index of the first opener visible to the current inline run. A closer
     /// outside the run's scope cannot pair across a finished node.
     floor: usize,
@@ -72,6 +75,7 @@ impl<'state, 'src> Parser<'state, 'src> {
             in_body: false,
             opens: Vec::new(),
             plan: std::cell::RefCell::new(None),
+            table_probe: std::cell::RefCell::new(None),
             floor: 0,
             scans: Scans::default(),
         }
@@ -928,16 +932,17 @@ impl<'state, 'src> Parser<'state, 'src> {
     /// Tab-expanded column of a token. The tape records it as it scans, so no
     /// caller rescans the source line.
     fn column_at(&self, pos: usize) -> usize {
-        self.state.lexed.column(pos)
+        self.state.lexed.column(pos).unwrap_or(0)
     }
 
     fn at_block_start(&self, pos: usize) -> bool {
         if self.block_start == Some(pos) {
             return true;
         }
-        let column = self.column_at(pos);
-        self.state.lexed.at_line_start(pos)
-            && (column == 0 || self.block_indent > 0 && column >= self.block_indent)
+        match self.state.lexed.column(pos) {
+            Some(column) => column == 0 || self.block_indent > 0 && column >= self.block_indent,
+            None => false,
+        }
     }
 
     fn at_list_marker(&self) -> bool {

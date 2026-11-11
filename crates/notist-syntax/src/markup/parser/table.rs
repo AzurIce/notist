@@ -14,6 +14,20 @@ impl Parser<'_, '_> {
     /// an actual pipe in the pair avoids interpreting a plain `---` divider
     /// as a one-column table. Headers start at a container's block boundary.
     pub(super) fn at_table_at(&self, start: usize) -> bool {
+        // The same line is asked about by both the block-end check and block
+        // dispatch, under the same context.
+        let key = (start, self.state.limit, self.block_indent);
+        if let Some((at, limit, indent, answer)) = *self.table_probe.borrow()
+            && (at, limit, indent) == key
+        {
+            return answer;
+        }
+        let answer = self.probe_table(start);
+        *self.table_probe.borrow_mut() = Some((start, key.1, key.2, answer));
+        answer
+    }
+
+    fn probe_table(&self, start: usize) -> bool {
         // A table needs a pipe in its two leading lines. Checking bytes first
         // keeps ordinary prose from tokenizing a line twice or allocating.
         if !self.line_has_pipe(start) {

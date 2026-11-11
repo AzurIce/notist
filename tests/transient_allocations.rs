@@ -107,3 +107,31 @@ fn url_safety_checks_do_not_allocate_even_with_controls() {
         assert_eq!(counts, Allocations::default());
     }
 }
+
+#[test]
+fn borrowed_attributes_and_word_arrays_add_no_temporary_allocations() {
+    use notist_core::item::{Ctor, Item, Value};
+
+    let plain =
+        Item::new(Ctor::Math, Default::default()).with_field("text", Value::Str("x".into()));
+    let mut attributed = plain.clone();
+    for key in ["id", "title", "lang", "dir", "aria-label", "data-label"] {
+        attributed.attrs.insert(key, Value::Str("中文<&\"".into()));
+    }
+    for key in ["class", "tags"] {
+        attributed.attrs.insert(
+            key,
+            Value::Array((0..128).map(|_| Value::Str("word".into())).collect()),
+        );
+    }
+    let renderer = notist_html::Renderer::new();
+    // Initialize any renderer metadata before entering the measured scopes.
+    black_box(renderer.render(&plain));
+    black_box(renderer.render(&attributed));
+    let (_, plain_counts) = measure(|| renderer.render(black_box(&plain)));
+    let (html, attributed_counts) = measure(|| renderer.render(black_box(&attributed)));
+    assert!(html.contains("class=\"notist-math word word"));
+    assert!(html.contains("data-notist-tags=\"word word"));
+    // Output growth may reallocate; attributes must not create other buffers.
+    assert_eq!(attributed_counts.allocations, plain_counts.allocations);
+}

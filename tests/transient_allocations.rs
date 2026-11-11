@@ -92,3 +92,18 @@ fn string_token_scanning_does_not_allocate() {
         assert_eq!(counts, Allocations::default());
     }
 }
+
+#[test]
+fn url_safety_checks_do_not_allocate_even_with_controls() {
+    for (url, safe) in [
+        ("https://example.com/中文?query#fragment", true),
+        ("\0\u{1f} \th\tt\nt\rpS://example.com/中文", true),
+        ("relative/path/中文", true),
+        ("\tja\nva\rscript:alert(1)", false),
+        ("d\ta\nt\ra:text/html,unsafe", false),
+    ] {
+        let (result, counts) = measure(|| notist_html::is_safe_url(black_box(url)));
+        assert_eq!(result, safe);
+        assert_eq!(counts, Allocations::default());
+    }
+}

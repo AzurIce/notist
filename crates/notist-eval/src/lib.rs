@@ -4,6 +4,7 @@
 //! A compiler supplies checked IR and implements [`EvaluationContext`] for
 //! execution mappings and any specializations discovered during evaluation.
 //! Source merging and document extension hooks remain the pipeline's job.
+mod descriptor_cache;
 mod eval;
 mod instance_cache;
 

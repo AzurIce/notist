@@ -170,6 +170,62 @@ fn fixed_scalar_arguments_need_no_dictionary_or_heap_frame() {
 }
 
 #[test]
+fn repeated_output_descriptor_hits_do_not_allocate_keys_arguments_or_arcs() {
+    let mut cache = crate::descriptor_cache::DescriptorCache::default();
+    let function = Context
+        .registry()
+        .function("notist", "text")
+        .unwrap()
+        .id
+        .def_id();
+    let targets = [
+        FunctionInstance {
+            function,
+            arguments: vec![],
+        },
+        FunctionInstance {
+            function,
+            arguments: vec![ComptimeValue::Type(Type::String)],
+        },
+        FunctionInstance {
+            function,
+            arguments: vec![ComptimeValue::Data(Value::Int(2))],
+        },
+        FunctionInstance {
+            function,
+            arguments: vec![ComptimeValue::Data(Value::Float(-0.0))],
+        },
+    ];
+    let originals: Vec<_> = targets
+        .iter()
+        .map(|target| cache.share(Cow::Borrowed(target)))
+        .collect();
+    // The former constructor path allocates one Arc per call plus one argument
+    // vector for each nonempty signature. Count that separately from cache hits.
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..4096 {
+                for target in &targets {
+                    drop(Shared::<FunctionInstance>::new(target.clone()));
+                }
+            }
+        }),
+        4096 * 7
+    );
+    assert_eq!(
+        allocations(|| {
+            for _ in 0..4096 {
+                for (target, original) in targets.iter().zip(&originals) {
+                    let shared = cache.share(Cow::Borrowed(target));
+                    assert!(shared.shares_storage(original));
+                }
+            }
+        }),
+        0
+    );
+}
+
+#[test]
 fn report_private_execution_layout() {
     println!(
         "execution-layout Content={} Piece={} Runtime={} Construction={} ArgumentValues={}",

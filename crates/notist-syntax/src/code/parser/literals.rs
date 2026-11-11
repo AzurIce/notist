@@ -6,7 +6,7 @@ use rowan::TextRange;
 
 impl Parser<'_, '_, '_> {
     pub(super) fn kind_at(&self, i: usize) -> Option<SyntaxKind> {
-        self.state.lexed.kind(i)
+        self.state.kind_at(i)
     }
     pub(super) fn cur(&self) -> Option<SyntaxKind> {
         self.kind_at(self.state.pos)

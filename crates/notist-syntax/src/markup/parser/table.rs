@@ -4,8 +4,10 @@ use super::Parser;
 use crate::tree::SyntaxKind;
 
 pub(super) struct Row {
+    /// Stable source byte ranges, not indices into mode-dependent tokens.
     cells: Vec<Range<usize>>,
     end: usize,
+    end_byte: usize,
     has_pipe: bool,
 }
 
@@ -67,9 +69,7 @@ impl Parser<'_, '_> {
 
     /// An alignment cell is `-`+ with optional surrounding colons, trimmed.
     fn is_align_cell(&self, cell: &Range<usize>) -> bool {
-        let start = usize::from(self.state.offset(cell.start));
-        let end = usize::from(self.state.offset(cell.end));
-        let text = self.state.source[start..end].trim();
+        let text = self.state.source[cell.clone()].trim();
         let text = text.strip_prefix(':').unwrap_or(text);
         let text = text.strip_suffix(':').unwrap_or(text);
         !text.is_empty() && text.bytes().all(|byte| byte == b'-')
@@ -82,7 +82,10 @@ impl Parser<'_, '_> {
         let offset = usize::from(self.state.offset(start));
         let rest = &self.state.source[offset..];
         let line = rest.find(['\r', '\n']).map_or(rest, |end| &rest[..end]);
-        line.as_bytes().contains(&b'|')
+        line.as_bytes()
+            .iter()
+            .any(|byte| matches!(byte, b'|' | b'#' | b'$'))
+            || rest.lines().nth(1).is_some_and(|line| line.contains('|'))
     }
 
     fn table_row_at(&self, start: usize) -> Option<Row> {
@@ -140,9 +143,16 @@ impl Parser<'_, '_> {
             cell_start = pipe + 1;
         }
         cells.push(cell_start..right);
+        let cells = cells
+            .into_iter()
+            .map(|cell| {
+                usize::from(self.state.offset(cell.start))..usize::from(self.state.offset(cell.end))
+            })
+            .collect();
         Some(Row {
             cells,
             end,
+            end_byte: usize::from(self.state.offset(end)),
             has_pipe,
         })
     }
@@ -196,7 +206,7 @@ impl Parser<'_, '_> {
             .into(),
         );
         for cell in row.cells {
-            while self.state.pos < cell.start {
+            while usize::from(self.state.byte()) < cell.start {
                 self.eat();
             }
             self.state.builder.start_node(SyntaxKind::TableCell.into());
@@ -213,7 +223,7 @@ impl Parser<'_, '_> {
             self.state.limit = previous_limit;
             self.state.builder.finish_node();
         }
-        while self.state.pos < row.end {
+        while usize::from(self.state.byte()) < row.end_byte {
             self.eat();
         }
         self.state.builder.finish_node();

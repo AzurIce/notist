@@ -17,7 +17,8 @@ pub(crate) struct State<'src> {
     pub contents: Vec<ParsedContent>,
     /// Code declaration grammar: keywords are reserved and `->` is an arrow.
     pub in_module: bool,
-    /// Exclusive token-index bound of the current container.
+    /// Exclusive byte bound of the current container. Token indices change
+    /// when a nested grammar switches lexical mode.
     pub limit: Option<usize>,
     /// The enclosing grammar is a Markup call: arguments end at a blank line.
     pub in_markup_args: bool,
@@ -40,7 +41,10 @@ impl<'src> State<'src> {
     }
 
     pub fn kind_at(&self, i: usize) -> Option<SyntaxKind> {
-        if self.limit.is_some_and(|limit| i >= limit) {
+        if self
+            .limit
+            .is_some_and(|limit| usize::from(self.lexed.offset(i)) >= limit)
+        {
             None
         } else {
             self.lexed.kind(i)
@@ -59,7 +63,10 @@ impl<'src> State<'src> {
     /// Consume the current token. At the end of the bounded region this is a
     /// no-op, so callers that consume an expected closer still finish the node.
     pub fn eat(&mut self) {
-        if self.limit.is_some_and(|limit| self.pos >= limit) {
+        if self
+            .limit
+            .is_some_and(|limit| usize::from(self.byte()) >= limit)
+        {
             return;
         }
         let Some((kind, text)) = self.lexed.peek(self.pos) else {
@@ -74,7 +81,8 @@ impl<'src> State<'src> {
             && !crate::code::lexer::string_closed(text)
         {
             Some("unclosed string")
-        } else if kind == SyntaxKind::PathLiteral && !crate::code::lexer::string_closed(&text[1..]) {
+        } else if kind == SyntaxKind::PathLiteral && !crate::code::lexer::string_closed(&text[1..])
+        {
             Some("unclosed path literal")
         } else {
             None

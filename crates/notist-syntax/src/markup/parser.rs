@@ -29,6 +29,7 @@ struct Open {
 /// turns repeated failures on one line into a single scan.
 #[derive(Clone, Copy)]
 struct NoCloser {
+    start: usize,
     /// Where the scan stopped: a newline ending the block, or the region end.
     end: usize,
     /// The container limit the scan ran under.
@@ -306,25 +307,26 @@ impl<'state, 'src> Parser<'state, 'src> {
         self.eat();
     }
 
-    /// An inline body: a run bounded by the body's `]`, the container end, or a
-    /// blank line. A blank line that ends the body is diagnosed once.
+    /// An inline body ends at `]` or the container end. Diagnose a blank line
+    /// once, but retain the rest of the body for semantic recovery.
     fn inline_in_body(&mut self) {
         // A body run owns its openers: a delimiter outside it must never wrap
         // tokens this run already emitted.
         let base = self.opens.len();
         let floor = std::mem::replace(&mut self.floor, base);
+        let mut diagnosed = false;
         loop {
             match self.cur() {
                 None | Some(SyntaxKind::RBracket) => break,
                 Some(SyntaxKind::Newline) => {
-                    // A blank line ends the body.
-                    if self.line_ends_block_at(self.state.pos) {
+                    let (next, _) = self.line_content_at(self.state.pos + 1);
+                    if !diagnosed && self.kind_at(next) == Some(SyntaxKind::Newline) {
                         let point = self.state.offset(self.state.pos);
                         self.state.diagnostics.push(Diagnostic {
                             span: TextRange::empty(point),
                             message: "inline content cannot contain a blank line".into(),
                         });
-                        break;
+                        diagnosed = true;
                     }
                     self.eat();
                 }
@@ -341,7 +343,9 @@ impl<'state, 'src> Parser<'state, 'src> {
         match self.cur() {
             Some(SyntaxKind::Backtick) => self.raw_inline(),
             Some(SyntaxKind::Star) => self.delimiter(SyntaxKind::Star, SyntaxKind::Strong),
-            Some(SyntaxKind::Underscore) => self.delimiter(SyntaxKind::Underscore, SyntaxKind::Emph),
+            Some(SyntaxKind::Underscore) => {
+                self.delimiter(SyntaxKind::Underscore, SyntaxKind::Emph)
+            }
             Some(SyntaxKind::Tilde) => self.delimiter(SyntaxKind::Tilde, SyntaxKind::Strike),
             Some(SyntaxKind::Dollar) => self.math(),
             Some(SyntaxKind::Bang) if self.peek(1) == Some(SyntaxKind::LBracket) => {
@@ -421,6 +425,7 @@ impl<'state, 'src> Parser<'state, 'src> {
         let slot = usize::from(block);
         if let Some(known) = self.scans.math[slot].get()
             && known.limit == self.state.limit
+            && start >= known.start
             && start < known.end
         {
             return None;
@@ -448,6 +453,7 @@ impl<'state, 'src> Parser<'state, 'src> {
             end += 1;
         };
         self.scans.math[slot].set(Some(NoCloser {
+            start,
             end: stop,
             limit: self.state.limit,
         }));
@@ -478,6 +484,7 @@ impl<'state, 'src> Parser<'state, 'src> {
         if let Some((known_run, known)) = self.scans.raw.get()
             && known_run == run
             && known.limit == self.state.limit
+            && start >= known.start
             && start < known.end
         {
             return None;
@@ -497,6 +504,7 @@ impl<'state, 'src> Parser<'state, 'src> {
         self.scans.raw.set(Some((
             run,
             NoCloser {
+                start,
                 end: stop,
                 limit: self.state.limit,
             },
@@ -536,6 +544,21 @@ impl<'state, 'src> Parser<'state, 'src> {
         while let Some(kind) = self.cur() {
             match kind {
                 SyntaxKind::Newline => return,
+                SyntaxKind::Pipe => {
+                    self.eat();
+                    let base = self.opens.len();
+                    let floor = std::mem::replace(&mut self.floor, base);
+                    while self.cur().is_some()
+                        && self.cur() != Some(SyntaxKind::Newline)
+                        && !(self.cur() == Some(SyntaxKind::RBracket)
+                            && self.peek(1) == Some(SyntaxKind::RBracket))
+                    {
+                        self.inline_at(&|_| true);
+                    }
+                    self.floor = floor;
+                    self.opens.truncate(base);
+                    break;
+                }
                 SyntaxKind::RBracket if self.peek(1) == Some(SyntaxKind::RBracket) => break,
                 _ => self.eat(),
             }
@@ -582,10 +605,7 @@ impl<'state, 'src> Parser<'state, 'src> {
                     depth -= 1;
                     self.eat();
                 }
-                Some(SyntaxKind::LBracket) => {
-                    depth += 1;
-                    self.eat();
-                }
+                Some(SyntaxKind::LBracket) => self.link(stop),
                 Some(SyntaxKind::Backslash) if self.peek(1) == Some(SyntaxKind::Newline) => {
                     self.floor = floor;
                     self.opens.truncate(base);
@@ -687,6 +707,9 @@ impl<'state, 'src> Parser<'state, 'src> {
         parse_fragment(&mut self.state, &MarkupContentParser, Fragment::CallHeader);
         self.state.in_markup_args = false;
         self.state.set_mode(crate::lexed::Mode::Markup);
+        self.scans = Scans::default();
+        *self.plan.borrow_mut() = None;
+        *self.table_probe.borrow_mut() = None;
         let _ = outer;
         // The body, when present, is part of the same call node.
         if self.cur() == Some(SyntaxKind::LBracket) {
@@ -714,7 +737,9 @@ impl<'state, 'src> Parser<'state, 'src> {
             .get(end..line_end.max(end))
             .unwrap_or_default()
             .trim();
-        if end > line_end || !before.trim().is_empty() || !after.is_empty() && !after.starts_with("//")
+        if end > line_end
+            || !before.trim().is_empty()
+            || !after.is_empty() && !after.starts_with("//")
         {
             self.state.diagnostics.push(Diagnostic {
                 span: TextRange::new((start as u32).into(), (end as u32).into()),
@@ -724,8 +749,8 @@ impl<'state, 'src> Parser<'state, 'src> {
     }
 
     /// The bracketed content at cur == `[`. Its flavor comes from the opening
-    /// side only; an inline body ends at a blank line (diagnosed) and a block
-    /// body at the closing bracket or the container end.
+    /// side only; blank lines in an inline body are diagnosed without losing
+    /// its closing bracket or the remaining content.
     fn bracket_body(&mut self) {
         let outer = self.state.lexed.mode();
         self.eat();
@@ -735,12 +760,13 @@ impl<'state, 'src> Parser<'state, 'src> {
         if block {
             self.block_body();
         } else {
-            // An inline body ends at a blank line: the paragraph break closes
-            // it, so following blocks keep their own structure.
             self.inline_in_body();
         }
         self.in_body = was;
         self.state.set_mode(outer);
+        self.scans = Scans::default();
+        *self.plan.borrow_mut() = None;
+        *self.table_probe.borrow_mut() = None;
         if self.cur() == Some(SyntaxKind::RBracket) {
             self.eat();
         } else {
@@ -879,7 +905,8 @@ impl<'state, 'src> Parser<'state, 'src> {
                 end += 1;
             }
         }
-        let old_limit = self.state.limit.replace(end);
+        let end_byte = usize::from(self.state.offset(end));
+        let old_limit = self.state.limit.replace(end_byte);
         let old_indent = std::mem::replace(&mut self.block_indent, body_indent);
         let old_start = self.block_start.replace(start);
         while let Some(kind) = self.cur() {
@@ -1056,6 +1083,9 @@ impl Parser<'_, '_> {
             Fragment::AnnotationBody,
         );
         self.state.set_mode(outer);
+        self.scans = Scans::default();
+        *self.plan.borrow_mut() = None;
+        *self.table_probe.borrow_mut() = None;
         let mut i = self.state.pos;
         while self.kind_at(i) == Some(SyntaxKind::Whitespace) {
             i += 1;
@@ -1094,60 +1124,72 @@ impl Parser<'_, '_> {
         } else {
             1
         };
-        let has_args = rest.as_bytes().get(after_path) == Some(&b'(');
-        let mut i = start + 1;
-        if has_args {
-            while let Some(kind) = self.kind_at(i) {
-                match kind {
-                    SyntaxKind::LParen => break,
-                    SyntaxKind::Newline if self.line_ends_block_at(i) => return None,
-                    _ => i += 1,
-                }
+        // Headers need Code token rules: quoted strings/comments are opaque,
+        // including pipes, brackets and line breaks in their payloads.
+        let header = crate::lexed::Lexed::bounded(
+            self.state.source,
+            offset + after_path,
+            crate::lexed::Mode::Module,
+        );
+        let mut h = 0;
+        for (open, close) in [
+            (SyntaxKind::LParen, SyntaxKind::RParen),
+            (SyntaxKind::Less, SyntaxKind::Greater),
+        ] {
+            if header.kind(h) != Some(open) {
+                continue;
             }
-            let mut depth = 0usize;
-            while let Some(kind) = self.kind_at(i) {
-                match kind {
-                    SyntaxKind::LParen => depth += 1,
-                    SyntaxKind::RParen => {
-                        depth -= 1;
-                        if depth == 0 {
-                            i += 1;
-                            break;
+            let mut depth = 1usize;
+            h += 1;
+            while depth > 0 {
+                match header.kind(h)? {
+                    kind if kind == open => depth += 1,
+                    kind if kind == close => depth -= 1,
+                    SyntaxKind::Newline => {
+                        let mut next = h + 1;
+                        while header.kind(next) == Some(SyntaxKind::Whitespace) {
+                            next += 1;
+                        }
+                        if header.kind(next) == Some(SyntaxKind::Newline) {
+                            return None;
                         }
                     }
-                    SyntaxKind::Newline if self.line_ends_block_at(i) => return None,
                     _ => {}
                 }
-                i += 1;
-            }
-            if depth != 0 {
-                return None;
+                h += 1;
             }
         }
-        // Compile-time arguments sit between the path and the body.
-        while matches!(self.kind_at(i), Some(SyntaxKind::Less)) {
-            let mut depth = 0usize;
-            while let Some(kind) = self.kind_at(i) {
-                match kind {
-                    SyntaxKind::Less => depth += 1,
-                    SyntaxKind::Greater => {
-                        depth -= 1;
-                        if depth == 0 {
-                            i += 1;
-                            break;
-                        }
-                    }
-                    SyntaxKind::Newline => return None,
-                    _ => {}
-                }
-                i += 1;
-            }
+        let byte = header.offset(h);
+        let mut i = start + 1;
+        while self.state.offset(i) < byte {
+            i += 1;
         }
         if self.kind_at(i) != Some(SyntaxKind::LBracket) {
-            return None;
+            return Some(i);
         }
         let mut depth = 0usize;
         while let Some(kind) = self.kind_at(i) {
+            if kind == SyntaxKind::Backtick
+                && self.state.lexed.len(i) >= 3
+                && self.at_block_start(i)
+            {
+                let run = self.state.lexed.len(i);
+                let mut close = i + 1;
+                while self.kind_at(close).is_some()
+                    && !(self.kind_at(close) == Some(SyntaxKind::Backtick)
+                        && self.state.lexed.len(close) >= run
+                        && self.at_block_start(close))
+                {
+                    close += 1;
+                }
+                self.kind_at(close)?;
+                i = close + 1;
+                continue;
+            }
+            if let Some(close) = self.opaque_close_at(i) {
+                i = close + 1;
+                continue;
+            }
             match kind {
                 SyntaxKind::LBracket => depth += 1,
                 SyntaxKind::RBracket => {
@@ -1168,7 +1210,8 @@ impl Parser<'_, '_> {
 /// a bare `#` only when a body bracket follows. Everything else is prose.
 fn call_shape(rest: &str) -> Option<bool> {
     let bytes = rest.as_bytes();
-    let named = matches!(bytes.get(1), Some(b) if b.is_ascii_alphabetic() || *b == b'_' || *b >= 0x80);
+    let named =
+        matches!(bytes.get(1), Some(b) if b.is_ascii_alphabetic() || *b == b'_' || *b >= 0x80);
     if named {
         path_end_bytes(bytes, 1)?;
         return Some(true);
@@ -1244,7 +1287,8 @@ fn content_extent(src: &str, open: usize) -> Extent {
                     if kind == SyntaxKind::Newline && !block {
                         break;
                     }
-                    if kind == SyntaxKind::Backtick && (tape.len(j) == run || block && tape.len(j) >= run)
+                    if kind == SyntaxKind::Backtick
+                        && (tape.len(j) == run || block && tape.len(j) >= run)
                     {
                         i = j;
                         found = true;
@@ -1297,9 +1341,7 @@ fn content_extent(src: &str, open: usize) -> Extent {
 /// Returns the flavor and whether the closing bracket was present.
 pub(crate) fn content_literal_in_place(state: &mut State<'_>) -> (ContentFlavor, bool) {
     let outer = state.lexed.mode();
-    state
-        .builder
-        .start_node(SyntaxKind::ContentLiteral.into());
+    state.builder.start_node(SyntaxKind::ContentLiteral.into());
     state.eat(); // [
     state.set_mode(crate::lexed::Mode::Markup);
     let block = matches!(
@@ -1357,7 +1399,7 @@ pub(crate) fn parse_content(source: &str, open: TextSize) -> ParsedContent {
     let mut state = State::new(&source[..extent.end], open_at, crate::lexed::Mode::Markup);
     let mut parser = Parser::new(&mut state);
     parser.state.pos = 1;
-    parser.state.limit = extent.close;
+    parser.state.limit = extent.close.map(|_| body_end);
     parser.in_body = true;
     parser.state.builder.start_node(SyntaxKind::Document.into());
     if block {

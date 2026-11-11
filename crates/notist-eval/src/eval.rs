@@ -1,4 +1,4 @@
-use crate::{EvaluationContext, instance_cache::InstanceCache};
+use crate::{EvaluationContext, descriptor_cache::DescriptorCache, instance_cache::InstanceCache};
 use notist_core::{
     builtins::Level,
     definitions::{
@@ -167,6 +167,7 @@ struct Evaluator<'a, C: EvaluationContext + ?Sized> {
     context: &'a C,
     program: CheckedProgram,
     implementations: InstanceCache,
+    descriptors: DescriptorCache,
     diagnostics: Vec<Diagnostic>,
     limits: Limits,
     steps: usize,
@@ -195,6 +196,7 @@ impl<'a, C: EvaluationContext + ?Sized> Evaluator<'a, C> {
             context,
             program: program.clone(),
             implementations: InstanceCache::default(),
+            descriptors: DescriptorCache::default(),
             diagnostics: Vec::new(),
             limits,
             steps: 0,
@@ -1116,7 +1118,7 @@ impl<C: EvaluationContext + ?Sized> Evaluator<'_, C> {
                         spec: ElementSpec {
                             ctor,
                             fields: fields.finish(),
-                            instance: Some(target.into_owned().into()),
+                            instance: Some(self.descriptors.share(target)),
                         },
                         children,
                     }));

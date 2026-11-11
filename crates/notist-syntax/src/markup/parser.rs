@@ -925,33 +925,18 @@ impl<'a> Parser<'a> {
         (pos, width)
     }
 
+    /// Tab-expanded column of a token. The tape records it as it scans, so no
+    /// caller rescans the source line.
     fn column_at(&self, pos: usize) -> usize {
-        let offset = usize::from(self.state.lexed.offset(pos));
-        let start = self.state.source[..offset]
-            .rfind(['\n', '\r'])
-            .map_or(0, |i| i + 1);
-        self.state.source[start..offset]
-            .chars()
-            .fold(0, |column, ch| {
-                if ch == '\t' {
-                    (column / 4 + 1) * 4
-                } else {
-                    column + 1
-                }
-            })
+        self.state.lexed.column(pos)
     }
 
     fn at_block_start(&self, pos: usize) -> bool {
         if self.block_start == Some(pos) {
             return true;
         }
-        let offset = usize::from(self.state.lexed.offset(pos));
         let column = self.column_at(pos);
-        let start = self.state.source[..offset]
-            .rfind(['\n', '\r'])
-            .map_or(0, |i| i + 1);
-        let prefix = &self.state.source[start..offset];
-        prefix.bytes().all(|ch| ch == b' ' || ch == b'\t')
+        self.state.lexed.at_line_start(pos)
             && (column == 0 || self.block_indent > 0 && column >= self.block_indent)
     }
 

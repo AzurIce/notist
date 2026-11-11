@@ -58,7 +58,7 @@ impl Parser<'_> {
             // Strings and comments are already opaque tokens. Complete calls
             // and raw/math payloads own their internal separators as well.
             if kind == SyntaxKind::Hash
-                && let Some(call_end) = self.code_call_at(end).and_then(|call| call.end())
+                && let Some(call_end) = self.call_end(end)
             {
                 end = call_end;
                 continue;

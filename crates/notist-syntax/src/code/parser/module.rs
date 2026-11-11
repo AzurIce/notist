@@ -1,9 +1,11 @@
 //! Code declaration grammar. Code parsing owns its token cursor and literal construction.
 
-use super::{Diagnostic, Parse, Parser, SyntaxKind, TextRange};
+use super::{Parser, SyntaxKind};
+use crate::Diagnostic;
+use rowan::TextRange;
 
-impl Parser<'_, '_> {
-    pub(super) fn run_module(mut self) -> Parse {
+impl Parser<'_, '_, '_> {
+    pub(super) fn run_module(mut self) {
         self.state.builder.start_node(SyntaxKind::Module.into());
         while self.cur().is_some() {
             self.eat_trivia();
@@ -18,7 +20,6 @@ impl Parser<'_, '_> {
             }
         }
         self.state.builder.finish_node();
-        self.state.finish()
     }
 
     fn import_decl(&mut self) {

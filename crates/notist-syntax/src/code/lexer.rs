@@ -1,17 +1,16 @@
 //! Common Code and data-literal tokenization. Content frontends own their
 //! text/delimiter rules and can delegate literal tokens to `literal_token`.
-use crate::lexed::Lexed;
+use crate::lexed::{Lexed, Mode};
 use crate::tree::SyntaxKind;
 
 /// Tokenize shared call/annotation literals without reserving Code keywords.
 pub fn lex(src: &str) -> Lexed<'_> {
-    Lexed::scan(src, |offset| literal_token(src, offset))
+    Lexed::new(src, 0, Mode::Literal)
 }
 
 /// Tokenize a Code declaration module.
 pub fn lex_module(src: &str) -> Lexed<'_> {
-    let scanner = Lexer { src, module: true };
-    Lexed::scan(src, |offset| scanner.lex_literal_token(offset))
+    Lexed::new(src, 0, Mode::Module)
 }
 
 pub(crate) fn module_token(src: &str, offset: usize) -> (SyntaxKind, usize) {

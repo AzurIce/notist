@@ -39,4 +39,5 @@ pub struct ParsedContent {
 /// receive source coordinates, never a Code token cursor or tree builder.
 pub trait ContentParser: Send + Sync {
     fn parse_content(&self, source: &str, open: TextSize) -> ParsedContent;
+
 }

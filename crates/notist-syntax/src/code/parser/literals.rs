@@ -1,9 +1,10 @@
 //! Shared paths, call headers, annotations and literal grammar.
-use super::{Diagnostic, Parser};
+use super::Parser;
+use crate::Diagnostic;
 use crate::tree::SyntaxKind;
 use rowan::TextRange;
 
-impl Parser<'_, '_> {
+impl Parser<'_, '_, '_> {
     pub(super) fn kind_at(&self, i: usize) -> Option<SyntaxKind> {
         self.state.lexed.kind(i)
     }
@@ -18,37 +19,30 @@ impl Parser<'_, '_> {
     }
 
     pub(super) fn content_literal(&mut self) {
-        let open = self.state.lexed.offset(self.state.pos);
         let Some(frontend) = self.content else {
+            let open = self.state.offset(self.state.pos);
             self.state.diagnostics.push(Diagnostic {
-                span: TextRange::empty(open),
+                span: rowan::TextRange::empty(open),
                 message: "content literals require a content parser".into(),
             });
             self.eat();
             return;
         };
+        let open = self.state.offset(self.state.pos);
         let parsed = frontend.parse_content(self.state.source, open);
         let end = parsed.range.end();
         let source = self.state.source;
-        assert_eq!(
+        debug_assert_eq!(
             parsed.range.start(),
             open,
             "content parser returned an invalid start"
         );
-        assert!(
+        debug_assert!(
             end > open
                 && usize::from(end) <= source.len()
                 && source.is_char_boundary(usize::from(end)),
             "content parser returned an invalid end"
         );
-        assert_eq!(parsed.body.start(), open + rowan::TextSize::new(1));
-        assert_eq!(
-            parsed.body.end(),
-            end - rowan::TextSize::new(u32::from(parsed.closed))
-        );
-        if parsed.closed {
-            assert_eq!(source.as_bytes()[usize::from(end) - 1], b']');
-        }
         self.state
             .builder
             .start_node(SyntaxKind::ContentLiteral.into());
@@ -64,7 +58,10 @@ impl Parser<'_, '_> {
         self.state
             .diagnostics
             .extend(parsed.diagnostics.iter().cloned());
-        self.state.lexed.resume(self.state.pos, end);
+        // Continue in the mode that produced the enclosing tokens: the literal
+        // only consumes its own range, and the caller's mode follows from it.
+        let mode = self.state.lexed.mode();
+        self.state.resume(self.state.pos, end, mode);
         self.state.contents.push(parsed);
     }
 
@@ -162,12 +159,14 @@ impl Parser<'_, '_> {
                         self.eat();
                         self.eat();
                     }
-                    let start = self.state.pos;
+                    let start = self.state.byte();
                     self.expression(0);
                     if named {
                         self.state.builder.finish_node();
                     }
-                    if self.state.pos == start && self.cur().is_some() {
+                    // Progress is measured in source bytes: a content literal
+                    // consumes its range without advancing the token index.
+                    if self.state.byte() == start && self.cur().is_some() {
                         self.eat();
                     }
                 }

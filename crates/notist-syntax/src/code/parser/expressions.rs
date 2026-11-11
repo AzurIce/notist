@@ -1,7 +1,7 @@
 //! Expression grammar shared by module bodies and interpolation arguments.
 use super::{Parser, SyntaxKind as K};
 
-impl Parser<'_, '_> {
+impl Parser<'_, '_, '_> {
     pub(super) fn expression(&mut self, min: u8) {
         self.eat_trivia();
         if self.expression_depth >= 128 {
@@ -131,7 +131,7 @@ impl Parser<'_, '_> {
             None | Some(K::FnKeyword | K::ImportKeyword | K::RBrace)
         ) && self.cur() != Some(close)
         {
-            let start = self.state.pos;
+            let start = self.state.byte();
             let named =
                 matches!(self.cur(), Some(K::Ident | K::Str)) && self.peek(1) == Some(K::Colon);
             if named {
@@ -157,7 +157,7 @@ impl Parser<'_, '_> {
             } else {
                 break;
             }
-            if self.state.pos == start {
+            if self.state.byte() == start {
                 break;
             }
         }

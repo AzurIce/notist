@@ -1,161 +1,30 @@
 //! Code modules and syntax fragments. Concrete content grammars are injected.
-use std::cell::{Cell, RefCell};
-
-use crate::code::lexer::{literal_token, module_token};
-use crate::content::{ContentParser, ParsedContent};
+use crate::content::ContentParser;
+use crate::lexed::Mode;
+use crate::parser::State;
 use crate::tree::SyntaxKind;
-use crate::{Diagnostic, Parse};
-use rowan::{GreenNodeBuilder, TextRange, TextSize};
+use crate::Parse;
+use rowan::TextRange;
 
 mod expressions;
 mod literals;
 mod module;
 
-#[derive(Clone, Copy)]
-struct Token {
-    kind: SyntaxKind,
-    range: TextRange,
-}
-
-/// Lex only requested Code tokens. A content callback can resume at its end
-/// without applying Code string/comment rules to the opaque payload.
-struct Tokens<'a> {
-    source: &'a str,
-    module: bool,
-    tokens: RefCell<Vec<Token>>,
-    next: Cell<usize>,
-}
-
-impl<'a> Tokens<'a> {
-    fn ensure(&self, i: usize) {
-        while self.tokens.borrow().len() <= i && self.next.get() < self.source.len() {
-            let start = self.next.get();
-            let (kind, len) = if self.module {
-                module_token(self.source, start)
-            } else {
-                literal_token(self.source, start)
-            };
-            let end = start + len;
-            self.tokens.borrow_mut().push(Token {
-                kind,
-                range: TextRange::new((start as u32).into(), (end as u32).into()),
-            });
-            self.next.set(end);
-        }
-    }
-
-    fn kind(&self, i: usize) -> Option<SyntaxKind> {
-        self.ensure(i);
-        self.tokens.borrow().get(i).map(|token| token.kind)
-    }
-
-    fn offset(&self, i: usize) -> TextSize {
-        self.ensure(i);
-        self.tokens
-            .borrow()
-            .get(i)
-            .map_or((self.source.len() as u32).into(), |token| {
-                token.range.start()
-            })
-    }
-
-    fn text(&self, i: usize) -> &'a str {
-        self.ensure(i);
-        let range = self.tokens.borrow()[i].range;
-        &self.source[usize::from(range.start())..usize::from(range.end())]
-    }
-
-    fn resume(&mut self, i: usize, end: TextSize) {
-        self.tokens.get_mut().truncate(i);
-        self.next.set(usize::from(end));
-    }
-}
-
-struct ParserState<'a> {
-    lexed: Tokens<'a>,
-    source: &'a str,
-    pos: usize,
-    builder: GreenNodeBuilder<'static>,
-    diagnostics: Vec<Diagnostic>,
-    contents: Vec<ParsedContent>,
-    in_module: bool,
-}
-
-impl<'a> ParserState<'a> {
-    fn new(source: &'a str, in_module: bool) -> Self {
-        Self {
-            lexed: Tokens {
-                source,
-                module: true,
-                tokens: RefCell::new(Vec::new()),
-                next: Cell::new(0),
-            },
-            source,
-            pos: 0,
-            builder: GreenNodeBuilder::new(),
-            diagnostics: Vec::new(),
-            contents: Vec::new(),
-            in_module,
-        }
-    }
-
-    fn finish(self) -> Parse {
-        Parse {
-            green: self.builder.finish(),
-            diagnostics: self.diagnostics,
-            contents: self.contents,
-        }
-    }
-
-    /// Consume the current token; a no-op at the end of the source so recovery
-    /// can keep building the enclosing node.
-    fn eat(&mut self) {
-        let Some(kind) = self.lexed.kind(self.pos) else {
-            return;
-        };
-        let text = self.lexed.text(self.pos);
-        let unclosed = if kind == SyntaxKind::BlockComment
-            && !crate::code::lexer::block_comment_closed(text)
-        {
-            Some("unclosed block comment")
-        } else if self.in_module
-            && kind == SyntaxKind::Str
-            && !crate::code::lexer::string_closed(text)
-        {
-            Some("unclosed string")
-        } else if kind == SyntaxKind::PathLiteral && !crate::code::lexer::string_closed(&text[1..])
-        {
-            Some("unclosed path literal")
-        } else {
-            None
-        };
-        if let Some(message) = unclosed {
-            self.diagnostics.push(Diagnostic {
-                span: TextRange::new(self.lexed.offset(self.pos), self.lexed.offset(self.pos + 1)),
-                message: message.into(),
-            });
-        }
-        self.builder.token(kind.into(), text);
-        self.pos += 1;
-    }
-}
-
-struct Parser<'src, 'content> {
-    state: ParserState<'src>,
+struct Parser<'state, 'src, 'content> {
+    state: &'state mut State<'src>,
     content: Option<&'content dyn ContentParser>,
     in_comptime_args: usize,
     expression_depth: usize,
     loop_subject_depth: Option<usize>,
 }
 
-impl<'src, 'content> Parser<'src, 'content> {
+impl<'state, 'src, 'content> Parser<'state, 'src, 'content> {
     fn new(
-        source: &'src str,
-        in_module: bool,
+        state: &'state mut State<'src>,
         content: Option<&'content dyn ContentParser>,
     ) -> Self {
         Self {
-            state: ParserState::new(source, in_module),
+            state,
             content,
             in_comptime_args: 0,
             expression_depth: 0,
@@ -201,59 +70,82 @@ impl<'src, 'content> Parser<'src, 'content> {
     }
 }
 
+/// A standalone Code state over `source`, in declaration or fragment mode.
+fn state(source: &str, mode: Mode, in_module: bool) -> State<'_> {
+    let mut state = State::new(source, 0, mode);
+    state.in_module = in_module;
+    state
+}
+
 /// Parse the implemented declaration grammar; no content dialect is required.
 pub fn parse_module(source: &str, content: &dyn ContentParser) -> Parse {
-    Parser::new(source, true, Some(content)).run_module()
+    let mut state = state(source, Mode::Module, true);
+    Parser::new(&mut state, Some(content)).run_module();
+    state.finish()
 }
 
 /// Parse a complete call header, without a content dialect or trailing body.
 pub fn parse_call_header(source: &str) -> Parse {
-    let mut parser = Parser::new(source, false, None);
-    parser.call_fragment();
-    parser.fragment_tail();
-    parser.state.builder.finish_node();
-    parser.state.finish()
+    let mut state = state(source, Mode::Module, false);
+    {
+        let mut parser = Parser::new(&mut state, None);
+        parser.call_fragment();
+        parser.fragment_tail();
+        parser.state.builder.finish_node();
+    }
+    state.finish()
 }
 
 /// Parse a call header prefix. Following content and text remain unconsumed;
 /// bracketed literals inside arguments use the supplied dialect.
 pub fn parse_call_prefix(source: &str, content: &dyn ContentParser) -> Parse {
-    let mut parser = Parser::new(source, false, Some(content));
-    parser.call_fragment();
-    parser.state.builder.finish_node();
-    parser.state.finish()
+    let mut state = state(source, Mode::Module, false);
+    {
+        let mut parser = Parser::new(&mut state, Some(content));
+        parser.call_fragment();
+        parser.state.builder.finish_node();
+    }
+    state.finish()
 }
 
 pub fn parse_annotation(source: &str) -> Parse {
-    let mut parser = Parser::new(source, false, None);
-    parser.annotation_fragment();
-    parser.fragment_tail();
-    parser.state.builder.finish_node();
-    parser.state.finish()
+    let mut state = state(source, Mode::Module, false);
+    {
+        let mut parser = Parser::new(&mut state, None);
+        parser.annotation_fragment();
+        parser.fragment_tail();
+        parser.state.builder.finish_node();
+    }
+    state.finish()
 }
 
 pub fn parse_annotation_prefix(source: &str, content: &dyn ContentParser) -> Parse {
-    let mut parser = Parser::new(source, false, Some(content));
-    parser.annotation_fragment();
-    parser.state.builder.finish_node();
-    parser.state.finish()
+    let mut state = state(source, Mode::Module, false);
+    {
+        let mut parser = Parser::new(&mut state, Some(content));
+        parser.annotation_fragment();
+        parser.state.builder.finish_node();
+    }
+    state.finish()
 }
 
 /// Parse a Code content literal with a caller-selected content dialect.
 pub fn parse_content_literal(source: &str, content: &dyn ContentParser) -> Parse {
-    let mut parser = Parser::new(source, false, Some(content));
-    if parser.cur() == Some(SyntaxKind::LBracket) {
-        parser.content_literal();
-    } else {
-        parser.state.builder.start_node(SyntaxKind::Error.into());
-        parser.module_error("expected a content literal");
-        while parser.cur().is_some() {
-            parser.eat();
+    let mut state = state(source, Mode::Module, false);
+    {
+        let mut parser = Parser::new(&mut state, Some(content));
+        if parser.cur() == Some(SyntaxKind::LBracket) {
+            parser.content_literal();
+        } else {
+            parser.state.builder.start_node(SyntaxKind::Error.into());
+            parser.module_error("expected a content literal");
+            while parser.cur().is_some() {
+                parser.eat();
+            }
+            parser.state.builder.finish_node();
         }
-        parser.state.builder.finish_node();
     }
-    // This is a prefix entry: its enclosing Code parser owns the continuation.
-    parser.state.finish()
+    state.finish()
 }
 
 /// Recognize a Markup import keyword without treating longer identifiers as directives.
@@ -273,7 +165,7 @@ pub fn is_markup_for(source: &str) -> bool {
     })
 }
 
-thread_local! { static FOR_NESTING: Cell<usize> = const { Cell::new(0) }; }
+thread_local! { static FOR_NESTING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Shared syntax/lowering recursion bound across embedded frontend callbacks.
 #[doc(hidden)]
 pub struct ForNesting {
@@ -304,21 +196,21 @@ pub fn parse_for_prefix(source: &str, content: &dyn ContentParser) -> Parse {
         } else {
             source.chars().next().map_or(0, char::len_utf8)
         };
-        let mut builder = GreenNodeBuilder::new();
+        let mut builder = rowan::GreenNodeBuilder::new();
         builder.start_node(SyntaxKind::ForExpr.into());
         builder.token(SyntaxKind::Error.into(), &source[..end]);
         builder.finish_node();
         return Parse::new(
             builder.finish(),
-            vec![Diagnostic {
+            vec![crate::Diagnostic {
                 span: TextRange::new(0.into(), (end as u32).into()),
                 message: "for syntax nesting limit exceeded".into(),
             }],
         );
     };
-    let mut parser = Parser::new(source, false, Some(content));
-    parser.for_expr();
-    parser.state.finish()
+    let mut state = state(source, Mode::Module, false);
+    Parser::new(&mut state, Some(content)).for_expr();
+    state.finish()
 }
 
 /// Parse a single import prefix, optionally including the Markup `#` marker.
@@ -333,18 +225,50 @@ pub fn parse_import(source: &str) -> Parse {
 }
 
 fn import_fragment(source: &str, complete: bool) -> Parse {
-    let mut parser = Parser::new(source, true, None);
-    parser
-        .state
-        .builder
-        .start_node(SyntaxKind::ImportDecl.into());
-    if parser.cur() == Some(SyntaxKind::Hash) {
-        parser.eat();
+    let mut state = state(source, Mode::Module, true);
+    {
+        let mut parser = Parser::new(&mut state, None);
+        parser.state.builder.start_node(SyntaxKind::ImportDecl.into());
+        if parser.cur() == Some(SyntaxKind::Hash) {
+            parser.eat();
+        }
+        parser.import_contents();
+        if complete {
+            parser.fragment_tail();
+        }
+        parser.state.builder.finish_node();
     }
-    parser.import_contents();
-    if complete {
-        parser.fragment_tail();
+    state.finish()
+}
+
+/// A Code construct parsed in place on a caller's state. The caller places the
+/// cursor and, for `CallHeader`, owns the still-open `CodeCall` node.
+pub(crate) enum Fragment {
+    /// `#path<args>(args)`; leaves the `CodeCall` node open for its body.
+    CallHeader,
+    /// `@(!)(dict)` without a node, so the caller can choose the node kind.
+    AnnotationBody,
+    For,
+    Import,
+}
+
+pub(crate) fn parse_fragment(
+    state: &mut State<'_>,
+    content: &dyn ContentParser,
+    fragment: Fragment,
+) {
+    let mut parser = Parser::new(state, Some(content));
+    match fragment {
+        Fragment::CallHeader => parser.call_fragment(),
+        Fragment::AnnotationBody => parser.annotation_contents(),
+        Fragment::For => parser.for_expr(),
+        Fragment::Import => {
+            parser.state.builder.start_node(SyntaxKind::ImportDecl.into());
+            if parser.cur() == Some(SyntaxKind::Hash) {
+                parser.eat();
+            }
+            parser.import_contents();
+            parser.state.builder.finish_node();
+        }
     }
-    parser.state.builder.finish_node();
-    parser.state.finish()
 }

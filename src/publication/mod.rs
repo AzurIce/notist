@@ -110,6 +110,22 @@ impl Assets {
     pub fn generated(&mut self, path: PathBuf, bytes: Vec<u8>) -> Result<(), Error> {
         self.insert(path, Some(bytes))
     }
+    /// Check additional destinations without mutating the current output plan.
+    pub fn validate_generated_paths<'a>(
+        &'a self,
+        paths: impl IntoIterator<Item = &'a Path>,
+    ) -> Result<(), Error> {
+        let mut planned = Self::default();
+        for path in self
+            .files
+            .iter()
+            .map(|file| file.path.as_path())
+            .chain(paths)
+        {
+            planned.reserve_generated(path.to_path_buf())?;
+        }
+        Ok(())
+    }
     /// Validate a known generated destination before constructing its bytes.
     pub fn reserve_generated(&mut self, path: PathBuf) -> Result<(), Error> {
         self.insert(path, None)
@@ -272,6 +288,34 @@ impl Assets {
 #[cfg(test)]
 mod tests {
     use super::{Assets, presentation_value};
+
+    #[test]
+    fn additional_destinations_validate_without_mutating_reserved_or_written_files() {
+        use std::path::Path;
+        let mut assets = Assets::default();
+        assets.reserve_generated("page/index.html".into()).unwrap();
+        assets
+            .generated("static.txt".into(), b"static".to_vec())
+            .unwrap();
+        assets
+            .validate_generated_paths([Path::new("extra.bin")])
+            .unwrap();
+        for paths in [
+            vec![Path::new("page")],
+            vec![Path::new("page/index.html")],
+            vec![Path::new("static.txt/child")],
+            vec![Path::new("extra"), Path::new("extra/child")],
+        ] {
+            assert!(assets.validate_generated_paths(paths).is_err());
+        }
+        assets
+            .write_reserved(Path::new("page/index.html"), b"page".to_vec())
+            .unwrap();
+        assets.generated("extra.bin".into(), vec![255]).unwrap();
+        let files = assets.finish().unwrap();
+        assert_eq!(files[Path::new("page/index.html")], b"page");
+        assert_eq!(files[Path::new("extra.bin")], [255]);
+    }
 
     #[test]
     fn template_values_preserve_scalars_and_variants_without_exporting_resources() {

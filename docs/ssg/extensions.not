@@ -1,7 +1,7 @@
 #import "../components/lib.notc" as components;
 = Extension（Experimental）
 
-站点扩展在 before_compile 处理源码集合，在 before_template 处理模板数据。同一次构建的两个事件由同一扩展实例处理，可以在内部保留状态。外部命令使用 `[site.extensions.<name>]`，内置扩展使用 `[site.extensions.builtins.<name>]`。
+站点扩展在 before_compile 处理源码集合，在 before_template 处理模板数据并贡献额外输出文件。同一次构建的两个事件由同一扩展实例处理，可以在内部保留状态。外部命令使用 `[site.extensions.<name>]`，内置扩展使用 `[site.extensions.builtins.<name>]`。
 
 == 构建生命周期
 
@@ -16,8 +16,10 @@ flowchart TB
     render -- Pages / HTML --> before_template{{before_template}}
     data[加载 data] -- data --> before_template
     before_template -- Pages / data --> template[template]
-    template -- build --> publish[写入 output]
-    template -- serve --> preview[更新内存预览]
+    before_template -- files --> output[统一产物集合]
+    template --> output
+    output -- build --> publish[写入 output]
+    output -- serve --> preview[更新内存预览]
     preview --> watch[等待文件变化]
     watch --> discover
 
@@ -41,16 +43,20 @@ pub struct CompileInput {
 pub struct TemplateInput<'a> {
     pub pages: &'a [Page],
     pub data: BTreeMap<String, serde_json::Value>,
+    pub files: BTreeMap<PathBuf, Vec<u8>>,
 }
 ```
 
 | 事件 | 输入 | 可修改 |
 | --- | --- | --- |
 | `before_compile` | 发现后的源码集合 | documents |
-| `before_template` | 正文已渲染的 Pages、加载后的模板 data | data |
+| `before_template` | 正文已渲染的 Pages、加载后的模板 data、扩展贡献的 files | data、files |
 
 - documents 的键是内容目录下的规范相对路径，使用 `/`；值是完整源码，扩展名决定前端。可以添加、删除或替换文档，不写回源文件。
 - data 的键是数据文件去掉扩展名后的相对路径，例如 data/example.toml 对应 example，嵌套键使用 folder/example。
+- files 的键是输出根目录下的规范相对路径，值为文件字节。每次构建从空集合开始，后续扩展可以添加、删除或替换前序扩展贡献的文件；集合不包含页面、static、Sass 或组件产物。
+- 文件统一进入 BuildOutput.files，build 发布到磁盘，serve 更新内存预览。扩展不需要写输出目录；下一次成功构建不再返回的文件不会残留。
+- before_template 在正文链接与资源解析之后运行。贡献的文件可由模板通过 URL 引用，也可配合 data 返回资源 URL；它们不是源码虚拟资源，不参与源码的读取、图片或嵌入解析，也不能读取套完模板后的完整 HTML。
 - 每个阶段先按 Builder 注册顺序运行原生扩展，再按 extension_order 运行配置扩展；未指定时按完整扩展名排序。
 - 每个钩子修改副本，成功且校验通过后才交给下一个扩展；失败停止构建，不提交本次修改。
 - 同一实例贯穿两个事件，内部状态仅属于本次构建。错误会终止该实例，不会用失败状态重试。
@@ -119,7 +125,7 @@ before_compile 只携带源码集合，不含 data 或 pages：
 }
 ```
 
-before_template 携带最终 pages 和前序扩展修改后的 data，不含源码集合：
+before_template 携带最终 pages 和前序扩展修改后的 data、files，不含源码集合：
 
 ```json
 {
@@ -128,7 +134,8 @@ before_template 携带最终 pages 和前序扩展修改后的 data，不含源�
   "root": "/project/website",
   "config": {"title": "My Site", "content": "content"},
   "pages": [],
-  "data": {"settings": {"language": "zh"}}
+  "data": {"settings": {"language": "zh"}},
+  "files": {}
 }
 ```
 
@@ -136,7 +143,7 @@ before_template 携带最终 pages 和前序扩展修改后的 data，不含源�
 
 === 响应
 
-响应必须携带相同的 version 和 event。before_compile 只能返回 documents；before_template 只能返回 data，不能返回 pages 或 documents：
+响应必须携带相同的 version 和 event。before_compile 只能返回 documents；before_template 可以返回 data、files，不能返回 pages 或 documents：
 
 ```json
 {"version":2,"event":"before_compile","documents":{"index.not":"= Edited","demo.md":"# Demo"}}
@@ -146,9 +153,15 @@ before_template 携带最终 pages 和前序扩展修改后的 data，不含源�
 {"version":2,"event":"before_template","data":{"catalog":{"count":2}}}
 ```
 
+files 中每个值必须恰好选择 text 或 base64 一种编码：text 是 UTF-8 字符串，base64 是带标准填充的标准 Base64 字符串。请求也使用这个表示，合法 UTF-8 字节发送为 text，其余发送为 base64。Rust 命令可用 command::FileContent 表示文件内容。
+
+```json
+{"version":2,"event":"before_template","files":{"search-index.json":{"text":"[]"},"assets/example.bin":{"base64":"AP8B"}}}
+```
+
 - 省略可修改字段或写 null 表示不修改；无操作响应仍需 version 与 event。
-- 返回映射表示完整替换，不是增量补丁；空映射表示清空。要保留已有键，先修改请求中的映射，再整体返回。
-- 响应拒绝未知字段、阶段不匹配、版本不匹配。before_compile 不允许返回 data，before_template 不允许返回 pages。
+- 返回映射表示该字段的完整替换，不是增量补丁；空映射表示清空。要保留已有键，先修改请求中的映射，再整体返回。清空 files 只删除扩展贡献的文件，不影响页面与站点静态资源。
+- 响应拒绝未知字段、阶段不匹配、版本不匹配。before_compile 不允许返回 data 或 files，before_template 不允许返回 pages。
 - 可选 errors 是字符串数组，非空立即终止构建，即使同时返回修改也不会应用：
 
 ```json
@@ -177,6 +190,12 @@ for line in sys.stdin:
             data = request["data"]
             data["demo"] = generated
             response["data"] = data
+            files = request["files"]
+            files["search-index.json"] = {"text": json.dumps([
+                {"title": page["title"], "url": page["route"]["url"]}
+                for page in request["pages"]
+            ], ensure_ascii=False)}
+            response["files"] = files
         else:
             raise ValueError("unsupported event")
     except Exception as error:
@@ -187,7 +206,8 @@ for line in sys.stdin:
 == 输入校验与失败
 
 - 文档路径必须是规范相对路径：不能为空、不能为绝对路径、不能含反斜杠、`.` 或 `..` 段、空段或隐藏段；不能占用 `_notist`；扩展名必须由已注册前端支持。
-- before_compile 后检查文档路径及输出冲突；before_template 后检查 data 键，键必须是规范相对路径。
+- before_compile 后检查文档路径及输出冲突；每次 before_template 后检查 data 键和 files 路径，均必须是规范相对路径。
+- files 禁止占用 `_notist`，允许 `.well-known` 等隐藏段。与页面、static、Sass、组件资源同名，或出现文件与目录前缀冲突时构建失败，不覆盖已有产物。非法 base64 也会导致失败。
 - 生成文档的源身份是 content 下的相对路径，imports、链接、嵌入与诊断以此为基准。根注解照常生效，新目录进入 site.directories。
 - 配置了扩展时 content 目录可以不存在，内容可以全部由扩展提供。每次构建重新发现输入，删除的生成页面不会残留。
 - 任一阶段失败停止构建，保留已有输出或上一次成功预览；脚本自行写文件、上传等外部副作用不会回滚。
@@ -234,6 +254,10 @@ impl SiteExtension for Catalog {
         &mut self, _: &SiteContext<'_>, input: &mut TemplateInput<'_>,
     ) -> Result<(), Error> {
         input.data.insert("catalog".into(), serde_json::json!({"count": self.count}));
+        let index: Vec<_> = input.pages.iter().map(|page| {
+            serde_json::json!({"title": page.title, "url": page.route.url})
+        }).collect();
+        input.files.insert("search-index.json".into(), serde_json::to_vec(&index).unwrap());
         Ok(())
     }
 }

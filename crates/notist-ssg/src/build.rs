@@ -1011,13 +1011,18 @@ pub(crate) fn build<R: Resources + Send>(
             let mut template_input = crate::extensions::TemplateInput {
                 pages: &pages,
                 data: assets::data(vault.resources(), &vault.resources().resolve(&config.data))?,
+                files: BTreeMap::new(),
             };
             crate::extensions::before_template(
                 vault.resources(),
                 config,
                 &mut extensions,
                 &mut template_input,
+                &assets,
             )?;
+            for (path, bytes) in template_input.files {
+                assets.generated(path, bytes)?;
+            }
             let data = template_input.data;
             crate::extensions::finish(&mut extensions)?;
             let templates_stage = notist::progress::Span::stage("site.templates", || {

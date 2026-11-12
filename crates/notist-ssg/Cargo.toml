@@ -15,6 +15,7 @@ percent-encoding = "2"
 url = "2"
 globset = "0.4"
 relative-path = "2"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

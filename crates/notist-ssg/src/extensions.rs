@@ -18,10 +18,12 @@ pub struct CompileInput {
     pub documents: BTreeMap<PathBuf, String>,
 }
 
-/// Final pages are read-only; only template data can be changed.
+/// Final pages are read-only; extensions edit template data and contributed files.
 pub struct TemplateInput<'a> {
     pub pages: &'a [crate::Page],
     pub data: BTreeMap<String, serde_json::Value>,
+    /// Output-root-relative files contributed by extensions, not the full output.
+    pub files: BTreeMap<PathBuf, Vec<u8>>,
 }
 
 /// Native extensions read explicit resources; command extensions receive the
@@ -43,7 +45,7 @@ pub trait SiteExtension: Debug + Send + Sync {
         Ok(())
     }
 
-    /// Add presentation data after compilation, using final titles and routes.
+    /// Add presentation data and files using final titles, routes and body HTML.
     fn before_template(
         &mut self,
         _context: &SiteContext<'_>,
@@ -254,6 +256,7 @@ pub(crate) fn before_template(
     config: &SiteConfig,
     extensions: &mut [Box<dyn SiteExtension>],
     input: &mut TemplateInput<'_>,
+    assets: &notist::publication::Assets,
 ) -> Result<(), Error> {
     let context = SiteContext { resources, config };
     for extension in extensions {
@@ -264,12 +267,29 @@ pub(crate) fn before_template(
         let mut candidate = TemplateInput {
             pages: input.pages,
             data: input.data.clone(),
+            files: input.files.clone(),
         };
         extension
             .before_template(&context, &mut candidate)
             .and_then(|()| validate_data(&candidate.data))
+            .and_then(|()| {
+                for path in candidate.files.keys() {
+                    if !valid_path(path) || path.starts_with("_notist") {
+                        return Err(Error::Message(format!(
+                            "invalid site extension file path `{}`",
+                            path.display()
+                        )));
+                    }
+                }
+                if !candidate.files.is_empty() {
+                    assets
+                        .validate_generated_paths(candidate.files.keys().map(PathBuf::as_path))?;
+                }
+                Ok(())
+            })
             .map_err(|e| contextualize(extension.as_ref(), "before_template", e))?;
         input.data = candidate.data;
+        input.files = candidate.files;
         progress.finish();
     }
     Ok(())

@@ -44,6 +44,10 @@ impl SiteExtension for Native {
         input: &mut TemplateInput<'_>,
     ) -> Result<(), Error> {
         input.data.insert("native".into(), json!(true));
+        input
+            .files
+            .insert("native.txt".into(), "你好".as_bytes().to_vec());
+        input.files.insert("raw.bin".into(), vec![0, 255, 1]);
         Ok(())
     }
 }
@@ -146,6 +150,64 @@ for line in sys.stdin:
 }
 
 #[test]
+fn command_files_round_trip_text_and_binary_and_follow_replacement_semantics() {
+    let root = tempfile::tempdir().unwrap();
+    for mode in ["omit", "null", "empty", "edit"] {
+        let script = format!(
+            r#"
+import base64, json, sys
+for line in sys.stdin:
+    r = json.loads(line)
+    response = dict(version=2, event=r['event'])
+    if r['event'] == 'before_template':
+        assert r['files']['native.txt'] == {{'text': '你好'}}
+        assert base64.b64decode(r['files']['raw.bin']['base64']) == bytes([0, 255, 1])
+        mode = {mode:?}
+        if mode == 'null':
+            response['files'] = None
+        elif mode == 'empty':
+            response['files'] = {{}}
+        elif mode == 'edit':
+            files = r['files']
+            del files['native.txt']
+            files['.well-known/example'] = {{'text': 'generated'}}
+            files['search-index.json'] = {{'text': json.dumps([p['title'] for p in r['pages']])}}
+            response['files'] = files
+        response['data'] = {{'generated': 'ok'}}
+    else:
+        assert 'files' not in r
+    print(json.dumps(response), flush=True)
+"#
+        );
+        let config = setup(root.path(), &script);
+        let builder = Builder::default().with_extension(Native);
+        for site in [
+            builder
+                .build(&mut Vault::new(FsResources::new(root.path())), &config)
+                .unwrap(),
+            builder
+                .serve(&mut Vault::new(FsResources::new(root.path())), &config)
+                .unwrap(),
+        ] {
+            assert_eq!(
+                site.files.contains_key(Path::new("native.txt")),
+                matches!(mode, "omit" | "null")
+            );
+            if mode == "empty" {
+                assert!(!site.files.contains_key(Path::new("raw.bin")));
+            } else {
+                assert_eq!(site.files[Path::new("raw.bin")], [0, 255, 1]);
+            }
+            if mode == "edit" {
+                assert_eq!(site.files[Path::new(".well-known/example")], b"generated");
+                assert_eq!(site.files[Path::new("search-index.json")], br#"["Native"]"#);
+            }
+        }
+        assert!(!root.path().join("raw.bin").exists());
+    }
+}
+
+#[test]
 fn early_rejection_does_not_block_a_large_request_writer() {
     let root = tempfile::tempdir().unwrap();
     let config = setup(
@@ -240,6 +302,10 @@ fn invalid_frames_fields_and_paths_abort_the_build() {
             "invalid JSON response",
         ),
         (
+            r#"{"version":2,"event":"before_compile","files":{}}"#,
+            "invalid JSON response",
+        ),
+        (
             r##"{"version":2,"event":"before_compile","documents":{"../escape.md":"# Escape"}}"##,
             "invalid site document path",
         ),
@@ -283,6 +349,30 @@ fn template_responses_cannot_modify_pages_and_data_keys_are_validated() {
         (
             r#"{"version":2,"event":"before_template","errors":["template failed"]}"#,
             "template failed",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"../escape":{"text":"bad"}}}"#,
+            "invalid site extension file path",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"_notist/custom":{"text":"bad"}}}"#,
+            "invalid site extension file path",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"index.html":{"text":"bad"}}}"#,
+            "output collision",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"raw.bin":{"base64":"%%%"}}}"#,
+            "invalid base64",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"raw.bin":{"text":"x","base64":"AA=="}}}"#,
+            "invalid JSON response",
+        ),
+        (
+            r#"{"version":2,"event":"before_template","files":{"raw.bin":{"unknown":"x"}}}"#,
+            "invalid JSON response",
         ),
     ] {
         let script = format!(

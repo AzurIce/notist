@@ -3,6 +3,7 @@ use crate::{
     Error, Page, SiteConfig,
     extensions::{CompileInput, SiteContext, SiteExtension, TemplateInput},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -13,6 +14,35 @@ use std::{
 
 /// The event stream is incompatible with the single-request protocol.
 pub const PROTOCOL_VERSION: u32 = 2;
+
+/// A contributed file is either UTF-8 text or standard padded base64 bytes.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileContent {
+    Text(String),
+    Base64(String),
+}
+
+impl FileContent {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self::Text(text.to_owned()),
+            Err(_) => Self::Base64(STANDARD.encode(bytes)),
+        }
+    }
+
+    fn into_bytes(self, path: &Path) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Text(text) => Ok(text.into_bytes()),
+            Self::Base64(encoded) => STANDARD.decode(encoded).map_err(|error| {
+                Error::Message(format!(
+                    "invalid base64 for site file `{}`: {error}",
+                    path.display()
+                ))
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
@@ -32,6 +62,8 @@ pub enum Event {
     BeforeTemplate {
         pages: Vec<Page>,
         data: BTreeMap<String, serde_json::Value>,
+        #[serde(default)]
+        files: BTreeMap<PathBuf, FileContent>,
     },
 }
 
@@ -44,6 +76,7 @@ enum EventRef<'a> {
     BeforeTemplate {
         pages: &'a [Page],
         data: &'a BTreeMap<String, serde_json::Value>,
+        files: BTreeMap<&'a Path, FileContent>,
     },
 }
 
@@ -61,6 +94,8 @@ pub enum Response {
         version: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data: Option<BTreeMap<String, serde_json::Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        files: Option<BTreeMap<PathBuf, FileContent>>,
         #[serde(default)]
         errors: Vec<String>,
     },
@@ -185,11 +220,25 @@ impl SiteExtension for CommandExtension {
         let event = EventRef::BeforeTemplate {
             pages: input.pages,
             data: &input.data,
+            files: input
+                .files
+                .iter()
+                .map(|(path, bytes)| (path.as_path(), FileContent::from_bytes(bytes)))
+                .collect(),
         };
         match self.exchange(context, event)? {
-            Response::BeforeTemplate { data, .. } => {
+            Response::BeforeTemplate { data, files, .. } => {
                 if let Some(data) = data {
                     input.data = data;
+                }
+                if let Some(files) = files {
+                    input.files = files
+                        .into_iter()
+                        .map(|(path, content)| {
+                            let bytes = content.into_bytes(&path)?;
+                            Ok((path, bytes))
+                        })
+                        .collect::<Result<_, Error>>()?;
                 }
                 Ok(())
             }

@@ -1132,9 +1132,12 @@ impl Parser<'_, '_> {
             crate::lexed::Mode::Module,
         );
         let mut h = 0;
+        // Match the call grammar: #path<comptime>(arguments)[body]. Skipping
+        // value arguments after a generic header would expose their newlines
+        // and pipes to the enclosing table row planner.
         for (open, close) in [
-            (SyntaxKind::LParen, SyntaxKind::RParen),
             (SyntaxKind::Less, SyntaxKind::Greater),
+            (SyntaxKind::LParen, SyntaxKind::RParen),
         ] {
             if header.kind(h) != Some(open) {
                 continue;

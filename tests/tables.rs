@@ -391,31 +391,61 @@ fn multiline_strings_keep_their_payload_and_following_cells_and_rows() {
             ("r#\"\"\"", "\"\"\"#"),
             ("r##\"\"\"", "\"\"\"##"),
         ] {
-            let src = format!(
-                "| name | diagram | last |{newline}| --- | --- | --- |{newline}\
-                 | mermaid | #raw({open}{newline}{payload}{newline}{close}) | tail |{newline}\
+            for (call, level) in [("raw", Level::Inline), ("raw<BlockContent>", Level::Block)] {
+                let src = format!(
+                    "| name | diagram | last |{newline}| --- | --- | --- |{newline}\
+                 | mermaid | #{call}({open}{newline}{payload}{newline}{close}, lang: \"mermaid\") | tail |{newline}\
                  | next | plain | end |{newline}{newline}after"
-            );
-            let root = analyze("test.not", &src);
-            let table = &root.children()[0];
-            assert_eq!(table.ctor(), Ctor::Table);
-            assert_eq!(table.children().len(), 3);
-            assert!(table.children().iter().all(|row| row.children().len() == 3));
-            let raw = table.children()[1].children()[1]
-                .find(|node| node.ctor() == Ctor::RawInline)
-                .unwrap();
-            assert_eq!(raw.field("text"), Some(&Value::Str(payload.clone().into())));
-            assert_eq!(text(&table.children()[1].children()[2]), "tail");
-            assert_eq!(text(&table.children()[2]), "nextplainend");
-            assert_eq!(text(&root.children()[1]), "after");
-            for cell in table.children().iter().flat_map(|row| row.children()) {
-                assert!(
-                    cell.descendants()
-                        .all(|node| cell.span.contains_range(node.span))
                 );
+                let root = analyze("test.not", &src);
+                let table = &root.children()[0];
+                assert_eq!(table.ctor(), Ctor::Table);
+                assert_eq!(table.children().len(), 3);
+                assert!(table.children().iter().all(|row| row.children().len() == 3));
+                let raw = table.children()[1].children()[1]
+                    .find(|node| node.ctor() == Ctor::RawInline)
+                    .unwrap();
+                assert_eq!(raw.field("text"), Some(&Value::Str(payload.clone().into())));
+                assert_eq!(raw.field("lang"), Some(&Value::Str("mermaid".into())));
+                assert_eq!(raw.level, level);
+                assert_eq!(text(&table.children()[1].children()[2]), "tail");
+                assert_eq!(text(&table.children()[2]), "nextplainend");
+                assert_eq!(text(&root.children()[1]), "after");
+                for cell in table.children().iter().flat_map(|row| row.children()) {
+                    assert!(
+                        cell.descendants()
+                            .all(|node| cell.span.contains_range(node.span))
+                    );
+                }
             }
         }
     }
+}
+
+#[test]
+fn cookbook_tables_parse_without_diagnostics_or_lost_rows() {
+    let source = include_str!("../docs/cookbook/README.not");
+    let parsed = notist::syntax::markup::parse_document(source);
+    assert_eq!(parsed.syntax().to_string(), source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let tables: Vec<_> = parsed
+        .syntax()
+        .descendants()
+        .filter_map(Table::cast)
+        .collect();
+    assert_eq!(
+        tables
+            .iter()
+            .map(|table| table.rows().count())
+            .collect::<Vec<_>>(),
+        [2, 4]
+    );
+    assert!(
+        tables
+            .iter()
+            .flat_map(|table| table.rows())
+            .all(|row| row.cells().count() == 2)
+    );
 }
 
 #[test]
@@ -655,6 +685,9 @@ fn incomplete_calls_and_plain_brackets_do_not_join_table_rows() {
         "#node[x",
         "#call(\"x\")[body",
         "#call(",
+        "#call<BlockContent>(",
+        "#call<BlockContent>(\"x\")[body",
+        "#call<BlockContent",
         "#pkg.",
         "#pkg.()",
         "#call [body",

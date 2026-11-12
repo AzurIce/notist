@@ -449,6 +449,16 @@ fn cookbook_tables_parse_without_diagnostics_or_lost_rows() {
 }
 
 #[test]
+fn unicode_punctuation_after_hash_stays_literal_in_table_cells() {
+    let payload = "Path 文件名中的 ?、#、% 不拆分。";
+    let source = format!("| value |\n| --- |\n| {payload} |");
+    let root = analyze("test.not", &source);
+    let table = &root.children()[0];
+    assert_eq!(table.children().len(), 2);
+    assert_eq!(text(&table.children()[1].children()[0]), payload);
+}
+
+#[test]
 fn mermaid_diagram_source_stays_in_one_table_cell_and_renders_as_a_component() {
     let context = notist::Context::default()
         .with_module(

@@ -1119,11 +1119,7 @@ impl Parser<'_, '_> {
         let offset = usize::from(self.state.offset(start));
         let named = call_shape(&self.state.source[offset..])?;
         let rest = &self.state.source[offset..];
-        let after_path = if named {
-            path_end_bytes(rest.as_bytes(), 1)?
-        } else {
-            1
-        };
+        let after_path = if named { path_end_bytes(rest, 1)? } else { 1 };
         // Headers need Code token rules: quoted strings/comments are opaque,
         // including pipes, brackets and line breaks in their payloads.
         let header = crate::lexed::Lexed::bounded(
@@ -1213,36 +1209,42 @@ impl Parser<'_, '_> {
 /// a bare `#` only when a body bracket follows. Everything else is prose.
 fn call_shape(rest: &str) -> Option<bool> {
     let bytes = rest.as_bytes();
-    let named =
-        matches!(bytes.get(1), Some(b) if b.is_ascii_alphabetic() || *b == b'_' || *b >= 0x80);
+    let named = rest[1..]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_alphabetic() || ch == '_');
     if named {
-        path_end_bytes(bytes, 1)?;
+        path_end_bytes(rest, 1)?;
         return Some(true);
     }
     (bytes.get(1) == Some(&b'[')).then_some(false)
 }
 
 /// End of an identifier run starting at `i`. Identifiers use the literal
-/// lexer's rule: alphabetic (or non-ASCII) first, then alphanumeric, `_`, `-`.
-fn ident_end_bytes(bytes: &[u8], i: usize) -> usize {
-    let mut j = i;
-    while let Some(b) = bytes.get(j) {
-        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-') || *b >= 0x80 {
-            j += 1;
-        } else {
-            break;
-        }
-    }
-    j
+/// lexer's rule: alphabetic or `_` first, then alphanumeric, `_`, `-`.
+/// Non-ASCII punctuation is text, not an identifier or an anonymous call.
+fn ident_end_bytes(source: &str, i: usize) -> usize {
+    source[i..]
+        .char_indices()
+        .take_while(|(offset, ch)| {
+            if *offset == 0 {
+                ch.is_alphabetic() || *ch == '_'
+            } else {
+                ch.is_alphanumeric() || matches!(*ch, '_' | '-')
+            }
+        })
+        .map(|(offset, ch)| i + offset + ch.len_utf8())
+        .last()
+        .unwrap_or(i)
 }
 
-fn path_end_bytes(bytes: &[u8], i: usize) -> Option<usize> {
-    let mut j = ident_end_bytes(bytes, i);
-    while bytes.get(j) == Some(&b'.') {
-        if ident_end_bytes(bytes, j + 1) == j + 1 {
+fn path_end_bytes(source: &str, i: usize) -> Option<usize> {
+    let mut j = ident_end_bytes(source, i);
+    while source.as_bytes().get(j) == Some(&b'.') {
+        if ident_end_bytes(source, j + 1) == j + 1 {
             return None;
         }
-        j = ident_end_bytes(bytes, j + 1);
+        j = ident_end_bytes(source, j + 1);
     }
     Some(j)
 }

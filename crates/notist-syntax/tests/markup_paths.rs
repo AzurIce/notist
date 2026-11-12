@@ -61,6 +61,11 @@ fn malformed_or_nonadjacent_paths_remain_text() {
         "#pkg.",
         "#pkg.()",
         "#pkg..foo()",
+        "#pkg.1()",
+        "#名字.、()",
+        "#、%",
+        "#，",
+        "#🙂",
         "#pkg .foo()",
         "#pkg. foo()",
         "#pkg.foo ()",
@@ -86,4 +91,27 @@ fn malformed_or_nonadjacent_paths_remain_text() {
             "{src}"
         );
     }
+}
+
+#[test]
+fn unicode_call_names_stop_before_punctuation_in_table_cells() {
+    use notist_syntax::markup::ast::Table;
+    let source = "| #名字.函数、#🙂 | end |\n| --- | --- |\n| #café.展示()，#、 | tail |";
+    let parsed = parse_document(source);
+    assert_eq!(parsed.syntax().text().to_string(), source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let table = Table::cast(parsed.syntax().children().next().unwrap()).unwrap();
+    assert_eq!(table.rows().count(), 2);
+    assert!(table.rows().all(|row| row.cells().count() == 2));
+    let calls: Vec<_> = parsed
+        .syntax()
+        .descendants()
+        .filter_map(CodeCall::cast)
+        .collect();
+    assert_eq!(
+        calls.iter().map(|call| call.name()).collect::<Vec<_>>(),
+        [Some("名字.函数".into()), Some("café.展示".into())]
+    );
+    assert_eq!(calls[0].syntax().text().to_string(), "#名字.函数");
+    assert_eq!(calls[1].syntax().text().to_string(), "#café.展示()");
 }

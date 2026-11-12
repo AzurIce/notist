@@ -101,7 +101,7 @@ struct ListenOptions {
     /// Host or IP address to listen on
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    /// Listen port; defaults to 8000 with automatic fallback (0 selects any free port)
+    /// Listen port; tries 8000, 8001, ... by default (0 selects any free port)
     #[arg(long)]
     port: Option<u16>,
     /// Legacy host:port syntax; cannot be combined with --host or --port

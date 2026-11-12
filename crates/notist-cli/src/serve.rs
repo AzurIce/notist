@@ -117,9 +117,14 @@ fn bind(listen: &crate::ListenOptions) -> std::io::Result<TcpListener> {
 }
 
 fn bind_default(host: &str, preferred_port: u16) -> std::io::Result<TcpListener> {
-    match TcpListener::bind((host, preferred_port)) {
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => TcpListener::bind((host, 0)),
-        result => result,
+    let mut port = preferred_port;
+    loop {
+        match TcpListener::bind((host, port)) {
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse && port < u16::MAX => {
+                port += 1;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -128,11 +133,24 @@ mod listen_tests {
     use super::*;
 
     #[test]
-    fn default_port_falls_back_if_occupied() {
-        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = occupied.local_addr().unwrap().port();
+    fn default_port_uses_the_first_available_successor() {
+        // Reserve a consecutive range before releasing its final port, so the
+        // expected successor does not depend on unrelated occupied ports.
+        let [first, second, available] = (0..100)
+            .find_map(|_| {
+                let first = TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = first.local_addr().unwrap().port();
+                let second = TcpListener::bind(("127.0.0.1", port.checked_add(1)?)).ok()?;
+                let third = TcpListener::bind(("127.0.0.1", port.checked_add(2)?)).ok()?;
+                Some([first, second, third])
+            })
+            .expect("three consecutive ports for the listener test");
+        let port = first.local_addr().unwrap().port();
+        let expected = available.local_addr().unwrap().port();
+        drop(available);
         let listener = bind_default("127.0.0.1", port).unwrap();
-        assert_ne!(listener.local_addr().unwrap().port(), port);
+        assert_eq!(listener.local_addr().unwrap().port(), expected);
+        drop((first, second));
     }
 
     #[test]
@@ -142,6 +160,40 @@ mod listen_tests {
         drop(listener);
         let listener = bind_default("127.0.0.1", port).unwrap();
         assert_eq!(listener.local_addr().unwrap().port(), port);
+    }
+
+    #[test]
+    fn explicit_ports_and_addresses_do_not_fall_back() {
+        let occupied = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = occupied.local_addr().unwrap();
+        for listen in [
+            crate::ListenOptions {
+                host: "127.0.0.1".into(),
+                port: Some(address.port()),
+                address: None,
+            },
+            crate::ListenOptions {
+                host: "127.0.0.1".into(),
+                port: None,
+                address: Some(address.to_string()),
+            },
+        ] {
+            assert_eq!(
+                bind(&listen).unwrap_err().kind(),
+                std::io::ErrorKind::AddrInUse
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_port_zero_still_requests_an_os_assigned_port() {
+        let listener = bind(&crate::ListenOptions {
+            host: "127.0.0.1".into(),
+            port: Some(0),
+            address: None,
+        })
+        .unwrap();
+        assert_ne!(listener.local_addr().unwrap().port(), 0);
     }
 }
 

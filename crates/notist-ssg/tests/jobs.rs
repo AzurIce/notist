@@ -6,7 +6,7 @@ use notist_ssg::{Builder, SiteConfig};
 use std::{
     collections::HashSet,
     num::NonZeroUsize,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     thread::{self, ThreadId},
 };
 
@@ -19,6 +19,96 @@ impl DocumentExtension for Threads {
     fn after_evaluate(&self, _: &DocumentContext<'_>, _: &mut notist::Item) -> ExtensionResult {
         self.0.lock().unwrap().insert(thread::current().id());
         Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct LiveTrees {
+    values: Mutex<Vec<Weak<str>>>,
+    maximum: std::sync::atomic::AtomicUsize,
+}
+#[derive(Debug)]
+struct Trees(Arc<LiveTrees>);
+impl DocumentExtension for Trees {
+    fn name(&self) -> &str {
+        "test.live-trees"
+    }
+    fn after_evaluate(&self, _: &DocumentContext<'_>, root: &mut notist::Item) -> ExtensionResult {
+        // This new value cannot be held by analysis or an evaluator cache.
+        let text: Arc<str> = Arc::from("tree-owned payload");
+        let mut values = self.0.values.lock().unwrap();
+        values.retain(|value| value.strong_count() != 0);
+        values.push(Arc::downgrade(&text));
+        self.0
+            .maximum
+            .fetch_max(values.len(), std::sync::atomic::Ordering::SeqCst);
+        root.children_mut().unwrap().push(
+            notist::Item::new(notist::Ctor::Text, Default::default())
+                .with_field("text", notist::Value::Str(text.into())),
+        );
+        Ok(())
+    }
+}
+
+#[test]
+fn evaluated_trees_are_retired_on_workers_not_retained_in_page_plans() {
+    for workers in [1, 4] {
+        let tracker = Arc::new(LiveTrees::default());
+        let mut vault = Vault::new(files()).with_extension(Trees(tracker.clone()));
+        let builder = Builder::default().with_executor(Arc::new(
+            Executor::new(NonZeroUsize::new(workers).unwrap()).unwrap(),
+        ));
+        let output = builder.build(&mut vault, &SiteConfig::default()).unwrap();
+        assert_eq!(output.pages.len(), 521);
+        assert!(tracker.maximum.load(std::sync::atomic::Ordering::SeqCst) <= workers);
+        assert!(
+            tracker
+                .values
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|value| value.strong_count() == 0)
+        );
+        assert!(
+            output
+                .pages
+                .iter()
+                .all(|page| page.html.contains("tree-owned payload"))
+        );
+    }
+}
+
+#[test]
+fn forward_anchors_and_typed_suffixes_work_across_preparation_windows() {
+    let mut resources = files();
+    resources.insert(
+        "content/page-0.not",
+        "= Start\n\n[Later](z.not#later) #link(p\"./z.not\", fragment: \"later\")[typed]",
+    );
+    resources.insert("content/z.not", "= Later\n\n[Start](page-0.not#start)");
+    let config = SiteConfig::default();
+    let mut expected = None;
+    for workers in [1, 2, 4] {
+        let builder = Builder::default().with_executor(Arc::new(
+            Executor::new(NonZeroUsize::new(workers).unwrap()).unwrap(),
+        ));
+        let site = builder
+            .build(&mut Vault::new(resources.clone()), &config)
+            .unwrap();
+        assert!(site.warnings.is_empty(), "{:?}", site.warnings);
+        assert!(
+            site.pages
+                .iter()
+                .find(|p| p.route.path == std::path::Path::new("page-0.not"))
+                .unwrap()
+                .html
+                .contains("href=\"z.html#later\"")
+        );
+        if let Some(expected) = &expected {
+            assert_eq!(&site.files, expected);
+        } else {
+            expected = Some(site.files);
+        }
     }
 }
 

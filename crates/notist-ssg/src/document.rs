@@ -30,7 +30,6 @@ pub struct Page {
 pub(crate) struct Document {
     pub page: Page,
     pub root: Item,
-    pub source: String,
     pub sources: Sources,
     pub ids: BTreeSet<String>,
 }
@@ -132,7 +131,7 @@ impl Document {
     pub(crate) fn new(
         route: Route,
         mut root: Item,
-        source: String,
+        source: &str,
         sources: Sources,
     ) -> Result<Self, Error> {
         let mut errors = vec![];
@@ -146,7 +145,7 @@ impl Document {
             return Err(Error::Diagnostics(
                 errors
                     .into_iter()
-                    .map(|d| diagnostic(&route.source, &source, d))
+                    .map(|d| diagnostic(&route.source, source, d))
                     .collect(),
             ));
         }
@@ -204,7 +203,6 @@ impl Document {
                 ancestors,
             },
             root,
-            source,
             sources,
             ids,
         })

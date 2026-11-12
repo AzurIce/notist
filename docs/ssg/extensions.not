@@ -12,7 +12,7 @@ flowchart TB
     config[加载配置] --> discover[发现输入]
     discover -- source --> before_compile{{before_compile}}
     before_compile -- source --> compile[compile]
-    compile -- 文档树与页面元信息 --> render[render]
+    compile -- HTML计划与页面元信息 --> render[render]
     render -- Pages / HTML --> before_template{{before_template}}
     data[加载 data] -- data --> before_template
     before_template -- Pages / data --> template[template]
@@ -25,7 +25,7 @@ flowchart TB
     class before_compile,before_template hook
 """#)
 
-- compile 校验输入、计算页面 URL 与输出路径、分析和求值文档、提取页面元信息。
+- compile 校验输入、计算页面 URL 与输出路径、完成全站分析，再有界求值并提取页面元信息和 HTML 计划。页面计划不保留文档树；所有权与定稿边界见 [有界页面生命周期](../designs/page-lifecycle.not)。
 - render 由 SSG 解析链接与资源路径，调用 notist-html 渲染正文并生成组件资源。
 - template 加载模板，将正文与模板数据组合为完整页面。静态资源与 Sass 属于站点资源处理，不单列节点。
 - site.data 不进入 .not 求值环境，不经过 before_compile。

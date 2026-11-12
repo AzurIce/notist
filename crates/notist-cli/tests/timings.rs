@@ -65,7 +65,8 @@ fn build_reports_cover_core_site_and_publication_even_on_failure() {
         "core.lower",
         "core.check",
         "core.evaluate",
-        "core.render.html",
+        "core.render.html.prepare",
+        "core.render.html.finish",
         "site.build",
         "site.discover",
         "site.links",
@@ -142,7 +143,12 @@ fn jobs_and_timings_cover_every_page_with_valid_worker_parents() {
         let report: serde_json::Value =
             serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
         let spans = report["spans"].as_array().unwrap();
-        for stage in ["host.document.evaluate", "site.template.page"] {
+        for stage in [
+            "host.document.evaluate",
+            "core.render.html.prepare",
+            "core.render.html.finish",
+            "site.template.page",
+        ] {
             assert_eq!(
                 spans.iter().filter(|s| s["stage"] == stage).count(),
                 258,

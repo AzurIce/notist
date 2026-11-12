@@ -8,6 +8,7 @@ mod config;
 mod document;
 pub mod extensions;
 mod mounts;
+mod prepared;
 mod routes;
 mod templates;
 mod themes;

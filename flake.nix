@@ -48,6 +48,7 @@
               || pkgs.lib.hasPrefix "${toString ./.}/crates/notist-ssg/src/themes/" path
               || path == "${toString ./.}/crates/notist-html/src/highlight/highlight.css"
               || path == "${toString ./.}/crates/notist-html/src/status.css"
+              || path == "${toString ./.}/crates/notist-observe/src/timings.html"
               || path == "${toString ./.}/crates/notist-cli/src/html.css"
               || path == "${toString ./.}/crates/notist-cli/src/serve.js";
           };

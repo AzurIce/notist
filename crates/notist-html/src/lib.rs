@@ -21,6 +21,8 @@ use notist_core::item::{Ctor, Item, Value};
 mod attributes;
 pub mod components;
 mod escape;
+mod plan;
+pub use plan::{HtmlPlan, PlanResult};
 #[cfg(feature = "highlight")]
 pub mod highlight;
 mod url;
@@ -206,6 +208,8 @@ impl<'a> Renderer<'a> {
                     diagnostics: Vec::new(),
                     source_map: Vec::new(),
                     used_components: Vec::new(),
+                    preparation: None,
+                    insertions: Vec::new(),
                 };
                 if self.source_map
                     && let Err(error) = self.sources.validate_node(item)
@@ -241,6 +245,8 @@ struct State<'r, 'a> {
     diagnostics: Vec<Diagnostic>,
     source_map: Vec<SourceMapping>,
     used_components: Vec<Component>,
+    preparation: Option<plan::Preparation<'r>>,
+    insertions: Vec<plan::Insertion>,
 }
 
 impl State<'_, '_> {
@@ -267,6 +273,9 @@ impl State<'_, '_> {
             return;
         }
 
+        if self.deferred_component(item) {
+            return;
+        }
         if let Some(id) = item.function_id()
             && let Some(target) = self.renderer.registry.target(id)
         {
@@ -309,6 +318,9 @@ impl State<'_, '_> {
     }
 
     fn component(&mut self, item: &Item, component: &Component) {
+        if self.preparation.is_some() {
+            self.insert(plan::Operation::ComponentUse(component.id.def_id()));
+        }
         if !self
             .used_components
             .iter()
@@ -316,6 +328,12 @@ impl State<'_, '_> {
         {
             self.used_components.push(component.clone());
         }
+        self.component_open(item, component);
+        self.children(item);
+        self.close(&component.tag);
+    }
+
+    fn component_open(&mut self, item: &Item, component: &Component) {
         self.open(&component.tag, item, "");
         self.attr("notist-protocol", "2");
         self.attr("notist-function", &component.id.to_string());
@@ -401,8 +419,6 @@ impl State<'_, '_> {
             }
         }
         self.output.push('>');
-        self.children(item);
-        self.close(&component.tag);
     }
 
     fn native(&mut self, item: &Item, ctor: &Ctor) {
@@ -495,6 +511,9 @@ impl State<'_, '_> {
             }
             Ctor::Link => self.link(item),
             Ctor::Embed => {
+                if self.deferred_url(item, true) {
+                    return;
+                }
                 self.open("span", item, "notist-embed");
                 self.field_title(item);
                 self.output.push('>');
@@ -747,6 +766,9 @@ impl State<'_, '_> {
     }
 
     fn link(&mut self, item: &Item) {
+        if self.deferred_url(item, false) {
+            return;
+        }
         self.open("a", item, "");
         self.url(item, "target", "href", false);
         self.field_title(item);
@@ -895,7 +917,11 @@ impl State<'_, '_> {
                 Err(_) => {}
             }
         }
-        self.diagnostics.push(d);
+        if self.preparation.is_some() {
+            self.insert(plan::Operation::Diagnostic(d));
+        } else {
+            self.diagnostics.push(d);
+        }
     }
 }
 

@@ -54,6 +54,20 @@ impl<R: Resources + Send> Vault<R> {
         documents: &[(&DocumentHandle, &Analysis)],
         executor: &crate::Executor,
     ) -> Result<Vec<Result<Evaluation, VaultError>>, VaultError> {
+        self.map_evaluated_documents(documents, executor, |_, output| output)
+    }
+
+    /// Consume each evaluation on its worker before starting the next document.
+    /// Only the callback's projection is collected. The callback must be pure
+    /// host preparation: resource binding/publication remain ordered operations.
+    /// At most one unconsumed evaluation per worker is live. To bound tree
+    /// lifetimes, the returned projection T must not itself retain evaluated IR.
+    pub fn map_evaluated_documents<T: Send>(
+        &mut self,
+        documents: &[(&DocumentHandle, &Analysis)],
+        executor: &crate::Executor,
+        prepare: impl Fn(usize, Result<Evaluation, VaultError>) -> T + Send + Sync,
+    ) -> Result<Vec<T>, VaultError> {
         for (handle, analysis) in documents {
             self.check_handle(handle)?;
             if analysis.source().id() != handle.source.id()
@@ -73,23 +87,28 @@ impl<R: Resources + Send> Vault<R> {
         if executor.jobs() == 1 {
             return Ok(documents
                 .iter()
-                .map(|(handle, analysis)| self.evaluate_document(handle, analysis))
+                .enumerate()
+                .map(|(i, (handle, analysis))| prepare(i, self.evaluate_document(handle, analysis)))
                 .collect());
         }
         let inputs = Inputs(Mutex::new(&mut self.resources));
         let pipeline = &self.pipeline;
         let limits = self.evaluation_limits;
         const BATCH: usize = 128;
-        let chunks = executor.map_chunks(documents, BATCH, |_, documents| {
+        let chunks = executor.map_chunks(documents, BATCH, |start, documents| {
             documents
                 .iter()
-                .map(|(handle, analysis)| {
-                    Self::evaluate_prepared(
-                        pipeline,
-                        analysis,
-                        handle.environment.context(),
-                        &inputs,
-                        limits,
+                .enumerate()
+                .map(|(i, (handle, analysis))| {
+                    prepare(
+                        start + i,
+                        Self::evaluate_prepared(
+                            pipeline,
+                            analysis,
+                            handle.environment.context(),
+                            &inputs,
+                            limits,
+                        ),
                     )
                 })
                 .collect::<Vec<_>>()

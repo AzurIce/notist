@@ -1,10 +1,11 @@
 use crate::{
     Error, Page, SiteConfig, assets,
-    document::{Document, diagnostic},
+    document::diagnostic,
+    prepared::{PreparedPage, Reference, Target, image},
     templates,
 };
 use notist::{
-    Diagnostic, DiagnosticCode, Item, Phase, Resources, SourceDiagnostic, Value, Vault,
+    DiagnosticCode, Resources, SourceDiagnostic, Vault,
     publication::{
         Assets,
         url::{fragment, relative_url},
@@ -240,17 +241,6 @@ fn discover<R: Resources>(
     Ok(())
 }
 
-fn issue(document: &Document, node: &Item, message: String) -> SourceDiagnostic {
-    let span = node.origin.as_ref().map_or(node.span, |o| {
-        notist::TextRange::new(o.start.into(), o.end.into())
-    });
-    let mut d = Diagnostic::new(Phase::Semantic, span, message);
-    if let Some(origin) = &node.origin {
-        d = d.at_source(&document.sources, origin.source);
-    }
-    diagnostic(&document.page.route.source, &document.source, d)
-}
-
 struct DocumentTarget {
     route: crate::Route,
     ids: BTreeSet<String>,
@@ -261,20 +251,22 @@ struct DocumentIndex {
     outputs: HashMap<PathBuf, usize>,
 }
 impl DocumentIndex {
-    fn new(documents: &[Document]) -> Self {
+    fn new<'a>(
+        documents: impl IntoIterator<Item = (&'a crate::Route, &'a BTreeSet<String>)>,
+    ) -> Self {
         // Link destinations need routes and anchors, never another page's tree.
         // Own that small projection so rendered trees can be released in order.
         let targets: Vec<_> = documents
-            .iter()
-            .map(|document| DocumentTarget {
-                route: document.page.route.clone(),
-                ids: document.ids.clone(),
+            .into_iter()
+            .map(|(route, ids)| DocumentTarget {
+                route: route.clone(),
+                ids: ids.clone(),
             })
             .collect();
-        let sources: BTreeMap<_, _> = documents
+        let sources: BTreeMap<_, _> = targets
             .iter()
             .enumerate()
-            .map(|(i, document)| (document.page.route.source.clone(), i))
+            .map(|(i, document)| (document.route.source.clone(), i))
             .collect();
         let mut outputs = HashMap::new();
         // Keep source-path precedence, including ambiguous aliases, exactly as
@@ -307,9 +299,9 @@ impl DocumentIndex {
 }
 
 fn resolve_link(
-    document: &Document,
+    route: &crate::Route,
     target: &str,
-    node: &Item,
+    node: &Reference,
     content: &Path,
     documents: &DocumentIndex,
     outputs: &BTreeSet<PathBuf>,
@@ -339,13 +331,7 @@ fn resolve_link(
         return Err("invalid local link path".into());
     }
     // Generated nodes retain their defining document as the reference base.
-    let origin = node
-        .origin
-        .as_ref()
-        .map(|o| document.sources.name(o.source).map(Path::new))
-        .transpose()
-        .map_err(|e| e.to_string())?
-        .unwrap_or(&document.page.route.source);
+    let origin = node.origin.as_ref().map_err(Clone::clone)?;
     let source = if path.is_empty() {
         Cow::Borrowed(origin)
     } else if path.starts_with('/') {
@@ -364,26 +350,18 @@ fn resolve_link(
                 .decode_utf8()
                 .map_err(|_| "invalid UTF-8 in anchor")?;
             if !destination.ids.contains(decoded.as_ref()) {
-                warnings.push(issue(
-                    document,
-                    node,
-                    format!(
-                        "missing anchor `{anchor}` in `{}`",
-                        destination.route.path.display()
-                    ),
-                ));
+                warnings.push(node.issue(format!(
+                    "missing anchor `{anchor}` in `{}`",
+                    destination.route.path.display()
+                )));
             }
         }
         Cow::Borrowed(destination.route.output.as_path())
     } else {
         let Some(published) = mounts.path(&source) else {
-            let mut warning = issue(
-                document,
-                node,
-                format!(
-                    "reference `{target}` is outside the content directory and configured mounts"
-                ),
-            );
+            let mut warning = node.issue(format!(
+                "reference `{target}` is outside the content directory and configured mounts"
+            ));
             warning.diagnostic.code = Some(DiagnosticCode::OutsideVault);
             warnings.push(warning);
             return Ok(None);
@@ -396,11 +374,9 @@ fn resolve_link(
         } else {
             let index = published.join("index.html");
             if !outputs.contains(&index) {
-                warnings.push(issue(
-                    document,
-                    node,
-                    format!("missing local reference `{target}` (not published)"),
-                ));
+                warnings.push(node.issue(format!(
+                    "missing local reference `{target}` (not published)"
+                )));
                 if source.extension().is_some_and(|s| s == "not" || s == "md") {
                     Cow::Owned(
                         crate::Route::plan(content.join(&published), content, directory_urls)
@@ -415,17 +391,13 @@ fn resolve_link(
             }
         }
     };
-    let mut url = if path.is_empty() && destination.as_ref() == document.page.route.output {
+    let mut url = if path.is_empty() && destination.as_ref() == route.output {
         String::new()
     } else {
         if directory_urls && destination.file_name().is_some_and(|s| s == "index.html") {
-            relative_url(
-                &document.page.route.output,
-                destination.parent().unwrap(),
-                true,
-            )
+            relative_url(&route.output, destination.parent().unwrap(), true)
         } else {
-            relative_url(&document.page.route.output, &destination, false)
+            relative_url(&route.output, &destination, false)
         }
     };
     if let Some(query) = query {
@@ -446,9 +418,9 @@ fn resolve_link(
 }
 
 fn resolve_embed(
-    document: &Document,
+    route: &crate::Route,
     path: &notist::ResourcePath,
-    node: &Item,
+    node: &Reference,
     content: &Path,
     documents: &DocumentIndex,
     outputs: &BTreeSet<PathBuf>,
@@ -461,8 +433,7 @@ fn resolve_embed(
         .find(&source, content)
         .or_else(|| logical.as_ref().and_then(|p| documents.find(p, content)));
     let output = if let Some(destination) = destination {
-        if let Some(anchor) =
-            notist::embed::string(&node.fields(), "fragment").filter(|anchor| !anchor.is_empty())
+        if let Some(anchor) = node.fragment.as_deref().filter(|anchor| !anchor.is_empty())
             && !destination.ids.contains(anchor)
         {
             return Err(format!(
@@ -488,43 +459,17 @@ fn resolve_embed(
             Cow::Owned(index)
         }
     };
-    if output.as_ref() == document.page.route.output {
+    if output.as_ref() == route.output {
         Ok(String::new())
     } else {
         Ok(
             if directory_urls && output.file_name().is_some_and(|s| s == "index.html") {
-                relative_url(&document.page.route.output, output.parent().unwrap(), true)
+                relative_url(&route.output, output.parent().unwrap(), true)
             } else {
-                relative_url(&document.page.route.output, &output, false)
+                relative_url(&route.output, &output, false)
             },
         )
     }
-}
-
-fn image(node: &Item, url: &str) -> Option<String> {
-    if !notist_html::is_safe_url(url) {
-        return None;
-    }
-    let extension = Path::new(url.split(['?', '#']).next()?)
-        .extension()?
-        .to_str()?;
-    if ![
-        "png", "jpg", "jpeg", "gif", "svg", "webp", "avif", "apng", "bmp", "ico",
-    ]
-    .iter()
-    .any(|e| extension.eq_ignore_ascii_case(e))
-    {
-        return None;
-    }
-    let alt = match node.field("description") {
-        Some(Value::Str(s)) => s.as_str(),
-        _ => "",
-    };
-    Some(format!(
-        "<img src=\"{}\" alt=\"{}\">",
-        notist_html::escape_attribute(url),
-        notist_html::escape_attribute(alt)
-    ))
 }
 
 /// Rendering uses only immutable prepared values. Resource reads, document
@@ -773,50 +718,57 @@ pub(crate) fn build<R: Resources + Send>(
             analysis_stage.finish();
             // Fix every generated/edited document source in the shared input view before
             // any page can consume another document as text, regardless of route order.
-            let mut handles = Vec::with_capacity(analyzed.len());
-            let evaluation_stage =
-                notist::progress::Span::stage("site.evaluate", || "Evaluate documents".into());
+            let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
+                "Evaluate and prepare pages".into()
+            });
             let evaluation_start = std::time::Instant::now();
-            let parallel = if executor.jobs() > 1 && analyzed.len() > 128 {
-                let jobs: Vec<_> = analyzed
+            let parallelized = executor.jobs() > 1 && analyzed.len() > 128;
+            let mut analyzed = analyzed.into_iter();
+            // Analysis has a whole-site barrier; evaluated trees do not. Windows
+            // retire consumed analyses, while each worker returns only a plan.
+            let window = executor.jobs().saturating_mul(128);
+            loop {
+                let batch: Vec<_> = analyzed.by_ref().take(window).collect();
+                if batch.is_empty() {
+                    break;
+                }
+                let jobs: Vec<_> = batch
                     .iter()
                     .map(|(_, _, analysis, handle)| (handle, analysis))
                     .collect();
-                Some(vault.evaluate_documents(&jobs, executor)?)
-            } else {
-                None
-            };
-            let parallelized = parallel.is_some();
-            let mut parallel = parallel.map(Vec::into_iter);
-            for (route, text, analysis, handle) in analyzed {
-                let document = notist::progress::Span::stage(
-                    if parallelized {
-                        "site.document.prepare"
-                    } else {
-                        "site.document.evaluate"
-                    },
-                    || format!("Document {}", route.path.display()),
-                );
-                let evaluation = match &mut parallel {
-                    Some(results) => results.next().unwrap()?,
-                    None => vault.evaluate_document(&handle, &analysis)?,
+                let prepare =
+                    |i: usize, evaluation: Result<notist::Evaluation, notist::VaultError>| {
+                        let (route, text, analysis, handle) = &batch[i];
+                        notist::progress::run_stage(
+                            "site.document.prepare",
+                            || format!("Prepare {}", route.path.display()),
+                            || {
+                                PreparedPage::new(
+                                    route.clone(),
+                                    text,
+                                    analysis.source().clone(),
+                                    evaluation?,
+                                    handle,
+                                    &config.title,
+                                )
+                            },
+                        )
+                    };
+                let prepared = if parallelized {
+                    vault.map_evaluated_documents(&jobs, executor, prepare)?
+                } else {
+                    jobs.iter()
+                        .enumerate()
+                        .map(|(i, (handle, analysis))| {
+                            prepare(i, vault.evaluate_document(handle, analysis))
+                        })
+                        .collect()
                 };
-                errors.extend(
-                    evaluation
-                        .diagnostics
-                        .into_iter()
-                        .map(|d| diagnostic(&route.source, &text, d)),
-                );
-                let mut prepared = Document::new(route, evaluation.root, text, evaluation.sources)?;
-                if prepared.page.route.url == "/"
-                    && prepared.page.headings.is_empty()
-                    && !prepared.page.attrs.contains_key("title")
-                {
-                    prepared.page.title = config.title.clone();
+                for prepared in prepared {
+                    let (page, diagnostics) = prepared?;
+                    errors.extend(diagnostics);
+                    documents.push(page);
                 }
-                documents.push(prepared);
-                handles.push(handle);
-                document.finish();
             }
             let mut diagnostics = vec![];
             if recover {
@@ -878,14 +830,17 @@ pub(crate) fn build<R: Resources + Send>(
                 }
             }
             asset_stage.finish();
-            let by_source = DocumentIndex::new(&documents);
+            let by_source = DocumentIndex::new(documents.iter().map(|d| (&d.page.route, &d.ids)));
+            for document in &mut documents {
+                document.ids.clear();
+            }
             let mut warnings = vec![];
             let mut pages = vec![];
             let mut components = BTreeMap::new();
             let rendering = notist::progress::Span::stage("site.render", || {
                 "Resolve links and render HTML".into()
             });
-            for (document, handle) in documents.into_iter().zip(handles) {
+            for document in documents {
                 let page_progress = notist::progress::Span::stage("site.document.render", || {
                     format!("Render {}", document.page.route.path.display())
                 });
@@ -895,22 +850,15 @@ pub(crate) fn build<R: Resources + Send>(
                 let links = notist::progress::Span::stage("site.links", || {
                     "Resolve document links and resources".into()
                 });
-                let mut resolved = BTreeMap::new();
-                let mut resource_urls = BTreeMap::new();
-                for node in notist::embed::references(&document.root) {
-                    if node.is_error() {
-                        continue;
-                    }
+                let mut resolved = vec![None; document.references.len()];
+                let mut resource_resolution_failed = false;
+                for (key, node) in document.references.iter().enumerate() {
                     // Only explicit references publish files when bulk copying is disabled.
-                    let referenced = match node.field("target") {
-                        Some(Value::Path(path)) => Some(PathBuf::from(path.logical_path())),
-                        Some(Value::Str(url)) if !notist::embed::is_embed(node) => {
-                            let origin = node
-                                .origin
-                                .as_ref()
-                                .and_then(|o| document.sources.name(o.source).ok())
-                                .map(Path::new)
-                                .unwrap_or(&document.page.route.source);
+                    let referenced = match &node.target {
+                        Target::Resource(path) => Some(PathBuf::from(path.logical_path())),
+                        Target::Url(url) if !node.embed => {
+                            let origin =
+                                node.origin.as_ref().unwrap_or(&document.page.route.source);
                             let local = url.split(['?', '#']).next().unwrap_or("");
                             if local.is_empty()
                                 || local.starts_with("//")
@@ -936,11 +884,11 @@ pub(crate) fn build<R: Resources + Send>(
                         let source = mounts.resolve(&source);
                         if let Some(destination) = mounts.path(&source) {
                             if destination.starts_with("_notist") {
-                                errors.push(issue(
-                                    &document,
-                                    node,
-                                    "_notist is reserved for generated resources".into(),
-                                ));
+                                errors.push(
+                                    node.issue(
+                                        "_notist is reserved for generated resources".into(),
+                                    ),
+                                );
                                 continue;
                             }
                             if !outputs.contains(&destination)
@@ -956,12 +904,10 @@ pub(crate) fn build<R: Resources + Send>(
                             }
                         }
                     }
-                    if notist::embed::is_embed(node)
-                        || matches!(node.field("target"), Some(Value::Path(_)))
-                    {
-                        if let Some(Value::Path(path)) = node.field("target") {
+                    if node.embed || matches!(&node.target, Target::Resource(_)) {
+                        if let Target::Resource(path) = &node.target {
                             match resolve_embed(
-                                &document,
+                                &document.page.route,
                                 path,
                                 node,
                                 &content,
@@ -971,18 +917,21 @@ pub(crate) fn build<R: Resources + Send>(
                                 config.directory_urls,
                             ) {
                                 Ok(url) => {
-                                    resource_urls.insert(path.clone(), url);
+                                    resolved[key] = Some(url);
                                 }
-                                Err(message) => errors.push(issue(&document, node, message)),
+                                Err(message) => {
+                                    resource_resolution_failed = true;
+                                    errors.push(node.issue(message));
+                                }
                             }
                         }
                         continue;
                     }
-                    let Some(Value::Str(target)) = node.field("target") else {
+                    let Target::Url(target) = &node.target else {
                         continue;
                     };
                     match resolve_link(
-                        &document,
+                        &document.page.route,
                         target,
                         node,
                         &content,
@@ -993,53 +942,53 @@ pub(crate) fn build<R: Resources + Send>(
                         &mut warnings,
                     ) {
                         Ok(Some(url)) => {
-                            resolved.insert(
-                                (node.origin.as_ref().map(|o| o.source), target.clone()),
-                                url,
-                            );
+                            resolved[key] = Some(url);
                         }
                         Ok(None) => {}
                         Err(message) => {
-                            let d = issue(&document, node, message);
+                            let d = node.issue(message);
                             errors.push(d);
                         }
                     }
                 }
+                if resource_resolution_failed {
+                    // A resource base is a page-local binding, independent of
+                    // each occurrence's fragment validation. Reuse a successful
+                    // occurrence even if another occurrence failed, so HTML
+                    // does not add a spurious unpublished-resource diagnostic.
+                    let bindings: BTreeMap<_, _> = document
+                        .references
+                        .iter()
+                        .zip(&resolved)
+                        .filter_map(|(reference, url)| match (&reference.target, url) {
+                            (Target::Resource(path), Some(url)) => Some((path, url.clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    for (reference, url) in document.references.iter().zip(&mut resolved) {
+                        if let Target::Resource(path) = &reference.target {
+                            *url = bindings.get(path).cloned();
+                        }
+                    }
+                }
                 links.finish();
-                let lookup = |node: &Item, url: &str| {
-                    resolved
-                        .get(&(node.origin.as_ref().map(|o| o.source), url.into()))
-                        .cloned()
-                };
-                let (registry, environment) =
-                    vault.html_registry_for_document(&handle, &document.root)?;
-                let rendered = notist_html::Renderer::from_registry(registry)
-                    .with_sources(&document.sources)
-                    .with_code_renderer(notist_html::highlight::code)
-                    .with_url_resolver(lookup)
-                    .with_resource_resolver(|_, path| resource_urls.get(path).cloned())
-                    .with_embed_renderer(|node| {
-                        let base = match node.field("target")? {
-                            Value::Path(path) => resource_urls.get(path)?.as_str(),
-                            Value::Str(url) => url.as_str(),
-                            _ => return None,
-                        };
-                        let url = notist::embed::append_suffix(base, &node.fields()).ok()?;
-                        image(node, &url)
-                    })
-                    .render_with_diagnostics(&document.root);
+                let registry = vault.resolve_html_bindings(&document.bindings)?;
+                let source = document.source_text().to_owned();
+                let rendered = document.html.finish(&registry, &resolved, |key, url| {
+                    image(&document.references[key].description, url)
+                });
                 errors.extend(
                     rendered
                         .diagnostics
                         .into_iter()
-                        .map(|d| diagnostic(&document.page.route.source, &document.source, d)),
+                        .map(|d| diagnostic(&document.page.route.source, &source, d)),
                 );
                 let component_path = PathBuf::from("_notist/pages")
                     .join(&document.page.route.path)
                     .with_extension("js");
                 let registrations = assets.components(
                     vault.resources(),
-                    &environment,
+                    document.bindings.environment(),
                     &rendered.used_components,
                     &component_path,
                 )?;
@@ -1105,6 +1054,8 @@ pub(crate) fn build<R: Resources + Send>(
 mod tests {
     use super::*;
     use crate::Route;
+    use crate::document::Document;
+    use notist::{Item, Value};
 
     #[test]
     fn destination_index_owns_only_metadata_and_preserves_alias_precedence() {
@@ -1121,15 +1072,15 @@ mod tests {
             Document::new(
                 Route::new(content.join(source), content).unwrap(),
                 root,
-                String::new(),
+                "",
                 Default::default(),
             )
             .unwrap()
         })
         .collect();
-        let index = DocumentIndex::new(&documents);
+        let index = DocumentIndex::new(documents.iter().map(|d| (&d.page.route, &d.ids)));
         documents.reverse();
-        let reversed = DocumentIndex::new(&documents);
+        let reversed = DocumentIndex::new(documents.iter().map(|d| (&d.page.route, &d.ids)));
         drop(documents);
         for index in [index, reversed] {
             let alias = index.find(&content.join("a.html"), content).unwrap();

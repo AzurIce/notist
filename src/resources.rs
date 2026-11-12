@@ -9,6 +9,24 @@ use std::sync::Arc;
 /// reading/copying. ResourceSession fixes the result of the first read.
 pub trait ResourceReader: Send + Sync {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead;
+    /// Verify actual bytes through this same rooted capability. Implementations
+    /// may stream without retaining a second full file. Failure is never proof
+    /// that an output is unchanged; the default preserves bounded-reader hosts.
+    fn matches_bytes(
+        &self,
+        path: &Path,
+        expected: &[u8],
+        buffer: &mut [u8],
+    ) -> Result<bool, InputError> {
+        if buffer.is_empty() {
+            return Err(InputError::Io("empty comparison buffer".into()));
+        }
+        match self.read_bounded(path, expected.len()) {
+            InputRead::Ready(actual) => Ok(actual.as_ref() == expected),
+            InputRead::Failed(error) => Err(error),
+            InputRead::Pending => Err(InputError::Unavailable),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,13 +223,18 @@ impl ResourceReader for MemoryReader {
 }
 
 fn within(root: &Path, relative: &Path) -> Result<PathBuf, InputError> {
+    validate_relative(relative)?;
+    Ok(root.join(relative))
+}
+
+fn validate_relative(relative: &Path) -> Result<(), InputError> {
     if relative
         .components()
         .any(|c| !matches!(c, Component::Normal(_)))
     {
         return Err(InputError::AccessDenied);
     }
-    Ok(root.join(relative))
+    Ok(())
 }
 
 /// Filesystem adapter. Its root determines relative-path resolution, not a
@@ -220,11 +243,70 @@ fn within(root: &Path, relative: &Path) -> Result<PathBuf, InputError> {
 pub struct FsResources {
     root: PathBuf,
 }
+/// An already resolved lexical filesystem identity. This carries no grant,
+/// kind, metadata, or byte snapshot and never bypasses a reader capability.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedPath(PathBuf);
+impl ResolvedPath {
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
 impl FsResources {
     pub fn new(root: impl AsRef<Path>) -> Self {
         let root = std::env::current_dir().unwrap_or_default().join(root);
         Self {
             root: normalize(&root),
+        }
+    }
+    pub fn resolve_path(&self, path: &Path) -> ResolvedPath {
+        ResolvedPath(self.resolve(path))
+    }
+    pub fn read_resolved(&self, path: &ResolvedPath) -> Result<Vec<u8>, ResourceError> {
+        std::fs::read(path.as_path()).map_err(|e| io_error(path.0.clone(), e))
+    }
+    pub fn kind_resolved(
+        &self,
+        path: &ResolvedPath,
+    ) -> Result<Option<ResourceKind>, ResourceError> {
+        match std::fs::metadata(path.as_path()) {
+            Ok(meta) if meta.is_file() => Ok(Some(ResourceKind::File)),
+            Ok(meta) if meta.is_dir() => Ok(Some(ResourceKind::Directory)),
+            Ok(_) => Err(ResourceError::Access {
+                path: path.0.clone(),
+                message: "not a regular file or directory".into(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_error(path.0.clone(), e)),
+        }
+    }
+    pub fn entries_resolved(&self, path: &ResolvedPath) -> Result<Vec<PathBuf>, ResourceError> {
+        let mut entries = std::fs::read_dir(path.as_path())
+            .map_err(|e| io_error(path.0.clone(), e))?
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|e| io_error(path.0.clone(), e))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        entries.sort();
+        Ok(entries)
+    }
+    pub fn read_root_resolved(
+        &self,
+        root: &ResolvedPath,
+    ) -> Result<Arc<dyn ResourceReader>, InputError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let directory =
+                cap_std::fs::Dir::open_ambient_dir(root.as_path(), cap_std::ambient_authority())
+                    .map_err(input_io)?;
+            Ok(Arc::new(FsReader(directory)))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = root;
+            Err(InputError::Unavailable)
         }
     }
 }
@@ -248,50 +330,16 @@ impl Resources for FsResources {
         &self.root
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        let path = self.resolve(path);
-        std::fs::read(&path).map_err(|e| io_error(path, e))
+        self.read_resolved(&self.resolve_path(path))
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
-        let path = self.resolve(path);
-        match std::fs::metadata(&path) {
-            Ok(meta) if meta.is_file() => Ok(Some(ResourceKind::File)),
-            Ok(meta) if meta.is_dir() => Ok(Some(ResourceKind::Directory)),
-            Ok(_) => Err(ResourceError::Access {
-                path,
-                message: "not a regular file or directory".into(),
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io_error(path, e)),
-        }
+        self.kind_resolved(&self.resolve_path(path))
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
-        let path = self.resolve(path);
-        let mut entries = std::fs::read_dir(&path)
-            .map_err(|e| io_error(path.clone(), e))?
-            .map(|entry| {
-                entry
-                    .map(|entry| entry.path())
-                    .map_err(|e| io_error(path.clone(), e))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        entries.sort();
-        Ok(entries)
+        self.entries_resolved(&self.resolve_path(path))
     }
     fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let directory = cap_std::fs::Dir::open_ambient_dir(
-                self.resolve(root),
-                cap_std::ambient_authority(),
-            )
-            .map_err(input_io)?;
-            Ok(Arc::new(FsReader(directory)))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = root;
-            Err(InputError::Unavailable)
-        }
+        self.read_root_resolved(&self.resolve_path(root))
     }
 }
 
@@ -308,30 +356,41 @@ fn input_io(error: std::io::Error) -> InputError {
 #[cfg(not(target_arch = "wasm32"))]
 struct FsReader(cap_std::fs::Dir);
 #[cfg(not(target_arch = "wasm32"))]
+impl FsReader {
+    fn checked_file(
+        &self,
+        path: &Path,
+        limit: usize,
+    ) -> Result<(cap_std::fs::File, cap_std::fs::Metadata), InputError> {
+        validate_relative(path)?;
+        if path.as_os_str().is_empty() {
+            return Err(InputError::NotFile);
+        }
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true);
+        // Opening a FIFO must not block before the regular-file check.
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+        }
+        let file = self.0.open_with(path, &options).map_err(input_io)?;
+        let metadata = file.metadata().map_err(input_io)?;
+        if !metadata.is_file() {
+            return Err(InputError::NotFile);
+        }
+        if metadata.len() > limit as u64 {
+            return Err(InputError::TooLarge);
+        }
+        Ok((file, metadata))
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
 impl ResourceReader for FsReader {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
         use std::io::Read;
         let read = (|| {
-            within(Path::new(""), path)?;
-            if path.as_os_str().is_empty() {
-                return Err(InputError::NotFile);
-            }
-            let mut options = cap_std::fs::OpenOptions::new();
-            options.read(true);
-            // Opening a FIFO must not block before the regular-file check.
-            #[cfg(unix)]
-            {
-                use cap_std::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
-            }
-            let file = self.0.open_with(path, &options).map_err(input_io)?;
-            let metadata = file.metadata().map_err(input_io)?;
-            if !metadata.is_file() {
-                return Err(InputError::NotFile);
-            }
-            if metadata.len() > limit as u64 {
-                return Err(InputError::TooLarge);
-            }
+            let (file, metadata) = self.checked_file(path, limit)?;
             let mut bytes = Vec::new();
             (&file)
                 .take((limit as u64).saturating_add(1))
@@ -349,6 +408,32 @@ impl ResourceReader for FsReader {
             Ok(bytes) => InputRead::Ready(bytes),
             Err(error) => InputRead::Failed(error),
         }
+    }
+    fn matches_bytes(
+        &self,
+        path: &Path,
+        expected: &[u8],
+        buffer: &mut [u8],
+    ) -> Result<bool, InputError> {
+        use std::io::Read;
+        if buffer.is_empty() {
+            return Err(InputError::Io("empty comparison buffer".into()));
+        }
+        let (mut file, metadata) = self.checked_file(path, expected.len())?;
+        if metadata.len() != expected.len() as u64 {
+            return Ok(false);
+        }
+        for chunk in expected.chunks(buffer.len()) {
+            file.read_exact(&mut buffer[..chunk.len()])
+                .map_err(input_io)?;
+            if &buffer[..chunk.len()] != chunk {
+                return Ok(false);
+            }
+        }
+        if !same_metadata(&metadata, &file.metadata().map_err(input_io)?) {
+            return Err(InputError::Io("file changed while being read".into()));
+        }
+        Ok(true)
     }
 }
 #[cfg(not(target_arch = "wasm32"))]

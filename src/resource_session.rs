@@ -3,7 +3,7 @@ use crate::resources::{ResourceError, ResourceKind, ResourceReader};
 use crate::{EvaluationInputs, InputError, InputRead, ResourcePath, Resources};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -27,8 +27,10 @@ impl Default for InputLimits {
 struct ReadRoot {
     path: PathBuf,
     reader: Result<Arc<dyn ResourceReader>, InputError>,
-    inputs: RefCell<BTreeMap<PathBuf, InputRead>>,
+    inputs: RefCell<HashMap<ResourceId, InputRead>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ResourceId(usize);
 struct CachedInput {
     read: InputRead,
     // Source-only reads do not authorize data access. Reuse bytes only when
@@ -36,14 +38,30 @@ struct CachedInput {
     reader: Option<Arc<dyn ResourceReader>>,
 }
 #[derive(Default)]
+struct Resource {
+    file: Option<CachedInput>,
+    kind: Option<Result<Option<ResourceKind>, ResourceError>>,
+    source: Option<Arc<str>>,
+    text: Option<Result<Arc<str>, ResourceError>>,
+}
+#[derive(Default)]
 struct State {
-    files: BTreeMap<PathBuf, CachedInput>,
-    kinds: BTreeMap<PathBuf, Result<Option<ResourceKind>, ResourceError>>,
-    sources: BTreeMap<PathBuf, Arc<str>>,
-    texts: BTreeMap<PathBuf, Result<Arc<str>, ResourceError>>,
+    identities: HashMap<PathBuf, ResourceId>,
+    records: Vec<Resource>,
     dependencies: BTreeSet<ResourcePath>,
     bytes: usize,
     requests: usize,
+}
+impl State {
+    fn identity(&mut self, path: &Path) -> ResourceId {
+        if let Some(&id) = self.identities.get(path) {
+            return id;
+        }
+        let id = ResourceId(self.records.len());
+        self.records.push(Resource::default());
+        self.identities.insert(path.into(), id);
+        id
+    }
 }
 
 /// A lazily loaded input batch. Reads retain their first bytes or error until
@@ -110,11 +128,9 @@ impl<R: Resources> ResourceSession<R> {
         self.data_cache.stats()
     }
     pub(crate) fn register_source(&self, path: &Path, source: Arc<str>) {
-        self.state
-            .borrow_mut()
-            .sources
-            .entry(path.into())
-            .or_insert(source);
+        let mut state = self.state.borrow_mut();
+        let id = state.identity(path);
+        state.records[id.0].source.get_or_insert(source);
     }
 
     fn request(&self) -> Result<(), InputError> {
@@ -149,23 +165,21 @@ impl<R: Resources> ResourceSession<R> {
     }
     fn store(
         &self,
-        path: &Path,
+        id: ResourceId,
         read: InputRead,
         reader: Option<Arc<dyn ResourceReader>>,
     ) -> InputRead {
         let read = self.cache(read);
-        self.state
-            .borrow_mut()
-            .files
-            .entry(path.into())
-            .or_insert_with(|| CachedInput {
+        self.state.borrow_mut().records[id.0]
+            .file
+            .get_or_insert_with(|| CachedInput {
                 read: read.clone(),
                 reader,
             });
         read
     }
-    fn load(&self, path: &Path, reader: &Arc<dyn ResourceReader>, relative: &Path) -> InputRead {
-        if let Some(cached) = self.state.borrow().files.get(path)
+    fn load(&self, id: ResourceId, reader: &Arc<dyn ResourceReader>, relative: &Path) -> InputRead {
+        if let Some(cached) = &self.state.borrow().records[id.0].file
             && cached
                 .reader
                 .as_ref()
@@ -183,7 +197,7 @@ impl<R: Resources> ResourceSession<R> {
         {
             read = InputRead::Failed(InputError::CacheLimit);
         }
-        self.store(path, read, Some(reader.clone()))
+        self.store(id, read, Some(reader.clone()))
     }
     fn data(&self, path: &ResourcePath) -> InputRead {
         if let Err(error) = self.request() {
@@ -195,15 +209,16 @@ impl<R: Resources> ResourceSession<R> {
             Ok(grant) => grant,
             Err(error) => return InputRead::Failed(error),
         };
-        if let Some(read) = root.inputs.borrow().get(&absolute) {
+        let id = self.state.borrow_mut().identity(&absolute);
+        if let Some(read) = root.inputs.borrow().get(&id) {
             return read.clone();
         }
-        let read = self.read_data(&absolute, root, relative);
-        root.inputs.borrow_mut().insert(absolute, read.clone());
+        let read = self.read_data(id, root, relative);
+        root.inputs.borrow_mut().insert(id, read.clone());
         read
     }
-    fn read_data(&self, absolute: &Path, root: &ReadRoot, relative: &Path) -> InputRead {
-        let source = self.state.borrow().sources.get(absolute).cloned();
+    fn read_data(&self, id: ResourceId, root: &ReadRoot, relative: &Path) -> InputRead {
+        let source = self.state.borrow().records[id.0].source.clone();
         // Explicit document inputs override disk without requiring a real file.
         // Their bytes are allocated and charged only if actually read as data.
         if let Some(source) = source {
@@ -211,7 +226,7 @@ impl<R: Resources> ResourceSession<R> {
             if let Some(CachedInput {
                 read: InputRead::Ready(bytes),
                 ..
-            }) = state.files.get(absolute)
+            }) = &state.records[id.0].file
                 && bytes.as_ref() == source.as_bytes()
             {
                 return InputRead::Ready(bytes.clone());
@@ -226,17 +241,16 @@ impl<R: Resources> ResourceSession<R> {
             return self.cache(InputRead::Ready(Arc::from(source.as_bytes())));
         }
         match &root.reader {
-            Ok(reader) => self.load(absolute, reader, relative),
+            Ok(reader) => self.load(id, reader, relative),
             Err(error) => InputRead::Failed(error.clone()),
         }
     }
     // Callers resolve once and retain that path for decoding and diagnostics.
-    fn source_bytes(&self, path: &Path) -> InputRead {
-        if let Err(error) = self.request() {
-            return InputRead::Failed(error);
-        }
-        if let Some(cached) = self.state.borrow().files.get(path) {
-            return cached.read.clone();
+    fn source_bytes(&self, path: &Path) -> Result<(ResourceId, InputRead), InputError> {
+        self.request()?;
+        let id = self.state.borrow_mut().identity(path);
+        if let Some(cached) = &self.state.borrow().records[id.0].file {
+            return Ok((id, cached.read.clone()));
         }
         let rooted = self.roots.iter().find_map(|root| {
             path.strip_prefix(&root.path)
@@ -250,8 +264,8 @@ impl<R: Resources> ResourceSession<R> {
                 PathBuf::from(path.file_name().unwrap()),
             )
         });
-        match reader {
-            Ok(reader) => self.load(path, &reader, &relative),
+        let read = match reader {
+            Ok(reader) => self.load(id, &reader, &relative),
             // Compatibility for source-only third-party backends. Data reads
             // never take this fallback, even when the source is already cached.
             Err(InputError::Unavailable) => {
@@ -260,10 +274,11 @@ impl<R: Resources> ResourceSession<R> {
                     Err(ResourceError::NotFound(_)) => InputRead::Failed(InputError::NotFound),
                     Err(error) => InputRead::Failed(InputError::Io(error.to_string())),
                 };
-                self.store(path, read, None)
+                self.store(id, read, None)
             }
-            Err(error) => self.store(path, InputRead::Failed(error), None),
-        }
+            Err(error) => self.store(id, InputRead::Failed(error), None),
+        };
+        Ok((id, read))
     }
 }
 impl<R: Resources> EvaluationInputs for ResourceSession<R> {
@@ -283,7 +298,10 @@ impl<R: Resources> Resources for ResourceSession<R> {
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
         let path = self.resolve(path);
-        let read = self.source_bytes(&path);
+        let read = self
+            .source_bytes(&path)
+            .map(|(_, read)| read)
+            .unwrap_or_else(InputRead::Failed);
         match read {
             InputRead::Ready(bytes) => Ok(bytes.to_vec()),
             InputRead::Failed(InputError::NotFound) => Err(ResourceError::NotFound(path)),
@@ -301,7 +319,12 @@ impl<R: Resources> Resources for ResourceSession<R> {
         // Charge every logical request, including text-cache hits. This cache
         // never supplies data grants or substitutes registered document inputs.
         let path = self.resolve(path);
-        let read = self.source_bytes(&path);
+        let (id, read) = self
+            .source_bytes(&path)
+            .map_err(|error| ResourceError::Access {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
         let bytes = match read {
             InputRead::Ready(bytes) => bytes,
             InputRead::Failed(InputError::NotFound) => return Err(ResourceError::NotFound(path)),
@@ -318,23 +341,24 @@ impl<R: Resources> Resources for ResourceSession<R> {
                 });
             }
         };
-        if let Some(text) = self.state.borrow().texts.get(&path) {
+        if let Some(text) = &self.state.borrow().records[id.0].text {
             return text.clone();
         }
         let text = std::str::from_utf8(&bytes)
             .map(Arc::from)
             .map_err(|_| ResourceError::InvalidUtf8(path.clone()));
         // At most one decoded text per retained, bounded byte input.
-        self.state.borrow_mut().texts.insert(path, text.clone());
+        self.state.borrow_mut().records[id.0].text = Some(text.clone());
         text
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
         let path = self.resolve(path);
-        if let Some(kind) = self.state.borrow().kinds.get(&path) {
+        let id = self.state.borrow_mut().identity(&path);
+        if let Some(kind) = &self.state.borrow().records[id.0].kind {
             return kind.clone();
         }
         let kind = self.resources.kind(&path);
-        self.state.borrow_mut().kinds.insert(path, kind.clone());
+        self.state.borrow_mut().records[id.0].kind = Some(kind.clone());
         kind
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
@@ -345,5 +369,58 @@ impl<R: Resources> Resources for ResourceSession<R> {
     }
     fn source_root(&self, path: &Path) -> PathBuf {
         self.resources.source_root(path)
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use crate::MemoryResources;
+
+    #[test]
+    fn resource_facets_share_one_batch_identity_without_sharing_authority() {
+        let mut files = MemoryResources::new("/project");
+        files.insert("item.txt", "bytes");
+        let session = ResourceSession::new(files);
+        assert_eq!(
+            session.kind(Path::new("item.txt")).unwrap(),
+            Some(ResourceKind::File)
+        );
+        assert!(session.state.borrow().records[0].file.is_none());
+        assert_eq!(
+            session
+                .source_shared(Path::new("./item.txt"))
+                .unwrap()
+                .as_ref(),
+            "bytes"
+        );
+        session.register_source(Path::new("/project/item.txt"), Arc::from("registered"));
+        assert_eq!(session.state.borrow().records.len(), 1);
+        assert_eq!(session.state.borrow().identities.len(), 1);
+        let path = ResourcePath::resolve("/project", "doc.not", "item.txt").unwrap();
+        assert_eq!(
+            session.file(&path),
+            InputRead::Failed(InputError::AccessDenied)
+        );
+        let state = session.state.borrow();
+        assert!(state.records[0].kind.is_some());
+        assert!(state.records[0].file.is_some());
+        assert!(state.records[0].source.is_some());
+        assert!(state.records[0].text.is_some());
+    }
+
+    #[test]
+    fn exhausted_requests_do_not_intern_more_paths() {
+        let mut files = MemoryResources::new("/project");
+        files.insert("first", "one");
+        let session = ResourceSession::new(files).with_limits(InputLimits {
+            requests: 1,
+            ..Default::default()
+        });
+        session.read(Path::new("first")).unwrap();
+        for i in 0..100 {
+            assert!(session.read(Path::new(&format!("other-{i}"))).is_err());
+        }
+        assert_eq!(session.state.borrow().records.len(), 1);
     }
 }

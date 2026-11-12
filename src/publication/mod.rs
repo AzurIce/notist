@@ -10,7 +10,10 @@ use std::{
 
 use std::fmt;
 
+mod index;
+mod plan;
 pub mod url;
+pub use plan::{OutputDirectory, OutputEntry, OutputPlan, PlannedFile};
 
 /// Ordinary template data, distinct from bit-exact component/IR wire values.
 /// Resource identities and private data views are never exposed to templates.
@@ -60,9 +63,14 @@ impl From<ResourceError> for Error {
 /// Exact source identities for published resources, with shared destinations.
 #[derive(Default)]
 pub struct Assets {
-    files: BTreeMap<PathBuf, Option<Vec<u8>>>,
-    sources: BTreeMap<PathBuf, PathBuf>,
+    destinations: index::Index,
+    files: Vec<Asset>,
     output: PathBuf,
+}
+struct Asset {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+    source: Option<PathBuf>,
 }
 impl Assets {
     pub fn finish(mut self) -> Result<BTreeMap<PathBuf, Vec<u8>>, Error> {
@@ -70,16 +78,28 @@ impl Assets {
             "_notist/publication.json".into(),
             br#"{"format":"notist-publication","version":1}"#.to_vec(),
         )?;
-        self.files
+        if let Some(file) = self
+            .files
+            .iter()
+            .filter(|f| f.bytes.is_none())
+            .min_by(|a, b| a.path.cmp(&b.path))
+        {
+            return Err(Error::Message(format!(
+                "unwritten reserved output `{}`",
+                file.path.display()
+            )));
+        }
+        let order = self.destinations.ordered_files();
+        let mut files: Vec<_> = self.files.into_iter().map(Some).collect();
+        Ok(order
             .into_iter()
-            .map(|(path, bytes)| match bytes {
-                Some(bytes) => Ok((path, bytes)),
-                None => Err(Error::Message(format!(
-                    "unwritten reserved output `{}`",
-                    path.display()
-                ))),
+            .map(|id| {
+                let file = files[id]
+                    .take()
+                    .expect("each planned file is exported once");
+                (file.path, file.bytes.unwrap())
             })
-            .collect()
+            .collect())
     }
     pub fn new(output: PathBuf) -> Self {
         Self {
@@ -96,7 +116,11 @@ impl Assets {
     }
     /// Fill exactly one reserved destination, without repeating path planning.
     pub fn write_reserved(&mut self, path: &Path, bytes: Vec<u8>) -> Result<(), Error> {
-        match self.files.get_mut(path) {
+        match self
+            .destinations
+            .get(path)
+            .map(|id| &mut self.files[id].bytes)
+        {
             Some(slot @ None) => {
                 *slot = Some(bytes);
                 Ok(())
@@ -108,26 +132,28 @@ impl Assets {
         }
     }
     fn insert(&mut self, path: PathBuf, bytes: Option<Vec<u8>>) -> Result<(), Error> {
-        // Check exact/ancestor files, then the first possible descendant in the
-        // ordered map. A full scan here makes publishing N pages quadratic.
-        let collision = path
-            .ancestors()
-            .any(|parent| self.files.contains_key(parent))
-            || self
-                .files
-                .range::<Path, _>((
-                    std::ops::Bound::Included(path.as_path()),
-                    std::ops::Bound::Unbounded,
-                ))
-                .next()
-                .is_some_and(|(previous, _)| previous.starts_with(&path));
-        if collision {
+        if self
+            .destinations
+            .insert(
+                &path,
+                self.files.len(),
+                self.files
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.path.as_path(), i)),
+            )
+            .is_err()
+        {
             return Err(Error::Message(format!(
                 "output collision at `{}`",
                 path.display()
             )));
         }
-        self.files.insert(path, bytes);
+        self.files.push(Asset {
+            path,
+            bytes,
+            source: None,
+        });
         Ok(())
     }
     pub fn copy(
@@ -142,7 +168,11 @@ impl Assets {
                 source.display()
             )));
         }
-        if let Some(previous) = self.sources.get(destination) {
+        if let Some(previous) = self
+            .destinations
+            .get(destination)
+            .and_then(|id| self.files[id].source.as_ref())
+        {
             if previous == source {
                 return Ok(());
             }
@@ -166,7 +196,11 @@ impl Assets {
             Some(crate::resources::ResourceKind::File) => {
                 let bytes = resources.read(source)?;
                 self.generated(destination.into(), bytes)?;
-                self.sources.insert(destination.into(), source.into());
+                let id = self
+                    .destinations
+                    .get(destination)
+                    .expect("copied output was inserted");
+                self.files[id].source = Some(source.into());
             }
             None => {
                 return Err(Error::Message(format!(
@@ -319,5 +353,70 @@ mod tests {
         let mut incomplete = Assets::new("dist".into());
         incomplete.reserve_generated("missing.html".into()).unwrap();
         assert!(incomplete.finish().is_err());
+    }
+
+    #[test]
+    fn copy_reuses_source_identity_without_reordering_probes_or_collision_errors() {
+        use crate::{ResourceError, Resources, resources::ResourceKind};
+        use std::{
+            cell::RefCell,
+            path::{Path, PathBuf},
+        };
+        struct Files(RefCell<Vec<String>>);
+        impl Resources for Files {
+            fn root(&self) -> &Path {
+                Path::new("/input")
+            }
+            fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
+                self.0.borrow_mut().push(format!("kind:{}", path.display()));
+                Ok(Some(ResourceKind::File))
+            }
+            fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+                self.0.borrow_mut().push(format!("read:{}", path.display()));
+                Ok(b"bytes".to_vec())
+            }
+            fn entries(&self, _: &Path) -> Result<Vec<PathBuf>, ResourceError> {
+                unreachable!()
+            }
+        }
+        let files = Files(RefCell::default());
+        let mut assets = Assets::new("/output".into());
+        assets
+            .copy(&files, Path::new("/input/a"), Path::new("dir/a"))
+            .unwrap();
+        assert_eq!(*files.0.borrow(), ["kind:/input/a", "read:/input/a"]);
+        files.0.borrow_mut().clear();
+        assets
+            .copy(&files, Path::new("/input/a"), Path::new("dir//a/"))
+            .unwrap();
+        assert!(files.0.borrow().is_empty());
+        assert!(
+            assets
+                .copy(&files, Path::new("/input/other"), Path::new("dir/a"))
+                .unwrap_err()
+                .to_string()
+                .contains("resource collision")
+        );
+        assert!(files.0.borrow().is_empty());
+        assets.generated("generated".into(), vec![]).unwrap();
+        assert!(
+            assets
+                .copy(&files, Path::new("/input/new"), Path::new("generated"))
+                .unwrap_err()
+                .to_string()
+                .contains("output collision")
+        );
+        assert_eq!(*files.0.borrow(), ["kind:/input/new", "read:/input/new"]);
+    }
+
+    #[test]
+    fn unfinished_reservations_report_standard_path_order_not_insertion_order() {
+        let mut assets = Assets::new("/output".into());
+        assets.reserve_generated("z/file".into()).unwrap();
+        assets.reserve_generated("a/file".into()).unwrap();
+        assert_eq!(
+            assets.finish().unwrap_err().to_string(),
+            "unwritten reserved output `a/file`"
+        );
     }
 }

@@ -1,18 +1,18 @@
 //! Filesystem resources and safe publication shared by HTML export and sites.
 use notist::{
     FsResources, InputError, InputRead, Resources,
-    publication::Error,
-    resources::{ResourceError, ResourceKind, ResourceReader, normalize},
+    publication::{Error, OutputEntry, OutputPlan},
+    resources::{ResolvedPath, ResourceError, ResourceKind, ResourceReader, normalize},
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Component, Path, PathBuf},
+    collections::{BTreeMap, BTreeSet, HashSet},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 pub(crate) struct Files {
     base: FsResources,
-    observed: Arc<Mutex<BTreeSet<PathBuf>>>,
+    observed: Arc<Mutex<HashSet<PathBuf>>>,
 }
 impl Files {
     pub fn new(root: &Path) -> Self {
@@ -26,14 +26,14 @@ impl Files {
         self
     }
     pub fn observed(&self) -> BTreeSet<PathBuf> {
-        self.observed.lock().unwrap().clone()
+        self.observed.lock().unwrap().iter().cloned().collect()
     }
-    fn inspect(&self, path: &Path) -> Result<PathBuf, ResourceError> {
-        let path = self.resolve(path);
-        self.observed.lock().unwrap().insert(path.clone());
+    fn inspect(&self, path: &Path) -> Result<ResolvedPath, ResourceError> {
+        let path = self.base.resolve_path(path);
+        self.observed.lock().unwrap().insert(path.as_path().into());
         // Never traverse symlink directories or copy symlink files. This also
         // prevents directory cycles during discovery and component publication.
-        for ancestor in path.ancestors() {
+        for ancestor in path.as_path().ancestors() {
             match std::fs::symlink_metadata(ancestor) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(ResourceError::Access {
@@ -59,19 +59,19 @@ impl Resources for Files {
         self.base.root()
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
-        self.base.read(&self.inspect(path)?)
+        self.base.read_resolved(&self.inspect(path)?)
     }
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError> {
-        self.base.kind(&self.inspect(path)?)
+        self.base.kind_resolved(&self.inspect(path)?)
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
-        self.base.entries(&self.inspect(path)?)
+        self.base.entries_resolved(&self.inspect(path)?)
     }
     fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
-        let root = self.resolve(root);
+        let root = self.base.resolve_path(root);
         Ok(Arc::new(ObservedReader {
-            base: self.base.read_root(&root)?,
-            root,
+            base: self.base.read_root_resolved(&root)?,
+            root: root.as_path().into(),
             observed: self.observed.clone(),
         }))
     }
@@ -80,7 +80,7 @@ impl Resources for Files {
 struct ObservedReader {
     root: PathBuf,
     base: Arc<dyn ResourceReader>,
-    observed: Arc<Mutex<BTreeSet<PathBuf>>>,
+    observed: Arc<Mutex<HashSet<PathBuf>>>,
 }
 impl ResourceReader for ObservedReader {
     fn read_bounded(&self, path: &Path, limit: usize) -> InputRead {
@@ -97,49 +97,41 @@ fn io(error: impl std::fmt::Display) -> Error {
 /// An identical rebuild needs no directory replacement. Compare actual bounded
 /// regular files, not timestamps or an untrusted manifest digest. Any unexpected
 /// entry, symlink or read failure falls back to ordinary staged publication.
-fn unchanged(files: &BTreeMap<PathBuf, Vec<u8>>, output: &Path) -> bool {
+fn unchanged(plan: &OutputPlan<'_>, output: &Path) -> bool {
     let resources = FsResources::new(output);
     let Ok(reader) = resources.read_root(output) else {
         return false;
     };
-    let directories: BTreeSet<_> = files
-        .keys()
-        .flat_map(|file| file.parent().unwrap().ancestors().map(Path::to_path_buf))
-        .collect();
-    let mut pending = vec![output.to_path_buf()];
+    let mut pending = vec![(output.to_path_buf(), plan.root())];
+    let mut buffer = [0u8; 64 * 1024];
     let mut seen = 0;
-    while let Some(directory) = pending.pop() {
+    while let Some((directory, planned)) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(directory) else {
             return false;
         };
         for entry in entries {
             let Ok(entry) = entry else { return false };
-            let path = entry.path();
-            let Ok(relative) = path.strip_prefix(output) else {
+            let Some(expected) = planned.child(&entry.file_name()) else {
                 return false;
             };
             let Ok(kind) = entry.file_type() else {
                 return false;
             };
-            if kind.is_dir() {
-                if !directories.contains(relative) {
-                    return false;
+            match expected {
+                OutputEntry::Directory(child) if kind.is_dir() => {
+                    pending.push((entry.path(), child))
                 }
-                pending.push(path);
-            } else if kind.is_file() {
-                let Some(expected) = files.get(relative) else {
-                    return false;
-                };
-                match reader.read_bounded(relative, expected.len()) {
-                    InputRead::Ready(actual) if actual.as_ref() == expected.as_slice() => seen += 1,
-                    _ => return false,
+                OutputEntry::File(file) if kind.is_file() => {
+                    if reader.matches_bytes(file.path, file.bytes, &mut buffer) != Ok(true) {
+                        return false;
+                    }
+                    seen += 1;
                 }
-            } else {
-                return false;
+                _ => return false,
             }
         }
     }
-    seen == files.len()
+    seen == plan.files().len()
 }
 /// Stage every file before replacing an owned output directory. A failed build
 /// or publication leaves the previous site intact.
@@ -182,16 +174,8 @@ pub fn publish(
             )));
         }
     }
-    for relative in files.keys() {
-        if relative.as_os_str().is_empty()
-            || relative
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(Error::Message("invalid publication file path".into()));
-        }
-    }
-    if output.exists() && unchanged(files, &output) {
+    let plan = OutputPlan::new(files)?;
+    if output.exists() && unchanged(&plan, &output) {
         return Ok(());
     }
     let parent = output
@@ -202,13 +186,13 @@ pub fn publish(
         .prefix(".notist-stage-")
         .tempdir_in(parent)
         .map_err(io)?;
-    let mut directories = BTreeSet::new();
-    for (relative, bytes) in files {
-        let file = staging.path().join(relative);
-        if directories.insert(relative.parent().unwrap()) {
+    let mut directories = HashSet::new();
+    for planned in plan.files() {
+        let file = staging.path().join(planned.path);
+        if directories.insert(planned.parent_key()) {
             std::fs::create_dir_all(file.parent().unwrap()).map_err(io)?;
         }
-        std::fs::write(file, bytes).map_err(io)?;
+        std::fs::write(file, planned.bytes).map_err(io)?;
     }
     let backup = tempfile::Builder::new()
         .prefix(".notist-old-")
@@ -245,6 +229,21 @@ mod tests {
             ("items/a.html".into(), b"first".to_vec()),
         ])
     }
+    #[cfg(unix)]
+    #[test]
+    fn resolved_paths_and_observation_do_not_cache_symlink_safety_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("input");
+        std::fs::create_dir_all(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir/file"), "bytes").unwrap();
+        let files = Files::new(&root);
+        assert_eq!(files.read(Path::new("dir/./file")).unwrap(), b"bytes");
+        std::fs::rename(root.join("dir"), root.join("old")).unwrap();
+        std::os::unix::fs::symlink(root.join("old"), root.join("dir")).unwrap();
+        assert!(files.read(Path::new("dir/file")).is_err());
+        assert!(files.kind(Path::new("dir/file")).is_err());
+        assert_eq!(files.observed(), BTreeSet::from([root.join("dir/file")]));
+    }
     #[test]
     fn identical_publications_verify_bytes_and_prune_unexpected_entries() {
         let temp = tempfile::tempdir().unwrap();
@@ -252,7 +251,7 @@ mod tests {
         let root = temp.path().join("source");
         let files = artifact();
         publish(&files, &output, &root).unwrap();
-        assert!(unchanged(&files, &output));
+        assert!(unchanged(&OutputPlan::new(&files).unwrap(), &output));
         let modified = std::fs::metadata(output.join("items/a.html"))
             .unwrap()
             .modified()
@@ -271,12 +270,12 @@ mod tests {
             } else {
                 std::fs::create_dir_all(output.join(stale)).unwrap();
             }
-            assert!(!unchanged(&files, &output));
+            assert!(!unchanged(&OutputPlan::new(&files).unwrap(), &output));
             publish(&files, &output, &root).unwrap();
             assert!(!output.join(stale).exists());
         }
         std::fs::write(output.join("items/a.html"), b"other").unwrap();
-        assert!(!unchanged(&files, &output));
+        assert!(!unchanged(&OutputPlan::new(&files).unwrap(), &output));
         publish(&files, &output, &root).unwrap();
         assert_eq!(
             std::fs::read(output.join("items/a.html")).unwrap(),
@@ -285,7 +284,7 @@ mod tests {
         let mut invalid = files.clone();
         invalid.insert("../escape".into(), vec![]);
         assert!(publish(&invalid, &output, &root).is_err());
-        assert!(unchanged(&files, &output));
+        assert!(unchanged(&OutputPlan::new(&files).unwrap(), &output));
     }
     #[cfg(unix)]
     #[test]
@@ -299,7 +298,7 @@ mod tests {
         std::fs::write(&external, b"first").unwrap();
         std::fs::remove_file(output.join("items/a.html")).unwrap();
         std::os::unix::fs::symlink(&external, output.join("items/a.html")).unwrap();
-        assert!(!unchanged(&files, &output));
+        assert!(!unchanged(&OutputPlan::new(&files).unwrap(), &output));
         publish(&files, &output, &root).unwrap();
         assert!(
             !std::fs::symlink_metadata(output.join("items/a.html"))

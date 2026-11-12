@@ -106,6 +106,23 @@ pub struct Component {
     pub module: ModuleLocator,
     pub definition: Arc<FunctionDef>,
 }
+impl Component {
+    /// A possible shell, not an installed/validated host binding.
+    pub fn candidate(
+        signature: Arc<notist_core::signature::ResolvedSignature>,
+        module: ModuleLocator,
+    ) -> Self {
+        let definition = Arc::new(signature.declaration().clone());
+        Self {
+            id: definition.id.clone(),
+            tag: component_tag(&definition.id),
+            module,
+            definition,
+            signature,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Target {
     Native(Ctor),

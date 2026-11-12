@@ -108,8 +108,15 @@ fn add_suffix(fields: &mut impl Fields, name: &str, value: String) -> Result<(),
 /// Add semantic suffix fields to a host-provided URL. Resource filenames never
 /// enter this function; hosts encode the path when selecting its public URL.
 pub fn append_suffix(base: &str, fields: &impl Fields) -> Result<String, String> {
-    let query = string(fields, "query");
-    let fragment = string(fields, "fragment");
+    append_suffix_parts(base, string(fields, "query"), string(fields, "fragment"))
+}
+
+/// The tree-independent form used by prepared presentation plans.
+pub fn append_suffix_parts(
+    base: &str,
+    query: Option<&str>,
+    fragment: Option<&str>,
+) -> Result<String, String> {
     if query.is_some_and(|query| query.chars().any(|c| c.is_control() || c == '#')) {
         return Err("embed query must be URL query text without control characters or `#`".into());
     }

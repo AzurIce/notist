@@ -12,8 +12,10 @@ use std::{
 };
 
 mod code;
+mod html;
 mod parallel;
 pub use code::CodeAnalysis;
+pub use html::HtmlBindings;
 
 #[derive(Debug)]
 pub enum VaultError {
@@ -689,21 +691,37 @@ pub(crate) fn bind_html(
     urls: &BTreeMap<PathBuf, String>,
     root: &crate::Item,
 ) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
-    let mut bindings = BTreeMap::new();
-    let mut errors = Vec::new();
-    for definition in
+    bind_html_ids(
+        environment,
+        resources,
+        urls,
         notist_html::components::component_definitions(root, environment.context().registry())
             .into_iter()
-            .filter(|definition| {
-                definition.id.module != "notist"
-                    && !definition.implementation.is_code()
-                    && environment
-                        .context()
-                        .registry()
-                        .signature(definition.id.def_id())
-                        .expect("registered declarations have resolved signatures")
-                        .may_return_content()
-            })
+            .map(|d| d.id.def_id()),
+    )
+}
+
+fn bind_html_ids(
+    environment: &Environment,
+    resources: &(impl Resources + ?Sized),
+    urls: &BTreeMap<PathBuf, String>,
+    ids: impl IntoIterator<Item = crate::DefId>,
+) -> Result<HtmlRegistry, Vec<SourceDiagnostic>> {
+    let mut bindings = BTreeMap::new();
+    let mut errors = Vec::new();
+    for definition in ids
+        .into_iter()
+        .filter_map(|id| environment.context().registry().definition(id))
+        .filter(|definition| {
+            definition.id.module != "notist"
+                && !definition.implementation.is_code()
+                && environment
+                    .context()
+                    .registry()
+                    .signature(definition.id.def_id())
+                    .expect("registered declarations have resolved signatures")
+                    .may_return_content()
+        })
     {
         let module = &environment.modules()[&definition.id.module_id()];
         let result = (|| -> Result<Option<ModuleLocator>, String> {

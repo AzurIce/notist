@@ -178,26 +178,8 @@ impl Assets {
         source: &Path,
         destination: &Path,
     ) -> Result<(), Error> {
-        if self.output.starts_with(source) || source.starts_with(&self.output) {
-            return Err(Error::Message(format!(
-                "resource source and site output overlap: {}",
-                source.display()
-            )));
-        }
-        if let Some(previous) = self
-            .destinations
-            .get(destination)
-            .and_then(|id| self.files[id].source.as_ref())
-        {
-            if previous == source {
-                return Ok(());
-            }
-            return Err(Error::Message(format!(
-                "resource collision at `{}` between `{}` and `{}`",
-                destination.display(),
-                previous.display(),
-                source.display()
-            )));
+        if self.already_copied(source, destination)? {
+            return Ok(());
         }
         match resources.kind(source)? {
             Some(crate::resources::ResourceKind::Directory) => {
@@ -211,12 +193,7 @@ impl Assets {
             }
             Some(crate::resources::ResourceKind::File) => {
                 let bytes = resources.read(source)?;
-                self.generated(destination.into(), bytes)?;
-                let id = self
-                    .destinations
-                    .get(destination)
-                    .expect("copied output was inserted");
-                self.files[id].source = Some(source.into());
+                self.insert_copy(source, destination, bytes)?;
             }
             None => {
                 return Err(Error::Message(format!(
@@ -226,6 +203,55 @@ impl Assets {
             }
         }
         Ok(())
+    }
+    /// Copy a discovered file through one checked capture operation. Unlike
+    /// `copy`, a file replaced by a directory is rejected, not traversed.
+    pub fn copy_file(
+        &mut self,
+        resources: &(impl Resources + ?Sized),
+        source: &Path,
+        destination: &Path,
+    ) -> Result<(), Error> {
+        if self.already_copied(source, destination)? {
+            return Ok(());
+        }
+        let bytes = resources.capture_file(source)?;
+        self.insert_copy(source, destination, bytes)
+    }
+    fn insert_copy(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        bytes: Vec<u8>,
+    ) -> Result<(), Error> {
+        let id = self.files.len();
+        self.generated(destination.into(), bytes)?;
+        self.files[id].source = Some(source.into());
+        Ok(())
+    }
+    fn already_copied(&self, source: &Path, destination: &Path) -> Result<bool, Error> {
+        if self.output.starts_with(source) || source.starts_with(&self.output) {
+            return Err(Error::Message(format!(
+                "resource source and site output overlap: {}",
+                source.display()
+            )));
+        }
+        if let Some(previous) = self
+            .destinations
+            .get(destination)
+            .and_then(|id| self.files[id].source.as_ref())
+        {
+            if previous == source {
+                return Ok(true);
+            }
+            return Err(Error::Message(format!(
+                "resource collision at `{}` between `{}` and `{}`",
+                destination.display(),
+                previous.display(),
+                source.display()
+            )));
+        }
+        Ok(false)
     }
     pub fn components(
         &mut self,

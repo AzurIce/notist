@@ -2,7 +2,9 @@
 use notist::{
     FsResources, InputError, InputRead, Resources,
     publication::{Error, OutputEntry, OutputPlan},
-    resources::{ResolvedPath, ResourceError, ResourceKind, ResourceReader, normalize},
+    resources::{
+        ResolvedPath, ResourceEntry, ResourceError, ResourceKind, ResourceReader, normalize,
+    },
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -66,6 +68,19 @@ impl Resources for Files {
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
         self.base.entries_resolved(&self.inspect(path)?)
+    }
+    fn entries_with_kind(&self, path: &Path) -> Result<Vec<ResourceEntry>, ResourceError> {
+        let entries = self.base.entries_with_kind_resolved(&self.inspect(path)?)?;
+        // Enumeration is a dependency too, including entries subsequently
+        // shadowed by site assets. Capture still checks every selected path.
+        self.observed
+            .lock()
+            .unwrap()
+            .extend(entries.iter().map(|entry| entry.path.clone()));
+        Ok(entries)
+    }
+    fn capture_file(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        self.base.capture_file_resolved(&self.inspect(path)?)
     }
     fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
         let root = self.base.resolve_path(root);
@@ -243,6 +258,29 @@ mod tests {
         assert!(files.read(Path::new("dir/file")).is_err());
         assert!(files.kind(Path::new("dir/file")).is_err());
         assert_eq!(files.observed(), BTreeSet::from([root.join("dir/file")]));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn enumeration_hints_never_bypass_capture_link_checks() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir/file"), b"original").unwrap();
+        let files = Files::new(root);
+        let entries = files.entries_with_kind(Path::new("dir")).unwrap();
+        assert_eq!(entries[0].kind_hint, Some(ResourceKind::File));
+        assert_eq!(files.capture_file(&entries[0].path).unwrap(), b"original");
+        std::fs::rename(root.join("dir/file"), root.join("dir/old")).unwrap();
+        symlink("old", root.join("dir/file")).unwrap();
+        assert!(files.capture_file(&entries[0].path).is_err());
+        std::fs::remove_file(root.join("dir/file")).unwrap();
+        std::fs::rename(root.join("dir/old"), root.join("dir/file")).unwrap();
+        std::fs::rename(root.join("dir"), root.join("old-dir")).unwrap();
+        symlink("old-dir", root.join("dir")).unwrap();
+        assert!(files.capture_file(&entries[0].path).is_err());
+        assert!(files.entries_with_kind(Path::new("dir")).is_err());
+        assert!(files.observed().contains(&root.join("dir/file")));
     }
     #[test]
     fn identical_publications_verify_bytes_and_prune_unexpected_entries() {

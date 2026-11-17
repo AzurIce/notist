@@ -35,6 +35,14 @@ pub enum ResourceKind {
     Directory,
 }
 
+/// A directory entry with an optional classification hint. The hint is neither
+/// an access grant nor a promise that the entry still has this type when read.
+#[derive(Debug, Clone)]
+pub struct ResourceEntry {
+    pub path: PathBuf,
+    pub kind_hint: Option<ResourceKind>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceError {
     NotFound(PathBuf),
@@ -69,6 +77,32 @@ pub trait Resources {
     fn read(&self, path: &Path) -> Result<Vec<u8>, ResourceError>;
     fn kind(&self, path: &Path) -> Result<Option<ResourceKind>, ResourceError>;
     fn entries(&self, directory: &Path) -> Result<Vec<PathBuf>, ResourceError>;
+    /// Enumerate without requiring a separate kind lookup for every entry.
+    /// Legacy backends retain their ordinary `entries`/`kind` behavior.
+    fn entries_with_kind(&self, directory: &Path) -> Result<Vec<ResourceEntry>, ResourceError> {
+        self.entries(directory).map(|entries| {
+            entries
+                .into_iter()
+                .map(|path| ResourceEntry {
+                    path,
+                    kind_hint: None,
+                })
+                .collect()
+        })
+    }
+    /// Capture one regular file. Classification hints never replace this
+    /// operation's checks. This returns owned bytes, not a deferred source path;
+    /// it does not introduce a cache or change rooted data-read permissions.
+    fn capture_file(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        match self.kind(path)? {
+            Some(ResourceKind::File) => self.read(path),
+            Some(ResourceKind::Directory) => Err(ResourceError::Access {
+                path: self.resolve(path),
+                message: "not a regular file".into(),
+            }),
+            None => Err(ResourceError::NotFound(self.resolve(path))),
+        }
+    }
     /// Explicit bounded data capability. Legacy backends remain source-only;
     /// there is intentionally no default that calls the unbounded `read`.
     fn read_root(&self, _root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
@@ -103,6 +137,12 @@ impl<R: Resources + ?Sized> Resources for &R {
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
         (**self).entries(path)
+    }
+    fn entries_with_kind(&self, path: &Path) -> Result<Vec<ResourceEntry>, ResourceError> {
+        (**self).entries_with_kind(path)
+    }
+    fn capture_file(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        (**self).capture_file(path)
     }
     fn resolve(&self, path: &Path) -> PathBuf {
         (**self).resolve(path)
@@ -265,6 +305,33 @@ impl FsResources {
     pub fn read_resolved(&self, path: &ResolvedPath) -> Result<Vec<u8>, ResourceError> {
         std::fs::read(path.as_path()).map_err(|e| io_error(path.0.clone(), e))
     }
+    /// Check the opened object, rather than checking a path and then opening a
+    /// potentially different object. Link policy belongs to the host adapter.
+    pub fn capture_file_resolved(&self, path: &ResolvedPath) -> Result<Vec<u8>, ResourceError> {
+        use std::io::Read;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Opening a FIFO must not block before checking the actual object.
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+        }
+        let mut file = options
+            .open(path.as_path())
+            .map_err(|e| io_error(path.0.clone(), e))?;
+        let metadata = file.metadata().map_err(|e| io_error(path.0.clone(), e))?;
+        if !metadata.is_file() {
+            return Err(ResourceError::Access {
+                path: path.0.clone(),
+                message: "not a regular file".into(),
+            });
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| io_error(path.0.clone(), e))?;
+        Ok(bytes)
+    }
     pub fn kind_resolved(
         &self,
         path: &ResolvedPath,
@@ -290,6 +357,37 @@ impl FsResources {
             })
             .collect::<Result<Vec<_>, _>>()?;
         entries.sort();
+        Ok(entries)
+    }
+    pub fn entries_with_kind_resolved(
+        &self,
+        path: &ResolvedPath,
+    ) -> Result<Vec<ResourceEntry>, ResourceError> {
+        let mut entries = std::fs::read_dir(path.as_path())
+            .map_err(|e| io_error(path.0.clone(), e))?
+            .map(|entry| {
+                let entry = entry.map_err(|e| io_error(path.0.clone(), e))?;
+                // Unknown types, symlinks and errors keep the ordinary kind
+                // lookup. In particular, hidden entries can still be skipped
+                // before performing a fallible classification.
+                let kind_hint = entry.file_type().ok().and_then(|kind| {
+                    if kind.is_symlink() {
+                        None
+                    } else if kind.is_file() {
+                        Some(ResourceKind::File)
+                    } else if kind.is_dir() {
+                        Some(ResourceKind::Directory)
+                    } else {
+                        None
+                    }
+                });
+                Ok(ResourceEntry {
+                    path: entry.path(),
+                    kind_hint,
+                })
+            })
+            .collect::<Result<Vec<_>, ResourceError>>()?;
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
     }
     pub fn read_root_resolved(
@@ -337,6 +435,12 @@ impl Resources for FsResources {
     }
     fn entries(&self, path: &Path) -> Result<Vec<PathBuf>, ResourceError> {
         self.entries_resolved(&self.resolve_path(path))
+    }
+    fn entries_with_kind(&self, path: &Path) -> Result<Vec<ResourceEntry>, ResourceError> {
+        self.entries_with_kind_resolved(&self.resolve_path(path))
+    }
+    fn capture_file(&self, path: &Path) -> Result<Vec<u8>, ResourceError> {
+        self.capture_file_resolved(&self.resolve_path(path))
     }
     fn read_root(&self, root: &Path) -> Result<Arc<dyn ResourceReader>, InputError> {
         self.read_root_resolved(&self.resolve_path(root))

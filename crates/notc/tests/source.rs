@@ -58,7 +58,7 @@ fn unused(flag: Bool) -> Int {
             actual: Type::Bool,
         }
     );
-    assert_eq!(slice(source, errors[0].span), "{\n        false\n    }");
+    assert_eq!(slice(source, errors[0].span), "false");
 }
 
 #[test]

@@ -1,0 +1,25 @@
+// Demonstrates syntax recovery across declarations and full checking of unused functions.
+
+fn broken_header(x: Int -> Int {
+    x + 1
+}
+
+fn healthy() -> Int {
+    42
+}
+
+fn unused_type_error(flag: Bool) -> Int {
+    if flag {
+        1
+    } else {
+        false
+    }
+}
+
+fn Int.add_one(self) -> Int {
+    self + 1
+}
+
+fn unused_method_error() -> Int {
+    true.add_one()
+}

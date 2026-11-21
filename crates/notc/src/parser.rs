@@ -199,8 +199,8 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::Arrow)?;
         let returns = self.parse_type()?;
-        let body = self.block()?;
-        let span = start.merge(body.span);
+        let (body, body_span) = self.block()?;
+        let span = start.merge(body_span);
         Ok(Function {
             name,
             name_span: name_tok.span,
@@ -228,8 +228,8 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::Arrow)?;
         let returns = self.parse_type()?;
-        let body = self.block()?;
-        let span = start.merge(body.span);
+        let (body, body_span) = self.block()?;
+        let span = start.merge(body_span);
         Ok(Method {
             receiver_type,
             name,
@@ -315,14 +315,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn block(&mut self) -> Result<Expr, ()> {
+    fn block(&mut self) -> Result<(Expr, Span), ()> {
         self.enter()?;
         let result = self.block_inner();
         self.leave();
         result
     }
 
-    fn block_inner(&mut self) -> Result<Expr, ()> {
+    fn block_inner(&mut self) -> Result<(Expr, Span), ()> {
         let open = self.expect(TokenKind::LBrace)?;
         let mut bindings = Vec::new();
         while self.at(TokenKind::Let) {
@@ -342,8 +342,7 @@ impl<'a> Parser<'a> {
             let span = let_span.merge(expr.span);
             expr = Expr::new(ExprKind::Let(name, Box::new(initializer), Box::new(expr)), span);
         }
-        expr.span = block_span;
-        Ok(expr)
+        Ok((expr, block_span))
     }
 
     fn expression(&mut self) -> Result<Expr, ()> {
@@ -364,14 +363,16 @@ impl<'a> Parser<'a> {
     fn if_expr(&mut self) -> Result<Expr, ()> {
         let if_tok = self.expect(TokenKind::If)?;
         let condition = self.expression()?;
-        let yes = self.block()?;
+        let (yes, _) = self.block()?;
         self.expect(TokenKind::Else)?;
-        let no = if self.at(TokenKind::If) {
-            self.if_expr()?
+        let (no, end_span) = if self.at(TokenKind::If) {
+            let expr = self.if_expr()?;
+            let span = expr.span;
+            (expr, span)
         } else {
             self.block()?
         };
-        let span = if_tok.span.merge(no.span);
+        let span = if_tok.span.merge(end_span);
         Ok(Expr::new(
             ExprKind::If(Box::new(condition), Box::new(yes), Box::new(no)),
             span,
@@ -453,7 +454,7 @@ impl<'a> Parser<'a> {
                 let name = self.text(tok.span).to_owned();
                 Ok(Expr::new(ExprKind::Name(name), tok.span))
             }
-            TokenKind::LBrace => self.block(),
+            TokenKind::LBrace => self.block().map(|(expr, _)| expr),
             TokenKind::LParen => {
                 self.advance();
                 let mut inner = self.expression()?;

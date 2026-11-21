@@ -168,7 +168,7 @@ Code 将 `[ ... ]` 的正文交给所选 Markup 前端：ContentParser 解析字
 
 == Checker 会话：名字在这里变成实例
 
-分析从一份装配好的 Context 开始（签名注册表、未检查函数体、模块作用域、transform 计划，只读）， Checker 会话在其上按需工作。两个方向都会用到它：
+分析从一份装配好的 Context 开始（签名注册表、未检查函数体、模块作用域、ExtensionPlan，只读），Checker 会话在其上按需工作。两个方向都会用到它：
 
 - 文档 Resolve 遇到 Code 调用（如 `#diagrams.diagram(...)`）时，向会话请求具体实例，并按其签名检查调用。
 - 会话根据编译期实参、参数类型与局部绑定，将函数体 Expr 检查为 TypedExpr。遇到 `Expr::Content` 时，将 IR₁ 与词法绑定交给共享后端，返回的 Item 森林嵌入已检查表达式：
@@ -183,7 +183,7 @@ Item 既是共享内容后端的输出，也可嵌入已检查的 Code 表达式
 
 == 求值
 
-Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：按 Item.pending 执行内容实现，replace 扩展在此挑选同签名目标，结果森林替换调用边界内的 children。它保留原语义树、不重新 Shape；失败在内容边界恢复，其余内容继续。契约见 [Code 类型与函数系统](../code/functions.not#对-item-与-shape-的契约) 与 [函数映射](extensions.not)。CLI 的 core / json / query 默认看求值前，`--eval` 看求值后。
+Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：按节点的 `NodeContent::Expr` 与已检查调用执行内容实现，replace 扩展在此挑选同签名目标，结果森林替换调用边界内的 children。它保留原语义树、不重新 Shape；失败在内容边界恢复，其余内容继续。契约见 [Code 类型与函数系统](../code/functions.not#对-item-与-shape-的契约) 与 [函数映射](extensions.not)。CLI 的 core / json / query 默认看求值前，`--eval` 看求值后。
 
 == 对象速查
 

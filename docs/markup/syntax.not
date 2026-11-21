@@ -365,7 +365,7 @@ MarkdownFrontend 独立解析 `.md`、`.markdown`、`.notmd` 与 `.nmd`，使用
 | 调用的 `[body]` | Markdown 前端；按 flavor 选择行内或块规则 |
 | 名称、签名、段落定稿与 section | 共享 Resolve / Shape / Materialize |
 
-Markdown 扩展支持 `@(dict)`、`@!(dict)`、`#name(args)[body]`、包限定调用与透明 `#node[body]`。`[正文]` 是行内槽；两端内侧均留白的 `[ 正文 ]` 是块槽，可以包含空行、标题、列表、引用和代码块。位置映射将移除容器前缀后的局部位置还原为原始源码范围。
+Markdown 扩展支持 `@(dict)`、`@!(dict)`、`#name(args)[body]`、模块限定调用与透明 `#node[body]`。`[正文]` 是行内槽；两端内侧均留白的 `[ 正文 ]` 是块槽，可以包含空行、标题、列表、引用和代码块。位置映射将移除容器前缀后的局部位置还原为原始源码范围。
 
 === Wiki 链接
 

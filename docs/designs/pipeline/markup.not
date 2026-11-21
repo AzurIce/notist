@@ -123,7 +123,7 @@ Materialize 先按源码位置把每个节点注解挂到定稿的内容结构�
 
 === Item 生成
 
-Materialize 随后将 RExpr 森林转换为 Item，保留函数与实例身份、Block / Inline 类别、字段、输入 children、已挂载的 attrs 与源码范围，将已检查的待求值信息复制到 Item.pending，并为每个节点填充来源身份；阶段结果同时保留已有诊断和注解目标诊断。节点对外类别保持 O，children 保留按 C 检查的输入内容。
+Materialize 随后将 RExpr 森林转换为 Item，保留函数与实例身份、Block / Inline 类别、字段、输入 children、已挂载的 attrs 与源码范围，将 `RExpr.expression` 保存的已检查表达式移入 `NodeContent::Expr`，并为每个节点填充来源身份；阶段结果同时保留已有诊断和注解目标诊断。节点对外类别保持 O，children 保留按 C 检查的输入内容。
 
 共享入口返回 Item 森林。文档入口创建 Doc 根并挂载模块属性，形成完整的 Item 树；宿主调用内容区域入口时只取得森林。
 

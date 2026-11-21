@@ -59,7 +59,7 @@ let label = match rule {
 
 - `?` 参数为 `none` 时，HTML 输出省略对应属性。
 - `some(v)` 按 `v` 的普通编码。集合内嵌套的 Option 值递归编码：`some(v)` 为 `["some", v]`，`none` 为 `["none"]`。
-- transform 按同签名替换实现时，原生与 Code 实现对省略的可观察行为一致：原生从缺席属性观察，Code 从 `none` 值观察，输出层把 `none` 映射回缺席。
+- replace 扩展按同签名替换实现时，原生与 Code 实现对省略的可观察行为一致：原生从缺席属性观察，Code 从 `none` 值观察，输出层把 `none` 映射回缺席。
 
 == 诊断
 

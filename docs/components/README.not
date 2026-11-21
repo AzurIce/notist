@@ -22,7 +22,7 @@ fn badge(label: String, count: Int = 1) -> InlineContent;
 
 badge 是行内内容函数，显示 label 与 count。badge.js 是单文件组件入口；使用 BigInt 读取 count，保留 i64 精度。HTML host 按规范函数身份注册组件。
 
-完整参数协议与生命周期契约见 [BlockContent Function Extensions](../designs/content-functions.not)。
+完整参数协议与生命周期契约见 [内容函数与输出绑定](../designs/content-functions.not)。
 
 @(id: "diagram")
 == diagram
@@ -33,17 +33,17 @@ fn diagram(source: String, theme: String = "auto") -> BlockContent;
 
 diagram 显示块级图形，source 使用 Mermaid 语法。theme 为 auto、light 或 dark；auto 跟随页面或系统主题。具体渲染器通过配置选择。
 
-docs/Notist.toml 选择具体实现：
+仓库根目录的 Notist.toml 选择具体实现：
 
 ```toml
 [[extensions]]
 kind = "replace"
-imports = { components = "components/lib.notc", pele = "../modules/pele/lib.notc" }
+imports = { components = "docs/components/lib.notc", pele = "modules/pele/lib.notc" }
 from = "components.diagram"
 to = "pele.diagram"
 ```
 
-切换为 Mermaid 时，将该规则的 pele 导入改为 `mermaid = "../modules/mermaid/lib.notc"`，并将 to 改为 `"mermaid.diagram"`。两个目标的参数、默认值与返回类型一致；正文只调用 `#components.diagram(...)`。
+切换为 Mermaid 时，将该规则的 pele 导入改为 `mermaid = "modules/mermaid/lib.notc"`，并将 to 改为 `"mermaid.diagram"`。两个目标的参数、默认值与返回类型一致；正文只调用 `#components.diagram(...)`。
 
 上例使用 Pele 渲染；更换渲染器时，正文中的调用保持不变。
 
@@ -72,7 +72,7 @@ to = "pele.diagram"
 
 正文用 `#components.panel[...]` 与 `#components.badge("标签")` 调用，组件资源放在声明文件所在目录。
 
-组合示例使用 components.diagram，并直接导入 [KaTeX](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not)。docs/Notist.toml 的数学映射独立导入 [Typst](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not)，把内置 math 映射为 typst.math；文档中的直接 katex.math 调用仍使用 KaTeX。映射保持公式原文，不转换 Typst 与 LaTeX 方言。
+组合示例使用 components.diagram，并直接导入 [KaTeX](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not)。仓库根目录 Notist.toml 的数学映射独立导入 [Typst](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not)，把内置 math 映射为 typst.math；文档中的直接 katex.math 调用仍使用 KaTeX。映射保持公式原文，不转换 Typst 与 LaTeX 方言。
 
 == Example
 

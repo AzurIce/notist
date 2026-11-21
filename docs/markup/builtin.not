@@ -1,11 +1,11 @@
 #import "../../modules/grammar/lib.notc" as grammar;
-== Builtin Content Functions & Sugar Grammar
+= Builtin Content Functions & Sugar Grammar
 
 记法见 [Grammar Notation](../notation.not)，共用词法、上下文、正文分派、调用及变换见 [Syntax](syntax.not)，类型与字面量见 [Types](../code/types.not)。每个函数一节，分别定义签名、包含结果构造的语法糖与必要的恢复；`MD.*` 是 Markdown 前端的 AST 模式。
 
 签名列出已知字段、默认值与 children 契约；已知字段的错误类型、值域及缺少必填字段产生 type 诊断，恢复树保留原值。未知具名字段与多余位置参数产生诊断。实现对应关系见 Syntax。
 
-=== text
+== text
 
 ```signature
 text(text: String) -> InlineContent
@@ -26,7 +26,7 @@ ast MD_Text -> MD.Text(s) => text(text: decode_once(s));
 
 `LiteralToken` 是其他语法的 recover 返回的原始标记；相邻文字按正文空白规则合并。text 参数使用具名写法。
 
-=== paragraph
+== paragraph
 
 ```signature
 paragraph()[children: InlineContent] -> BlockContent
@@ -46,7 +46,7 @@ ast MD_Paragraph -> MD.Paragraph(body) => Fragment(lower(body));
 
 平坦 CST 中的连续内容由空行、显式分段或块语法边界划为 Fragment，没有独立 Paragraph CST 节点。Lower 只保留分组；Resolve 确定类别后，全 Inline 的片段生成一个 paragraph，单个 Block 表达式直接保留。混合类别或多个 Block 表达式要求硬分隔，Shape 不自动拆段。显式 paragraph 调用始终按签名检查。单 NL 不插入空格，行末与续行开头空白丢弃；Markdown 双空格换行归一为单 NL，反斜杠换行分段。
 
-=== heading
+== heading
 
 ```signature
 heading<level: Int = 1>()[children: InlineContent] -> BlockContent
@@ -65,7 +65,7 @@ ast MD_Heading -> MD.Heading(level, body) => { heading<level: level>()[lower(bod
 
 `always_true` 使当前行的 NL 结束正文，NL 留给外层。原生块分派在块起点识别 Heading；EQ 是整个连续 `=` run。Markdown 对应 ATX 与 Setext 标题。
 
-=== section
+== section
 
 ```signature
 section<C: Type = BlockContent>()[children: C] -> BlockContent
@@ -100,7 +100,7 @@ close_section() {
 
 两个前端的普通块序列使用同一规则。
 
-=== strong
+== strong
 
 ```signature
 strong()[children: InlineContent] -> InlineContent
@@ -152,7 +152,7 @@ recover MatchedInline on Miss when kind(rule_start) == k {
 
 探测按 token 进行；Escape 不作为界定符。真正消费正文仍由 InlineRun 决定，可能先遇到内容槽闭括号等停止条件，因此收尾 token 可选。配对仅检查空白，不检查词内边界；Escape 不参与配对。Markdown 对应 `**...**` / `__...__`。
 
-=== emph
+== emph
 
 ```signature
 emph()[children: InlineContent] -> InlineContent
@@ -169,7 +169,7 @@ ast MD_Emphasis -> MD.Emphasis(body) => emph()[lower(body)];
 
 匹配和恢复使用 strong 节定义的 MatchedInline。Markdown 对应 `*...*` / `_..._`。
 
-=== strike
+== strike
 
 ```signature
 strike()[children: InlineContent] -> InlineContent
@@ -186,7 +186,7 @@ ast MD_Strikethrough -> MD.Strikethrough(body) => strike()[lower(body)];
 
 匹配和恢复使用 MatchedInline。Markdown 对应 `~...~` / `~~...~~`。
 
-=== underline
+== underline
 
 ```signature
 underline()[children: InlineContent] -> InlineContent
@@ -194,7 +194,7 @@ underline()[children: InlineContent] -> InlineContent
 
 为行内内容添加下划线，写作 `#underline[需要下划线的文字]`，HTML 输出带下划线样式的 span。`_..._` 表示 emph。
 
-=== raw
+== raw
 
 ```signature
 raw<C: Type = InlineContent>(text: String, lang?: String) -> C
@@ -278,7 +278,7 @@ Error 包装的未闭合 raw 块在 desugar 时跳过。正文保留末尾换行
 
 `strip_container_indent` 按行移除最多 ctx.block_indent 列的前导空格 / tab；tab 跨过边界时，剩余列补为空格。`strip_continuation_indent` 使用同一算法，但保留第一行。它们处理容器缩进，不移除 payload 自己的额外缩进。
 
-=== math
+== math
 
 ```signature
 math<C: Type = InlineContent>(text: String) -> C
@@ -324,7 +324,7 @@ payload 不透明。开后的留白确定类别，随后第一个闭前留白与
 
 math_text 先按 raw 小节的 strip_continuation_indent 去掉容器缩进，再在块级形式中 trim 首尾布局空白；行内 payload 原样保留。语法糖直接选择 BlockContent 或 InlineContent 实例。Markdown 使用相同的留白匹配规则，但 payload 仍受 Markdown 块范围限制，不跨空行或其他块边界；其段落解析会去掉续行的前导空白。代码内容与转义的美元符号不触发数学解析。
 
-=== link
+== link
 
 ```signature
 link<T: Type>(target: T, title?: String, query?: String, fragment?: String)[children: InlineContent] -> InlineContent
@@ -435,7 +435,7 @@ recover Link or WikiLink on Miss when kind(rule_start) == LBracket {
 
 Markdown 的行内、引用式链接均匹配 MD.Link。
 
-=== embed
+== embed
 
 ```signature
 embed(target: ResourceTarget, description?: String, title?: String, query?: String, fragment?: String) -> InlineContent
@@ -470,7 +470,7 @@ recover Embed on Miss when kind(rule_start) == Bang {
 
 Markdown 行内、引用式图片均匹配 MD.Image。
 
-=== list
+== list
 
 ```signature
 list(ordered: Bool = false, start: Int = 1)[children: BlockContent] -> BlockContent
@@ -510,7 +510,7 @@ ast MD_List -> MD.List(ordered, start, body) => list(ordered: ordered,
 
 gap 的空白属于 List CST；同缩进切换标记结束该 list。不保存 Markdown tight / loose 标记。structural_children 见 Syntax。Markdown 的 lazy continuation 由其前端识别；`.not` 的内容归属由 item 小节的缩进规则决定。
 
-=== item
+== item
 
 ```signature
 item<C: Type = BlockContent>()[children: C] -> BlockContent
@@ -552,10 +552,10 @@ ast MD_ListItem -> MD.ListItem(body) => item()[lower(body)];
 
 marker 与 WS 的消费前缀固定正文起始列；BlankLine 不单独结束 item。ItemBody 使用 Syntax 的 BlockRun(ctx, Item)；缩进与范围使用上述 ItemExtent。空项没有 children。
 
-=== callout
+== callout
 
 ```signature
-callout(kind?: String)[children: BlockContent] -> BlockContent
+callout<C: Type = BlockContent>(kind?: String)[children: C] -> BlockContent
 ```
 
 `.not` 无语法糖。
@@ -566,7 +566,7 @@ ast MD_Blockquote -> MD.Blockquote(body) => callout(kind: "quote")[lower(body)];
 
 MD.Blockquote 由 Markdown 的 `>` 引用块语法产生。
 
-=== divider
+== divider
 
 ```signature
 divider() -> BlockContent
@@ -587,7 +587,7 @@ ast MD_ThematicBreak -> MD.ThematicBreak => divider();
 
 原生 Divider CST 只包含三个 MINUS，尾部空白和 NL 留给外层。MD.ThematicBreak 对应 Markdown 的 `---` / `***` / `___` 等。
 
-=== table
+== table
 
 ```signature
 table(align?: Array<String>)[children: BlockContent] -> BlockContent
@@ -633,7 +633,7 @@ ast MD_Table -> MD.Table(align, rows) => table(align: align)[lower(rows)];
 
 `alignments` 逐 delimiter cell 去掉首尾空白；首 / 尾 / 两端冒号分别映射为 left / right / center，其余为 none。
 
-=== row
+== row
 
 ```signature
 row(header?: Bool)[children: BlockContent] -> BlockContent
@@ -672,7 +672,7 @@ ast MD_TableRow -> MD.TableRow(body, header) => row(header: header)[lower(body)]
 
 需要多段内容、列表或嵌套表格时，用 `#node[ ... ]` 包裹单元格内容，两端内侧留白以使用 BlockContent 文法。多行字符串使用 `"""..."""` 或 `r#"""..."""#`，开引号后须立即换行。示例见 [Cook Book](../cookbook/README.not)。header true 为表头、false 为表体。显式 row 省略 header 时不补入字段。
 
-=== cell
+== cell
 
 ```signature
 cell<C: Type = BlockContent>()[children: C] -> BlockContent
@@ -695,7 +695,7 @@ ast MD_TableCell -> MD.TableCell(body) => cell()[lower(body)];
 
 table_inline 在 range.start 解析 TableCell 并 lower，沿用正文的转义规则，不对 raw / math payload 额外解码。空区间产生空 cell。
 
-=== node
+== node
 
 ```signature
 node<C: Type = InlineContent>()[children: C] -> C

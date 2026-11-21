@@ -219,10 +219,10 @@ notist lsp
 
 ```sh
 # 构建并部署文档
-notist build --config docs/Notist.toml
+notist build --config Notist.toml
 
 # 本地预览，指定端口
-notist serve --config docs/Notist.toml --port 9000
+notist serve --config Notist.toml --port 9000
 
 # 检查一份文档或整个目录
 notist check docs/README.not

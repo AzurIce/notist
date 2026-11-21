@@ -38,9 +38,9 @@ Evaluation.dependencies 记录实际请求的 ResourcePath，包括缓存命中�
 
 一轮构建使用一个 Vault／ResourceSession，所有页面共享按需加载的输入。在同一授权读取能力下，每个逻辑路径的首次读取结果固定为本批次的字节、错误或 Pending，后续请求复用该结果。文件变化由下一轮构建接收；不同文件在各自首次使用时读取。
 
-宿主在读取前配置授权与预算。直接构造 ResourceSession 时默认没有数据授权；Vault.new 明确授予项目根。Vault.with_read_roots 替换授权列表，空列表拒绝所有数据读取。读取根、Resources.source_root 的词法绑定根和 publication／Book mounts 的发布根互不授予能力。
+宿主在读取前配置授权与预算。直接构造 ResourceSession 时默认没有数据授权；Vault.new 明确授予项目根。Vault.with_read_roots 替换授权列表，空列表拒绝所有数据读取。授权属于会话的读取视图：替换授权会作废先前读取的字节、文本、数据结果和依赖记录，收窄授权不可能复用更宽授权的读取。读取根、Resources.source_root 的词法绑定根和 publication／Book mounts 的发布根互不授予能力。
 
-Resources.read_root 返回显式的 ResourceReader，其 read_bounded 在根边界内有界读取。ResourceSession 保存首次结果，后端无须提供文件版本查询。数据缓存按授权读取能力隔离；源码字节只有经同一能力加载，才能直接复用为磁盘数据输入。收窄授权不能复用更宽能力的读取证明。不支持有界接口的后端仅可通过 Resources.read 加载源码，不能借已有源码缓存取得数据读取能力。
+Resources.read_root 返回显式的 ResourceReader，其 read_bounded 在根边界内有界读取。InputAccess 持有后端、读取根、预算和文件缓存，保存首次读取的字节或错误；后端无须提供文件版本查询。经同一根能力取得的文件字节供源码和数据读取共享。仅支持 Resources.read 的后端可以加载源码，但无界读取的缓存不会满足磁盘数据请求。
 
 FsResources 使用 cap-std 的目录 capability，将授权检查与实际打开维持在同一根边界内；允许根内 symlink，不允许指向根外，拒绝非普通文件。读取至多取得 limit + 1 字节，以判断超限；Memory／Overlay 先检查已知长度，再复制。单文件、会话缓存和请求数分别受限：
 
@@ -57,7 +57,7 @@ Resources.source_shared 提供共享 UTF-8 源码；ResourceSession 在有界字
 
 文件系统后端在首次有界读取前后检查同一文件句柄的元数据，读取期间发生变化作为该文件的 IO 失败缓存，不影响其他输入。缓存命中、文档求值与发布不重新扫描已读文件。
 
-显式逻辑路径加源码是文档覆盖输入，不要求落盘。每个路径首次登记的文本供本轮的资源读取使用；已消费的读取保持原结果，后续登记不替换它，也不使批次失效。SSG 先登记全部生成／编辑页面，再求值，使跨页读取取得准备后的文本，而非旧磁盘内容。
+DocumentInputs 按逻辑路径保存宿主首次登记的源码，不要求落盘，也不改写 InputAccess 的文件缓存。ResourceSession 在求值读取时先计账、检查读取根，再复用该路径已经返回的数据结果；第一次数据读取优先使用登记文本，否则访问后端。SSG 先登记全部生成／编辑页面，再求值，使跨页读取取得准备后的文本，而非旧磁盘内容。逻辑数据读取依赖和 JSON／TOML 解析缓存由会话保留，不属于后端文件缓存。
 
 新构建、编辑和资源准备重试创建新的 Vault。CLI 的 serve／listen 和 LSP 在输入更新后开始新批次；输入缓存与 comemo 计算缓存分离，新批次仍可复用未变化的模块编译与导入绑定。
 

@@ -593,6 +593,32 @@ fn source_or_data_cache_hits_cannot_bypass_a_narrower_root_capability() {
 }
 
 #[test]
+fn replacing_grants_discards_reads_and_their_accounting() {
+    let mut resources = Observed::new();
+    resources.files.insert("data.txt", "shared");
+    let data = path("/project", "data.txt");
+    let session = ResourceSession::new(&resources).with_read_root("/project");
+    assert_eq!(ready(session.file(&data)).as_ref(), b"shared");
+    assert_eq!(session.cached_bytes(), 6);
+    // Declaring the same root again does not change authority.
+    let session = session.with_read_root("/project");
+    assert_eq!(ready(session.file(&data)).as_ref(), b"shared");
+    assert_eq!(
+        resources.reads.lock().unwrap()[Path::new("/project/data.txt")],
+        1
+    );
+    // Replacing the grant view starts a new read view.
+    let session = session.with_read_roots(["/project".into()]);
+    assert_eq!(session.cached_bytes(), 0);
+    assert!(session.dependencies().is_empty());
+    assert_eq!(ready(session.file(&data)).as_ref(), b"shared");
+    assert_eq!(
+        resources.reads.lock().unwrap()[Path::new("/project/data.txt")],
+        2
+    );
+}
+
+#[test]
 fn legacy_source_bytes_do_not_manufacture_a_bounded_data_capability() {
     struct SourceOnly(MemoryResources);
     impl Resources for SourceOnly {

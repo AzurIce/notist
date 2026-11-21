@@ -150,6 +150,8 @@ impl<R: Resources> Vault<R> {
         &self.resources
     }
     /// Replace data grants; importing or publishing a directory never adds one.
+    /// The replacement starts a new read view, so bytes read under the previous
+    /// grants are not reused.
     pub fn with_read_roots(mut self, roots: impl IntoIterator<Item = PathBuf>) -> Self {
         self.resources = self.resources.with_read_roots(roots);
         self

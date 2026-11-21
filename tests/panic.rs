@@ -472,7 +472,6 @@ fn show(source: Path, before: Bool) -> InlineContent {
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn never_and_native_panic_round_trip_without_changing_legacy_function_metadata() {
     use notist::{FunctionImpl, NativeFunction};

@@ -389,7 +389,6 @@ fn option_types_are_nominal_and_display_with_their_payload() {
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn option_values_round_trip_and_key_bit_exact() {
     use notist::ComptimeValue;

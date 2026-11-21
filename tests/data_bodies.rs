@@ -720,7 +720,6 @@ fn cheap_scalar_projections_do_not_grow_a_batch_cache_but_arrays_still_share() {
     assert_eq!(cache.stats().entries, 2);
 }
 
-#[cfg(any(feature = "serde", feature = "command-extensions"))]
 #[test]
 fn new_native_functions_and_deferred_loop_ir_round_trip_without_public_payloads() {
     use notist_core::{

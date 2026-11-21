@@ -495,7 +495,6 @@ fn a_group_does_not_grant_structural_roles_to_an_opaque_block_value() {
     }
 }
 
-#[cfg(any(feature = "serde", feature = "command-extensions"))]
 #[test]
 fn retained_group_state_attributes_and_empty_children_round_trip() {
     let (_, evaluation) = evaluate(

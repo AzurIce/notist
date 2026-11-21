@@ -113,7 +113,6 @@ fn external_contract_errors_stay_distinct_from_unknown_calls() {
             .any(|d| d.message.contains("unknown"))
     );
 }
-#[cfg(feature = "serde")]
 #[test]
 fn serialized_extensions_need_no_module_to_restore_category_and_children() {
     let (root, _, sources) = notist::Pipeline::default()
@@ -136,7 +135,6 @@ fn serialized_extensions_need_no_module_to_restore_category_and_children() {
     incomplete.as_object_mut().unwrap().remove("level");
     assert!(sources.decode::<notist::Item>(incomplete).is_err());
 }
-#[cfg(feature = "serde")]
 #[test]
 fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
     for value in [
@@ -171,7 +169,6 @@ fn float_serialization_and_ir_json_preserve_every_f64_bit_pattern() {
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn serialized_items_retain_pending_calls_and_checked_expressions() {
     use notist::evaluation::ExprKind;

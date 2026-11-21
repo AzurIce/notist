@@ -721,7 +721,6 @@ pub(crate) fn build<R: Resources + Send>(
             let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
                 "Evaluate and prepare pages".into()
             });
-            let evaluation_start = std::time::Instant::now();
             let parallelized = executor.jobs() > 1 && analyzed.len() > 128;
             let mut analyzed = analyzed.into_iter();
             // Analysis has a whole-site barrier; evaluated trees do not. Windows
@@ -781,12 +780,6 @@ pub(crate) fn build<R: Resources + Send>(
                 return Err(Error::Diagnostics(errors));
             }
             evaluation_stage.finish();
-            if std::env::var_os("NOTIST_EVAL_TIMING").is_some() {
-                eprintln!(
-                    "[eval-batch] seconds={:.9}",
-                    evaluation_start.elapsed().as_secs_f64()
-                );
-            }
             let asset_stage =
                 notist::progress::Span::stage("site.assets", || "Prepare assets and Sass".into());
             let mut assets = Assets::new(output);

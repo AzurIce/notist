@@ -39,7 +39,7 @@ pub(crate) fn compile_module(
     let timing =
         crate::progress::Span::stage("core.module.cache", || format!("Module cache {module}"));
     let probe = crate::progress::timings::CacheProbe::new("core.module.compile.work");
-    let enabled = frontend.cache_key().is_some() && cache_enabled();
+    let enabled = frontend.cache_key().is_some();
     let result = match frontend.cache_key() {
         Some(key) => compile_cached(
             module,
@@ -59,18 +59,7 @@ pub(crate) fn compile_module(
     result
 }
 
-fn cache_enabled() -> bool {
-    #[cfg(feature = "profiling")]
-    {
-        crate::profiling::compile_enabled()
-    }
-    #[cfg(not(feature = "profiling"))]
-    {
-        true
-    }
-}
-
-#[comemo::memoize(enabled = cache_enabled())]
+#[comemo::memoize]
 fn compile_cached(
     module: &str,
     path: &str,
@@ -235,8 +224,6 @@ fn compile_uncached(
         "core.module.compile.work",
         || format!("Compile module body {module}"),
         || {
-            #[cfg(feature = "profiling")]
-            let _timer = crate::profiling::enter(crate::profiling::Stage::CompileWork);
             let origin = notist_core::source::Source::in_namespace(
                 notist_core::source::SourceNamespace::named(resource_root),
                 path,

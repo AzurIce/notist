@@ -205,7 +205,6 @@ fn float_descriptors_preserve_signed_zero_and_nan_value_semantics() {
         };
         assert_eq!(actual.to_bits(), expected.to_bits());
     }
-    #[cfg(any(feature = "serde", feature = "command-extensions"))]
     {
         let wire = serde_json::to_value(result.sources.wire(&result.root)).unwrap();
         let restored: Node = result.sources.decode(wire.clone()).unwrap();
@@ -270,7 +269,6 @@ fn sharing_descriptors_does_not_memoize_results_or_suppress_diagnostics() {
     assert_eq!(result, pipeline.evaluate(&analysis, &context));
 }
 
-#[cfg(any(feature = "serde", feature = "command-extensions"))]
 #[test]
 fn shared_and_detached_descriptors_have_identical_wire_data() {
     fn detach(node: &mut Node) {

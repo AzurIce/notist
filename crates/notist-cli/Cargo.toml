@@ -10,15 +10,6 @@ path = "src/main.rs"
 [features]
 default = ["lsp"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
-profiling = ["notist/profiling"]
-
-[[example]]
-name = "module_cache_profile"
-required-features = ["profiling"]
-
-[[example]]
-name = "module_site_profile"
-required-features = ["profiling"]
 
 [dependencies]
 notist = { path = "../.." }

@@ -477,7 +477,6 @@ fn result_payloads_are_included_in_component_protocol_and_path_checks() {
     }
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn result_serde_and_instance_keys_preserve_variants_and_nested_float_bits() {
     use notist::ComptimeValue;

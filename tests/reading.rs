@@ -326,7 +326,6 @@ fn same_named_value_declarations_do_not_acquire_native_reading_implementations()
     );
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn function_implementation_wire_preserves_legacy_code_flags_and_rejects_conflicts() {
     use notist::{FunctionDef, FunctionImpl, NativeFunction};

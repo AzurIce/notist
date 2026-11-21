@@ -51,8 +51,6 @@ pub use notist_core::{
 pub use notist_pipeline::frontend::{
     PipelineFrontend, markdown::MarkdownFrontend, markup::NotistFrontend,
 };
-#[cfg(feature = "profiling")]
-pub use notist_pipeline::profiling;
 pub use notist_pipeline::progress::{self, timings};
 pub use notist_pipeline::{
     Analysis, BindingSpec, CodeModule, CodeProgram, ContentAnalysis, ContentLowering, Context,

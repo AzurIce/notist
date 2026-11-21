@@ -884,7 +884,6 @@ fn virtual_source_and_overlay_inputs_bind_data_to_the_same_immutable_text_view()
     assert!(!output.rendered.html.contains("stale disk"));
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn error_wire_drops_sources_and_special_native_implementations_are_reserved() {
     let d = json(r#"{"name":false,"private":"SECRET"}"#).bind_source(
@@ -1009,7 +1008,6 @@ fn malformed_unicode_json_diagnostics_use_complete_character_boundaries() {
     assert_eq!(text.get(span), Some("😀"));
 }
 
-#[cfg(feature = "serde")]
 #[test]
 fn data_wire_is_bounded_selected_and_provenance_free_and_old_wire_stays_exact() {
     let d = json(r#"{"selected":[1,-0.0],"private":"SECRET"}"#)

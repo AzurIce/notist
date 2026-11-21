@@ -53,8 +53,6 @@ impl Context {
         targets: impl IntoIterator<Item = String>,
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
         let timing = crate::progress::Span::stage("core.module.link", || "Link module".into());
-        #[cfg(feature = "profiling")]
-        let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
         let code = CodeModule::linked_snapshot(module.into());
         let targets: Vec<_> = targets.into_iter().collect();
         if code.imports.len() != targets.len() {
@@ -93,8 +91,6 @@ impl Context {
     ) -> Result<Arc<LinkedModule>, Vec<Diagnostic>> {
         let timing =
             crate::progress::Span::stage("core.module.link", || "Link resolved module".into());
-        #[cfg(feature = "profiling")]
-        let _timer = crate::profiling::enter(crate::profiling::Stage::Link);
         let code = CodeModule::linked_snapshot(module.into());
         let targets: Vec<_> = targets.into_iter().collect();
         if targets.len() != code.imports.len() {
@@ -142,8 +138,6 @@ impl Context {
             format!("Install module {}", module.code().id())
         });
         timing.attribute("module", || module.code().id().into());
-        #[cfg(feature = "profiling")]
-        let _timer = crate::profiling::enter(crate::profiling::Stage::Install);
         self.registry.register(module.code().definitions.clone())?;
         self.identities.merge(self.registry.identities());
         self.checked = Default::default();

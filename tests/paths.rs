@@ -538,7 +538,6 @@ fn filesystem_and_memory_hosts_bind_identical_logical_paths_without_target_files
     assert!(!directory.path().join("views/default.json").exists());
 }
 
-#[cfg(any(feature = "serde", feature = "command-extensions"))]
 #[test]
 fn serialized_path_values_round_trip_and_reject_noncanonical_identity() {
     let value = expected("views/data.json");
@@ -560,7 +559,6 @@ fn serialized_path_values_round_trip_and_reject_noncanonical_identity() {
     }
 }
 
-#[cfg(any(feature = "serde", feature = "command-extensions"))]
 #[test]
 fn metadata_wire_keeps_ordinary_values_and_preserves_unresolved_path_ranges() {
     let output = notist::NotistFrontend.compile(

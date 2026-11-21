@@ -6,8 +6,6 @@ mod definitions;
 mod modules;
 mod navigation;
 pub use navigation::SourceNavigation;
-#[cfg(feature = "profiling")]
-pub mod profiling;
 pub mod progress;
 
 pub mod extensions;
@@ -265,8 +263,6 @@ impl Pipeline {
             progress::Span::stage("core.module.compile", || format!("Compile module {module}"));
         progress.attribute("module", || module.into());
         progress.attribute("source", || source_path.into());
-        #[cfg(feature = "profiling")]
-        let _timer = profiling::enter(profiling::Stage::Compile);
         let Some(frontend) = self.frontends.get(dialect_path.as_ref()) else {
             return Err(vec![Diagnostic::new(
                 notist_core::diag::Phase::Syntax,

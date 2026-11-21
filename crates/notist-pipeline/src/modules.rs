@@ -134,12 +134,6 @@ impl ModuleScope {
         }
     }
     fn shared(data: ScopeData) -> Arc<Self> {
-        if !cache_enabled() {
-            return Arc::new(Self {
-                data,
-                pooled: false,
-            });
-        }
         let mut scopes = SCOPES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -176,9 +170,7 @@ pub fn bind_imports(
     exports: &dyn ModuleExports,
 ) -> Result<Arc<ModuleScope>, Vec<Diagnostic>> {
     let timing = crate::progress::Span::stage("core.module.bind", || "Bind imports".into());
-    #[cfg(feature = "profiling")]
-    let _timer = crate::profiling::enter(crate::profiling::Stage::Bind);
-    if cache_enabled() && spec.locals.is_empty() && spec.imports.is_empty() {
+    if spec.locals.is_empty() && spec.imports.is_empty() {
         // Ordinary documents without imports have nothing to hash or validate.
         static EMPTY: LazyLock<Arc<ModuleScope>> =
             LazyLock::new(|| Arc::new(ModuleScope::default()));
@@ -188,32 +180,14 @@ pub fn bind_imports(
     }
     let probe = crate::progress::timings::CacheProbe::new("core.module.bind.work");
     let result = bind_cached(spec, exports.track());
-    timing.attribute("cache", || {
-        if cache_enabled() {
-            probe.outcome()
-        } else {
-            "bypass"
-        }
-        .into()
-    });
+    timing.attribute("cache", || probe.outcome().into());
     if result.is_ok() {
         timing.finish();
     }
     result
 }
 
-fn cache_enabled() -> bool {
-    #[cfg(feature = "profiling")]
-    {
-        crate::profiling::binding_enabled()
-    }
-    #[cfg(not(feature = "profiling"))]
-    {
-        true
-    }
-}
-
-#[comemo::memoize(enabled = cache_enabled())]
+#[comemo::memoize]
 fn bind_cached(
     spec: &BindingSpec,
     exports: Tracked<dyn ModuleExports + '_>,
@@ -222,8 +196,6 @@ fn bind_cached(
         "core.module.bind.work",
         || "Resolve import bindings".into(),
         || {
-            #[cfg(feature = "profiling")]
-            let _timer = crate::profiling::enter(crate::profiling::Stage::BindWork);
             let mut bindings = BTreeMap::new();
             let mut origins = BTreeMap::new();
             let mut diagnostics = Vec::new();

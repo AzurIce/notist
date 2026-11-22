@@ -1,7 +1,9 @@
-use crate::{
-    BinaryOp, Decl, Expr, ExprKind, Function, Method, Module, Program, Span, Type, TypePattern,
-    UnaryOp, WhereExpr, WhereExprKind,
+use crate::ast::{
+    AttrEntry, AttrLiteral, BinaryOp, BlockPiece, Decl, Expr, ExprKind, Function, InlinePiece,
+    Method, Module, Program, Span, Type, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
 };
+use crate::builtin::{BuiltinFn, lookup_builtin_method, lookup_prelude_function};
+use crate::content::{AttrValue, Attrs};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -52,6 +54,10 @@ pub(crate) enum CheckedExpr {
     String(Arc<str>),
     Local(usize),
     Function(FunctionId),
+    Builtin(BuiltinFn, Span),
+    InlineFragment(Vec<Self>, Attrs, Span),
+    BlockFragment(Vec<Self>, Attrs, Span),
+    AttachAttrs(Box<Self>, Attrs),
     Let(Box<Self>, Box<Self>),
     Seq(Box<Self>, Box<Self>),
     Unary(UnaryOp, Box<Self>),
@@ -72,6 +78,10 @@ pub(crate) enum ModuleExpr {
     String(Arc<str>),
     Local(usize),
     Function(InstanceKey, Span),
+    Builtin(BuiltinFn, Span),
+    InlineFragment(Vec<Self>, Attrs, Span),
+    BlockFragment(Vec<Self>, Attrs, Span),
+    AttachAttrs(Box<Self>, Attrs),
     Let(Box<Self>, Box<Self>),
     Seq(Box<Self>, Box<Self>),
     Unary(UnaryOp, Box<Self>),
@@ -377,6 +387,49 @@ fn lower_specialized_expr(
             };
             C::Function(id)
         }
+        M::Builtin(builtin, span) => C::Builtin(*builtin, *span),
+        M::InlineFragment(items, attrs, span) => {
+            let mut lowered = Vec::with_capacity(items.len());
+            for item in items {
+                lowered.push(lower_specialized_expr(
+                    decls,
+                    item,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?);
+            }
+            C::InlineFragment(lowered, attrs.clone(), *span)
+        }
+        M::BlockFragment(items, attrs, span) => {
+            let mut lowered = Vec::with_capacity(items.len());
+            for item in items {
+                lowered.push(lower_specialized_expr(
+                    decls,
+                    item,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?);
+            }
+            C::BlockFragment(lowered, attrs.clone(), *span)
+        }
+        M::AttachAttrs(target, attrs) => C::AttachAttrs(
+            Box::new(lower_specialized_expr(
+                decls,
+                target,
+                type_params,
+                type_args,
+                mapping,
+                order,
+                queue,
+            )?),
+            attrs.clone(),
+        ),
         M::Let(init, body) => C::Let(
             Box::new(lower_specialized_expr(
                 decls,
@@ -690,7 +743,14 @@ pub(crate) fn collect_module_interface(
 
 fn validate_type(ty: &Type, type_params: &[String]) -> Result<(), String> {
     match ty {
-        Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String | Type::Never => Ok(()),
+        Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::String
+        | Type::Inline
+        | Type::Block
+        | Type::Never => Ok(()),
         Type::Param(name) => {
             if type_params.iter().any(|p| p == name) {
                 Ok(())
@@ -768,9 +828,14 @@ fn eval_where(expr: &WhereExpr, params: &[String], args: &[Type]) -> Option<bool
 
 pub(crate) fn substitute_type(ty: &Type, params: &[String], args: &[Type]) -> Type {
     match ty {
-        Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String | Type::Never => {
-            ty.clone()
-        }
+        Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::String
+        | Type::Inline
+        | Type::Block
+        | Type::Never => ty.clone(),
         Type::Param(name) => params
             .iter()
             .position(|p| p == name)
@@ -787,9 +852,14 @@ fn substitute_map(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         return ty.clone();
     }
     match ty {
-        Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String | Type::Never => {
-            ty.clone()
-        }
+        Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::String
+        | Type::Inline
+        | Type::Block
+        | Type::Never => ty.clone(),
         Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
         Type::Function(ps, ret) => Type::Function(
             ps.iter().map(|p| substitute_map(p, subst)).collect(),
@@ -903,6 +973,8 @@ pub(crate) fn format_type(ty: &Type) -> String {
         Type::Int => "Int".into(),
         Type::Float => "Float".into(),
         Type::String => "String".into(),
+        Type::Inline => "Inline".into(),
+        Type::Block => "Block".into(),
         Type::Never => "Never".into(),
         Type::Param(name) => name.clone(),
         Type::Function(parameters, returns) => {
@@ -1194,6 +1266,12 @@ impl<'a> Checker<'a> {
             ExprKind::Int(n) => (M::Int(*n), Type::Int),
             ExprKind::Float(f) => (M::Float(*f), Type::Float),
             ExprKind::String(s) => (M::String(Arc::from(s.as_str())), Type::String),
+            ExprKind::InlineLiteral(pieces) => {
+                (self.check_inline_pieces(pieces, expr.span)?, Type::Inline)
+            }
+            ExprKind::BlockLiteral(pieces) => {
+                (self.check_block_pieces(pieces, expr.span)?, Type::Block)
+            }
             ExprKind::CompileError(message) => (
                 M::CompileError {
                     message: message.clone(),
@@ -1235,6 +1313,11 @@ impl<'a> Checker<'a> {
                             return Err((expr.span, TypeError::NamespaceAsValue(name.clone())));
                         }
                     }
+                } else if let Some((builtin, params, returns)) = lookup_prelude_function(name) {
+                    (
+                        M::Builtin(builtin, expr.span),
+                        Type::Function(params, Box::new(returns)),
+                    )
                 } else {
                     return Err((expr.span, TypeError::UnknownName(name.clone())));
                 }
@@ -1528,11 +1611,60 @@ impl<'a> Checker<'a> {
                 }
 
                 let (receiver_expr, receiver_ty) = self.expression(receiver, None)?;
-                let Some(entry) = self
+                if let Some(entry) = self
                     .scope
                     .methods
                     .get(&(receiver_ty.clone(), method_name.clone()))
-                else {
+                {
+                    if entry.parameters.len() != arguments.len() {
+                        return Err((
+                            expr.span,
+                            TypeError::Arity {
+                                expected: entry.parameters.len(),
+                                actual: arguments.len(),
+                            },
+                        ));
+                    }
+                    let mut call_args = Vec::with_capacity(1 + arguments.len());
+                    call_args.push(receiver_expr);
+                    for (arg, ty) in arguments.iter().zip(&entry.parameters) {
+                        call_args.push(self.expect_expr(arg, ty)?);
+                    }
+                    (
+                        M::Call(
+                            Box::new(M::Function(
+                                InstanceKey {
+                                    decl: entry.id,
+                                    type_args: Vec::new(),
+                                },
+                                expr.span,
+                            )),
+                            call_args,
+                        ),
+                        entry.returns.clone(),
+                    )
+                } else if let Some((builtin, params, returns)) =
+                    lookup_builtin_method(&receiver_ty, method_name)
+                {
+                    if params.len() != arguments.len() {
+                        return Err((
+                            expr.span,
+                            TypeError::Arity {
+                                expected: params.len(),
+                                actual: arguments.len(),
+                            },
+                        ));
+                    }
+                    let mut call_args = Vec::with_capacity(1 + arguments.len());
+                    call_args.push(receiver_expr);
+                    for (arg, ty) in arguments.iter().zip(&params) {
+                        call_args.push(self.expect_expr(arg, ty)?);
+                    }
+                    (
+                        M::Call(Box::new(M::Builtin(builtin, expr.span)), call_args),
+                        returns,
+                    )
+                } else {
                     return Err((
                         expr.span,
                         TypeError::UnknownMethod {
@@ -1540,36 +1672,157 @@ impl<'a> Checker<'a> {
                             method: method_name.clone(),
                         },
                     ));
-                };
-                if entry.parameters.len() != arguments.len() {
-                    return Err((
-                        expr.span,
-                        TypeError::Arity {
-                            expected: entry.parameters.len(),
-                            actual: arguments.len(),
-                        },
-                    ));
                 }
-                let mut call_args = Vec::with_capacity(1 + arguments.len());
-                call_args.push(receiver_expr);
-                for (arg, ty) in arguments.iter().zip(&entry.parameters) {
-                    call_args.push(self.expect_expr(arg, ty)?);
-                }
-                (
-                    M::Call(
-                        Box::new(M::Function(
-                            InstanceKey {
-                                decl: entry.id,
-                                type_args: Vec::new(),
-                            },
-                            expr.span,
-                        )),
-                        call_args,
-                    ),
-                    entry.returns.clone(),
-                )
             }
         })
+    }
+
+    fn check_inline_pieces(
+        &mut self,
+        pieces: &'a [InlinePiece],
+        span: Span,
+    ) -> Result<ModuleExpr, (Span, TypeError)> {
+        let mut items = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            items.push(self.check_inline_piece(piece)?);
+        }
+        Ok(ModuleExpr::InlineFragment(items, Attrs::empty(), span))
+    }
+
+    fn check_inline_piece(
+        &mut self,
+        piece: &'a InlinePiece,
+    ) -> Result<ModuleExpr, (Span, TypeError)> {
+        use ModuleExpr as M;
+        match piece {
+            InlinePiece::Text(text, span) => Ok(M::Call(
+                Box::new(M::Builtin(BuiltinFn::Text, *span)),
+                vec![M::String(Arc::from(text.as_str()))],
+            )),
+            InlinePiece::Strong(items, span) => {
+                let inner = self.check_inline_pieces(items, *span)?;
+                Ok(M::Call(
+                    Box::new(M::Builtin(BuiltinFn::Strong, *span)),
+                    vec![inner],
+                ))
+            }
+            InlinePiece::Emph(items, span) => {
+                let inner = self.check_inline_pieces(items, *span)?;
+                Ok(M::Call(
+                    Box::new(M::Builtin(BuiltinFn::Emph, *span)),
+                    vec![inner],
+                ))
+            }
+            InlinePiece::Raw(text, span) => Ok(M::Call(
+                Box::new(M::Builtin(BuiltinFn::Raw, *span)),
+                vec![M::String(Arc::from(text.as_str()))],
+            )),
+            InlinePiece::Link {
+                target,
+                label,
+                span,
+            } => {
+                let checked_label = self.check_inline_pieces(label, *span)?;
+                Ok(M::Call(
+                    Box::new(M::Builtin(BuiltinFn::Link, *span)),
+                    vec![M::String(Arc::from(target.as_str())), checked_label],
+                ))
+            }
+            InlinePiece::Expr(expr, _) => self.expect_expr(expr, &Type::Inline),
+            InlinePiece::Attributed { attrs, target, .. } => {
+                let inner = self.check_inline_piece(target)?;
+                let lowered = lower_attrs(attrs);
+                if lowered.is_empty() {
+                    Ok(inner)
+                } else {
+                    Ok(M::AttachAttrs(Box::new(inner), lowered))
+                }
+            }
+        }
+    }
+
+    fn check_block_pieces(
+        &mut self,
+        pieces: &'a [BlockPiece],
+        span: Span,
+    ) -> Result<ModuleExpr, (Span, TypeError)> {
+        let mut items = Vec::with_capacity(pieces.len());
+        for piece in pieces {
+            items.push(self.check_block_piece(piece)?);
+        }
+        Ok(ModuleExpr::BlockFragment(items, Attrs::empty(), span))
+    }
+
+    fn check_block_piece(
+        &mut self,
+        piece: &'a BlockPiece,
+    ) -> Result<ModuleExpr, (Span, TypeError)> {
+        use ModuleExpr as M;
+        let (base, attrs) = match piece {
+            BlockPiece::Paragraph {
+                inlines,
+                attrs,
+                span,
+            } => {
+                let body = self.check_inline_pieces(inlines, *span)?;
+                let para = M::Call(Box::new(M::Builtin(BuiltinFn::Para, *span)), vec![body]);
+                (para, attrs)
+            }
+            BlockPiece::Heading {
+                level,
+                title,
+                attrs,
+                span,
+            } => {
+                let body = self.check_inline_pieces(title, *span)?;
+                let heading = M::Call(
+                    Box::new(M::Builtin(BuiltinFn::Heading, *span)),
+                    vec![M::Int(i64::from(*level)), body],
+                );
+                (heading, attrs)
+            }
+            BlockPiece::CodeBlock {
+                lang,
+                text,
+                attrs,
+                span,
+            } => {
+                let code = M::Call(
+                    Box::new(M::Builtin(BuiltinFn::CodeBlock, *span)),
+                    vec![
+                        M::String(Arc::from(lang.as_str())),
+                        M::String(Arc::from(text.as_str())),
+                    ],
+                );
+                (code, attrs)
+            }
+            BlockPiece::Expr { expr, attrs, span } => {
+                let (checked, ty) = self.expression(expr, None)?;
+                let block_expr = match ty {
+                    Type::Block | Type::Never => checked,
+                    Type::Inline => M::Call(
+                        Box::new(M::Builtin(BuiltinFn::Para, *span)),
+                        vec![checked],
+                    ),
+                    other => {
+                        return Err((
+                            expr.span,
+                            TypeError::Mismatch {
+                                expected: Type::Block,
+                                actual: other,
+                            },
+                        ));
+                    }
+                };
+                (block_expr, attrs)
+            }
+        };
+        let lowered = lower_attrs(attrs);
+        if lowered.is_empty() {
+            Ok(base)
+        } else {
+            Ok(M::AttachAttrs(Box::new(base), lowered))
+        }
     }
 
     fn check_binary(
@@ -1590,7 +1843,13 @@ impl<'a> Checker<'a> {
                 let (checked_right, right_ty) = self.expression(right, None)?;
                 let supported = matches!(
                     left_ty,
-                    Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String
+                    Type::Unit
+                        | Type::Bool
+                        | Type::Int
+                        | Type::Float
+                        | Type::String
+                        | Type::Inline
+                        | Type::Block
                 );
                 if !supported {
                     return Err((
@@ -1625,7 +1884,10 @@ impl<'a> Checker<'a> {
             BinaryOp::Add => {
                 let (checked_left, left_ty) = self.expression(left, None)?;
                 let (checked_right, right_ty) = self.expression(right, None)?;
-                let supported = matches!(left_ty, Type::Int | Type::Float | Type::String);
+                let supported = matches!(
+                    left_ty,
+                    Type::Int | Type::Float | Type::String | Type::Inline | Type::Block
+                );
                 if !supported {
                     return Err((
                         span,
@@ -1669,6 +1931,25 @@ impl<'a> Checker<'a> {
         expect(&resolved, actual, expr.span)?;
         Ok(checked)
     }
+}
+
+fn lower_attrs(entries: &[AttrEntry]) -> Attrs {
+    if entries.is_empty() {
+        return Attrs::empty();
+    }
+    let pairs = entries
+        .iter()
+        .map(|entry| {
+            let value = match &entry.value {
+                AttrLiteral::Bool(b) => AttrValue::Bool(*b),
+                AttrLiteral::Int(n) => AttrValue::Int(*n),
+                AttrLiteral::Float(f) => AttrValue::Float(*f),
+                AttrLiteral::String(s) => AttrValue::String(Arc::from(s.as_str())),
+            };
+            (Arc::from(entry.key.as_str()), value)
+        })
+        .collect();
+    Attrs::from_entries(pairs)
 }
 
 fn expect(expected: &Type, actual: Type, span: Span) -> Result<(), (Span, TypeError)> {

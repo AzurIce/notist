@@ -17,6 +17,23 @@ fn multi_file_example_runs_main() {
 }
 
 #[test]
+fn content_example_runs_all_entries() {
+    let source = include_str!("../examples/programs/content.notc");
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = check(&parsed.program).expect("content.notc should check");
+    assert!(matches!(
+        program.run("summary"),
+        Ok(Value::String(ref s)) if s.as_ref() == "h1: Welcome to ⚡ Notist | h2: Architecture"
+    ));
+    let Value::Block(doc) = program.run("main").expect("main should evaluate") else {
+        panic!("expected Block");
+    };
+    assert!(doc.plain_text().contains("Welcome to ⚡ Notist"));
+    assert!(doc.plain_text().contains("Remember to run sectionize() explicitly."));
+}
+
+#[test]
 fn generics_example_runs_main() {
     let source = include_str!("../examples/programs/generics.notc");
     let parsed = parse(source);

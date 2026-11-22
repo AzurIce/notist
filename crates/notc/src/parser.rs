@@ -3,6 +3,7 @@ use crate::ast::{
     Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
+use crate::content_parser::parse_content_literal;
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
 const MAX_PARSE_DEPTH: usize = 128;
@@ -20,6 +21,7 @@ pub fn parse(source: &str) -> ParseResult {
     let (tokens, diagnostics) = lex(source);
     let mut parser = Parser {
         source,
+        base_offset: 0,
         tokens,
         pos: 0,
         depth: 0,
@@ -34,8 +36,164 @@ pub fn parse(source: &str) -> ParseResult {
     }
 }
 
+/// Parse `#(expr)` embedded inside a `[...]` content literal, returning `(expr, bytes_consumed)`.
+pub(crate) fn parse_embedded_expr(
+    slice: &str,
+    base_offset: usize,
+    depth: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<(Expr, usize)> {
+    let end = scan_balanced_delims(slice.as_bytes(), 0, b'(', b')')?;
+    let sub = &slice[..end];
+    let (mut tokens, mut lex_diags) = lex(sub);
+    offset_tokens(&mut tokens, base_offset as u32);
+    offset_diagnostics(&mut lex_diags, base_offset as u32);
+    let mut parser = Parser {
+        source: sub,
+        base_offset,
+        tokens,
+        pos: 0,
+        depth,
+        diagnostics: lex_diags,
+    };
+    let expr = parser.primary().ok();
+    diagnostics.extend(parser.diagnostics);
+    expr.map(|e| (e, end))
+}
+
+/// Parse `#ident` / `#mod.func<T>(args)[body]` embedded inside a `[...]` content literal.
+pub(crate) fn parse_embedded_postfix(
+    slice: &str,
+    base_offset: usize,
+    depth: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<(Expr, usize)> {
+    let end = scan_embedded_postfix_end(slice.as_bytes());
+    if end == 0 {
+        return None;
+    }
+    let sub = &slice[..end];
+    let (mut tokens, mut lex_diags) = lex(sub);
+    offset_tokens(&mut tokens, base_offset as u32);
+    offset_diagnostics(&mut lex_diags, base_offset as u32);
+    let mut parser = Parser {
+        source: sub,
+        base_offset,
+        tokens,
+        pos: 0,
+        depth,
+        diagnostics: lex_diags,
+    };
+    let expr = parser.postfix().ok();
+    diagnostics.extend(parser.diagnostics);
+    expr.map(|e| (e, end))
+}
+
+fn offset_tokens(tokens: &mut [Token], offset: u32) {
+    if offset == 0 {
+        return;
+    }
+    for tok in tokens {
+        tok.span.start += offset;
+        tok.span.end += offset;
+    }
+}
+
+fn offset_diagnostics(diags: &mut [ParseDiagnostic], offset: u32) {
+    if offset == 0 {
+        return;
+    }
+    for d in diags {
+        d.span.start += offset;
+        d.span.end += offset;
+    }
+}
+
+fn scan_embedded_postfix_end(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    let mut i = 0;
+    if i >= len || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        return 0;
+    }
+    i += 1;
+    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    loop {
+        if i >= len {
+            break;
+        }
+        match bytes[i] {
+            b'.' if i + 1 < len && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_') => {
+                i += 2;
+                while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+            }
+            b'<' => {
+                let Some(next) = scan_balanced_delims(bytes, i, b'<', b'>') else {
+                    break;
+                };
+                i = next;
+            }
+            b'(' => {
+                let Some(next) = scan_balanced_delims(bytes, i, b'(', b')') else {
+                    break;
+                };
+                i = next;
+            }
+            b'[' => {
+                let Some(next) = scan_balanced_delims(bytes, i, b'[', b']') else {
+                    break;
+                };
+                i = next;
+            }
+            _ => break,
+        }
+    }
+    i
+}
+
+fn scan_balanced_delims(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    let len = bytes.len();
+    if start >= len || bytes[start] != open {
+        return None;
+    }
+    let mut i = start + 1;
+    let mut depth = 1usize;
+    while i < len && depth > 0 {
+        match bytes[i] {
+            b'\\' if i + 1 < len => i += 2,
+            b'"' if open != b'[' => {
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        i += 2;
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b if b == open => {
+                depth += 1;
+                i += 1;
+            }
+            b if b == close => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    (depth == 0).then_some(i)
+}
+
 struct Parser<'a> {
     source: &'a str,
+    base_offset: usize,
     tokens: Vec<Token>,
     pos: usize,
     depth: usize,
@@ -69,7 +227,9 @@ impl<'a> Parser<'a> {
     }
 
     fn text(&self, span: Span) -> &'a str {
-        &self.source[span.start as usize..span.end as usize]
+        let start = span.start as usize - self.base_offset;
+        let end = span.end as usize - self.base_offset;
+        &self.source[start..end]
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
@@ -494,6 +654,8 @@ impl<'a> Parser<'a> {
                     "Int" => Ok(Type::Int),
                     "Float" => Ok(Type::Float),
                     "String" => Ok(Type::String),
+                    "Inline" => Ok(Type::Inline),
+                    "Block" => Ok(Type::Block),
                     "Never" => Ok(Type::Never),
                     other => Ok(Type::Param(other.to_owned())),
                 }
@@ -827,6 +989,25 @@ impl<'a> Parser<'a> {
                     let span = expr.span.merge(close.span);
                     expr = Expr::new(ExprKind::Call(Box::new(expr), args), span);
                 }
+                // Trailing `[...]` immediately adjacent to a callee or call binds as
+                // the next ordinary positional argument (`callout("tip")[ body ]`,
+                // `strong[hi]`, `columns[ left ][ right ]`).
+                TokenKind::Content if self.current().span.start == expr.span.end => {
+                    let content_expr = self.parse_content_token()?;
+                    let new_span = expr.span.merge(content_expr.span);
+                    match &mut expr.kind {
+                        ExprKind::Call(_, args) | ExprKind::MethodCall(_, _, args) => {
+                            args.push(content_expr);
+                            expr.span = new_span;
+                        }
+                        _ => {
+                            expr = Expr::new(
+                                ExprKind::Call(Box::new(expr), vec![content_expr]),
+                                new_span,
+                            );
+                        }
+                    }
+                }
                 TokenKind::Dot => {
                     self.advance();
                     let name_tok = self.expect(TokenKind::Ident)?;
@@ -838,6 +1019,15 @@ impl<'a> Parser<'a> {
                         let span = expr.span.merge(close.span);
                         expr =
                             Expr::new(ExprKind::MethodCall(Box::new(expr), member, args), span);
+                    } else if self.at(TokenKind::Content)
+                        && self.current().span.start == name_tok.span.end
+                    {
+                        let content_expr = self.parse_content_token()?;
+                        let span = expr.span.merge(content_expr.span);
+                        expr = Expr::new(
+                            ExprKind::MethodCall(Box::new(expr), member, vec![content_expr]),
+                            span,
+                        );
                     } else {
                         let span = expr.span.merge(name_tok.span);
                         expr = Expr::new(ExprKind::Member(Box::new(expr), member), span);
@@ -889,6 +1079,7 @@ impl<'a> Parser<'a> {
                 })?;
                 Ok(Expr::new(ExprKind::String(value), tok.span))
             }
+            TokenKind::Content => self.parse_content_token(),
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(true), tok.span))
@@ -934,6 +1125,15 @@ impl<'a> Parser<'a> {
                 Err(())
             }
         }
+    }
+
+    fn parse_content_token(&mut self) -> Result<Expr, ()> {
+        self.enter()?;
+        let tok = self.expect(TokenKind::Content)?;
+        let raw = self.text(tok.span);
+        let expr = parse_content_literal(raw, tok.span, self.depth, &mut self.diagnostics);
+        self.leave();
+        Ok(expr)
     }
 }
 

@@ -75,6 +75,8 @@ pub enum Type {
     Int,
     Float,
     String,
+    Inline,
+    Block,
     Never,
     Param(String),
     Function(Vec<Type>, Box<Type>),
@@ -188,6 +190,66 @@ impl Expr {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrLiteral {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+#[derive(Debug)]
+pub struct AttrEntry {
+    pub key: String,
+    pub value: AttrLiteral,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub enum InlinePiece {
+    Text(String, Span),
+    Strong(Vec<InlinePiece>, Span),
+    Emph(Vec<InlinePiece>, Span),
+    Raw(String, Span),
+    Link {
+        target: String,
+        label: Vec<InlinePiece>,
+        span: Span,
+    },
+    Expr(Box<Expr>, Span),
+    Attributed {
+        attrs: Vec<AttrEntry>,
+        target: Box<InlinePiece>,
+        span: Span,
+    },
+}
+
+#[derive(Debug)]
+pub enum BlockPiece {
+    Paragraph {
+        inlines: Vec<InlinePiece>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Heading {
+        level: u8,
+        title: Vec<InlinePiece>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    CodeBlock {
+        lang: String,
+        text: String,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Expr {
+        expr: Box<Expr>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+}
+
 #[derive(Debug)]
 pub enum ExprKind {
     Unit,
@@ -195,6 +257,8 @@ pub enum ExprKind {
     Int(i64),
     Float(f64),
     String(String),
+    InlineLiteral(Vec<InlinePiece>),
+    BlockLiteral(Vec<BlockPiece>),
     Name(String),
     Member(Box<Expr>, String),
     Instantiate(Box<Expr>, Vec<Type>),

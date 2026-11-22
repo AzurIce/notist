@@ -146,6 +146,8 @@ fn format_type(ty: &Type) -> String {
         Type::Int => "Int".into(),
         Type::Float => "Float".into(),
         Type::String => "String".into(),
+        Type::Inline => "Inline".into(),
+        Type::Block => "Block".into(),
         Type::Never => "Never".into(),
         Type::Param(name) => name.clone(),
         Type::Function(params, ret) => {
@@ -237,6 +239,9 @@ fn format_value(value: Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Float(f) => f.to_string(),
         Value::String(s) => format!("{s:?}"),
+        Value::Inline(inline) => inline.to_string(),
+        Value::Block(block) => block.to_string(),
         Value::Function(_) => "<function>".into(),
+        Value::Builtin(b, _) => format!("<builtin:{b:?}>"),
     }
 }

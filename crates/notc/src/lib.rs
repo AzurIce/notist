@@ -5,18 +5,23 @@
 //! reachability before evaluation; no document host or filesystem IO is required.
 
 pub mod ast;
+mod builtin;
 mod check;
+pub mod content;
+mod content_parser;
 mod eval;
 mod lexer;
 mod module;
 mod parser;
 
 pub use ast::{
-    BinaryOp, Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module,
-    Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
-    WhereExprKind,
+    AttrEntry, AttrLiteral, BinaryOp, BlockPiece, Decl, Expr, ExprKind, Function, Import,
+    ImportKind, ImportMember, InlinePiece, Method, Module, Param, Program, Span, Type,
+    TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
 };
+pub use builtin::BuiltinFn;
 pub use check::{CheckedProgram, Diagnostic, TypeError, check};
+pub use content::{AttrValue, Attrs, Block, BlockKind, BlockNode, Inline, InlineKind, InlineNode};
 pub use eval::{ExecutionError, FunctionValue, Value};
 pub use lexer::ParseDiagnostic;
 pub use module::{

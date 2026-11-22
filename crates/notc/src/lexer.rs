@@ -22,6 +22,7 @@ pub(crate) enum TokenKind {
     Int,
     Float,
     String,
+    Content,
     LParen,
     RParen,
     LBrace,
@@ -67,6 +68,7 @@ impl TokenKind {
             Self::Int => "integer literal",
             Self::Float => "float literal",
             Self::String => "string literal",
+            Self::Content => "content literal",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
             Self::LBrace => "`{`",
@@ -146,6 +148,9 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
             }
             b'"' => {
                 i = scan_escaped_string(bytes, i, &mut tokens, &mut diagnostics);
+            }
+            b'[' => {
+                i = scan_content_literal(bytes, i, &mut tokens, &mut diagnostics);
             }
             b'r' if i + 1 < len && bytes[i + 1] == b'#' => {
                 i = scan_raw_string(bytes, i, &mut tokens, &mut diagnostics);
@@ -412,6 +417,90 @@ fn scan_raw_string(
         diagnostics.push(ParseDiagnostic {
             span: span(start, i),
             message: "unterminated raw string literal".into(),
+        });
+    }
+    i
+}
+
+/// Scan a balanced `[...]` content literal token, skipping backslash escapes,
+/// inline/fenced raw backticks, and strings inside embedded code parentheses.
+fn scan_content_literal(
+    bytes: &[u8],
+    start: usize,
+    tokens: &mut Vec<Token>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> usize {
+    let len = bytes.len();
+    let mut i = start + 1;
+    let mut depth = 1usize;
+    let mut paren_depth = 0usize;
+
+    while i < len && depth > 0 {
+        match bytes[i] {
+            b'\\' if i + 1 < len => {
+                i += 2;
+            }
+            b'`' if paren_depth == 0 => {
+                let tick_start = i;
+                while i < len && bytes[i] == b'`' {
+                    i += 1;
+                }
+                let tick_count = i - tick_start;
+                while i < len {
+                    if bytes[i] == b'`'
+                        && i + tick_count <= len
+                        && bytes[i..i + tick_count].iter().all(|&b| b == b'`')
+                    {
+                        i += tick_count;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => {
+                paren_depth += 1;
+                i += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                i += 1;
+            }
+            b'"' if paren_depth > 0 => {
+                // Skip string literals inside embedded `#call("]")` / `@(k: "]")`.
+                i += 1;
+                while i < len {
+                    match bytes[i] {
+                        b'\\' if i + 1 < len => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\n' => break,
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b']' => {
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if depth == 0 {
+        tokens.push(Token {
+            kind: TokenKind::Content,
+            span: span(start, i),
+        });
+    } else {
+        diagnostics.push(ParseDiagnostic {
+            span: span(start, i),
+            message: "unterminated content literal".into(),
         });
     }
     i

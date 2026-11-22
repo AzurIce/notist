@@ -1,5 +1,7 @@
-use crate::ast::{BinaryOp, UnaryOp};
+use crate::ast::{BinaryOp, Span, UnaryOp};
+use crate::builtin::BuiltinFn;
 use crate::check::{CheckedExpr, CheckedProgram, FunctionId};
+use crate::content::{AttrValue, Attrs, Block, BlockKind, Inline, InlineKind};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -9,7 +11,10 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(Arc<str>),
+    Inline(Inline),
+    Block(Block),
     Function(FunctionValue),
+    Builtin(BuiltinFn, Span),
 }
 
 /// An opaque function reference local to the program that produced it.
@@ -56,6 +61,36 @@ fn evaluate(
         C::String(s) => Ok(Value::String(Arc::clone(s))),
         C::Local(slot) => Ok(stack[base + slot].clone()),
         C::Function(id) => Ok(Value::Function(FunctionValue(*id))),
+        C::Builtin(builtin, span) => Ok(Value::Builtin(*builtin, *span)),
+        C::InlineFragment(items, attrs, span) => {
+            let mut inlines = Vec::with_capacity(items.len());
+            for item in items {
+                let Value::Inline(inline) = evaluate(program, item, stack, base, depth)? else {
+                    unreachable!("checked inline fragment item")
+                };
+                inlines.push(inline);
+            }
+            Ok(Value::Inline(Inline::fragment(
+                inlines,
+                attrs.clone(),
+                *span,
+            )))
+        }
+        C::BlockFragment(items, attrs, span) => {
+            let mut blocks = Vec::with_capacity(items.len());
+            for item in items {
+                let Value::Block(block) = evaluate(program, item, stack, base, depth)? else {
+                    unreachable!("checked block fragment item")
+                };
+                blocks.push(block);
+            }
+            Ok(Value::Block(Block::fragment(blocks, attrs.clone(), *span)))
+        }
+        C::AttachAttrs(inner, attrs) => match evaluate(program, inner, stack, base, depth)? {
+            Value::Inline(inline) => Ok(Value::Inline(inline.with_attrs(attrs.clone()))),
+            Value::Block(block) => Ok(Value::Block(block.with_attrs(attrs.clone()))),
+            _ => unreachable!("checked attribute target"),
+        },
         C::Let(initializer, body) => {
             let value = evaluate(program, initializer, stack, base, depth)?;
             stack.push(value);
@@ -115,20 +150,31 @@ fn evaluate(
             )
         }
         C::Call(callee, arguments) => {
-            const MAX_CALL_DEPTH: usize = 64;
-            if depth >= MAX_CALL_DEPTH {
-                return Err(ExecutionError::CallDepthExceeded);
-            }
-            let Value::Function(FunctionValue(id)) = evaluate(program, callee, stack, base, depth)?
-            else {
-                unreachable!("checked call target")
-            };
+            let callee_value = evaluate(program, callee, stack, base, depth)?;
             // Evaluate in the caller's frame before installing the callee frame.
             // Stage arguments separately so they cannot occupy caller let slots.
             let mut values = Vec::with_capacity(arguments.len());
             for argument in arguments {
                 values.push(evaluate(program, argument, stack, base, depth)?);
             }
+            call_value(program, callee_value, values, stack, depth)
+        }
+    }
+}
+
+fn call_value(
+    program: &CheckedProgram,
+    callee: Value,
+    values: Vec<Value>,
+    stack: &mut Vec<Value>,
+    depth: usize,
+) -> Result<Value, ExecutionError> {
+    const MAX_CALL_DEPTH: usize = 64;
+    if depth >= MAX_CALL_DEPTH {
+        return Err(ExecutionError::CallDepthExceeded);
+    }
+    match callee {
+        Value::Function(FunctionValue(id)) => {
             let frame = stack.len();
             stack.extend(values);
             let result = evaluate(
@@ -141,7 +187,222 @@ fn evaluate(
             stack.truncate(frame);
             result
         }
+        Value::Builtin(builtin, span) => {
+            eval_builtin(program, builtin, span, values, stack, depth)
+        }
+        _ => unreachable!("checked call target"),
     }
+}
+
+fn attr_to_arc_str(value: &AttrValue) -> Arc<str> {
+    match value {
+        AttrValue::String(s) => Arc::clone(s),
+        AttrValue::Bool(b) => Arc::from(b.to_string()),
+        AttrValue::Int(n) => Arc::from(n.to_string()),
+        AttrValue::Float(f) => Arc::from(f.to_string()),
+    }
+}
+
+fn eval_builtin(
+    program: &CheckedProgram,
+    builtin: BuiltinFn,
+    span: Span,
+    values: Vec<Value>,
+    stack: &mut Vec<Value>,
+    depth: usize,
+) -> Result<Value, ExecutionError> {
+    let mut args = values.into_iter();
+    let take_string = |args: &mut std::vec::IntoIter<Value>| -> Arc<str> {
+        match args.next() {
+            Some(Value::String(s)) => s,
+            _ => unreachable!("checked string builtin argument"),
+        }
+    };
+    let take_int = |args: &mut std::vec::IntoIter<Value>| -> i64 {
+        match args.next() {
+            Some(Value::Int(n)) => n,
+            _ => unreachable!("checked int builtin argument"),
+        }
+    };
+    let take_inline = |args: &mut std::vec::IntoIter<Value>| -> Inline {
+        match args.next() {
+            Some(Value::Inline(inline)) => inline,
+            _ => unreachable!("checked inline builtin argument"),
+        }
+    };
+    let take_block = |args: &mut std::vec::IntoIter<Value>| -> Block {
+        match args.next() {
+            Some(Value::Block(block)) => block,
+            _ => unreachable!("checked block builtin argument"),
+        }
+    };
+
+    Ok(match builtin {
+        BuiltinFn::Text => {
+            let text = take_string(&mut args);
+            Value::Inline(Inline::text(text, span))
+        }
+        BuiltinFn::Strong => {
+            let inner = take_inline(&mut args);
+            Value::Inline(Inline::new(InlineKind::Strong(inner), Attrs::empty(), span))
+        }
+        BuiltinFn::Emph => {
+            let inner = take_inline(&mut args);
+            Value::Inline(Inline::new(InlineKind::Emph(inner), Attrs::empty(), span))
+        }
+        BuiltinFn::Raw => {
+            let code = take_string(&mut args);
+            Value::Inline(Inline::new(InlineKind::Raw(code), Attrs::empty(), span))
+        }
+        BuiltinFn::Link => {
+            let target = take_string(&mut args);
+            let label = take_inline(&mut args);
+            Value::Inline(Inline::new(
+                InlineKind::Link { target, label },
+                Attrs::empty(),
+                span,
+            ))
+        }
+        BuiltinFn::Para => {
+            let inner = take_inline(&mut args);
+            Value::Block(Block::new(BlockKind::Paragraph(inner), Attrs::empty(), span))
+        }
+        BuiltinFn::Heading => {
+            let level = take_int(&mut args).clamp(1, 6) as u8;
+            let title = take_inline(&mut args);
+            Value::Block(Block::new(
+                BlockKind::Heading { level, title },
+                Attrs::empty(),
+                span,
+            ))
+        }
+        BuiltinFn::Callout => {
+            let kind = take_string(&mut args);
+            let body = take_block(&mut args);
+            Value::Block(Block::new(
+                BlockKind::Callout { kind, body },
+                Attrs::empty(),
+                span,
+            ))
+        }
+        BuiltinFn::CodeBlock => {
+            let lang = take_string(&mut args);
+            let text = take_string(&mut args);
+            Value::Block(Block::new(
+                BlockKind::CodeBlock { lang, text },
+                Attrs::empty(),
+                span,
+            ))
+        }
+        BuiltinFn::InlinePlainText => {
+            let inline = take_inline(&mut args);
+            Value::String(Arc::from(inline.plain_text()))
+        }
+        BuiltinFn::InlineWithAttr => {
+            let inline = take_inline(&mut args);
+            let key = take_string(&mut args);
+            let value = take_string(&mut args);
+            Value::Inline(inline.with_attr(key, AttrValue::String(value)))
+        }
+        BuiltinFn::InlineAttrOr => {
+            let inline = take_inline(&mut args);
+            let key = take_string(&mut args);
+            let fallback = take_string(&mut args);
+            let found = inline
+                .node()
+                .attrs
+                .get(&key)
+                .map(attr_to_arc_str)
+                .unwrap_or(fallback);
+            Value::String(found)
+        }
+        BuiltinFn::InlineHasAttr => {
+            let inline = take_inline(&mut args);
+            let key = take_string(&mut args);
+            Value::Bool(inline.node().attrs.get(&key).is_some())
+        }
+        BuiltinFn::InlineRewrite => {
+            let inline = take_inline(&mut args);
+            let func = args.next().expect("checked rewrite callback");
+            let rewritten = inline.rewrite_bottom_up(&mut |node| {
+                match call_value(program, func.clone(), vec![Value::Inline(node)], stack, depth + 1)?
+                {
+                    Value::Inline(out) => Ok(out),
+                    _ => unreachable!("checked inline rewrite return"),
+                }
+            })?;
+            Value::Inline(rewritten)
+        }
+        BuiltinFn::BlockPlainText => {
+            let block = take_block(&mut args);
+            Value::String(Arc::from(block.plain_text()))
+        }
+        BuiltinFn::BlockSectionize => {
+            let block = take_block(&mut args);
+            Value::Block(block.sectionize())
+        }
+        BuiltinFn::BlockHeadingCount => {
+            let block = take_block(&mut args);
+            Value::Int(block.headings().len() as i64)
+        }
+        BuiltinFn::BlockHeadingsSummary => {
+            let block = take_block(&mut args);
+            let summary = block
+                .headings()
+                .into_iter()
+                .map(|(level, title)| format!("h{level}: {title}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            Value::String(Arc::from(summary))
+        }
+        BuiltinFn::BlockWithAttr => {
+            let block = take_block(&mut args);
+            let key = take_string(&mut args);
+            let value = take_string(&mut args);
+            Value::Block(block.with_attr(key, AttrValue::String(value)))
+        }
+        BuiltinFn::BlockAttrOr => {
+            let block = take_block(&mut args);
+            let key = take_string(&mut args);
+            let fallback = take_string(&mut args);
+            let found = block
+                .node()
+                .attrs
+                .get(&key)
+                .map(attr_to_arc_str)
+                .unwrap_or(fallback);
+            Value::String(found)
+        }
+        BuiltinFn::BlockHasAttr => {
+            let block = take_block(&mut args);
+            let key = take_string(&mut args);
+            Value::Bool(block.node().attrs.get(&key).is_some())
+        }
+        BuiltinFn::BlockRewriteInlines => {
+            let block = take_block(&mut args);
+            let func = args.next().expect("checked rewrite callback");
+            let rewritten = block.rewrite_inlines(&mut |node| {
+                match call_value(program, func.clone(), vec![Value::Inline(node)], stack, depth + 1)?
+                {
+                    Value::Inline(out) => Ok(out),
+                    _ => unreachable!("checked inline rewrite return"),
+                }
+            })?;
+            Value::Block(rewritten)
+        }
+        BuiltinFn::BlockRewriteBlocks => {
+            let block = take_block(&mut args);
+            let func = args.next().expect("checked rewrite callback");
+            let rewritten = block.rewrite_blocks(&mut |node| {
+                match call_value(program, func.clone(), vec![Value::Block(node)], stack, depth + 1)?
+                {
+                    Value::Block(out) => Ok(out),
+                    _ => unreachable!("checked block rewrite return"),
+                }
+            })?;
+            Value::Block(rewritten)
+        }
+    })
 }
 
 fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Result<Value, ExecutionError> {
@@ -188,6 +449,14 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Result<Value, Executi
             joined.push_str(&b);
             Ok(Value::String(Arc::from(joined)))
         }
+        (Op::Add, Value::Inline(a), Value::Inline(b)) => {
+            let span = a.node().span;
+            Ok(Value::Inline(Inline::concat(a, b, span)))
+        }
+        (Op::Add, Value::Block(a), Value::Block(b)) => {
+            let span = a.node().span;
+            Ok(Value::Block(Block::concat(a, b, span)))
+        }
 
         (Op::Eq, Value::Unit, Value::Unit) => Ok(Value::Bool(true)),
         (Op::Ne, Value::Unit, Value::Unit) => Ok(Value::Bool(false)),
@@ -199,6 +468,10 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Result<Value, Executi
         (Op::Ne, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a != b)),
         (Op::Eq, Value::String(a), Value::String(b)) => Ok(Value::Bool(a == b)),
         (Op::Ne, Value::String(a), Value::String(b)) => Ok(Value::Bool(a != b)),
+        (Op::Eq, Value::Inline(a), Value::Inline(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::Inline(a), Value::Inline(b)) => Ok(Value::Bool(a != b)),
+        (Op::Eq, Value::Block(a), Value::Block(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::Block(a), Value::Block(b)) => Ok(Value::Bool(a != b)),
 
         (Op::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
         (Op::Le, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),

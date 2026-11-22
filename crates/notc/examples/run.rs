@@ -146,6 +146,8 @@ fn format_type(ty: &Type) -> String {
         Type::Int => "Int".into(),
         Type::Float => "Float".into(),
         Type::String => "String".into(),
+        Type::Never => "Never".into(),
+        Type::Param(name) => name.clone(),
         Type::Function(params, ret) => {
             let params = params
                 .iter()
@@ -163,6 +165,27 @@ fn format_type_error(error: &TypeError) -> String {
         TypeError::DuplicateMethod => "duplicate method declaration for receiver type".into(),
         TypeError::DuplicateBinding(name) => format!("duplicate binding `{name}`"),
         TypeError::DuplicateParameter(name) => format!("duplicate parameter `{name}`"),
+        TypeError::DuplicateTypeParam(name) => format!("duplicate type parameter `{name}`"),
+        TypeError::UnknownType(name) => format!("unknown type `{name}`"),
+        TypeError::UnknownTypeParam(name) => format!("unknown type parameter `{name}`"),
+        TypeError::TypeArity { expected, actual } => {
+            format!("expected {expected} type argument(s), found {actual}")
+        }
+        TypeError::TypeArgsRequired { function, expected } => format!(
+            "generic function `{function}` requires {expected} type argument(s) when used as a value"
+        ),
+        TypeError::CannotInferTypeParam { function, param } => {
+            format!("cannot infer type parameter `{param}` for `{function}`")
+        }
+        TypeError::WhereUnsatisfied { function } => {
+            format!("`where` constraint on `{function}` is not satisfied")
+        }
+        TypeError::DuplicateMatchPattern(ty) => {
+            format!("duplicate `match` arm for type `{}`", format_type(ty))
+        }
+        TypeError::DuplicateWildcardArm => "duplicate wildcard `_` arm in `match`".into(),
+        TypeError::MissingWildcardArm => "`match` on type parameter requires a `_` fallback arm".into(),
+        TypeError::CompileError(msg) => format!("compile_error: {msg}"),
         TypeError::InvalidImportPath(path) => format!("invalid relative import path `{path}`"),
         TypeError::InvalidImportAlias(alias) => {
             format!("cannot derive valid module alias from `{alias}`")

@@ -75,7 +75,37 @@ pub enum Type {
     Int,
     Float,
     String,
+    Never,
+    Param(String),
     Function(Vec<Type>, Box<Type>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParam {
+    pub name: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhereExpr {
+    pub kind: WhereExprKind,
+    pub span: Span,
+}
+
+impl WhereExpr {
+    pub const fn new(kind: WhereExprKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WhereExprKind {
+    Bool(bool),
+    TypeEq(Type, Type),
+    TypeNe(Type, Type),
+    Not(Box<WhereExpr>),
+    And(Box<WhereExpr>, Box<WhereExpr>),
+    Or(Box<WhereExpr>, Box<WhereExpr>),
 }
 
 #[derive(Debug)]
@@ -89,8 +119,10 @@ pub struct Param {
 pub struct Function {
     pub name: String,
     pub name_span: Span,
+    pub type_params: Vec<TypeParam>,
     pub parameters: Vec<Param>,
     pub returns: Type,
+    pub where_clause: Option<WhereExpr>,
     pub body: Expr,
     pub span: Span,
 }
@@ -132,6 +164,19 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug)]
+pub struct TypeMatchArm {
+    pub pattern: TypePattern,
+    pub body: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypePattern {
+    Type(Type),
+    Wildcard,
+}
+
+#[derive(Debug)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -152,11 +197,18 @@ pub enum ExprKind {
     String(String),
     Name(String),
     Member(Box<Expr>, String),
+    Instantiate(Box<Expr>, Vec<Type>),
     Let(String, Box<Expr>, Box<Expr>),
     Seq(Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
+    TypeMatch {
+        param: String,
+        param_span: Span,
+        arms: Vec<TypeMatchArm>,
+    },
+    CompileError(String),
     Call(Box<Expr>, Vec<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
 }

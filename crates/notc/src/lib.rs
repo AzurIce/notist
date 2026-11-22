@@ -13,7 +13,8 @@ mod parser;
 
 pub use ast::{
     BinaryOp, Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module,
-    Param, Program, Span, Type, UnaryOp,
+    Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
+    WhereExprKind,
 };
 pub use check::{CheckedProgram, Diagnostic, TypeError, check};
 pub use eval::{ExecutionError, FunctionValue, Value};

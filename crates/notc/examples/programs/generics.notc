@@ -1,0 +1,49 @@
+// Compile-time `<T: Type>` generics with decoupled `where` call-site guards
+// and explicit `match T` type-narrowing scopes.
+
+fn identity<T: Type>(x: T) -> T {
+    x
+}
+
+fn zero<T: Type>() -> T
+where T == Int || T == Float || T == String {
+    match T {
+        Int    => 0,
+        Float  => 0.0,
+        String => "",
+        _      => compile_error("unreachable"),
+    }
+}
+
+fn combine<T: Type>(flag: Bool, a: T, b: T) -> T
+where T == Int || T == Float || T == String {
+    if flag {
+        zero<T>()
+    } else {
+        match T {
+            Int    => a + b,
+            Float  => a + b,
+            String => a + b,
+            _      => compile_error("unreachable"),
+        }
+    }
+}
+
+fn apply_int(f: fn(Int) -> Int, x: Int) -> Int {
+    f(x)
+}
+
+fn main() -> Int {
+    // Explicit instantiation produces an ordinary monomorphic first-class function value.
+    let id_int = identity<Int>;
+    let a = apply_int(id_int, 20);
+    // Implicit inference at call site.
+    let b = identity(22);
+    let label = combine(false, "no", "tc");
+    let sum_f = combine(false, 1.5, 2.5);
+    if label == "notc" && sum_f == 4.0 && combine(true, 1, 2) == 0 {
+        combine(false, a, b)
+    } else {
+        0
+    }
+}

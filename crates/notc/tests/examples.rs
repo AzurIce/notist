@@ -17,6 +17,15 @@ fn multi_file_example_runs_main() {
 }
 
 #[test]
+fn generics_example_runs_main() {
+    let source = include_str!("../examples/programs/generics.notc");
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = check(&parsed.program).expect("generics.notc should check");
+    assert!(matches!(program.run("main"), Ok(Value::Int(42))));
+}
+
+#[test]
 fn scalars_example_runs_all_entries() {
     let source = include_str!("../examples/programs/scalars.notc");
     let parsed = parse(source);

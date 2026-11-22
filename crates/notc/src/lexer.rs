@@ -11,6 +11,8 @@ pub(crate) enum TokenKind {
     Import,
     As,
     Fn,
+    Where,
+    Match,
     Let,
     If,
     Else,
@@ -30,6 +32,7 @@ pub(crate) enum TokenKind {
     Dot,
     Eq,
     EqEq,
+    FatArrow,
     Bang,
     BangEq,
     Lt,
@@ -53,6 +56,8 @@ impl TokenKind {
             Self::Import => "`import`",
             Self::As => "`as`",
             Self::Fn => "`fn`",
+            Self::Where => "`where`",
+            Self::Match => "`match`",
             Self::Let => "`let`",
             Self::If => "`if`",
             Self::Else => "`else`",
@@ -72,6 +77,7 @@ impl TokenKind {
             Self::Dot => "`.`",
             Self::Eq => "`=`",
             Self::EqEq => "`==`",
+            Self::FatArrow => "`=>`",
             Self::Bang => "`!`",
             Self::BangEq => "`!=`",
             Self::Lt => "`<`",
@@ -166,6 +172,8 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
             b'=' => {
                 if i + 1 < len && bytes[i + 1] == b'=' {
                     push_double(&mut tokens, TokenKind::EqEq, &mut i);
+                } else if i + 1 < len && bytes[i + 1] == b'>' {
+                    push_double(&mut tokens, TokenKind::FatArrow, &mut i);
                 } else {
                     push_single(&mut tokens, TokenKind::Eq, &mut i);
                 }
@@ -231,6 +239,8 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
                     "import" => TokenKind::Import,
                     "as" => TokenKind::As,
                     "fn" => TokenKind::Fn,
+                    "where" => TokenKind::Where,
+                    "match" => TokenKind::Match,
                     "let" => TokenKind::Let,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,

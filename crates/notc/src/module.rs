@@ -1,23 +1,22 @@
 //! Multi-file module graph, static import binding, per-module checking, and
-//! entry-reachability lowering. Pure in-memory inputs; no filesystem IO.
+//! entry-reachability specialization/lowering. Pure in-memory inputs; no filesystem IO.
 //!
 //! Architecture deliberately separates three layers so future tooling queries
 //! and body-level incremental reuse plug in without redesign:
 //! 1. Per-file parsing (`parse`) and body-independent interface extraction;
 //! 2. Topological import resolution and per-module body checking (`check_module_bodies`);
-//! 3. Reachability-driven lowering to a dense executable `CheckedProgram`.
+//! 3. Reachability-driven specialization & lowering to a dense executable `CheckedProgram`.
 
 use crate::ast::{Decl, Import, ImportKind, Module, Span, Type};
 use crate::check::{
-    Binding, CheckedDecl, CheckedExpr, CheckedFunction, CheckedProgram, DeclId, FunctionId,
-    InterfaceView, MethodSig, ModuleExpr, ModuleId, ModuleScope, TypeError, check_module_bodies,
-    collect_module_interface,
+    Binding, CheckedDecl, CheckedProgram, FunctionSig, InstanceKey, InterfaceView, MethodSig,
+    ModuleId, ModuleScope, TypeError, check_module_bodies, collect_module_interface,
+    specialize_roots,
 };
 use crate::eval::{ExecutionError, Value};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::parse;
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
@@ -36,8 +35,8 @@ pub enum ProjectDiagnosticKind {
 }
 
 /// Checked multi-module semantic result. All modules and declarations have been
-/// statically checked; execution lowers only the subgraph reachable from a
-/// chosen `(module, entry)`.
+/// statically checked; execution specializes and lowers only the subgraph
+/// reachable from a chosen `(module, entry)`.
 #[derive(Debug)]
 pub struct CheckedProject {
     module_ids: HashMap<String, ModuleId>,
@@ -46,8 +45,8 @@ pub struct CheckedProject {
 }
 
 impl CheckedProject {
-    /// Lower only functions and methods reachable from `(module_path, entry)`
-    /// into a compact executable `CheckedProgram`.
+    /// Specialize and lower only functions and methods reachable from
+    /// `(module_path, entry)` into a compact executable `CheckedProgram`.
     pub fn lower_entry(
         &self,
         module_path: &str,
@@ -63,45 +62,22 @@ impl CheckedProject {
         let Some(&Binding::Function(root_id)) = self.exports[module_id.0].get(entry) else {
             return Err(ExecutionError::UnknownEntry(entry.into()));
         };
-
-        let mut mapping: HashMap<DeclId, FunctionId> = HashMap::new();
-        let mut order: Vec<DeclId> = Vec::new();
-        let mut queue: VecDeque<DeclId> = VecDeque::new();
-
-        mapping.insert(root_id, FunctionId(0));
-        order.push(root_id);
-        queue.push_back(root_id);
-
-        while let Some(decl_id) = queue.pop_front() {
-            let decl = &self.decls[decl_id.module.0][decl_id.index];
-            collect_referenced_decls(&decl.body, &mut |target| {
-                if let std::collections::hash_map::Entry::Vacant(entry) = mapping.entry(target) {
-                    let next = FunctionId(order.len());
-                    entry.insert(next);
-                    order.push(target);
-                    queue.push_back(target);
-                }
-            });
+        if !self.decls[root_id.module.0][root_id.index]
+            .type_params
+            .is_empty()
+        {
+            return Err(ExecutionError::UnknownEntry(entry.into()));
         }
 
-        let functions = order
-            .into_iter()
-            .map(|decl_id| {
-                let decl = &self.decls[decl_id.module.0][decl_id.index];
-                CheckedFunction {
-                    arity: decl.arity,
-                    body: remap_expr(&decl.body, &mapping),
-                }
-            })
-            .collect();
-
-        let mut function_names = HashMap::with_capacity(1);
-        function_names.insert(entry.to_owned(), FunctionId(0));
-
-        Ok(CheckedProgram {
-            function_names,
-            functions,
-        })
+        let roots = [(
+            entry.to_owned(),
+            InstanceKey {
+                decl: root_id,
+                type_args: Vec::new(),
+            },
+        )];
+        specialize_roots(&self.decls, &roots)
+            .map_err(|_| ExecutionError::UnknownEntry(entry.into()))
     }
 
     /// Lower the reachable subgraph for `(module_path, entry)` and execute it.
@@ -171,7 +147,7 @@ pub fn check_parsed_modules(
     }
 
     // Layer 1a: per-module local declarations & resolved import edges (no body inspection).
-    let mut signatures: Vec<Vec<Type>> = Vec::with_capacity(modules.len());
+    let mut signatures: Vec<Vec<FunctionSig>> = Vec::with_capacity(modules.len());
     let mut local_bindings: Vec<HashMap<String, Binding>> = Vec::with_capacity(modules.len());
     let mut local_methods: Vec<HashMap<(Type, String), MethodSig>> =
         Vec::with_capacity(modules.len());
@@ -303,7 +279,6 @@ pub fn check_parsed_modules(
                     }
                 }
                 ImportKind::Wildcard { span } => {
-                    // Deterministic order so duplicate diagnostics are reproducible.
                     let mut entries: Vec<(&String, &Binding)> = target_exports.iter().collect();
                     entries.sort_by_key(|(a, _)| *a);
                     for (name, &binding) in entries {
@@ -320,9 +295,6 @@ pub fn check_parsed_modules(
                 }
             }
 
-            // Directly imported modules expose their declared type methods into the
-            // importing module's method table (local methods take precedence, while
-            // conflicting methods from two distinct imported modules are rejected).
             let mut target_methods: Vec<(&(Type, String), &MethodSig)> =
                 local_methods[target_id.0].iter().collect();
             target_methods.sort_by(|((_, a), _), ((_, b), _)| a.cmp(b));
@@ -385,6 +357,39 @@ pub fn check_parsed_modules(
     }
 
     if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
+    // Validate that no concrete specialization reachable from any monomorphic
+    // declaration hits `compile_error(...)`.
+    let mut mono_roots = Vec::new();
+    for (m_idx, mod_decls) in decls.iter().enumerate() {
+        for (d_idx, decl) in mod_decls.iter().enumerate() {
+            if decl.type_params.is_empty() {
+                mono_roots.push((
+                    format!("{m_idx}:{d_idx}"),
+                    InstanceKey {
+                        decl: crate::check::DeclId {
+                            module: ModuleId(m_idx),
+                            index: d_idx,
+                        },
+                        type_args: Vec::new(),
+                    },
+                ));
+            }
+        }
+    }
+    if let Err(spec_errors) = specialize_roots(&decls, &mono_roots) {
+        for (module_id, diag) in spec_errors {
+            diagnostics.push(ProjectDiagnostic {
+                module: module_paths[module_id.0].clone(),
+                kind: ProjectDiagnosticKind::Type {
+                    declaration: diag.declaration,
+                    span: diag.span,
+                    error: diag.error,
+                },
+            });
+        }
         return Err(diagnostics);
     }
 
@@ -576,71 +581,6 @@ fn is_valid_binding_ident(name: &str) -> bool {
     }
     !matches!(
         name,
-        "import" | "as" | "fn" | "let" | "if" | "else" | "true" | "false"
+        "import" | "as" | "fn" | "where" | "match" | "let" | "if" | "else" | "true" | "false"
     )
-}
-
-fn collect_referenced_decls(expr: &ModuleExpr, visit: &mut impl FnMut(DeclId)) {
-    use ModuleExpr as M;
-    match expr {
-        M::Unit | M::Bool(_) | M::Int(_) | M::Float(_) | M::String(_) | M::Local(_) => {}
-        M::Function(id) => visit(*id),
-        M::Let(init, body) | M::Seq(init, body) => {
-            collect_referenced_decls(init, visit);
-            collect_referenced_decls(body, visit);
-        }
-        M::Unary(_, operand) => collect_referenced_decls(operand, visit),
-        M::Binary(_, left, right) => {
-            collect_referenced_decls(left, visit);
-            collect_referenced_decls(right, visit);
-        }
-        M::If(cond, yes, no) => {
-            collect_referenced_decls(cond, visit);
-            collect_referenced_decls(yes, visit);
-            collect_referenced_decls(no, visit);
-        }
-        M::Call(callee, args) => {
-            collect_referenced_decls(callee, visit);
-            for arg in args {
-                collect_referenced_decls(arg, visit);
-            }
-        }
-    }
-}
-
-fn remap_expr(expr: &ModuleExpr, mapping: &HashMap<DeclId, FunctionId>) -> CheckedExpr {
-    use CheckedExpr as C;
-    use ModuleExpr as M;
-    match expr {
-        M::Unit => C::Unit,
-        M::Bool(b) => C::Bool(*b),
-        M::Int(n) => C::Int(*n),
-        M::Float(f) => C::Float(*f),
-        M::String(s) => C::String(Arc::clone(s)),
-        M::Local(slot) => C::Local(*slot),
-        M::Function(id) => C::Function(mapping[id]),
-        M::Let(init, body) => C::Let(
-            Box::new(remap_expr(init, mapping)),
-            Box::new(remap_expr(body, mapping)),
-        ),
-        M::Seq(first, second) => C::Seq(
-            Box::new(remap_expr(first, mapping)),
-            Box::new(remap_expr(second, mapping)),
-        ),
-        M::Unary(op, operand) => C::Unary(*op, Box::new(remap_expr(operand, mapping))),
-        M::Binary(op, left, right) => C::Binary(
-            *op,
-            Box::new(remap_expr(left, mapping)),
-            Box::new(remap_expr(right, mapping)),
-        ),
-        M::If(cond, yes, no) => C::If(
-            Box::new(remap_expr(cond, mapping)),
-            Box::new(remap_expr(yes, mapping)),
-            Box::new(remap_expr(no, mapping)),
-        ),
-        M::Call(callee, args) => C::Call(
-            Box::new(remap_expr(callee, mapping)),
-            args.iter().map(|a| remap_expr(a, mapping)).collect(),
-        ),
-    }
 }

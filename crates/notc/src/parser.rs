@@ -1,6 +1,7 @@
 use crate::ast::{
     BinaryOp, Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module,
-    Param, Program, Span, Type, UnaryOp,
+    Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
+    WhereExprKind,
 };
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
@@ -261,21 +262,166 @@ impl<'a> Parser<'a> {
     fn function_decl(&mut self, start: Span) -> Result<Function, ()> {
         let name_tok = self.expect(TokenKind::Ident)?;
         let name = self.text(name_tok.span).to_owned();
+        let type_params = if self.at(TokenKind::Lt) {
+            self.type_param_list()?
+        } else {
+            Vec::new()
+        };
         self.expect(TokenKind::LParen)?;
         let parameters = self.param_list()?;
         self.expect(TokenKind::RParen)?;
         self.expect(TokenKind::Arrow)?;
         let returns = self.parse_type()?;
+        let where_clause = if self.at(TokenKind::Where) {
+            self.advance();
+            Some(self.parse_where_expr()?)
+        } else {
+            None
+        };
         let (body, body_span) = self.block()?;
         let span = start.merge(body_span);
         Ok(Function {
             name,
             name_span: name_tok.span,
+            type_params,
             parameters,
             returns,
+            where_clause,
             body,
             span,
         })
+    }
+
+    fn type_param_list(&mut self) -> Result<Vec<TypeParam>, ()> {
+        self.expect(TokenKind::Lt)?;
+        let mut params = Vec::new();
+        while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+            let name_tok = self.expect(TokenKind::Ident)?;
+            let name = self.text(name_tok.span).to_owned();
+            self.expect(TokenKind::Colon)?;
+            let kind_tok = self.expect(TokenKind::Ident)?;
+            if self.text(kind_tok.span) != "Type" {
+                self.error(
+                    kind_tok.span,
+                    format!(
+                        "expected `Type` for compile-time type parameter `{name}`, found `{}`",
+                        self.text(kind_tok.span)
+                    ),
+                );
+                return Err(());
+            }
+            params.push(TypeParam {
+                name,
+                span: name_tok.span,
+            });
+            if self.at(TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(TokenKind::Gt)?;
+        Ok(params)
+    }
+
+    fn parse_where_expr(&mut self) -> Result<WhereExpr, ()> {
+        self.enter()?;
+        let result = self.where_or();
+        self.leave();
+        result
+    }
+
+    fn where_or(&mut self) -> Result<WhereExpr, ()> {
+        let mut left = self.where_and()?;
+        while self.at(TokenKind::OrOr) {
+            self.advance();
+            let right = self.where_and()?;
+            let span = left.span.merge(right.span);
+            left = WhereExpr::new(WhereExprKind::Or(Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn where_and(&mut self) -> Result<WhereExpr, ()> {
+        let mut left = self.where_atom()?;
+        while self.at(TokenKind::AndAnd) {
+            self.advance();
+            let right = self.where_atom()?;
+            let span = left.span.merge(right.span);
+            left = WhereExpr::new(WhereExprKind::And(Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn where_atom(&mut self) -> Result<WhereExpr, ()> {
+        match self.kind() {
+            TokenKind::Bang => {
+                let tok = self.advance();
+                let operand = self.where_atom()?;
+                let span = tok.span.merge(operand.span);
+                Ok(WhereExpr::new(WhereExprKind::Not(Box::new(operand)), span))
+            }
+            TokenKind::True => {
+                let tok = self.advance();
+                Ok(WhereExpr::new(WhereExprKind::Bool(true), tok.span))
+            }
+            TokenKind::False => {
+                let tok = self.advance();
+                Ok(WhereExpr::new(WhereExprKind::Bool(false), tok.span))
+            }
+            TokenKind::LParen => {
+                let open = self.advance();
+                // Distinguish parenthesized where-expr `(A == Int || A == Float)`
+                // from parenthesized type `(fn(Int) -> Int) == T`.
+                let saved_pos = self.pos;
+                let saved_diags = self.diagnostics.len();
+                if let Ok(mut inner) = self.where_or()
+                    && self.at(TokenKind::RParen)
+                {
+                    let close = self.advance();
+                    inner.span = open.span.merge(close.span);
+                    return Ok(inner);
+                }
+                self.pos = saved_pos - 1;
+                self.diagnostics.truncate(saved_diags);
+                self.where_type_cmp()
+            }
+            _ => self.where_type_cmp(),
+        }
+    }
+
+    fn where_type_cmp(&mut self) -> Result<WhereExpr, ()> {
+        let start = self.current().span;
+        let left = self.parse_type()?;
+        let is_eq = match self.kind() {
+            TokenKind::EqEq => {
+                self.advance();
+                true
+            }
+            TokenKind::BangEq => {
+                self.advance();
+                false
+            }
+            _ => {
+                let tok = self.current();
+                self.error(
+                    tok.span,
+                    format!(
+                        "expected `==` or `!=` in `where` constraint, found {}",
+                        tok.kind.describe()
+                    ),
+                );
+                return Err(());
+            }
+        };
+        let right = self.parse_type()?;
+        let end = self.tokens[self.pos.saturating_sub(1)].span;
+        let kind = if is_eq {
+            WhereExprKind::TypeEq(left, right)
+        } else {
+            WhereExprKind::TypeNe(left, right)
+        };
+        Ok(WhereExpr::new(kind, start.merge(end)))
     }
 
     fn method_decl(&mut self, start: Span) -> Result<Method, ()> {
@@ -348,10 +494,8 @@ impl<'a> Parser<'a> {
                     "Int" => Ok(Type::Int),
                     "Float" => Ok(Type::Float),
                     "String" => Ok(Type::String),
-                    other => {
-                        self.error(tok.span, format!("unknown type `{other}`"));
-                        Err(())
-                    }
+                    "Never" => Ok(Type::Never),
+                    other => Ok(Type::Param(other.to_owned())),
                 }
             }
             TokenKind::Fn => {
@@ -457,9 +601,50 @@ impl<'a> Parser<'a> {
     fn expression_inner(&mut self) -> Result<Expr, ()> {
         if self.at(TokenKind::If) {
             self.if_expr()
+        } else if self.at(TokenKind::Match) {
+            self.type_match_expr()
         } else {
             self.logical_or()
         }
+    }
+
+    fn type_match_expr(&mut self) -> Result<Expr, ()> {
+        let match_tok = self.expect(TokenKind::Match)?;
+        let param_tok = self.expect(TokenKind::Ident)?;
+        let param = self.text(param_tok.span).to_owned();
+        self.expect(TokenKind::LBrace)?;
+        let mut arms = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let arm_start = self.current().span;
+            let pattern = if self.at(TokenKind::Ident) && self.text(self.current().span) == "_" {
+                self.advance();
+                TypePattern::Wildcard
+            } else {
+                TypePattern::Type(self.parse_type()?)
+            };
+            self.expect(TokenKind::FatArrow)?;
+            let body = self.expression()?;
+            let arm_span = arm_start.merge(body.span);
+            arms.push(TypeMatchArm {
+                pattern,
+                body,
+                span: arm_span,
+            });
+            if self.at(TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RBrace)?;
+        Ok(Expr::new(
+            ExprKind::TypeMatch {
+                param,
+                param_span: param_tok.span,
+                arms,
+            },
+            match_tok.span.merge(close.span),
+        ))
     }
 
     fn if_expr(&mut self) -> Result<Expr, ()> {
@@ -617,6 +802,24 @@ impl<'a> Parser<'a> {
         let mut expr = self.primary()?;
         loop {
             match self.kind() {
+                // `<` immediately adjacent to a target starts compile-time type arguments
+                // (e.g. `identity<Int>(41)` or `identity<Int>`), while whitespace separates
+                // comparison `<` (e.g. `a < b`).
+                TokenKind::Lt if self.current().span.start == expr.span.end => {
+                    self.advance();
+                    let mut type_args = Vec::new();
+                    while !self.at(TokenKind::Gt) && !self.at(TokenKind::Eof) {
+                        type_args.push(self.parse_type()?);
+                        if self.at(TokenKind::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    let close = self.expect(TokenKind::Gt)?;
+                    let span = expr.span.merge(close.span);
+                    expr = Expr::new(ExprKind::Instantiate(Box::new(expr), type_args), span);
+                }
                 TokenKind::LParen => {
                     self.advance();
                     let args = self.arg_list()?;
@@ -696,8 +899,20 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident => {
                 self.advance();
-                let name = self.text(tok.span).to_owned();
-                Ok(Expr::new(ExprKind::Name(name), tok.span))
+                let name = self.text(tok.span);
+                if name == "compile_error" && self.at(TokenKind::LParen) {
+                    self.advance();
+                    let msg_tok = self.expect(TokenKind::String)?;
+                    let msg = decode_string(self.text(msg_tok.span)).map_err(|err| {
+                        self.error(msg_tok.span, err);
+                    })?;
+                    let close = self.expect(TokenKind::RParen)?;
+                    return Ok(Expr::new(
+                        ExprKind::CompileError(msg),
+                        tok.span.merge(close.span),
+                    ));
+                }
+                Ok(Expr::new(ExprKind::Name(name.to_owned()), tok.span))
             }
             TokenKind::LBrace => self.block().map(|(expr, _)| expr),
             TokenKind::LParen => {

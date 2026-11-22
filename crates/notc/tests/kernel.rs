@@ -13,6 +13,7 @@ fn def<const N: usize>(
     Decl::Function(Function {
         name: name.into(),
         name_span: Span::DUMMY,
+        type_params: Vec::new(),
         parameters: parameters
             .into_iter()
             .map(|(name, ty)| Param {
@@ -22,6 +23,7 @@ fn def<const N: usize>(
             })
             .collect(),
         returns,
+        where_clause: None,
         body,
         span: Span::DUMMY,
     })

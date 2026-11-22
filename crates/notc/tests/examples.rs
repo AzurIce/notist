@@ -17,6 +17,19 @@ fn multi_file_example_runs_main() {
 }
 
 #[test]
+fn scalars_example_runs_all_entries() {
+    let source = include_str!("../examples/programs/scalars.notc");
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = check(&parsed.program).expect("scalars.notc should check");
+    assert!(matches!(program.run("main"), Ok(Value::Int(42))));
+    assert!(matches!(
+        program.run("greeting"),
+        Ok(Value::String(ref s)) if s.as_ref() == "Hello\n\"Notist\"!"
+    ));
+}
+
+#[test]
 fn higher_order_example_runs_all_entries() {
     let source = include_str!("../examples/programs/higher_order.notc");
     let parsed = parse(source);

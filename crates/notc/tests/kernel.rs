@@ -1,7 +1,7 @@
 use Type::{Bool, Int};
 use notc::{
-    CheckedProgram, Decl, Diagnostic, ExecutionError, Expr, ExprKind, Function, Method, Module,
-    Param, Program, Span, Type, TypeError, Value, check,
+    BinaryOp, CheckedProgram, Decl, Diagnostic, ExecutionError, Expr, ExprKind, Function, Method,
+    Module, Param, Program, Span, Type, TypeError, Value, check,
 };
 
 fn def<const N: usize>(
@@ -83,7 +83,10 @@ fn call_method<const N: usize>(receiver: Expr, name: &str, args: [Expr; N]) -> E
 }
 
 fn add(left: Expr, right: Expr) -> Expr {
-    Expr::new(ExprKind::Add(Box::new(left), Box::new(right)), Span::DUMMY)
+    Expr::new(
+        ExprKind::Binary(BinaryOp::Add, Box::new(left), Box::new(right)),
+        Span::DUMMY,
+    )
 }
 
 fn bind(name: &str, value: Expr, body: Expr) -> Expr {

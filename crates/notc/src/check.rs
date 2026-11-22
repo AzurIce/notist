@@ -1,5 +1,6 @@
-use crate::{Decl, Expr, ExprKind, Function, Method, Module, Program, Span, Type};
+use crate::{BinaryOp, Decl, Expr, ExprKind, Function, Method, Module, Program, Span, Type, UnaryOp};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleId(pub(crate) usize);
@@ -35,12 +36,17 @@ pub(crate) struct CheckedFunction {
 
 #[derive(Debug)]
 pub(crate) enum CheckedExpr {
-    Int(i64),
+    Unit,
     Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Arc<str>),
     Local(usize),
     Function(FunctionId),
     Let(Box<Self>, Box<Self>),
-    Add(Box<Self>, Box<Self>),
+    Seq(Box<Self>, Box<Self>),
+    Unary(UnaryOp, Box<Self>),
+    Binary(BinaryOp, Box<Self>, Box<Self>),
     If(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Self>),
 }
@@ -50,12 +56,17 @@ pub(crate) enum CheckedExpr {
 /// global flat function layout.
 #[derive(Debug)]
 pub(crate) enum ModuleExpr {
-    Int(i64),
+    Unit,
     Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Arc<str>),
     Local(usize),
     Function(DeclId),
     Let(Box<Self>, Box<Self>),
-    Add(Box<Self>, Box<Self>),
+    Seq(Box<Self>, Box<Self>),
+    Unary(UnaryOp, Box<Self>),
+    Binary(BinaryOp, Box<Self>, Box<Self>),
     If(Box<Self>, Box<Self>, Box<Self>),
     Call(Box<Self>, Vec<Self>),
 }
@@ -122,6 +133,12 @@ pub enum TypeError {
     NotNamespace(Type),
     UnknownName(String),
     UnknownMethod { receiver: Type, method: String },
+    UnsupportedUnaryOp { op: UnaryOp, operand: Type },
+    UnsupportedBinaryOp {
+        op: BinaryOp,
+        left: Type,
+        right: Type,
+    },
     NotCallable(Type),
     Arity { expected: usize, actual: usize },
     Mismatch { expected: Type, actual: Type },
@@ -188,15 +205,24 @@ fn lower_single_module_expr(expr: ModuleExpr) -> CheckedExpr {
     use CheckedExpr as C;
     use ModuleExpr as M;
     match expr {
-        M::Int(n) => C::Int(n),
+        M::Unit => C::Unit,
         M::Bool(b) => C::Bool(b),
+        M::Int(n) => C::Int(n),
+        M::Float(f) => C::Float(f),
+        M::String(s) => C::String(s),
         M::Local(slot) => C::Local(slot),
         M::Function(id) => C::Function(FunctionId(id.index)),
         M::Let(init, body) => C::Let(
             Box::new(lower_single_module_expr(*init)),
             Box::new(lower_single_module_expr(*body)),
         ),
-        M::Add(left, right) => C::Add(
+        M::Seq(first, second) => C::Seq(
+            Box::new(lower_single_module_expr(*first)),
+            Box::new(lower_single_module_expr(*second)),
+        ),
+        M::Unary(op, operand) => C::Unary(op, Box::new(lower_single_module_expr(*operand))),
+        M::Binary(op, left, right) => C::Binary(
+            op,
             Box::new(lower_single_module_expr(*left)),
             Box::new(lower_single_module_expr(*right)),
         ),
@@ -338,8 +364,11 @@ pub(crate) fn method_declaration_name(method: &Method) -> String {
 
 pub(crate) fn format_type(ty: &Type) -> String {
     match ty {
-        Type::Int => "Int".into(),
+        Type::Unit => "Unit".into(),
         Type::Bool => "Bool".into(),
+        Type::Int => "Int".into(),
+        Type::Float => "Float".into(),
+        Type::String => "String".into(),
         Type::Function(parameters, returns) => {
             let params = parameters
                 .iter()
@@ -439,8 +468,11 @@ impl<'a> Checker<'a> {
     fn expression(&mut self, expr: &'a Expr) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
         use ModuleExpr as M;
         Ok(match &expr.kind {
-            ExprKind::Int(n) => (M::Int(*n), Type::Int),
+            ExprKind::Unit => (M::Unit, Type::Unit),
             ExprKind::Bool(b) => (M::Bool(*b), Type::Bool),
+            ExprKind::Int(n) => (M::Int(*n), Type::Int),
+            ExprKind::Float(f) => (M::Float(*f), Type::Float),
+            ExprKind::String(s) => (M::String(Arc::from(s.as_str())), Type::String),
             ExprKind::Name(name) => {
                 if let Some((slot, ty)) = self.locals.get(name.as_str()) {
                     (M::Local(*slot), ty.clone())
@@ -493,13 +525,41 @@ impl<'a> Checker<'a> {
                 let (body, ty) = result?;
                 (M::Let(Box::new(initializer), Box::new(body)), ty)
             }
-            ExprKind::Add(left, right) => (
-                M::Add(
-                    Box::new(self.expect_expr(left, &Type::Int)?),
-                    Box::new(self.expect_expr(right, &Type::Int)?),
-                ),
-                Type::Int,
-            ),
+            ExprKind::Seq(first, second) => {
+                let (first, _) = self.expression(first)?;
+                let (second, ty) = self.expression(second)?;
+                (M::Seq(Box::new(first), Box::new(second)), ty)
+            }
+            ExprKind::Unary(op, operand) => match op {
+                UnaryOp::Not => {
+                    let operand = self.expect_expr(operand, &Type::Bool)?;
+                    (M::Unary(*op, Box::new(operand)), Type::Bool)
+                }
+                UnaryOp::Neg => {
+                    let (checked, ty) = self.expression(operand)?;
+                    match ty {
+                        Type::Int | Type::Float => (M::Unary(*op, Box::new(checked)), ty),
+                        other => {
+                            return Err((
+                                expr.span,
+                                TypeError::UnsupportedUnaryOp {
+                                    op: *op,
+                                    operand: other,
+                                },
+                            ));
+                        }
+                    }
+                }
+            },
+            ExprKind::Binary(op, left, right) => {
+                let (checked_left, left_ty, checked_right, result_ty) =
+                    self.check_binary(*op, left, right, expr.span)?;
+                let _ = left_ty;
+                (
+                    M::Binary(*op, Box::new(checked_left), Box::new(checked_right)),
+                    result_ty,
+                )
+            }
             ExprKind::If(condition, yes, no) => {
                 let condition = self.expect_expr(condition, &Type::Bool)?;
                 let (yes, ty) = self.expression(yes)?;
@@ -604,6 +664,95 @@ impl<'a> Checker<'a> {
                 )
             }
         })
+    }
+
+    fn check_binary(
+        &mut self,
+        op: BinaryOp,
+        left: &'a Expr,
+        right: &'a Expr,
+        span: Span,
+    ) -> Result<(ModuleExpr, Type, ModuleExpr, Type), (Span, TypeError)> {
+        match op {
+            BinaryOp::Or | BinaryOp::And => {
+                let checked_left = self.expect_expr(left, &Type::Bool)?;
+                let checked_right = self.expect_expr(right, &Type::Bool)?;
+                Ok((checked_left, Type::Bool, checked_right, Type::Bool))
+            }
+            BinaryOp::Eq | BinaryOp::Ne => {
+                let (checked_left, left_ty) = self.expression(left)?;
+                let (checked_right, right_ty) = self.expression(right)?;
+                let supported = matches!(
+                    left_ty,
+                    Type::Unit | Type::Bool | Type::Int | Type::Float | Type::String
+                );
+                if !supported {
+                    return Err((
+                        span,
+                        TypeError::UnsupportedBinaryOp {
+                            op,
+                            left: left_ty,
+                            right: right_ty,
+                        },
+                    ));
+                }
+                expect(&left_ty, right_ty, right.span)?;
+                Ok((checked_left, left_ty, checked_right, Type::Bool))
+            }
+            BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+                let (checked_left, left_ty) = self.expression(left)?;
+                let (checked_right, right_ty) = self.expression(right)?;
+                let supported = matches!(left_ty, Type::Int | Type::Float | Type::String);
+                if !supported {
+                    return Err((
+                        span,
+                        TypeError::UnsupportedBinaryOp {
+                            op,
+                            left: left_ty,
+                            right: right_ty,
+                        },
+                    ));
+                }
+                expect(&left_ty, right_ty, right.span)?;
+                Ok((checked_left, left_ty, checked_right, Type::Bool))
+            }
+            BinaryOp::Add => {
+                let (checked_left, left_ty) = self.expression(left)?;
+                let (checked_right, right_ty) = self.expression(right)?;
+                let supported = matches!(left_ty, Type::Int | Type::Float | Type::String);
+                if !supported {
+                    return Err((
+                        span,
+                        TypeError::UnsupportedBinaryOp {
+                            op,
+                            left: left_ty,
+                            right: right_ty,
+                        },
+                    ));
+                }
+                expect(&left_ty, right_ty, right.span)?;
+                let result_ty = left_ty.clone();
+                Ok((checked_left, left_ty, checked_right, result_ty))
+            }
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                let (checked_left, left_ty) = self.expression(left)?;
+                let (checked_right, right_ty) = self.expression(right)?;
+                let supported = matches!(left_ty, Type::Int | Type::Float);
+                if !supported {
+                    return Err((
+                        span,
+                        TypeError::UnsupportedBinaryOp {
+                            op,
+                            left: left_ty,
+                            right: right_ty,
+                        },
+                    ));
+                }
+                expect(&left_ty, right_ty, right.span)?;
+                let result_ty = left_ty.clone();
+                Ok((checked_left, left_ty, checked_right, result_ty))
+            }
+        }
     }
 
     fn expect_expr(

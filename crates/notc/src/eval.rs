@@ -1,9 +1,14 @@
+use crate::ast::{BinaryOp, UnaryOp};
 use crate::check::{CheckedExpr, CheckedProgram, FunctionId};
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Value {
-    Int(i64),
+    Unit,
     Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Arc<str>),
     Function(FunctionValue),
 }
 
@@ -17,6 +22,7 @@ pub enum ExecutionError {
     EntryRequiresArguments(usize),
     CallDepthExceeded,
     IntegerOverflow,
+    DivisionByZero,
 }
 
 impl CheckedProgram {
@@ -43,9 +49,12 @@ fn evaluate(
 ) -> Result<Value, ExecutionError> {
     use CheckedExpr as C;
     match expr {
-        C::Int(n) => Ok(Value::Int(*n)),
+        C::Unit => Ok(Value::Unit),
         C::Bool(b) => Ok(Value::Bool(*b)),
-        C::Local(slot) => Ok(stack[base + slot]),
+        C::Int(n) => Ok(Value::Int(*n)),
+        C::Float(f) => Ok(Value::Float(*f)),
+        C::String(s) => Ok(Value::String(Arc::clone(s))),
+        C::Local(slot) => Ok(stack[base + slot].clone()),
         C::Function(id) => Ok(Value::Function(FunctionValue(*id))),
         C::Let(initializer, body) => {
             let value = evaluate(program, initializer, stack, base, depth)?;
@@ -54,16 +63,44 @@ fn evaluate(
             stack.pop();
             result
         }
-        C::Add(left, right) => {
-            let Value::Int(left) = evaluate(program, left, stack, base, depth)? else {
-                unreachable!("checked integer operand")
+        C::Seq(first, second) => {
+            let _ = evaluate(program, first, stack, base, depth)?;
+            evaluate(program, second, stack, base, depth)
+        }
+        C::Unary(op, operand) => {
+            let value = evaluate(program, operand, stack, base, depth)?;
+            match (op, value) {
+                (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+                (UnaryOp::Neg, Value::Int(n)) => n
+                    .checked_neg()
+                    .map(Value::Int)
+                    .ok_or(ExecutionError::IntegerOverflow),
+                (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
+                _ => unreachable!("checked unary operand"),
+            }
+        }
+        C::Binary(BinaryOp::And, left, right) => {
+            let Value::Bool(left) = evaluate(program, left, stack, base, depth)? else {
+                unreachable!("checked boolean operand")
             };
-            let Value::Int(right) = evaluate(program, right, stack, base, depth)? else {
-                unreachable!("checked integer operand")
+            if !left {
+                return Ok(Value::Bool(false));
+            }
+            evaluate(program, right, stack, base, depth)
+        }
+        C::Binary(BinaryOp::Or, left, right) => {
+            let Value::Bool(left) = evaluate(program, left, stack, base, depth)? else {
+                unreachable!("checked boolean operand")
             };
-            left.checked_add(right)
-                .map(Value::Int)
-                .ok_or(ExecutionError::IntegerOverflow)
+            if left {
+                return Ok(Value::Bool(true));
+            }
+            evaluate(program, right, stack, base, depth)
+        }
+        C::Binary(op, left, right) => {
+            let left = evaluate(program, left, stack, base, depth)?;
+            let right = evaluate(program, right, stack, base, depth)?;
+            eval_binary(*op, left, right)
         }
         C::If(condition, yes, no) => {
             let Value::Bool(condition) = evaluate(program, condition, stack, base, depth)? else {
@@ -104,5 +141,80 @@ fn evaluate(
             stack.truncate(frame);
             result
         }
+    }
+}
+
+fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Result<Value, ExecutionError> {
+    use BinaryOp as Op;
+    match (op, left, right) {
+        (Op::Add, Value::Int(a), Value::Int(b)) => a
+            .checked_add(b)
+            .map(Value::Int)
+            .ok_or(ExecutionError::IntegerOverflow),
+        (Op::Sub, Value::Int(a), Value::Int(b)) => a
+            .checked_sub(b)
+            .map(Value::Int)
+            .ok_or(ExecutionError::IntegerOverflow),
+        (Op::Mul, Value::Int(a), Value::Int(b)) => a
+            .checked_mul(b)
+            .map(Value::Int)
+            .ok_or(ExecutionError::IntegerOverflow),
+        (Op::Div, Value::Int(_), Value::Int(0)) => Err(ExecutionError::DivisionByZero),
+        (Op::Div, Value::Int(a), Value::Int(b)) => a
+            .checked_div(b)
+            .map(Value::Int)
+            .ok_or(ExecutionError::IntegerOverflow),
+        (Op::Rem, Value::Int(_), Value::Int(0)) => Err(ExecutionError::DivisionByZero),
+        (Op::Rem, Value::Int(a), Value::Int(b)) => a
+            .checked_rem(b)
+            .map(Value::Int)
+            .ok_or(ExecutionError::IntegerOverflow),
+
+        (Op::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+        (Op::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+        (Op::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+        (Op::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+        (Op::Rem, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a % b)),
+
+        (Op::Add, Value::String(a), Value::String(b)) => {
+            if a.is_empty() {
+                return Ok(Value::String(b));
+            }
+            if b.is_empty() {
+                return Ok(Value::String(a));
+            }
+            let mut joined = String::with_capacity(a.len() + b.len());
+            joined.push_str(&a);
+            joined.push_str(&b);
+            Ok(Value::String(Arc::from(joined)))
+        }
+
+        (Op::Eq, Value::Unit, Value::Unit) => Ok(Value::Bool(true)),
+        (Op::Ne, Value::Unit, Value::Unit) => Ok(Value::Bool(false)),
+        (Op::Eq, Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a != b)),
+        (Op::Eq, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a != b)),
+        (Op::Eq, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a != b)),
+        (Op::Eq, Value::String(a), Value::String(b)) => Ok(Value::Bool(a == b)),
+        (Op::Ne, Value::String(a), Value::String(b)) => Ok(Value::Bool(a != b)),
+
+        (Op::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
+        (Op::Le, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
+        (Op::Gt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
+        (Op::Ge, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
+
+        (Op::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
+        (Op::Le, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
+        (Op::Gt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
+        (Op::Ge, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
+
+        (Op::Lt, Value::String(a), Value::String(b)) => Ok(Value::Bool(a < b)),
+        (Op::Le, Value::String(a), Value::String(b)) => Ok(Value::Bool(a <= b)),
+        (Op::Gt, Value::String(a), Value::String(b)) => Ok(Value::Bool(a > b)),
+        (Op::Ge, Value::String(a), Value::String(b)) => Ok(Value::Bool(a >= b)),
+
+        _ => unreachable!("checked binary operands"),
     }
 }

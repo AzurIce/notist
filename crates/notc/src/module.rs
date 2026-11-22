@@ -17,6 +17,7 @@ use crate::eval::{ExecutionError, Value};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::parse;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
@@ -582,13 +583,14 @@ fn is_valid_binding_ident(name: &str) -> bool {
 fn collect_referenced_decls(expr: &ModuleExpr, visit: &mut impl FnMut(DeclId)) {
     use ModuleExpr as M;
     match expr {
-        M::Int(_) | M::Bool(_) | M::Local(_) => {}
+        M::Unit | M::Bool(_) | M::Int(_) | M::Float(_) | M::String(_) | M::Local(_) => {}
         M::Function(id) => visit(*id),
-        M::Let(init, body) => {
+        M::Let(init, body) | M::Seq(init, body) => {
             collect_referenced_decls(init, visit);
             collect_referenced_decls(body, visit);
         }
-        M::Add(left, right) => {
+        M::Unary(_, operand) => collect_referenced_decls(operand, visit),
+        M::Binary(_, left, right) => {
             collect_referenced_decls(left, visit);
             collect_referenced_decls(right, visit);
         }
@@ -610,15 +612,24 @@ fn remap_expr(expr: &ModuleExpr, mapping: &HashMap<DeclId, FunctionId>) -> Check
     use CheckedExpr as C;
     use ModuleExpr as M;
     match expr {
-        M::Int(n) => C::Int(*n),
+        M::Unit => C::Unit,
         M::Bool(b) => C::Bool(*b),
+        M::Int(n) => C::Int(*n),
+        M::Float(f) => C::Float(*f),
+        M::String(s) => C::String(Arc::clone(s)),
         M::Local(slot) => C::Local(*slot),
         M::Function(id) => C::Function(mapping[id]),
         M::Let(init, body) => C::Let(
             Box::new(remap_expr(init, mapping)),
             Box::new(remap_expr(body, mapping)),
         ),
-        M::Add(left, right) => C::Add(
+        M::Seq(first, second) => C::Seq(
+            Box::new(remap_expr(first, mapping)),
+            Box::new(remap_expr(second, mapping)),
+        ),
+        M::Unary(op, operand) => C::Unary(*op, Box::new(remap_expr(operand, mapping))),
+        M::Binary(op, left, right) => C::Binary(
+            *op,
             Box::new(remap_expr(left, mapping)),
             Box::new(remap_expr(right, mapping)),
         ),

@@ -141,8 +141,11 @@ fn print_diagnostic(path: &str, source: &str, span: Span, kind: &str, message: &
 
 fn format_type(ty: &Type) -> String {
     match ty {
-        Type::Int => "Int".into(),
+        Type::Unit => "Unit".into(),
         Type::Bool => "Bool".into(),
+        Type::Int => "Int".into(),
+        Type::Float => "Float".into(),
+        Type::String => "String".into(),
         Type::Function(params, ret) => {
             let params = params
                 .iter()
@@ -176,13 +179,22 @@ fn format_type_error(error: &TypeError) -> String {
         TypeError::NamespaceAsValue(name) => {
             format!("module namespace `{name}` cannot be used as a value")
         }
-        TypeError::NotNamespace(ty) => {
-            format!("cannot access member on non-namespace value of type `{}`", format_type(ty))
-        }
+        TypeError::NotNamespace(ty) => format!(
+            "cannot access member on non-namespace value of type `{}`",
+            format_type(ty)
+        ),
         TypeError::UnknownName(name) => format!("unknown name `{name}`"),
         TypeError::UnknownMethod { receiver, method } => {
             format!("no method `{method}` on type `{}`", format_type(receiver))
         }
+        TypeError::UnsupportedUnaryOp { op, operand } => {
+            format!("operator `{op:?}` cannot be applied to `{}`", format_type(operand))
+        }
+        TypeError::UnsupportedBinaryOp { op, left, right } => format!(
+            "operator `{op:?}` cannot be applied to `{}` and `{}`",
+            format_type(left),
+            format_type(right)
+        ),
         TypeError::NotCallable(ty) => format!("type `{}` is not callable", format_type(ty)),
         TypeError::Arity { expected, actual } => {
             format!("expected {expected} argument(s), found {actual}")
@@ -197,8 +209,11 @@ fn format_type_error(error: &TypeError) -> String {
 
 fn format_value(value: Value) -> String {
     match value {
-        Value::Int(n) => n.to_string(),
+        Value::Unit => "()".into(),
         Value::Bool(b) => b.to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::String(s) => format!("{s:?}"),
         Value::Function(_) => "<function>".into(),
     }
 }

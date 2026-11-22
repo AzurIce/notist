@@ -12,8 +12,8 @@ mod module;
 mod parser;
 
 pub use ast::{
-    Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module, Param,
-    Program, Span, Type,
+    BinaryOp, Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module,
+    Param, Program, Span, Type, UnaryOp,
 };
 pub use check::{CheckedProgram, Diagnostic, TypeError, check};
 pub use eval::{ExecutionError, FunctionValue, Value};

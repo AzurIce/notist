@@ -1,6 +1,6 @@
 use crate::ast::{
-    Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module, Param,
-    Program, Span, Type,
+    BinaryOp, Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module,
+    Param, Program, Span, Type, UnaryOp,
 };
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
@@ -200,8 +200,8 @@ impl<'a> Parser<'a> {
     fn import_decl(&mut self) -> Result<Import, ()> {
         let import_tok = self.expect(TokenKind::Import)?;
         let path_tok = self.expect(TokenKind::String)?;
-        let path = unescape_string(self.text(path_tok.span)).ok_or_else(|| {
-            self.error(path_tok.span, "invalid escape sequence in import path");
+        let path = decode_string(self.text(path_tok.span)).map_err(|msg| {
+            self.error(path_tok.span, msg);
         })?;
         let kind = if self.at(TokenKind::As) {
             self.advance();
@@ -343,8 +343,11 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => {
                 let tok = self.advance();
                 match self.text(tok.span) {
-                    "Int" => Ok(Type::Int),
+                    "Unit" => Ok(Type::Unit),
                     "Bool" => Ok(Type::Bool),
+                    "Int" => Ok(Type::Int),
+                    "Float" => Ok(Type::Float),
+                    "String" => Ok(Type::String),
                     other => {
                         self.error(tok.span, format!("unknown type `{other}`"));
                         Err(())
@@ -376,7 +379,10 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let tok = self.current();
-                self.error(tok.span, format!("expected type, found {}", tok.kind.describe()));
+                self.error(
+                    tok.span,
+                    format!("expected type, found {}", tok.kind.describe()),
+                );
                 Err(())
             }
         }
@@ -390,24 +396,53 @@ impl<'a> Parser<'a> {
     }
 
     fn block_inner(&mut self) -> Result<(Expr, Span), ()> {
-        let open = self.expect(TokenKind::LBrace)?;
-        let mut bindings = Vec::new();
-        while self.at(TokenKind::Let) {
-            let let_tok = self.advance();
-            let name_tok = self.expect(TokenKind::Ident)?;
-            let name = self.text(name_tok.span).to_owned();
-            self.expect(TokenKind::Eq)?;
-            let initializer = self.expression()?;
-            self.expect(TokenKind::Semi)?;
-            bindings.push((let_tok.span, name, initializer));
+        enum Stmt {
+            Let(Span, String, Expr),
+            Expr(Expr),
         }
-        let tail = self.expression()?;
+
+        let open = self.expect(TokenKind::LBrace)?;
+        let mut stmts = Vec::new();
+        let mut tail = None;
+
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            if self.at(TokenKind::Let) {
+                let let_tok = self.advance();
+                let name_tok = self.expect(TokenKind::Ident)?;
+                let name = self.text(name_tok.span).to_owned();
+                self.expect(TokenKind::Eq)?;
+                let initializer = self.expression()?;
+                self.expect(TokenKind::Semi)?;
+                stmts.push(Stmt::Let(let_tok.span, name, initializer));
+            } else {
+                let expr = self.expression()?;
+                if self.at(TokenKind::Semi) {
+                    self.advance();
+                    stmts.push(Stmt::Expr(expr));
+                } else {
+                    tail = Some(expr);
+                    break;
+                }
+            }
+        }
+
         let close = self.expect(TokenKind::RBrace)?;
         let block_span = open.span.merge(close.span);
-        let mut expr = tail;
-        for (let_span, name, initializer) in bindings.into_iter().rev() {
-            let span = let_span.merge(expr.span);
-            expr = Expr::new(ExprKind::Let(name, Box::new(initializer), Box::new(expr)), span);
+        let mut expr = tail.unwrap_or_else(|| Expr::new(ExprKind::Unit, block_span));
+        for stmt in stmts.into_iter().rev() {
+            match stmt {
+                Stmt::Let(let_span, name, initializer) => {
+                    let span = let_span.merge(expr.span);
+                    expr = Expr::new(
+                        ExprKind::Let(name, Box::new(initializer), Box::new(expr)),
+                        span,
+                    );
+                }
+                Stmt::Expr(first) => {
+                    let span = first.span.merge(expr.span);
+                    expr = Expr::new(ExprKind::Seq(Box::new(first), Box::new(expr)), span);
+                }
+            }
         }
         Ok((expr, block_span))
     }
@@ -423,7 +458,7 @@ impl<'a> Parser<'a> {
         if self.at(TokenKind::If) {
             self.if_expr()
         } else {
-            self.additive()
+            self.logical_or()
         }
     }
 
@@ -446,15 +481,136 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    fn additive(&mut self) -> Result<Expr, ()> {
-        let mut left = self.postfix()?;
-        while self.at(TokenKind::Plus) {
+    fn logical_or(&mut self) -> Result<Expr, ()> {
+        let mut left = self.logical_and()?;
+        while self.at(TokenKind::OrOr) {
             self.advance();
-            let right = self.postfix()?;
+            let right = self.logical_and()?;
             let span = left.span.merge(right.span);
-            left = Expr::new(ExprKind::Add(Box::new(left), Box::new(right)), span);
+            left = Expr::new(
+                ExprKind::Binary(BinaryOp::Or, Box::new(left), Box::new(right)),
+                span,
+            );
         }
         Ok(left)
+    }
+
+    fn logical_and(&mut self) -> Result<Expr, ()> {
+        let mut left = self.equality()?;
+        while self.at(TokenKind::AndAnd) {
+            self.advance();
+            let right = self.equality()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(
+                ExprKind::Binary(BinaryOp::And, Box::new(left), Box::new(right)),
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn equality(&mut self) -> Result<Expr, ()> {
+        let mut left = self.compare()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::EqEq => BinaryOp::Eq,
+                TokenKind::BangEq => BinaryOp::Ne,
+                _ => break,
+            };
+            self.advance();
+            let right = self.compare()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(ExprKind::Binary(op, Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn compare(&mut self) -> Result<Expr, ()> {
+        let mut left = self.additive()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Lt => BinaryOp::Lt,
+                TokenKind::LtEq => BinaryOp::Le,
+                TokenKind::Gt => BinaryOp::Gt,
+                TokenKind::GtEq => BinaryOp::Ge,
+                _ => break,
+            };
+            self.advance();
+            let right = self.additive()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(ExprKind::Binary(op, Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn additive(&mut self) -> Result<Expr, ()> {
+        let mut left = self.multiplicative()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Plus => BinaryOp::Add,
+                TokenKind::Minus => BinaryOp::Sub,
+                _ => break,
+            };
+            self.advance();
+            let right = self.multiplicative()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(ExprKind::Binary(op, Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn multiplicative(&mut self) -> Result<Expr, ()> {
+        let mut left = self.prefix()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Star => BinaryOp::Mul,
+                TokenKind::Slash => BinaryOp::Div,
+                TokenKind::Percent => BinaryOp::Rem,
+                _ => break,
+            };
+            self.advance();
+            let right = self.prefix()?;
+            let span = left.span.merge(right.span);
+            left = Expr::new(ExprKind::Binary(op, Box::new(left), Box::new(right)), span);
+        }
+        Ok(left)
+    }
+
+    fn prefix(&mut self) -> Result<Expr, ()> {
+        match self.kind() {
+            TokenKind::Bang => {
+                let tok = self.advance();
+                let operand = self.prefix()?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr::new(
+                    ExprKind::Unary(UnaryOp::Not, Box::new(operand)),
+                    span,
+                ))
+            }
+            TokenKind::Minus => {
+                let tok = self.advance();
+                // Allow `-9223372036854775808` (i64::MIN) when immediately followed by an integer literal
+                // and not a postfix call/method on that literal.
+                if self.at(TokenKind::Int)
+                    && !matches!(self.peek(1).kind, TokenKind::Dot | TokenKind::LParen)
+                {
+                    let int_tok = self.advance();
+                    let raw = self.text(int_tok.span);
+                    let span = tok.span.merge(int_tok.span);
+                    let value = parse_neg_i64(raw).ok_or_else(|| {
+                        self.error(span, format!("integer literal `-{raw}` overflows `Int`"));
+                    })?;
+                    return Ok(Expr::new(ExprKind::Int(value), span));
+                }
+                let operand = self.prefix()?;
+                let span = tok.span.merge(operand.span);
+                Ok(Expr::new(
+                    ExprKind::Unary(UnaryOp::Neg, Box::new(operand)),
+                    span,
+                ))
+            }
+            _ => self.postfix(),
+        }
     }
 
     fn postfix(&mut self) -> Result<Expr, ()> {
@@ -514,6 +670,22 @@ impl<'a> Parser<'a> {
                 })?;
                 Ok(Expr::new(ExprKind::Int(value), tok.span))
             }
+            TokenKind::Float => {
+                self.advance();
+                let raw = self.text(tok.span);
+                let value = parse_f64(raw).ok_or_else(|| {
+                    self.error(tok.span, format!("invalid float literal `{raw}`"));
+                })?;
+                Ok(Expr::new(ExprKind::Float(value), tok.span))
+            }
+            TokenKind::String => {
+                self.advance();
+                let raw = self.text(tok.span);
+                let value = decode_string(raw).map_err(|msg| {
+                    self.error(tok.span, msg);
+                })?;
+                Ok(Expr::new(ExprKind::String(value), tok.span))
+            }
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(true), tok.span))
@@ -530,6 +702,10 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => self.block().map(|(expr, _)| expr),
             TokenKind::LParen => {
                 self.advance();
+                if self.at(TokenKind::RParen) {
+                    let close = self.advance();
+                    return Ok(Expr::new(ExprKind::Unit, tok.span.merge(close.span)));
+                }
                 let mut inner = self.expression()?;
                 let close = self.expect(TokenKind::RParen)?;
                 inner.span = tok.span.merge(close.span);
@@ -546,38 +722,105 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn parse_i64(raw: &str) -> Option<i64> {
-    if !raw.contains('_') {
-        return raw.parse::<i64>().ok();
-    }
-    let mut acc = 0i64;
+fn parse_u64(raw: &str) -> Option<u64> {
+    let mut acc = 0u64;
     for byte in raw.bytes() {
         if byte == b'_' {
             continue;
         }
-        let digit = i64::from(byte - b'0');
+        let digit = u64::from(byte - b'0');
         acc = acc.checked_mul(10)?.checked_add(digit)?;
     }
     Some(acc)
 }
 
-fn unescape_string(raw: &str) -> Option<String> {
-    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+fn parse_i64(raw: &str) -> Option<i64> {
+    if !raw.contains('_') {
+        return raw.parse::<i64>().ok();
+    }
+    i64::try_from(parse_u64(raw)?).ok()
+}
+
+fn parse_neg_i64(raw: &str) -> Option<i64> {
+    let magnitude = parse_u64(raw)?;
+    const MIN_MAGNITUDE: u64 = (i64::MAX as u64) + 1;
+    if magnitude == MIN_MAGNITUDE {
+        Some(i64::MIN)
+    } else if magnitude <= i64::MAX as u64 {
+        Some(-(magnitude as i64))
+    } else {
+        None
+    }
+}
+
+fn parse_f64(raw: &str) -> Option<f64> {
+    let value = if raw.contains('_') {
+        let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+        cleaned.parse::<f64>().ok()?
+    } else {
+        raw.parse::<f64>().ok()?
+    };
+    value.is_finite().then_some(value)
+}
+
+fn decode_string(raw: &str) -> Result<String, &'static str> {
+    if let Some(rest) = raw.strip_prefix('r') {
+        let hashes = rest.bytes().take_while(|&b| b == b'#').count();
+        let after_hashes = &rest[hashes..];
+        let body = &after_hashes[..after_hashes.len() - hashes];
+        if let Some(inner) = body.strip_prefix("\"\"\"").and_then(|s| s.strip_suffix("\"\"\"")) {
+            return strip_multiline_edges(inner).map(str::to_owned);
+        }
+        let inner = body
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .ok_or("invalid raw string literal")?;
+        return Ok(inner.to_owned());
+    }
+
+    if let Some(inner) = raw.strip_prefix("\"\"\"").and_then(|s| s.strip_suffix("\"\"\"")) {
+        let trimmed = strip_multiline_edges(inner)?;
+        return unescape(trimmed);
+    }
+
+    let inner = raw
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .ok_or("invalid string literal")?;
+    unescape(inner)
+}
+
+fn strip_multiline_edges(inner: &str) -> Result<&str, &'static str> {
+    let after_open = inner
+        .strip_prefix("\r\n")
+        .or_else(|| inner.strip_prefix('\n'))
+        .ok_or("multiline string opening `\"\"\"` must be followed by a newline")?;
+    let trimmed = after_open
+        .strip_suffix("\r\n")
+        .or_else(|| after_open.strip_suffix('\n'))
+        .unwrap_or(after_open);
+    Ok(trimmed)
+}
+
+fn unescape(inner: &str) -> Result<String, &'static str> {
+    if !inner.contains('\\') {
+        return Ok(inner.to_owned());
+    }
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(ch) = chars.next() {
         if ch == '\\' {
-            match chars.next()? {
-                '"' => out.push('"'),
-                '\\' => out.push('\\'),
-                'n' => out.push('\n'),
-                't' => out.push('\t'),
-                'r' => out.push('\r'),
-                _ => return None,
+            match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                _ => return Err("invalid escape sequence in string literal"),
             }
         } else {
             out.push(ch);
         }
     }
-    Some(out)
+    Ok(out)
 }

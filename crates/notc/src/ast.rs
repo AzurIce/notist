@@ -70,8 +70,11 @@ pub struct ImportMember {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
-    Int,
+    Unit,
     Bool,
+    Int,
+    Float,
+    String,
     Function(Vec<Type>, Box<Type>),
 }
 
@@ -105,6 +108,29 @@ pub struct Method {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOp {
+    Or,
+    And,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+}
+
 #[derive(Debug)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -119,12 +145,17 @@ impl Expr {
 
 #[derive(Debug)]
 pub enum ExprKind {
-    Int(i64),
+    Unit,
     Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(String),
     Name(String),
     Member(Box<Expr>, String),
     Let(String, Box<Expr>, Box<Expr>),
-    Add(Box<Expr>, Box<Expr>),
+    Seq(Box<Expr>, Box<Expr>),
+    Unary(UnaryOp, Box<Expr>),
+    Binary(BinaryOp, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
     MethodCall(Box<Expr>, String, Vec<Expr>),

@@ -1,4 +1,4 @@
-use notc::{Type, TypeError, Value, check, parse};
+use notc::{BinaryOp, ExecutionError, Type, TypeError, UnaryOp, Value, check, parse};
 
 fn slice(source: &str, span: notc::Span) -> &str {
     &source[span.start as usize..span.end as usize]
@@ -189,5 +189,154 @@ fn caps_deep_syntax_nesting_without_stack_overflow() {
             .any(|d| d.message.contains("nesting depth")),
         "{:?}",
         parsed.diagnostics
+    );
+}
+
+#[test]
+fn evaluates_all_scalars_string_forms_precedence_and_short_circuit() {
+    let source = r###"
+fn recurse() -> Bool {
+    recurse()
+}
+
+fn Int.inc(self) -> Int {
+    self + 1
+}
+
+fn Float.half(self) -> Float {
+    self / 2.0
+}
+
+fn empty_unit() -> Unit {}
+
+fn seq_unit() -> Unit {
+    let x = 1;
+    x + 2;
+}
+
+fn main() -> Bool {
+    let u1 = ();
+    let u2 = empty_unit();
+    let u3 = seq_unit();
+    let unit_ok = (u1 == u2) && !(u2 != u3);
+
+    // Operator precedence & method calls on Int and Float literals
+    let math_ok = 1 + 2 * 3 - 4 / 2 + 10 % 4 == 7
+        && -3 * -2 == 6
+        && 41.inc() == 42
+        && 5.0.half() == 2.5
+        && -9223372036854775808 < 0;
+
+    // Short-circuit logic never enters `recurse()`
+    let logic_ok = !(false && recurse()) && (true || recurse());
+
+    // All 4 string literal forms + concatenation + lexicographical ordering
+    let s1 = "a\nb\t\"c\"\\";
+    let s2 = """
+a
+b	"c"\\
+""";
+    let s3 = r#"a\n"#;
+    let s4 = r##"""
+raw "# text
+"""##;
+    let str_ok = s1 == s2 && s3 != "a\n" && s4 == "raw \"# text" && ("ab" + "c" > "aba");
+
+    unit_ok && math_ok && logic_ok && str_ok
+}
+"###;
+
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = check(&parsed.program).expect("scalars program should check");
+    assert!(matches!(program.run("main"), Ok(Value::Bool(true))));
+}
+
+#[test]
+fn catches_checked_integer_runtime_errors() {
+    let source = r#"
+fn div_zero() -> Int { 10 / 0 }
+fn rem_zero() -> Int { 10 % 0 }
+fn min_neg() -> Int {
+    let m = -9223372036854775808;
+    -m
+}
+fn min_div_neg1() -> Int {
+    let m = -9223372036854775808;
+    m / -1
+}
+fn mul_overflow() -> Int { 9223372036854775807 * 2 }
+"#;
+
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = check(&parsed.program).expect("should check");
+    assert_eq!(program.run("div_zero").unwrap_err(), ExecutionError::DivisionByZero);
+    assert_eq!(program.run("rem_zero").unwrap_err(), ExecutionError::DivisionByZero);
+    assert_eq!(program.run("min_neg").unwrap_err(), ExecutionError::IntegerOverflow);
+    assert_eq!(program.run("min_div_neg1").unwrap_err(), ExecutionError::IntegerOverflow);
+    assert_eq!(program.run("mul_overflow").unwrap_err(), ExecutionError::IntegerOverflow);
+}
+
+#[test]
+fn rejects_ill_typed_scalar_and_operator_expressions() {
+    let source = r#"
+fn id(x: Int) -> Int { x }
+fn bad_neg() -> Bool { -true }
+fn bad_fn_eq() -> Bool { id == id }
+fn bad_bool_lt() -> Bool { true < false }
+fn bad_str_sub() -> String { "a" - "b" }
+fn bad_mixed_add() -> Int { 1 + 1.0 }
+fn bad_not_int() -> Bool { !1 }
+"#;
+
+    let parsed = parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let errors = check(&parsed.program).unwrap_err();
+    assert_eq!(errors.len(), 6);
+    assert_eq!(
+        errors[0].error,
+        TypeError::UnsupportedUnaryOp {
+            op: UnaryOp::Neg,
+            operand: Type::Bool,
+        }
+    );
+    assert_eq!(
+        errors[1].error,
+        TypeError::UnsupportedBinaryOp {
+            op: BinaryOp::Eq,
+            left: Type::Function(vec![Type::Int], Box::new(Type::Int)),
+            right: Type::Function(vec![Type::Int], Box::new(Type::Int)),
+        }
+    );
+    assert_eq!(
+        errors[2].error,
+        TypeError::UnsupportedBinaryOp {
+            op: BinaryOp::Lt,
+            left: Type::Bool,
+            right: Type::Bool,
+        }
+    );
+    assert_eq!(
+        errors[3].error,
+        TypeError::UnsupportedBinaryOp {
+            op: BinaryOp::Sub,
+            left: Type::String,
+            right: Type::String,
+        }
+    );
+    assert_eq!(
+        errors[4].error,
+        TypeError::Mismatch {
+            expected: Type::Int,
+            actual: Type::Float,
+        }
+    );
+    assert_eq!(
+        errors[5].error,
+        TypeError::Mismatch {
+            expected: Type::Bool,
+            actual: Type::Int,
+        }
     );
 }

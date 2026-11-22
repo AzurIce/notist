@@ -1,4 +1,20 @@
-use notc::{Type, TypeError, Value, check, parse};
+use notc::{Type, TypeError, Value, check, check_project, parse};
+
+#[test]
+fn multi_file_example_runs_main() {
+    let project = check_project(&[
+        (
+            "main.notc",
+            include_str!("../examples/programs/multi/main.notc"),
+        ),
+        (
+            "math.notc",
+            include_str!("../examples/programs/multi/math.notc"),
+        ),
+    ])
+    .expect("multi-file example should check");
+    assert!(matches!(project.run("main.notc", "main"), Ok(Value::Int(42))));
+}
 
 #[test]
 fn higher_order_example_runs_all_entries() {

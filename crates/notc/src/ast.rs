@@ -24,7 +24,7 @@ impl Span {
 
 #[derive(Debug)]
 pub struct Program {
-    /// The only module until imports are supported.
+    /// The only module when compiling a standalone single-file program.
     pub root: Module,
 }
 
@@ -35,8 +35,37 @@ pub struct Module {
 
 #[derive(Debug)]
 pub enum Decl {
+    Import(Import),
     Function(Function),
     Method(Method),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    pub path: String,
+    pub path_span: Span,
+    pub kind: ImportKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportKind {
+    /// `import "./math.notc";` — alias derived from file stem.
+    Default,
+    /// `import "./math.notc" as m;`
+    Alias { alias: String, span: Span },
+    /// `import "./math.notc": inc, add as sum;`
+    Members(Vec<ImportMember>),
+    /// `import "./math.notc": *;`
+    Wildcard { span: Span },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportMember {
+    pub name: String,
+    pub name_span: Span,
+    pub alias: String,
+    pub alias_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -93,6 +122,7 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Name(String),
+    Member(Box<Expr>, String),
     Let(String, Box<Expr>, Box<Expr>),
     Add(Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),

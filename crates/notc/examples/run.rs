@@ -1,62 +1,116 @@
-//! Run a standalone `.notc` file and print diagnostics with line/column spans.
+//! Run a `.notc` file (single-file or multi-file via relative `import`) and
+//! print diagnostics with line/column spans.
 //!
 //! Usage:
 //!   cargo run -p notc --example run -- <path.notc> [entry]
 
-use notc::{Span, Type, TypeError, Value, check, parse};
-use std::{env, fs, process::ExitCode};
+use notc::{
+    Decl, ProjectDiagnosticKind, Span, Type, TypeError, Value, check_project, parse,
+    resolve_import_path,
+};
+use std::collections::{HashMap, VecDeque};
+use std::{env, fs, path::Path, process::ExitCode};
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
-    let Some(path) = args.next() else {
+    let Some(entry_arg) = args.next() else {
         eprintln!("usage: run <file.notc> [entry]");
         return ExitCode::from(2);
     };
-    let entry = args.next().unwrap_or_else(|| "main".into());
+    let entry_fn = args.next().unwrap_or_else(|| "main".into());
 
-    let source = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("error: failed to read `{path}`: {err}");
+    let entry_fs = Path::new(&entry_arg);
+    let root_dir = entry_fs.parent().unwrap_or_else(|| Path::new("."));
+    let Some(entry_name) = entry_fs.file_name().and_then(|s| s.to_str()) else {
+        eprintln!("error: invalid entry path `{entry_arg}`");
+        return ExitCode::FAILURE;
+    };
+
+    // Host responsibility: discover and read transitively imported `.notc` files.
+    // The `notc` library itself performs zero filesystem IO.
+    let mut loaded: Vec<(String, String)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    seen.insert(entry_name.to_owned(), 0);
+    queue.push_back(entry_name.to_owned());
+
+    while let Some(rel) = queue.pop_front() {
+        let fs_path = root_dir.join(&rel);
+        let source = match fs::read_to_string(&fs_path) {
+            Ok(text) => text,
+            Err(err) => {
+                if rel == entry_name {
+                    eprintln!("error: failed to read `{}`: {err}", fs_path.display());
+                    return ExitCode::FAILURE;
+                }
+                // Let `notc::check_project` report `MissingModule` with the exact import span.
+                continue;
+            }
+        };
+        let parsed = parse(&source);
+        for decl in &parsed.program.root.declarations {
+            if let Decl::Import(import) = decl
+                && let Ok(target) = resolve_import_path(&rel, &import.path)
+                && !seen.contains_key(&target)
+            {
+                let next_idx = seen.len();
+                seen.insert(target.clone(), next_idx);
+                queue.push_back(target);
+            }
+        }
+        loaded.push((rel, source));
+    }
+
+    let source_by_module: HashMap<&str, &str> = loaded
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    let files: Vec<(&str, &str)> = loaded
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+
+    let project = match check_project(&files) {
+        Ok(project) => project,
+        Err(diagnostics) => {
+            for diag in &diagnostics {
+                let display_path = root_dir.join(&diag.module);
+                let display = display_path.to_string_lossy();
+                let source = source_by_module
+                    .get(diag.module.as_str())
+                    .copied()
+                    .unwrap_or("");
+                match &diag.kind {
+                    ProjectDiagnosticKind::Parse(parse_diag) => {
+                        print_diagnostic(
+                            &display,
+                            source,
+                            parse_diag.span,
+                            "parse error",
+                            &parse_diag.message,
+                        );
+                    }
+                    ProjectDiagnosticKind::Type {
+                        declaration,
+                        span,
+                        error,
+                    } => {
+                        let message = format!("in `{declaration}`: {}", format_type_error(error));
+                        print_diagnostic(&display, source, *span, "type error", &message);
+                    }
+                }
+            }
             return ExitCode::FAILURE;
         }
     };
 
-    let parsed = parse(&source);
-    let mut has_errors = false;
-    for diag in &parsed.diagnostics {
-        has_errors = true;
-        print_diagnostic(&path, &source, diag.span, "parse error", &diag.message);
-    }
-
-    let checked = match check(&parsed.program) {
-        Ok(program) => Some(program),
-        Err(diagnostics) => {
-            has_errors = true;
-            for diag in &diagnostics {
-                let message = format!(
-                    "in `{}`: {}",
-                    diag.declaration,
-                    format_type_error(&diag.error)
-                );
-                print_diagnostic(&path, &source, diag.span, "type error", &message);
-            }
-            None
-        }
-    };
-
-    if has_errors {
-        return ExitCode::FAILURE;
-    }
-
-    let program = checked.expect("error-free check produces a CheckedProgram");
-    match program.run(&entry) {
+    match project.run(entry_name, &entry_fn) {
         Ok(value) => {
-            println!("{entry}() => {}", format_value(value));
+            println!("{entry_fn}() => {}", format_value(value));
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("runtime error in `{entry}`: {err:?}");
+            eprintln!("runtime error in `{entry_fn}`: {err:?}");
             ExitCode::FAILURE
         }
     }
@@ -104,7 +158,27 @@ fn format_type_error(error: &TypeError) -> String {
     match error {
         TypeError::DuplicateFunction => "duplicate function declaration".into(),
         TypeError::DuplicateMethod => "duplicate method declaration for receiver type".into(),
+        TypeError::DuplicateBinding(name) => format!("duplicate binding `{name}`"),
         TypeError::DuplicateParameter(name) => format!("duplicate parameter `{name}`"),
+        TypeError::InvalidImportPath(path) => format!("invalid relative import path `{path}`"),
+        TypeError::InvalidImportAlias(alias) => {
+            format!("cannot derive valid module alias from `{alias}`")
+        }
+        TypeError::MissingModule(path) => format!("missing imported module `{path}`"),
+        TypeError::ImportCycle(cycle) => format!("import cycle: {}", cycle.join(" -> ")),
+        TypeError::UnknownExport { module, name } => {
+            format!("module `{module}` does not export `{name}`")
+        }
+        TypeError::AmbiguousMethod { receiver, method } => format!(
+            "ambiguous imported method `{method}` on type `{}`",
+            format_type(receiver)
+        ),
+        TypeError::NamespaceAsValue(name) => {
+            format!("module namespace `{name}` cannot be used as a value")
+        }
+        TypeError::NotNamespace(ty) => {
+            format!("cannot access member on non-namespace value of type `{}`", format_type(ty))
+        }
         TypeError::UnknownName(name) => format!("unknown name `{name}`"),
         TypeError::UnknownMethod { receiver, method } => {
             format!("no method `{method}` on type `{}`", format_type(receiver))

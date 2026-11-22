@@ -1,5 +1,14 @@
-use crate::{Decl, Expr, ExprKind, Function, Method, Program, Span, Type};
+use crate::{Decl, Expr, ExprKind, Function, Method, Module, Program, Span, Type};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ModuleId(pub(crate) usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DeclId {
+    pub(crate) module: ModuleId,
+    pub(crate) index: usize,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FunctionId(pub(crate) usize);
@@ -9,6 +18,13 @@ pub struct CheckedProgram {
     /// Top-level entry lookup, not a table of lexical bindings.
     pub(crate) function_names: HashMap<String, FunctionId>,
     pub(crate) functions: Vec<CheckedFunction>,
+}
+
+impl CheckedProgram {
+    /// Number of lowered functions/methods present in this executable program.
+    pub fn function_count(&self) -> usize {
+        self.functions.len()
+    }
 }
 
 #[derive(Debug)]
@@ -29,6 +45,60 @@ pub(crate) enum CheckedExpr {
     Call(Box<Self>, Vec<Self>),
 }
 
+/// Checked expression before entry-reachability lowering.
+/// Uses module-qualified `DeclId` so per-module checking never depends on a
+/// global flat function layout.
+#[derive(Debug)]
+pub(crate) enum ModuleExpr {
+    Int(i64),
+    Bool(bool),
+    Local(usize),
+    Function(DeclId),
+    Let(Box<Self>, Box<Self>),
+    Add(Box<Self>, Box<Self>),
+    If(Box<Self>, Box<Self>, Box<Self>),
+    Call(Box<Self>, Vec<Self>),
+}
+
+#[derive(Debug)]
+pub(crate) struct CheckedDecl {
+    pub(crate) arity: usize,
+    pub(crate) body: ModuleExpr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Binding {
+    Function(DeclId),
+    Namespace(ModuleId),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MethodSig {
+    pub(crate) id: DeclId,
+    pub(crate) parameters: Vec<Type>,
+    pub(crate) returns: Type,
+}
+
+/// Body-independent lexical scope for checking a single module.
+pub(crate) struct ModuleScope {
+    pub(crate) bindings: HashMap<String, Binding>,
+    pub(crate) methods: HashMap<(Type, String), MethodSig>,
+}
+
+/// Project-wide signature & export view read by per-module body checking.
+/// Contains no function bodies, keeping body checking isolated per module.
+pub(crate) struct InterfaceView<'a> {
+    pub(crate) module_paths: &'a [String],
+    pub(crate) exports: &'a [HashMap<String, Binding>],
+    pub(crate) signatures: &'a [Vec<Type>],
+}
+
+impl InterfaceView<'_> {
+    fn signature(&self, id: DeclId) -> &Type {
+        &self.signatures[id.module.0][id.index]
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub declaration: String,
@@ -40,7 +110,16 @@ pub struct Diagnostic {
 pub enum TypeError {
     DuplicateFunction,
     DuplicateMethod,
+    DuplicateBinding(String),
     DuplicateParameter(String),
+    InvalidImportPath(String),
+    InvalidImportAlias(String),
+    MissingModule(String),
+    ImportCycle(Vec<String>),
+    UnknownExport { module: String, name: String },
+    AmbiguousMethod { receiver: Type, method: String },
+    NamespaceAsValue(String),
+    NotNamespace(Type),
     UnknownName(String),
     UnknownMethod { receiver: Type, method: String },
     NotCallable(Type),
@@ -48,26 +127,123 @@ pub enum TypeError {
     Mismatch { expected: Type, actual: Type },
 }
 
-struct MethodEntry {
-    id: FunctionId,
-    parameters: Vec<Type>,
-    returns: Type,
+/// Body-independent signature summary extracted from a single parsed module.
+pub(crate) struct ModuleInterface {
+    pub(crate) signatures: Vec<Type>,
+    pub(crate) bindings: HashMap<String, Binding>,
+    pub(crate) methods: HashMap<(Type, String), MethodSig>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
 /// Collect all signatures first, then check every body, independent of reachability.
-/// The prototype reports at most one body error per definition.
+/// Single-file convenience entry point; rejects `import` declarations.
 pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
-    let declarations = &program.root.declarations;
+    let module_id = ModuleId(0);
+    let interface = collect_module_interface(module_id, &program.root, false);
+    let mut diagnostics = interface.diagnostics;
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
+    let exports = vec![interface.bindings.clone()];
+    let signatures = vec![interface.signatures];
+    let paths = vec!["<root>".to_owned()];
+    let scope = ModuleScope {
+        bindings: interface.bindings,
+        methods: interface.methods,
+    };
+    let view = InterfaceView {
+        module_paths: &paths,
+        exports: &exports,
+        signatures: &signatures,
+    };
+
+    let (checked_decls, body_diags) = check_module_bodies(&program.root, &scope, &view);
+    diagnostics.extend(body_diags);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
     let mut function_names = HashMap::new();
+    for (name, binding) in &scope.bindings {
+        if let Binding::Function(decl_id) = binding {
+            function_names.insert(name.clone(), FunctionId(decl_id.index));
+        }
+    }
+    let functions = checked_decls
+        .into_iter()
+        .map(|decl| CheckedFunction {
+            arity: decl.arity,
+            body: lower_single_module_expr(decl.body),
+        })
+        .collect();
+
+    Ok(CheckedProgram {
+        function_names,
+        functions,
+    })
+}
+
+fn lower_single_module_expr(expr: ModuleExpr) -> CheckedExpr {
+    use CheckedExpr as C;
+    use ModuleExpr as M;
+    match expr {
+        M::Int(n) => C::Int(n),
+        M::Bool(b) => C::Bool(b),
+        M::Local(slot) => C::Local(slot),
+        M::Function(id) => C::Function(FunctionId(id.index)),
+        M::Let(init, body) => C::Let(
+            Box::new(lower_single_module_expr(*init)),
+            Box::new(lower_single_module_expr(*body)),
+        ),
+        M::Add(left, right) => C::Add(
+            Box::new(lower_single_module_expr(*left)),
+            Box::new(lower_single_module_expr(*right)),
+        ),
+        M::If(cond, yes, no) => C::If(
+            Box::new(lower_single_module_expr(*cond)),
+            Box::new(lower_single_module_expr(*yes)),
+            Box::new(lower_single_module_expr(*no)),
+        ),
+        M::Call(callee, args) => C::Call(
+            Box::new(lower_single_module_expr(*callee)),
+            args.into_iter().map(lower_single_module_expr).collect(),
+        ),
+    }
+}
+
+/// Layer 1 helper: extract signatures, local bindings, and local methods from a
+/// single parsed module without inspecting any function or method body.
+pub(crate) fn collect_module_interface(
+    module_id: ModuleId,
+    module: &Module,
+    allow_imports: bool,
+) -> ModuleInterface {
+    let mut signatures = Vec::new();
+    let mut bindings = HashMap::new();
     let mut methods = HashMap::new();
-    let mut signatures = Vec::with_capacity(declarations.len());
     let mut diagnostics = Vec::new();
 
-    for (index, decl) in declarations.iter().enumerate() {
-        let id = FunctionId(index);
+    for decl in &module.declarations {
         match decl {
+            Decl::Import(import) => {
+                if !allow_imports {
+                    diagnostics.push(Diagnostic {
+                        declaration: format!("import \"{}\"", import.path),
+                        span: import.path_span,
+                        error: TypeError::MissingModule(import.path.clone()),
+                    });
+                }
+            }
             Decl::Function(function) => {
-                if function_names.insert(function.name.clone(), id).is_some() {
+                let id = DeclId {
+                    module: module_id,
+                    index: signatures.len(),
+                };
+                if bindings
+                    .insert(function.name.clone(), Binding::Function(id))
+                    .is_some()
+                {
                     diagnostics.push(Diagnostic {
                         declaration: function.name.clone(),
                         span: function.name_span,
@@ -80,13 +256,17 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
                 ));
             }
             Decl::Method(method) => {
+                let id = DeclId {
+                    module: module_id,
+                    index: signatures.len(),
+                };
                 let key = (method.receiver_type.clone(), method.name.clone());
                 let parameters: Vec<Type> =
                     method.parameters.iter().map(|p| p.ty.clone()).collect();
                 if methods
                     .insert(
                         key,
-                        MethodEntry {
+                        MethodSig {
                             id,
                             parameters: parameters.clone(),
                             returns: method.returns.clone(),
@@ -107,25 +287,40 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             }
         }
     }
-    if !diagnostics.is_empty() {
-        return Err(diagnostics);
-    }
 
-    let mut checked = Vec::with_capacity(declarations.len());
-    for decl in declarations {
+    ModuleInterface {
+        signatures,
+        bindings,
+        methods,
+        diagnostics,
+    }
+}
+
+/// Layer 2: check every function and method body in a single module using only
+/// its resolved `ModuleScope` and project `InterfaceView` (never reading other
+/// modules' bodies).
+pub(crate) fn check_module_bodies(
+    module: &Module,
+    scope: &ModuleScope,
+    view: &InterfaceView<'_>,
+) -> (Vec<CheckedDecl>, Vec<Diagnostic>) {
+    let mut checked = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for decl in &module.declarations {
         let mut checker = Checker {
-            function_names: &function_names,
-            methods: &methods,
-            signatures: &signatures,
+            scope,
+            view,
             locals: HashMap::new(),
             depth: 0,
         };
         let (declaration, result) = match decl {
+            Decl::Import(_) => continue,
             Decl::Function(function) => (function.name.clone(), checker.function(function)),
             Decl::Method(method) => (method_declaration_name(method), checker.method(method)),
         };
         match result {
-            Ok(function) => checked.push(function),
+            Ok(decl) => checked.push(decl),
             Err((span, error)) => diagnostics.push(Diagnostic {
                 declaration,
                 span,
@@ -133,21 +328,15 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
             }),
         }
     }
-    if diagnostics.is_empty() {
-        Ok(CheckedProgram {
-            function_names,
-            functions: checked,
-        })
-    } else {
-        Err(diagnostics)
-    }
+
+    (checked, diagnostics)
 }
 
-fn method_declaration_name(method: &Method) -> String {
+pub(crate) fn method_declaration_name(method: &Method) -> String {
     format!("{}.{}", format_type(&method.receiver_type), method.name)
 }
 
-fn format_type(ty: &Type) -> String {
+pub(crate) fn format_type(ty: &Type) -> String {
     match ty {
         Type::Int => "Int".into(),
         Type::Bool => "Bool".into(),
@@ -163,15 +352,14 @@ fn format_type(ty: &Type) -> String {
 }
 
 struct Checker<'a> {
-    function_names: &'a HashMap<String, FunctionId>,
-    methods: &'a HashMap<(Type, String), MethodEntry>,
-    signatures: &'a [Type],
+    scope: &'a ModuleScope,
+    view: &'a InterfaceView<'a>,
     locals: HashMap<&'a str, (usize, Type)>,
     depth: usize,
 }
 
 impl<'a> Checker<'a> {
-    fn function(&mut self, function: &'a Function) -> Result<CheckedFunction, (Span, TypeError)> {
+    fn function(&mut self, function: &'a Function) -> Result<CheckedDecl, (Span, TypeError)> {
         for param in &function.parameters {
             if self
                 .locals
@@ -184,13 +372,13 @@ impl<'a> Checker<'a> {
         }
         let (body, ty) = self.expression(&function.body)?;
         expect(&function.returns, ty, function.body.span)?;
-        Ok(CheckedFunction {
+        Ok(CheckedDecl {
             arity: function.parameters.len(),
             body,
         })
     }
 
-    fn method(&mut self, method: &'a Method) -> Result<CheckedFunction, (Span, TypeError)> {
+    fn method(&mut self, method: &'a Method) -> Result<CheckedDecl, (Span, TypeError)> {
         self.locals.insert(
             method.receiver_name.as_str(),
             (self.depth, method.receiver_type.clone()),
@@ -208,24 +396,87 @@ impl<'a> Checker<'a> {
         }
         let (body, ty) = self.expression(&method.body)?;
         expect(&method.returns, ty, method.body.span)?;
-        Ok(CheckedFunction {
+        Ok(CheckedDecl {
             arity: 1 + method.parameters.len(),
             body,
         })
     }
 
-    fn expression(&mut self, expr: &'a Expr) -> Result<(CheckedExpr, Type), (Span, TypeError)> {
-        use CheckedExpr as C;
+    /// Resolve an expression as a module namespace chain (e.g. `math` or `a.b`),
+    /// returning `Ok(None)` when the expression refers to a runtime value or is
+    /// shadowed by a local binding.
+    fn resolve_namespace(&self, expr: &Expr) -> Result<Option<ModuleId>, (Span, TypeError)> {
+        match &expr.kind {
+            ExprKind::Name(name) => {
+                if self.locals.contains_key(name.as_str()) {
+                    return Ok(None);
+                }
+                match self.scope.bindings.get(name) {
+                    Some(Binding::Namespace(module_id)) => Ok(Some(*module_id)),
+                    _ => Ok(None),
+                }
+            }
+            ExprKind::Member(base, member) => {
+                let Some(module_id) = self.resolve_namespace(base)? else {
+                    return Ok(None);
+                };
+                match self.view.exports[module_id.0].get(member) {
+                    Some(Binding::Namespace(next)) => Ok(Some(*next)),
+                    Some(Binding::Function(_)) => Ok(None),
+                    None => Err((
+                        expr.span,
+                        TypeError::UnknownExport {
+                            module: self.view.module_paths[module_id.0].clone(),
+                            name: member.clone(),
+                        },
+                    )),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn expression(&mut self, expr: &'a Expr) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
+        use ModuleExpr as M;
         Ok(match &expr.kind {
-            ExprKind::Int(n) => (C::Int(*n), Type::Int),
-            ExprKind::Bool(b) => (C::Bool(*b), Type::Bool),
+            ExprKind::Int(n) => (M::Int(*n), Type::Int),
+            ExprKind::Bool(b) => (M::Bool(*b), Type::Bool),
             ExprKind::Name(name) => {
                 if let Some((slot, ty)) = self.locals.get(name.as_str()) {
-                    (C::Local(*slot), ty.clone())
-                } else if let Some(&id) = self.function_names.get(name) {
-                    (C::Function(id), self.signatures[id.0].clone())
+                    (M::Local(*slot), ty.clone())
+                } else if let Some(&binding) = self.scope.bindings.get(name) {
+                    match binding {
+                        Binding::Function(id) => (M::Function(id), self.view.signature(id).clone()),
+                        Binding::Namespace(_) => {
+                            return Err((expr.span, TypeError::NamespaceAsValue(name.clone())));
+                        }
+                    }
                 } else {
                     return Err((expr.span, TypeError::UnknownName(name.clone())));
+                }
+            }
+            ExprKind::Member(base, member) => {
+                if let Some(module_id) = self.resolve_namespace(base)? {
+                    match self.view.exports[module_id.0].get(member) {
+                        Some(&Binding::Function(id)) => {
+                            (M::Function(id), self.view.signature(id).clone())
+                        }
+                        Some(Binding::Namespace(_)) => {
+                            return Err((expr.span, TypeError::NamespaceAsValue(member.clone())));
+                        }
+                        None => {
+                            return Err((
+                                expr.span,
+                                TypeError::UnknownExport {
+                                    module: self.view.module_paths[module_id.0].clone(),
+                                    name: member.clone(),
+                                },
+                            ));
+                        }
+                    }
+                } else {
+                    let (_, ty) = self.expression(base)?;
+                    return Err((expr.span, TypeError::NotNamespace(ty)));
                 }
             }
             ExprKind::Let(name, initializer, body) => {
@@ -240,10 +491,10 @@ impl<'a> Checker<'a> {
                     self.locals.remove(name.as_str());
                 }
                 let (body, ty) = result?;
-                (C::Let(Box::new(initializer), Box::new(body)), ty)
+                (M::Let(Box::new(initializer), Box::new(body)), ty)
             }
             ExprKind::Add(left, right) => (
-                C::Add(
+                M::Add(
                     Box::new(self.expect_expr(left, &Type::Int)?),
                     Box::new(self.expect_expr(right, &Type::Int)?),
                 ),
@@ -253,7 +504,7 @@ impl<'a> Checker<'a> {
                 let condition = self.expect_expr(condition, &Type::Bool)?;
                 let (yes, ty) = self.expression(yes)?;
                 let no = self.expect_expr(no, &ty)?;
-                (C::If(Box::new(condition), Box::new(yes), Box::new(no)), ty)
+                (M::If(Box::new(condition), Box::new(yes), Box::new(no)), ty)
             }
             ExprKind::Call(callee, arguments) => {
                 let (checked_callee, ty) = self.expression(callee)?;
@@ -274,11 +525,56 @@ impl<'a> Checker<'a> {
                     .zip(&parameters)
                     .map(|(arg, ty)| self.expect_expr(arg, ty))
                     .collect::<Result<_, _>>()?;
-                (C::Call(Box::new(checked_callee), arguments), *returns)
+                (M::Call(Box::new(checked_callee), arguments), *returns)
             }
             ExprKind::MethodCall(receiver, method_name, arguments) => {
+                if let Some(module_id) = self.resolve_namespace(receiver)? {
+                    match self.view.exports[module_id.0].get(method_name) {
+                        Some(&Binding::Function(id)) => {
+                            let Type::Function(parameters, returns) =
+                                self.view.signature(id).clone()
+                            else {
+                                unreachable!("function declaration always has function signature");
+                            };
+                            if parameters.len() != arguments.len() {
+                                return Err((
+                                    expr.span,
+                                    TypeError::Arity {
+                                        expected: parameters.len(),
+                                        actual: arguments.len(),
+                                    },
+                                ));
+                            }
+                            let checked_args = arguments
+                                .iter()
+                                .zip(&parameters)
+                                .map(|(arg, ty)| self.expect_expr(arg, ty))
+                                .collect::<Result<_, _>>()?;
+                            return Ok((M::Call(Box::new(M::Function(id)), checked_args), *returns));
+                        }
+                        Some(Binding::Namespace(_)) => {
+                            return Err((
+                                expr.span,
+                                TypeError::NamespaceAsValue(method_name.clone()),
+                            ));
+                        }
+                        None => {
+                            return Err((
+                                expr.span,
+                                TypeError::UnknownExport {
+                                    module: self.view.module_paths[module_id.0].clone(),
+                                    name: method_name.clone(),
+                                },
+                            ));
+                        }
+                    }
+                }
+
                 let (receiver_expr, receiver_ty) = self.expression(receiver)?;
-                let Some(entry) = self.methods.get(&(receiver_ty.clone(), method_name.clone()))
+                let Some(entry) = self
+                    .scope
+                    .methods
+                    .get(&(receiver_ty.clone(), method_name.clone()))
                 else {
                     return Err((
                         expr.span,
@@ -303,7 +599,7 @@ impl<'a> Checker<'a> {
                     call_args.push(self.expect_expr(arg, ty)?);
                 }
                 (
-                    C::Call(Box::new(C::Function(entry.id)), call_args),
+                    M::Call(Box::new(M::Function(entry.id)), call_args),
                     entry.returns.clone(),
                 )
             }
@@ -314,7 +610,7 @@ impl<'a> Checker<'a> {
         &mut self,
         expr: &'a Expr,
         expected: &Type,
-    ) -> Result<CheckedExpr, (Span, TypeError)> {
+    ) -> Result<ModuleExpr, (Span, TypeError)> {
         let (checked, actual) = self.expression(expr)?;
         expect(expected, actual, expr.span)?;
         Ok(checked)

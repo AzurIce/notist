@@ -8,6 +8,8 @@ pub struct ParseDiagnostic {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenKind {
+    Import,
+    As,
     Fn,
     Let,
     If,
@@ -16,6 +18,7 @@ pub(crate) enum TokenKind {
     False,
     Ident,
     Int,
+    String,
     LParen,
     RParen,
     LBrace,
@@ -24,6 +27,7 @@ pub(crate) enum TokenKind {
     Colon,
     Semi,
     Dot,
+    Star,
     Eq,
     Plus,
     Arrow,
@@ -33,6 +37,8 @@ pub(crate) enum TokenKind {
 impl TokenKind {
     pub(crate) fn describe(self) -> &'static str {
         match self {
+            Self::Import => "`import`",
+            Self::As => "`as`",
             Self::Fn => "`fn`",
             Self::Let => "`let`",
             Self::If => "`if`",
@@ -41,6 +47,7 @@ impl TokenKind {
             Self::False => "`false`",
             Self::Ident => "identifier",
             Self::Int => "integer literal",
+            Self::String => "string literal",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
             Self::LBrace => "`{`",
@@ -49,6 +56,7 @@ impl TokenKind {
             Self::Colon => "`:`",
             Self::Semi => "`;`",
             Self::Dot => "`.`",
+            Self::Star => "`*`",
             Self::Eq => "`=`",
             Self::Plus => "`+`",
             Self::Arrow => "`->`",
@@ -101,6 +109,36 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
                     diagnostics.push(ParseDiagnostic {
                         span: span(start, i),
                         message: "unterminated block comment".into(),
+                    });
+                }
+            }
+            b'"' => {
+                let start = i;
+                i += 1;
+                let mut closed = false;
+                while i < len {
+                    match bytes[i] {
+                        b'\\' if i + 1 < len => {
+                            i += 2;
+                        }
+                        b'"' => {
+                            i += 1;
+                            closed = true;
+                            break;
+                        }
+                        b'\n' => break,
+                        _ => i += 1,
+                    }
+                }
+                if closed {
+                    tokens.push(Token {
+                        kind: TokenKind::String,
+                        span: span(start, i),
+                    });
+                } else {
+                    diagnostics.push(ParseDiagnostic {
+                        span: span(start, i),
+                        message: "unterminated string literal".into(),
                     });
                 }
             }
@@ -160,6 +198,13 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
                 });
                 i += 1;
             }
+            b'*' => {
+                tokens.push(Token {
+                    kind: TokenKind::Star,
+                    span: span(i, i + 1),
+                });
+                i += 1;
+            }
             b'=' => {
                 tokens.push(Token {
                     kind: TokenKind::Eq,
@@ -199,6 +244,8 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
                     i += 1;
                 }
                 let kind = match &source[start..i] {
+                    "import" => TokenKind::Import,
+                    "as" => TokenKind::As,
                     "fn" => TokenKind::Fn,
                     "let" => TokenKind::Let,
                     "if" => TokenKind::If,

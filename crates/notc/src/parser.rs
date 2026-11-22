@@ -1,4 +1,7 @@
-use crate::ast::{Decl, Expr, ExprKind, Function, Method, Module, Param, Program, Span, Type};
+use crate::ast::{
+    Decl, Expr, ExprKind, Function, Import, ImportKind, ImportMember, Method, Module, Param,
+    Program, Span, Type,
+};
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
 const MAX_PARSE_DEPTH: usize = 128;
@@ -109,7 +112,7 @@ impl<'a> Parser<'a> {
         let mut declarations = Vec::new();
         while !self.at(TokenKind::Eof) {
             let start_pos = self.pos;
-            if self.at(TokenKind::Fn) {
+            if self.at(TokenKind::Import) || self.at(TokenKind::Fn) {
                 match self.declaration() {
                     Ok(decl) => declarations.push(decl),
                     Err(()) => self.recover_to_next_decl(start_pos),
@@ -119,7 +122,7 @@ impl<'a> Parser<'a> {
                 self.error(
                     token.span,
                     format!(
-                        "expected top-level `fn` declaration, found {}",
+                        "expected top-level `import` or `fn` declaration, found {}",
                         token.kind.describe()
                     ),
                 );
@@ -130,9 +133,6 @@ impl<'a> Parser<'a> {
     }
 
     /// Synchronize to the next top-level declaration without swallowing it.
-    /// In this grammar, `fn` followed by an identifier (`fn name(` or
-    /// `fn Type.name(`) or a parenthesized type followed by `.` (`fn (fn(...) -> ...).name(`)
-    /// always begins a declaration rather than an inline function type.
     fn recover_to_next_decl(&mut self, start_pos: usize) {
         if self.pos == start_pos && !self.at(TokenKind::Eof) {
             self.advance();
@@ -146,6 +146,9 @@ impl<'a> Parser<'a> {
     }
 
     fn at_decl_start(&self) -> bool {
+        if self.at(TokenKind::Import) {
+            return true;
+        }
         if !self.at(TokenKind::Fn) {
             return false;
         }
@@ -178,6 +181,9 @@ impl<'a> Parser<'a> {
     }
 
     fn declaration(&mut self) -> Result<Decl, ()> {
+        if self.at(TokenKind::Import) {
+            return self.import_decl().map(Decl::Import);
+        }
         let fn_tok = self.expect(TokenKind::Fn)?;
         let is_method = match self.kind() {
             TokenKind::Ident => self.peek(1).kind == TokenKind::Dot,
@@ -189,6 +195,67 @@ impl<'a> Parser<'a> {
         } else {
             self.function_decl(fn_tok.span).map(Decl::Function)
         }
+    }
+
+    fn import_decl(&mut self) -> Result<Import, ()> {
+        let import_tok = self.expect(TokenKind::Import)?;
+        let path_tok = self.expect(TokenKind::String)?;
+        let path = unescape_string(self.text(path_tok.span)).ok_or_else(|| {
+            self.error(path_tok.span, "invalid escape sequence in import path");
+        })?;
+        let kind = if self.at(TokenKind::As) {
+            self.advance();
+            let alias_tok = self.expect(TokenKind::Ident)?;
+            ImportKind::Alias {
+                alias: self.text(alias_tok.span).to_owned(),
+                span: alias_tok.span,
+            }
+        } else if self.at(TokenKind::Colon) {
+            self.advance();
+            if self.at(TokenKind::Star) {
+                let star_tok = self.advance();
+                ImportKind::Wildcard {
+                    span: star_tok.span,
+                }
+            } else {
+                let mut members = Vec::new();
+                loop {
+                    let name_tok = self.expect(TokenKind::Ident)?;
+                    let name = self.text(name_tok.span).to_owned();
+                    let (alias, alias_span) = if self.at(TokenKind::As) {
+                        self.advance();
+                        let alias_tok = self.expect(TokenKind::Ident)?;
+                        (self.text(alias_tok.span).to_owned(), alias_tok.span)
+                    } else {
+                        (name.clone(), name_tok.span)
+                    };
+                    members.push(ImportMember {
+                        name,
+                        name_span: name_tok.span,
+                        alias,
+                        alias_span,
+                    });
+                    if self.at(TokenKind::Comma) {
+                        self.advance();
+                        if self.at(TokenKind::Semi) || self.at(TokenKind::Eof) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                ImportKind::Members(members)
+            }
+        } else {
+            ImportKind::Default
+        };
+        let semi_tok = self.expect(TokenKind::Semi)?;
+        Ok(Import {
+            path,
+            path_span: path_tok.span,
+            kind,
+            span: import_tok.span.merge(semi_tok.span),
+        })
     }
 
     fn function_decl(&mut self, start: Span) -> Result<Function, ()> {
@@ -404,12 +471,18 @@ impl<'a> Parser<'a> {
                 TokenKind::Dot => {
                     self.advance();
                     let name_tok = self.expect(TokenKind::Ident)?;
-                    let method = self.text(name_tok.span).to_owned();
-                    self.expect(TokenKind::LParen)?;
-                    let args = self.arg_list()?;
-                    let close = self.expect(TokenKind::RParen)?;
-                    let span = expr.span.merge(close.span);
-                    expr = Expr::new(ExprKind::MethodCall(Box::new(expr), method, args), span);
+                    let member = self.text(name_tok.span).to_owned();
+                    if self.at(TokenKind::LParen) {
+                        self.advance();
+                        let args = self.arg_list()?;
+                        let close = self.expect(TokenKind::RParen)?;
+                        let span = expr.span.merge(close.span);
+                        expr =
+                            Expr::new(ExprKind::MethodCall(Box::new(expr), member, args), span);
+                    } else {
+                        let span = expr.span.merge(name_tok.span);
+                        expr = Expr::new(ExprKind::Member(Box::new(expr), member), span);
+                    }
                 }
                 _ => break,
             }
@@ -486,4 +559,25 @@ fn parse_i64(raw: &str) -> Option<i64> {
         acc = acc.checked_mul(10)?.checked_add(digit)?;
     }
     Some(acc)
+}
+
+fn unescape_string(raw: &str) -> Option<String> {
+    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                'n' => out.push('\n'),
+                't' => out.push('\t'),
+                'r' => out.push('\r'),
+                _ => return None,
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    Some(out)
 }

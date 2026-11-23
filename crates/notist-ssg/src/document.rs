@@ -106,7 +106,10 @@ fn collect_headings(
             collect_headings(heading, ids, heading_ids, out);
             collect_headings(body, ids, heading_ids, out);
         }
-        BlockKind::Callout { body, .. } | BlockKind::Quote(body) => {
+        BlockKind::Callout { body, .. }
+        | BlockKind::Quote(body)
+        | BlockKind::Div(body)
+        | BlockKind::SectionBox(body) => {
             collect_headings(body, ids, heading_ids, out);
         }
         BlockKind::List { items, .. } => {

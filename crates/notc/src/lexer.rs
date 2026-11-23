@@ -14,6 +14,8 @@ pub(crate) enum TokenKind {
     Where,
     Match,
     Let,
+    For,
+    In,
     If,
     Else,
     True,
@@ -23,6 +25,8 @@ pub(crate) enum TokenKind {
     Float,
     String,
     Content,
+    HashLBracket,
+    RBracket,
     LParen,
     RParen,
     LBrace,
@@ -60,6 +64,8 @@ impl TokenKind {
             Self::Where => "`where`",
             Self::Match => "`match`",
             Self::Let => "`let`",
+            Self::For => "`for`",
+            Self::In => "`in`",
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::True => "`true`",
@@ -69,6 +75,8 @@ impl TokenKind {
             Self::Float => "float literal",
             Self::String => "string literal",
             Self::Content => "content literal",
+            Self::HashLBracket => "`#[`",
+            Self::RBracket => "`]`",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
             Self::LBrace => "`{`",
@@ -149,6 +157,10 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
             b'"' => {
                 i = scan_escaped_string(bytes, i, &mut tokens, &mut diagnostics);
             }
+            b'#' if i + 1 < len && bytes[i + 1] == b'[' => {
+                push_double(&mut tokens, TokenKind::HashLBracket, &mut i);
+            }
+            b']' => push_single(&mut tokens, TokenKind::RBracket, &mut i),
             b'[' => {
                 i = scan_content_literal(bytes, i, &mut tokens, &mut diagnostics);
             }
@@ -247,6 +259,8 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
                     "where" => TokenKind::Where,
                     "match" => TokenKind::Match,
                     "let" => TokenKind::Let,
+                    "for" => TokenKind::For,
+                    "in" => TokenKind::In,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "true" => TokenKind::True,

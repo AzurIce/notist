@@ -134,7 +134,10 @@ fn collect_block_references(
             collect_block_references(heading, origin, source_text, out, customs, has_math);
             collect_block_references(body, origin, source_text, out, customs, has_math);
         }
-        BlockKind::Callout { body, .. } | BlockKind::Quote(body) => {
+        BlockKind::Callout { body, .. }
+        | BlockKind::Quote(body)
+        | BlockKind::Div(body)
+        | BlockKind::SectionBox(body) => {
             collect_block_references(body, origin, source_text, out, customs, has_math);
         }
         BlockKind::List { items, .. } => {
@@ -413,6 +416,20 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
             out.push('>');
             render_block(body, ctx, out);
             out.push_str("</blockquote>");
+        }
+        BlockKind::Div(body) => {
+            out.push_str("<div");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            render_block(body, ctx, out);
+            out.push_str("</div>");
+        }
+        BlockKind::SectionBox(body) => {
+            out.push_str("<section");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            render_block(body, ctx, out);
+            out.push_str("</section>");
         }
         BlockKind::Divider => {
             out.push_str("<hr>");

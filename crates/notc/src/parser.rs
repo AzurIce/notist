@@ -730,6 +730,13 @@ impl<'a> Parser<'a> {
                     "String" => Ok(Type::String),
                     "Inline" => Ok(Type::Inline),
                     "Block" => Ok(Type::Block),
+                    "Json" => Ok(Type::Json),
+                    "List" => {
+                        self.expect(TokenKind::Lt)?;
+                        let elem = self.parse_type()?;
+                        self.expect(TokenKind::Gt)?;
+                        Ok(Type::List(Box::new(elem)))
+                    }
                     "Never" => Ok(Type::Never),
                     other => Ok(Type::Param(other.to_owned())),
                 }
@@ -837,11 +844,31 @@ impl<'a> Parser<'a> {
     fn expression_inner(&mut self) -> Result<Expr, ()> {
         if self.at(TokenKind::If) {
             self.if_expr()
+        } else if self.at(TokenKind::For) {
+            self.for_expr()
         } else if self.at(TokenKind::Match) {
             self.type_match_expr()
         } else {
             self.logical_or()
         }
+    }
+
+    fn for_expr(&mut self) -> Result<Expr, ()> {
+        let for_tok = self.expect(TokenKind::For)?;
+        let bind_tok = self.expect(TokenKind::Ident)?;
+        let binding = self.text(bind_tok.span).to_owned();
+        self.expect(TokenKind::In)?;
+        let iterable = self.expression()?;
+        let (body, body_span) = self.block()?;
+        Ok(Expr::new(
+            ExprKind::For {
+                binding,
+                binding_span: bind_tok.span,
+                iterable: Box::new(iterable),
+                body: Box::new(body),
+            },
+            for_tok.span.merge(body_span),
+        ))
     }
 
     fn type_match_expr(&mut self) -> Result<Expr, ()> {
@@ -1156,6 +1183,23 @@ impl<'a> Parser<'a> {
                 Ok(Expr::new(ExprKind::String(value), tok.span))
             }
             TokenKind::Content => self.parse_content_token(),
+            TokenKind::HashLBracket => {
+                self.advance();
+                let mut items = Vec::new();
+                while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                    items.push(self.expression()?);
+                    if self.at(TokenKind::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                let close = self.expect(TokenKind::RBracket)?;
+                Ok(Expr::new(
+                    ExprKind::ListLiteral(items),
+                    tok.span.merge(close.span),
+                ))
+            }
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(true), tok.span))

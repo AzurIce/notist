@@ -1190,6 +1190,38 @@ impl<'a> SemanticIndexer<'a> {
                 }
                 Some(Type::Block)
             }
+            ExprKind::ListLiteral(items) => {
+                let mut elem_ty = None;
+                for item in items {
+                    let ty = self.index_expr(item);
+                    if elem_ty.is_none() {
+                        elem_ty = ty;
+                    }
+                }
+                elem_ty.map(|t| Type::List(Box::new(t)))
+            }
+            ExprKind::For {
+                binding,
+                binding_span,
+                iterable,
+                body,
+            } => {
+                let iter_ty = self.index_expr(iterable);
+                let elem_ty = match iter_ty {
+                    Some(Type::List(inner)) => *inner,
+                    _ => Type::Unit,
+                };
+                let prev = self
+                    .locals
+                    .insert(binding.clone(), (elem_ty, *binding_span));
+                let body_ty = self.index_expr(body);
+                if let Some(prev) = prev {
+                    self.locals.insert(binding.clone(), prev);
+                } else {
+                    self.locals.remove(binding);
+                }
+                body_ty.map(|t| Type::List(Box::new(t)))
+            }
             ExprKind::AttachAttrs(_, target) => self.index_expr(target),
             ExprKind::Name(name) => {
                 if let Some((ty, def_span)) = self.locals.get(name).cloned() {

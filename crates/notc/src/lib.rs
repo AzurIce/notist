@@ -11,6 +11,7 @@ pub mod content;
 mod content_parser;
 mod eval;
 pub mod ide;
+pub mod json;
 mod lexer;
 mod module;
 mod parser;
@@ -29,6 +30,7 @@ pub use content::{
     InlineNode,
 };
 pub use eval::{ExecutionError, FunctionValue, Value};
+pub use json::{DataHost, JsonData, JsonValue, NoDataHost};
 pub use lexer::ParseDiagnostic;
 pub use module::{
     CheckedProject, ProjectDiagnostic, ProjectDiagnosticKind, check_parsed_modules, check_project,

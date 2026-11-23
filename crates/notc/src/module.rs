@@ -86,9 +86,36 @@ impl CheckedProject {
         self.lower_entry(module_path, entry)?.run(entry)
     }
 
+    /// Lower and execute `(module_path, entry)` with a read-only external `DataHost`.
+    pub fn run_with_host(
+        &self,
+        module_path: &str,
+        entry: &str,
+        host: &dyn crate::json::DataHost,
+    ) -> Result<Value, ExecutionError> {
+        let normalized = normalize_path(module_path)
+            .ok_or_else(|| ExecutionError::UnknownEntry(format!("{module_path}::{entry}")))?;
+        self.lower_entry(module_path, entry)?
+            .run_with_host(entry, &normalized, host)
+    }
+
     /// Evaluate a `.not` document entry in this checked project and return its root `Block`.
     pub fn eval_document(&self, document_path: &str) -> Result<Block, ExecutionError> {
         match self.run(document_path, DOC_ENTRY)? {
+            Value::Block(block) => Ok(block),
+            _ => Err(ExecutionError::UnknownEntry(format!(
+                "{document_path}::{DOC_ENTRY}"
+            ))),
+        }
+    }
+
+    /// Evaluate a `.not` document entry with a read-only external `DataHost`.
+    pub fn eval_document_with_host(
+        &self,
+        document_path: &str,
+        host: &dyn crate::json::DataHost,
+    ) -> Result<Block, ExecutionError> {
+        match self.run_with_host(document_path, DOC_ENTRY, host)? {
             Value::Block(block) => Ok(block),
             _ => Err(ExecutionError::UnknownEntry(format!(
                 "{document_path}::{DOC_ENTRY}"

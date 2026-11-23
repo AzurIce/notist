@@ -64,6 +64,8 @@ pub(crate) enum CheckedExpr {
         attrs: Attrs,
         span: Span,
     },
+    List(Vec<Self>),
+    For(Box<Self>, Box<Self>),
     CustomNode {
         is_block: bool,
         module: Arc<str>,
@@ -102,6 +104,8 @@ pub(crate) enum ModuleExpr {
         attrs: Attrs,
         span: Span,
     },
+    List(Vec<Self>),
+    For(Box<Self>, Box<Self>),
     CustomNode {
         return_ty: Type,
         module: Arc<str>,
@@ -222,6 +226,8 @@ pub enum TypeError {
         right: Type,
     },
     NotCallable(Type),
+    NotIterable(Type),
+    CannotInferEmptyList,
     Arity { expected: usize, actual: usize },
     Mismatch { expected: Type, actual: Type },
 }
@@ -505,6 +511,41 @@ fn lower_specialized_expr(
                 span: *span,
             }
         }
+        M::List(items) => {
+            let mut lowered = Vec::with_capacity(items.len());
+            for item in items {
+                lowered.push(lower_specialized_expr(
+                    decls,
+                    item,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?);
+            }
+            C::List(lowered)
+        }
+        M::For(iterable, body) => C::For(
+            Box::new(lower_specialized_expr(
+                decls,
+                iterable,
+                type_params,
+                type_args,
+                mapping,
+                order,
+                queue,
+            )?),
+            Box::new(lower_specialized_expr(
+                decls,
+                body,
+                type_params,
+                type_args,
+                mapping,
+                order,
+                queue,
+            )?),
+        ),
         M::CustomNode {
             return_ty,
             module,
@@ -871,7 +912,9 @@ fn validate_type(ty: &Type, type_params: &[String]) -> Result<(), String> {
         | Type::String
         | Type::Inline
         | Type::Block
+        | Type::Json
         | Type::Never => Ok(()),
+        Type::List(elem) => validate_type(elem, type_params),
         Type::Param(name) => {
             if type_params.iter().any(|p| p == name) {
                 Ok(())
@@ -956,7 +999,9 @@ pub(crate) fn substitute_type(ty: &Type, params: &[String], args: &[Type]) -> Ty
         | Type::String
         | Type::Inline
         | Type::Block
+        | Type::Json
         | Type::Never => ty.clone(),
+        Type::List(elem) => Type::List(Box::new(substitute_type(elem, params, args))),
         Type::Param(name) => params
             .iter()
             .position(|p| p == name)
@@ -980,7 +1025,9 @@ fn substitute_map(ty: &Type, subst: &HashMap<String, Type>) -> Type {
         | Type::String
         | Type::Inline
         | Type::Block
+        | Type::Json
         | Type::Never => ty.clone(),
+        Type::List(elem) => Type::List(Box::new(substitute_map(elem, subst))),
         Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
         Type::Function(ps, ret) => Type::Function(
             ps.iter().map(|p| substitute_map(p, subst)).collect(),
@@ -992,6 +1039,7 @@ fn substitute_map(ty: &Type, subst: &HashMap<String, Type>) -> Type {
 fn contains_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) => true,
+        Type::List(elem) => contains_param(elem),
         Type::Function(ps, ret) => ps.iter().any(contains_param) || contains_param(ret),
         _ => false,
     }
@@ -1012,6 +1060,11 @@ fn unify_type(
                 && inferred[idx].is_none()
             {
                 inferred[idx] = Some(actual.clone());
+            }
+        }
+        Type::List(pat_elem) => {
+            if let Type::List(act_elem) = actual {
+                unify_type(pat_elem, act_elem, params, inferred);
             }
         }
         Type::Function(pat_ps, pat_ret) => {
@@ -1099,6 +1152,8 @@ pub fn format_type(ty: &Type) -> String {
         Type::String => "String".into(),
         Type::Inline => "Inline".into(),
         Type::Block => "Block".into(),
+        Type::Json => "Json".into(),
+        Type::List(elem) => format!("List<{}>", format_type(elem)),
         Type::Never => "Never".into(),
         Type::Param(name) => name.clone(),
         Type::Function(parameters, returns) => {
@@ -1185,6 +1240,13 @@ pub fn format_type_error(error: &TypeError) -> String {
             format_type(right)
         ),
         TypeError::NotCallable(ty) => format!("type `{}` is not callable", format_type(ty)),
+        TypeError::NotIterable(ty) => format!(
+            "expected `List<T>` in `for` expression, found `{}`",
+            format_type(ty)
+        ),
+        TypeError::CannotInferEmptyList => {
+            "cannot infer element type of empty list literal `#[ ]`".into()
+        }
         TypeError::Arity { expected, actual } => {
             format!("expected {expected} argument(s), found {actual}")
         }
@@ -1507,6 +1569,59 @@ impl<'a> Checker<'a> {
             }
             ExprKind::BlockLiteral(pieces) => {
                 (self.check_block_pieces(pieces, expr.span)?, Type::Block)
+            }
+            ExprKind::ListLiteral(items) => {
+                let expected_elem = expected.and_then(|ty| match self.resolve_ty(ty) {
+                    Type::List(elem) => Some(*elem),
+                    _ => None,
+                });
+                if let Some(elem_ty) = expected_elem {
+                    let mut checked = Vec::with_capacity(items.len());
+                    for item in items {
+                        checked.push(self.expect_expr(item, &elem_ty)?);
+                    }
+                    (M::List(checked), Type::List(Box::new(elem_ty)))
+                } else {
+                    let Some((first, rest)) = items.split_first() else {
+                        return Err((expr.span, TypeError::CannotInferEmptyList));
+                    };
+                    let (checked_first, elem_ty) = self.expression(first, None)?;
+                    let mut checked = Vec::with_capacity(items.len());
+                    checked.push(checked_first);
+                    for item in rest {
+                        checked.push(self.expect_expr(item, &elem_ty)?);
+                    }
+                    (M::List(checked), Type::List(Box::new(elem_ty)))
+                }
+            }
+            ExprKind::For {
+                binding,
+                iterable,
+                body,
+                ..
+            } => {
+                let (checked_iter, iter_ty) = self.expression(iterable, None)?;
+                let Type::List(elem_ty) = iter_ty else {
+                    return Err((iterable.span, TypeError::NotIterable(iter_ty)));
+                };
+                let expected_body = expected.and_then(|ty| match self.resolve_ty(ty) {
+                    Type::List(elem) => Some(*elem),
+                    _ => None,
+                });
+                let previous = self.locals.insert(binding.as_str(), (self.depth, *elem_ty));
+                self.depth += 1;
+                let result = self.expression(body, expected_body.as_ref());
+                self.depth -= 1;
+                if let Some(previous) = previous {
+                    self.locals.insert(binding.as_str(), previous);
+                } else {
+                    self.locals.remove(binding.as_str());
+                }
+                let (checked_body, body_ty) = result?;
+                (
+                    M::For(Box::new(checked_iter), Box::new(checked_body)),
+                    Type::List(Box::new(body_ty)),
+                )
             }
             ExprKind::AttachAttrs(attrs, target) => {
                 let (checked, ty) = self.expression(target, expected)?;
@@ -2151,17 +2266,7 @@ impl<'a> Checker<'a> {
             BinaryOp::Eq | BinaryOp::Ne => {
                 let (checked_left, left_ty) = self.expression(left, None)?;
                 let (checked_right, right_ty) = self.expression(right, None)?;
-                let supported = matches!(
-                    left_ty,
-                    Type::Unit
-                        | Type::Bool
-                        | Type::Int
-                        | Type::Float
-                        | Type::String
-                        | Type::Inline
-                        | Type::Block
-                );
-                if !supported {
+                if !supports_equality(&left_ty) {
                     return Err((
                         span,
                         TypeError::UnsupportedBinaryOp {
@@ -2196,7 +2301,12 @@ impl<'a> Checker<'a> {
                 let (checked_right, right_ty) = self.expression(right, None)?;
                 let supported = matches!(
                     left_ty,
-                    Type::Int | Type::Float | Type::String | Type::Inline | Type::Block
+                    Type::Int
+                        | Type::Float
+                        | Type::String
+                        | Type::Inline
+                        | Type::Block
+                        | Type::List(_)
                 );
                 if !supported {
                     return Err((
@@ -2260,6 +2370,21 @@ fn lower_attrs(entries: &[AttrEntry]) -> Attrs {
         })
         .collect();
     Attrs::from_entries(pairs)
+}
+
+fn supports_equality(ty: &Type) -> bool {
+    match ty {
+        Type::Unit
+        | Type::Bool
+        | Type::Int
+        | Type::Float
+        | Type::String
+        | Type::Inline
+        | Type::Block
+        | Type::Json => true,
+        Type::List(elem) => supports_equality(elem),
+        Type::Never | Type::Param(_) | Type::Function(_, _) => false,
+    }
 }
 
 fn expect(expected: &Type, actual: Type, span: Span) -> Result<(), (Span, TypeError)> {

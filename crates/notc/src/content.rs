@@ -428,6 +428,8 @@ pub enum BlockKind {
     },
     Math(Arc<str>),
     Custom(CustomNode),
+    Div(Block),
+    SectionBox(Block),
     Section { heading: Block, body: Block },
 }
 
@@ -510,7 +512,10 @@ impl Block {
             BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
                 out.push(inline.plain_text());
             }
-            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => {
+            BlockKind::Callout { body, .. }
+            | BlockKind::Quote(body)
+            | BlockKind::Div(body)
+            | BlockKind::SectionBox(body) => {
                 body.collect_plain_text(out);
             }
             BlockKind::List { items, .. } => {
@@ -562,7 +567,10 @@ impl Block {
                 }
             }
             BlockKind::Heading { level, title } => out.push((*level, title.plain_text())),
-            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_headings(out),
+            BlockKind::Callout { body, .. }
+            | BlockKind::Quote(body)
+            | BlockKind::Div(body)
+            | BlockKind::SectionBox(body) => body.collect_headings(out),
             BlockKind::List { items, .. } => {
                 for item in items.iter() {
                     item.collect_headings(out);
@@ -603,7 +611,10 @@ impl Block {
             BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
                 inline.collect_links(out);
             }
-            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_links(out),
+            BlockKind::Callout { body, .. }
+            | BlockKind::Quote(body)
+            | BlockKind::Div(body)
+            | BlockKind::SectionBox(body) => body.collect_links(out),
             BlockKind::List { items, .. } => {
                 for item in items.iter() {
                     item.collect_links(out);
@@ -652,7 +663,10 @@ impl Block {
             BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
                 inline.collect_images(out);
             }
-            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_images(out),
+            BlockKind::Callout { body, .. }
+            | BlockKind::Quote(body)
+            | BlockKind::Div(body)
+            | BlockKind::SectionBox(body) => body.collect_images(out),
             BlockKind::List { items, .. } => {
                 for item in items.iter() {
                     item.collect_images(out);
@@ -704,7 +718,10 @@ impl Block {
             BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
                 inline.collect_ids(out);
             }
-            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_ids(out),
+            BlockKind::Callout { body, .. }
+            | BlockKind::Quote(body)
+            | BlockKind::Div(body)
+            | BlockKind::SectionBox(body) => body.collect_ids(out),
             BlockKind::List { items, .. } => {
                 for item in items.iter() {
                     item.collect_ids(out);
@@ -774,6 +791,25 @@ impl Block {
         };
 
         for item in items {
+            let item = match &item.0.kind {
+                BlockKind::Div(body) => {
+                    let s = body.sectionize();
+                    if s.ptr_eq(body) {
+                        item
+                    } else {
+                        Block::new(BlockKind::Div(s), item.0.attrs.clone(), item.0.span)
+                    }
+                }
+                BlockKind::SectionBox(body) => {
+                    let s = body.sectionize();
+                    if s.ptr_eq(body) {
+                        item
+                    } else {
+                        Block::new(BlockKind::SectionBox(s), item.0.attrs.clone(), item.0.span)
+                    }
+                }
+                _ => item,
+            };
             if let BlockKind::Heading { level, .. } = item.0.kind {
                 while stack.last().is_some_and(|top| top.level >= level) {
                     close_top(&mut stack, &mut root);
@@ -889,6 +925,30 @@ impl Block {
                 } else {
                     Block::new(
                         BlockKind::Quote(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            BlockKind::Div(body) => {
+                let rewritten = body.rewrite_inlines(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::Div(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            BlockKind::SectionBox(body) => {
+                let rewritten = body.rewrite_inlines(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::SectionBox(rewritten),
                         self.0.attrs.clone(),
                         self.0.span,
                     )
@@ -1054,6 +1114,30 @@ impl Block {
                     )
                 }
             }
+            BlockKind::Div(body) => {
+                let rewritten = body.rewrite_blocks(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::Div(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            BlockKind::SectionBox(body) => {
+                let rewritten = body.rewrite_blocks(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::SectionBox(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
             BlockKind::Custom(custom) => {
                 let mut changed = false;
                 let mut next_props = Vec::with_capacity(custom.props.len());
@@ -1187,6 +1271,8 @@ impl fmt::Display for Block {
             }
             BlockKind::Math(s) => write!(f, "BlockMath({s:?})"),
             BlockKind::Custom(c) => write!(f, "CustomBlock({}::{})", c.module, c.name),
+            BlockKind::Div(body) => write!(f, "Div({body})"),
+            BlockKind::SectionBox(body) => write!(f, "SectionBox({body})"),
             BlockKind::Section { heading, body } => write!(f, "Section({heading}, {body})"),
         }
     }

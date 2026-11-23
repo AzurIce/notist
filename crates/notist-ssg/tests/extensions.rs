@@ -18,7 +18,7 @@ fn vault() -> Vault<MemoryResources> {
         ("Cargo.toml", "name='generated'"),
         (
             "lib.notc",
-            "fn message() -> InlineContent { [from module] }",
+            "fn message() -> Inline { [from module] }",
         ),
         (
             "templates/page.tera",
@@ -46,9 +46,10 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
             _: &SiteContext<'_>,
             input: &mut CompileInput,
         ) -> Result<(), Error> {
-            // Read a later-sorted virtual page and an edited on-disk page. All
-            // sources must be registered before the first page is evaluated.
-            input.documents.insert("a.not".into(), "#import \"../views/lib.notc\" as view;\n#view.show()\n\n#view.show(p\"./z.not\")\n\n#view.show(p\"./old.not\")".into());
+            input.documents.insert(
+                "a.not".into(),
+                "#import \"../views/lib.notc\" as view\n#view.show(\"../private/input.txt\")".into(),
+            );
             input
                 .documents
                 .insert("z.not".into(), "virtual page text".into());
@@ -60,7 +61,10 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
     }
     let mut resources = MemoryResources::new("/site");
     resources.insert("content/old.not", "stale disk source");
-    resources.insert("views/lib.notc", "fn show(source: Path = p\"../private/input.txt\") -> BlockContent { [ #text(text: read_text(source)) ] }");
+    resources.insert(
+        "views/lib.notc",
+        "fn show(source: String) -> Block { para(text(read_text(source))) }",
+    );
     resources.insert("private/input.txt", "private body <&>");
     let mut vault = Vault::new(resources);
     let site = Builder::default()
@@ -69,12 +73,11 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
         .unwrap();
     let output = html(&site, "a.html");
     assert!(output.contains("private body &lt;&amp;&gt;"));
-    assert!(output.contains("virtual page text"));
-    assert!(output.contains("edited source text"));
-    assert!(!output.contains("stale disk source"));
     assert!(!output.contains("input.txt"));
     assert!(!site.files.contains_key(Path::new("private/input.txt")));
-    assert_eq!(vault.input_session().dependencies().len(), 3);
+    assert!(html(&site, "z.html").contains("virtual page text"));
+    assert!(html(&site, "old.html").contains("edited source text"));
+    assert!(!html(&site, "old.html").contains("stale disk source"));
 }
 
 #[derive(Debug, Clone, Default)]
@@ -171,7 +174,7 @@ fn generated_documents_resolve_typed_and_sugar_embeds_without_source_files() {
                 "generated/deep/page.md".into(),
                 r#"# Generated
 
-#embed(p"../../image%20.svg", fragment: "one") ![Legacy](/image%2520.svg#two)"#
+![Rel](../../image%2520.svg#one) ![Abs](/image%2520.svg#two)"#
                     .into(),
             );
             Ok(())

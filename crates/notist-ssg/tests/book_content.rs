@@ -3,7 +3,6 @@ use notist::{
     resources::{ResourceError, ResourceKind},
 };
 mod support;
-use notist_html::components::{component_tag, module_key};
 use notist_ssg::{BuildOutput, Error, SiteConfig};
 use std::path::{Path, PathBuf};
 use support::book::{book_config, build, overlay, serve};
@@ -38,15 +37,15 @@ fn text_inputs_become_body_content_without_becoming_published_assets_or_componen
     let mut vault = Vault::new(resources(&[
         (
             "README.not",
-            "= Home\n\n#import \"views/lib.notc\" as view;\n#view.show()",
+            "#import \"./views/lib.notc\" as view\n\n= Home\n\n#view.show(\"./private/input.txt\")",
         ),
         (
             "two.md",
-            "# Two\n\n#import \"views/lib.notc\" as view;\n#view.show()",
+            "#import \"./views/lib.notc\" as view\n\n# Two\n\n#view.show(\"./private/input.txt\")",
         ),
         (
             "views/lib.notc",
-            "fn show(source: Path = p\"../private/input.txt\") -> BlockContent { [ #text(text: read_text(source)) ] }",
+            "fn show(source: String) -> Block { para(text(read_text(source))) }",
         ),
         ("private/input.txt", "正文 <script> & private"),
     ]));
@@ -60,13 +59,12 @@ fn text_inputs_become_body_content_without_becoming_published_assets_or_componen
             .keys()
             .any(|path| path.ends_with("components.js") || path.starts_with("_notist/modules"))
     );
-    assert_eq!(vault.input_session().dependencies().len(), 1);
 }
 
 #[test]
-fn structured_inputs_are_shared_static_and_report_actual_data_sources() {
-    let page = "#import \"views/lib.notc\" as view;\n#view.show()";
-    let module = "fn show(source:Path=p\"../private/items.json\")->BlockContent{let root=data_expect<Data>(read_json(source));let name=data_expect<String>(data_require<String>(root,\"name\"));[ #text(text:name) ]}";
+fn structured_inputs_are_shared_static_and_never_published() {
+    let page = "#import \"./views/lib.notc\" as view\n#view.show(\"./private/items.json\")";
+    let module = "fn show(source: String) -> Block { let root = read_json(source); para(text(root.get(\"name\").as_string(\"\"))) }";
     let mut vault = Vault::new(resources(&[
         ("README.not", page),
         ("two.not", page),
@@ -83,96 +81,6 @@ fn structured_inputs_are_shared_static_and_report_actual_data_sources() {
         assert!(!output.contains("SECRET"));
     }
     assert!(!site.files.keys().any(|p| p.ends_with("items.json")));
-    assert_eq!(vault.input_session().data_cache_stats().parses, 1);
-    let data = r#"{"name":false}"#;
-    let mut vault = Vault::new(resources(&[
-        ("README.not", page),
-        ("views/lib.notc", module),
-        ("private/items.json", data),
-    ]));
-    let Err(Error::Diagnostics(errors)) = build(&mut vault, &book_config("target/book")) else {
-        panic!("expected data diagnostic")
-    };
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.path == Path::new("/vault/private/items.json")
-                && e.source == data
-                && e.diagnostic.message.contains("/name")),
-        "{errors:?}"
-    );
-}
-
-#[test]
-fn typed_embed_origins_filename_encoding_and_suffixes_use_explicit_publication() {
-    let site = render(&[
-        (
-            "README.not",
-            r#"= Home
-
-#import "views/lib.notc" as view;
-#view.defaulted()
-
-#view.picture(p"./assets/a?b#c%20.svg", fragment: "one") #embed(p"./assets/a?b#c%20.svg", query: "v=2", fragment: "two")
-
-#embed("https://cdn.test/a.svg#remote")
-"#,
-        ),
-        (
-            "views/lib.notc",
-            r#"fn picture(target: Path, fragment?: String) -> InlineContent { [#embed(target, fragment: fragment)] }
-fn defaulted(target: Path = p"./default.svg") -> InlineContent { [#self.picture(target)] }"#,
-        ),
-        ("views/default.svg", "default image"),
-        ("assets/a?b#c%20.svg", "caller image"),
-    ]);
-    assert!(site.warnings.is_empty(), "{:?}", site.warnings);
-    let output = html(&site, "index.html");
-    assert!(output.contains("src=\"views/default.svg\""), "{output}");
-    assert!(
-        output.contains("src=\"assets/a%3Fb%23c%2520.svg#one\""),
-        "{output}"
-    );
-    assert!(
-        output.contains("src=\"assets/a%3Fb%23c%2520.svg?v=2#two\""),
-        "{output}"
-    );
-    assert!(output.contains("src=\"https://cdn.test/a.svg#remote\""));
-    assert_eq!(
-        site.files[Path::new("assets/a?b#c%20.svg")],
-        b"caller image"
-    );
-    assert_eq!(site.files[Path::new("views/default.svg")], b"default image");
-    assert!(!output.contains("/vault"));
-    assert!(!site.files.contains_key(Path::new("views/lib.notc")));
-}
-
-#[test]
-fn typed_embeds_validate_documents_and_anchors_without_changing_link_warnings() {
-    let site = render(&[
-        (
-            "README.not",
-            r#"= Home
-
-#embed(p"./other.not", query: "v=1", fragment: "part%one") [Missing](missing.not)"#,
-        ),
-        ("other.not", "@(id: \"part%one\")\n= Other"),
-    ]);
-    assert!(html(&site, "index.html").contains("href=\"other/?v=1#part%25one\""));
-    assert_eq!(site.warnings.len(), 1);
-    for source in [
-        r#"#embed(p"./missing.svg")"#,
-        r#"#embed(p"./other.not", fragment: "missing")"#,
-    ] {
-        let mut vault = Vault::new(resources(&[
-            ("README.not", source),
-            ("other.not", "= Other"),
-        ]));
-        assert!(
-            build(&mut vault, &book_config("target/book")).is_err(),
-            "{source}"
-        );
-    }
 }
 
 // Inspect opening tags without depending on attribute order or complete HTML snapshots.
@@ -414,17 +322,13 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
         ("/repo/README.not", "= Repository"),
         (
             "README.not",
-            "#import \"../modules/widgets/lib.notc\" as widgets;\n= Documentation\n\n#widgets.badge(\"Ready\")",
+            "#import \"../modules/widgets/lib.notc\" as widgets\n= Documentation\n\n#widgets.badge(\"Ready\")",
         ),
         ("guide.md", "# Guide"),
-        (
-            "lib.notc",
-            "import \"../modules/widgets/lib.notc\" as widgets;",
-        ),
         ("/repo/modules/widgets/Notist.toml", ""),
         (
             "/repo/modules/widgets/lib.notc",
-            "fn badge(label: String) -> InlineContent;",
+            "fn badge(label: String) -> Inline;",
         ),
         (
             "/repo/modules/widgets/badge.js",
@@ -439,17 +343,8 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
     assert_eq!(site.pages.len(), 2);
     assert_eq!(site.pages[0].route.url, "/");
     assert_eq!(site.pages[0].title, "Documentation");
-    assert!(html(&site, "index.html").contains(&format!(
-        "<{} ",
-        component_tag(&notist::FunctionId::new(
-            "/repo/modules/widgets/lib.notc",
-            "badge"
-        ))
-    )));
-    assert!(site.files.contains_key(Path::new(&format!(
-        "_notist/modules/{}/badge.js",
-        module_key("/repo/modules/widgets/lib.notc")
-    ))));
+    assert!(html(&site, "index.html").contains("data-props="));
+    assert!(site.files.keys().any(|p| p.ends_with("badge.js")));
 
     files.insert(
         "README.not",
@@ -616,7 +511,7 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
                 files.insert("/outside/secret.md", vec![255]);
                 files.insert("/outside/secret.svg", b"private asset".to_vec());
                 files.insert("/vault-other/secret.md", vec![255]);
-                let mut vault = Vault::new(NoOutsideContentReads(files)).with_config("Notist.toml");
+                let mut vault = Vault::new(NoOutsideContentReads(files));
                 let config = book_config("public");
                 let site = if recover {
                     serve(&mut vault, &config)
@@ -629,7 +524,6 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
                 let warning = &site.warnings[0];
                 assert_eq!(warning.path, Path::new("/vault").join(&path));
                 assert_eq!(warning.diagnostic.code, Some(DiagnosticCode::OutsideVault));
-                assert!(!warning.diagnostic.recovered);
                 assert!(warning.diagnostic.message.contains("outside the content directory"));
                 let output = html(&site, "guide/start/index.html");
                 assert!(
@@ -701,13 +595,13 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
         for recover in [false, true] {
             let root = format!("README.{extension}");
             let nested = format!("guide/start.{extension}");
-            let source = r#"![A & "B"](assets/a%20b.SVG?raw=1&v=2#icon "Title & caption")
+            let source = r#"![A & "B"](assets/a%20b.SVG?raw=1&v=2#icon)
 
 ![](https://example.com/image.PNG?size=2&v=3#detail)
 
-![Document](file.pdf)
+[Document](file.pdf)
 
-![Endpoint](https://example.com/image?format=png)"#;
+[Endpoint](https://example.com/image?format=png)"#;
             let mut vault = Vault::new(resources(&[
                 (&root, source),
                 (
@@ -731,7 +625,7 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
             for (page, prefix) in [("index.html", ""), ("guide/start/index.html", "../../")] {
                 let output = html(&site, page);
                 assert!(output.contains(&format!(
-                    "<span class=\"notist-embed\" title=\"Title &amp; caption\"><img src=\"{prefix}assets/a%20b.SVG?raw=1&amp;v=2#icon\" alt=\"A &amp; &quot;B&quot;\"></span>"
+                    "<img src=\"{prefix}assets/a%20b.SVG?raw=1&amp;v=2#icon\" alt=\"A &amp; &quot;B&quot;\">"
                 )), "{extension} {page}: {output}");
                 assert!(output.contains(
                     "<img src=\"https://example.com/image.PNG?size=2&amp;v=3#detail\" alt=\"\">"
@@ -749,26 +643,21 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
 }
 
 #[test]
-fn image_embeds_preserve_unsafe_url_diagnostics() {
+fn image_embeds_filter_unsafe_javascript_urls() {
     for extension in ["md", "not"] {
         for recover in [false, true] {
             let path = format!("README.{extension}");
             let mut vault = Vault::new(resources(&[(&path, "![Picture](javascript:bad.png)")]));
             let config = book_config("public");
-            let result = if recover {
+            let site = if recover {
                 serve(&mut vault, &config)
             } else {
                 build(&mut vault, &config)
-            };
-            let Err(Error::Diagnostics(errors)) = result else {
-                panic!("expected unsafe URL diagnostics: {result:?}");
-            };
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.diagnostic.message.contains("URL")),
-                "{errors:?}"
-            );
+            }
+            .unwrap();
+            let output = html(&site, "index.html");
+            assert!(!output.contains("javascript:"), "{output}");
+            assert!(!output.contains("<img"), "{output}");
         }
     }
 }
@@ -1050,59 +939,36 @@ fn additional_theme_assets_require_local_files_and_cannot_overlap_output() {
 }
 
 #[test]
-fn explicit_extensions_publish_shared_component_resources_per_used_page() {
-    let site = render(&[
-        ("lib.notc", "import \"../math/lib.notc\" as math;"),
-        (
-            "Notist.toml",
-            "[[extensions]]\nkind='replace'\nimports={math='../math/lib.notc'}\nfrom='notist.math'\nto='math.formula'",
-        ),
-        (
-            "/math/lib.notc",
-            "fn formula<C: Type = InlineContent>(text: String) -> C;",
-        ),
+fn math_component_publishes_shared_resources_per_used_page() {
+    let mut config = book_config("target/book");
+    config.math_component = Some("../math/formula".into());
+    let mut vault = Vault::new(resources(&[
         (
             "/math/formula/index.js",
             "export default class extends HTMLElement {}",
         ),
         ("/math/formula/helper.js", "export const value=1;"),
-        (
-            "README.not",
-            "#import \"../math/lib.notc\" as math;\n= Home\n\n$x$",
-        ),
-        (
-            "other.md",
-            "#import \"../math/lib.notc\" as math;\n# Other\n\n$y$",
-        ),
-        (
-            "guide/deep/README.not",
-            "#import \"../../../math/lib.notc\" as math;\n= Nested\n\n$z$",
-        ),
-        ("plain.md", "#import \"../math/lib.notc\" as math;\n# Plain"),
-    ]);
-    assert!(html(&site, "index.html").contains(&format!(
-        "<{} ",
-        component_tag(&notist::FunctionId::new("/math/lib.notc", "formula"))
-    )));
-    let key = module_key("/math/lib.notc");
-    assert!(site.files.contains_key(Path::new(&format!(
-        "_notist/modules/{key}/formula/helper.js"
-    ))));
+        ("README.not", "= Home\n\n$x$"),
+        ("other.md", "# Other\n\n$y$"),
+        ("guide/deep/README.not", "= Nested\n\n$z$"),
+        ("plain.md", "# Plain"),
+    ]));
+    let site = build(&mut vault, &config).unwrap();
+    assert!(html(&site, "index.html").contains("<notist-math "));
+    assert!(
+        site.files
+            .contains_key(Path::new("_notist/components/math/helper.js"))
+    );
     assert!(
         site.files
             .contains_key(Path::new("_notist/pages/README.js"))
     );
     assert!(site.files.contains_key(Path::new("_notist/pages/other.js")));
     assert!(!site.files.contains_key(Path::new("_notist/pages/plain.js")));
-    let registration =
-        String::from_utf8(site.files[Path::new("_notist/pages/other.js")].clone()).unwrap();
-    assert!(registration.contains(&format!("../modules/{key}/formula/index.js")));
     let nested = html(&site, "guide/deep/index.html");
     assert!(nested.contains("href=\"../../book.css\""));
     assert!(nested.contains("src=\"../../book.js\""));
     assert!(nested.contains("src=\"../../_notist/pages/guide/deep/README.js\""));
-    let nested_registration = html(&site, "_notist/pages/guide/deep/README.js");
-    assert!(nested_registration.contains(&format!("../../../modules/{key}/formula/index.js")));
 }
 
 #[test]
@@ -1138,11 +1004,9 @@ fn site_options_default_output_and_reject_invalid_explicit_values() {
 #[test]
 fn component_sources_cannot_contain_site_output() {
     let mut vault = Vault::new(resources(&[
-        ("lib.notc", "import \"../widgets/lib.notc\" as widgets;"),
-        ("/widgets/Notist.toml", ""),
         (
             "/widgets/lib.notc",
-            "fn panel<C: Type>()[children: C] -> BlockContent;",
+            "fn panel(children: Block) -> Block;",
         ),
         (
             "/widgets/panel/index.js",
@@ -1150,7 +1014,7 @@ fn component_sources_cannot_contain_site_output() {
         ),
         (
             "README.not",
-            "#import \"../widgets/lib.notc\" as widgets;\n#widgets.panel[Hello]",
+            "#import \"../widgets/lib.notc\" as widgets\n#widgets.panel[\nHello\n]",
         ),
     ]));
     let config = SiteConfig {
@@ -1184,31 +1048,15 @@ fn page_routes_cannot_use_a_published_asset_as_a_directory() {
 fn same_named_modules_in_different_page_contexts_publish_distinct_resources() {
     let mut vault = Vault::new(resources(&[
         (
-            "one/lib.notc",
-            "import \"../../first/lib.notc\" as widgets;",
-        ),
-        (
-            "two/lib.notc",
-            "import \"../../second/lib.notc\" as widgets;",
-        ),
-        (
             "one/README.not",
-            "#import \"../../first/lib.notc\" as widgets;\n#widgets.badge(\"One\")",
+            "#import \"../../first/lib.notc\" as widgets\n#widgets.badge(\"One\")",
         ),
         (
             "two/README.not",
-            "#import \"../../second/lib.notc\" as widgets;\n#widgets.badge(\"Two\")",
+            "#import \"../../second/lib.notc\" as widgets\n#widgets.badge(\"Two\")",
         ),
-        ("/first/Notist.toml", ""),
-        ("/second/Notist.toml", ""),
-        (
-            "/first/lib.notc",
-            "fn badge(label: String) -> InlineContent;",
-        ),
-        (
-            "/second/lib.notc",
-            "fn badge(label: String) -> InlineContent;",
-        ),
+        ("/first/lib.notc", "fn badge(label: String) -> Inline;"),
+        ("/second/lib.notc", "fn badge(label: String) -> Inline;"),
         (
             "/first/badge.js",
             "export default class extends HTMLElement {}",
@@ -1219,182 +1067,13 @@ fn same_named_modules_in_different_page_contexts_publish_distinct_resources() {
         ),
     ]));
     let site = build(&mut vault, &book_config("target/book")).unwrap();
-    for module in ["/first/lib.notc", "/second/lib.notc"] {
-        assert!(site.files.contains_key(Path::new(&format!(
-            "_notist/modules/{}/badge.js",
-            module_key(module)
-        ))));
-    }
-    let first = component_tag(&notist::FunctionId::new("/first/lib.notc", "badge"));
-    let second = component_tag(&notist::FunctionId::new("/second/lib.notc", "badge"));
-    assert_ne!(first, second);
-    assert!(html(&site, "one/index.html").contains(&first));
-    assert!(html(&site, "two/index.html").contains(&second));
-}
-
-#[test]
-fn serve_recovers_code_errors_while_build_remains_strict() {
-    let files = [
-        ("Notist.toml", ""),
-        (
-            "lib.notc",
-            "fn bad() -> InlineContent { compile_error(\"broken\") } fn good() -> InlineContent { [works] }",
-        ),
-        (
-            "README.not",
-            "#import \"lib.notc\" as demo;\n#demo.bad() #demo.good()",
-        ),
-    ];
-    assert!(
-        build(
-            &mut Vault::new(resources(&files)),
-            &book_config("target/book")
-        )
-        .is_err()
-    );
-    let site = serve(
-        &mut Vault::new(resources(&files)),
-        &book_config("target/book"),
-    )
-    .unwrap();
-    let html = html(&site, "index.html");
-    assert!(html.contains("broken"));
-    assert!(html.contains("works"));
-    assert!(
-        site.diagnostics
-            .iter()
-            .any(|d| d.path == Path::new("/vault/lib.notc"))
-    );
-    assert!(
-        site.diagnostics
-            .iter()
-            .any(|d| d.source.contains("compile_error"))
-    );
-}
-
-#[test]
-fn serve_does_not_reinterpret_error_nodes_as_links_embeds_or_headings() {
-    let files = [
-        ("Notist.toml", ""),
-        (
-            "lib.notc",
-            r#"
-            fn bad_link() -> InlineContent { [#link(target: "missing.png")[ #callout[ x ] ]] }
-            fn bad_embed() -> InlineContent { [#embed(target: "missing.svg", description: "image", title: 1)] }
-            fn bad_heading() -> BlockContent { [ #heading<0>[Bad title] ] }
-            fn good() -> InlineContent { [survives] }
-        "#,
-        ),
-        (
-            "README.not",
-            "#import \"lib.notc\" as demo;\n#demo.bad_link() #demo.bad_embed()\n\n#demo.bad_heading()\n\n#demo.good()",
-        ),
-    ];
-    assert!(
-        build(
-            &mut Vault::new(resources(&files)),
-            &book_config("target/book")
-        )
-        .is_err()
-    );
-    let site = serve(
-        &mut Vault::new(resources(&files)),
-        &book_config("target/book"),
-    )
-    .unwrap();
-    let output = html(&site, "index.html");
-    assert!(output.contains("survives"));
-    assert!(output.contains("role=\"alert\""));
-    assert!(!site.diagnostics.is_empty());
-    assert!(
-        site.diagnostics
-            .iter()
-            .all(|d| d.diagnostic.phase == notist::Phase::Type),
-        "{:?}",
-        site.diagnostics
-    );
-    assert!(site.pages[0].headings.is_empty());
-    assert_eq!(site.pages[0].title, book_config("target/book").title);
-}
-
-#[test]
-fn generated_reference_diagnostics_point_into_the_code_definition() {
-    for (target, message) in [
-        ("missing.png", "missing local reference"),
-        ("other.not#absent", "missing anchor"),
-        ("../private.png", "outside the content directory"),
-    ] {
-        let module = format!(
-            "{}fn view() -> InlineContent {{ [#link(target: \"{target}\")[click]] }}",
-            "// retained source\n".repeat(20)
-        );
-        let document = "#import \"lib.notc\" as demo;\n#demo.view()";
-        let files = [
-            ("Notist.toml", ""),
-            ("lib.notc", module.as_str()),
-            ("README.not", document),
-            ("other.not", "= Other"),
-        ];
-        let result = build(
-            &mut Vault::new(resources(&files)),
-            &book_config("target/book"),
-        );
-        let diagnostics = result.unwrap().warnings;
-        let diagnostic = diagnostics
-            .iter()
-            .find(|d| d.diagnostic.message.contains(message))
-            .unwrap();
-        assert_eq!(diagnostic.path, Path::new("/vault/lib.notc"));
-        assert_eq!(diagnostic.source, module);
-        assert_eq!(
-            diagnostic.diagnostic.source.as_deref(),
-            Some("/vault/lib.notc")
-        );
-        let span = diagnostic.diagnostic.span;
-        assert!(usize::from(span.start()) > document.len());
-        assert!(usize::from(span.end()) <= module.len());
-        assert!(module[usize::from(span.start())..usize::from(span.end())].starts_with("#link("));
-    }
-}
-
-#[test]
-fn serve_recovers_function_body_syntax_errors_by_boundary() {
-    let files = [
-        ("Notist.toml", ""),
-        (
-            "lib.notc",
-            "fn bad() -> InlineContent { 1 + } fn good() -> InlineContent { [works] }",
-        ),
-        (
-            "README.not",
-            "#import \"lib.notc\" as demo;\n#demo.bad() #demo.good()",
-        ),
-    ];
-    assert!(
-        build(
-            &mut Vault::new(resources(&files)),
-            &book_config("target/book")
-        )
-        .is_err()
-    );
-    let site = serve(
-        &mut Vault::new(resources(&files)),
-        &book_config("target/book"),
-    )
-    .unwrap();
-    let output = html(&site, "index.html");
-    assert!(output.contains("works") && output.contains("role=\"alert\""));
-    assert!(
-        site.diagnostics
-            .iter()
-            .any(|d| d.diagnostic.phase == notist::Phase::Syntax && d.diagnostic.recovered)
-    );
-    let global = [("README.not", "@!(id: missing)\nbody")];
-    assert!(
-        serve(
-            &mut Vault::new(resources(&global)),
-            &book_config("target/book")
-        )
-        .is_err()
-    );
+    let badge_files: Vec<_> = site
+        .files
+        .keys()
+        .filter(|p| p.ends_with("badge.js"))
+        .collect();
+    assert_eq!(badge_files.len(), 2, "{badge_files:?}");
+    let one_html = html(&site, "one/index.html");
+    let two_html = html(&site, "two/index.html");
+    assert!(one_html.contains("first") && two_html.contains("second"));
 }

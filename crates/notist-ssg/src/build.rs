@@ -7,7 +7,7 @@ use crate::{
 use notc::{
     CheckedDocument, DataHost, Decl, DocumentFrontend, JsonValue, Module, NotistFrontend,
     ProjectDiagnosticKind, check_parsed_modules, format_type_error, parse,
-    parse_file_with_frontends, resolve_import_path,
+    parse_file_with_frontends,
 };
 use notist_markdown::MarkdownFrontend;
 use notist::{
@@ -175,6 +175,7 @@ fn directories(pages: &[Page], paths: &[PathBuf], content: &Path) -> BTreeMap<St
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn discover<R: Resources>(
     vault: &Vault<R>,
     path: &Path,
@@ -305,6 +306,7 @@ impl DocumentIndex {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_link(
     route: &crate::Route,
     target: &str,
@@ -534,10 +536,10 @@ pub(crate) fn build<R: Resources + Send>(
                 config.data.clone(),
                 config.sass.clone(),
             ];
-            if let Some(theme) = &config.theme {
-                if !crate::themes::is_builtin(theme) {
-                    inputs.push(theme.clone());
-                }
+            if let Some(theme) = &config.theme
+                && !crate::themes::is_builtin(theme)
+            {
+                inputs.push(theme.clone());
             }
             for input in inputs {
                 let input = vault.resources().resolve(&input);
@@ -1189,22 +1191,8 @@ fn copy_component_dir<R: Resources>(
     assets: &mut Assets,
     published: &mut BTreeSet<PathBuf>,
 ) -> Result<(), Error> {
-    for entry in resources.entries(src_dir)? {
-        let Some(file_name) = entry.file_name() else {
-            continue;
-        };
-        let target = out_dir.join(file_name);
-        match resources.kind(&entry)? {
-            Some(ResourceKind::Directory) => {
-                copy_component_dir(resources, &entry, &target, assets, published)?;
-            }
-            Some(ResourceKind::File) => {
-                if published.insert(target.clone()) {
-                    assets.copy(resources, &entry, &target)?;
-                }
-            }
-            None => {}
-        }
+    if published.insert(out_dir.to_path_buf()) {
+        assets.copy(resources, src_dir, out_dir)?;
     }
     Ok(())
 }
@@ -1373,34 +1361,31 @@ fn compile_shared_notc_modules<R: Resources>(
     for route in routes {
         all_paths.push(route.source.clone());
     }
-    let vroot = common_root_dir(&all_paths);
 
     let mut errors: Vec<SourceDiagnostic> = Vec::new();
-    let mut parsed_modules: Vec<(String, PathBuf, Arc<str>, Module)> = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
-    let mut imports_by_file: HashMap<String, Vec<String>> = HashMap::new();
+    let mut raw_modules: Vec<(PathBuf, Arc<str>, Module)> = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
-    // Seed shared `.notc` module discovery from every document's `#import` lines.
+    // Seed shared `.notc` module discovery on real normalized filesystem paths so
+    // parent-relative imports (e.g. `../modules/widgets/lib.notc`) resolve cleanly
+    // before computing the shared virtual root `vroot`.
     for (text, route) in documents.values().zip(routes.iter()) {
         let import_paths = scan_import_paths(text);
         if import_paths.is_empty() {
             continue;
         }
-        let doc_rel = to_virtual_path(&vroot, &route.source);
+        let parent = route.source.parent().unwrap_or(resources.root());
         for import_path in import_paths {
-            let Ok(target_rel) = resolve_import_path(&doc_rel, &import_path) else {
-                continue;
-            };
-            if visited.insert(target_rel.clone()) {
-                queue.push_back(target_rel);
+            let target_fs = normalize(&parent.join(&import_path));
+            if visited.insert(target_fs.clone()) {
+                queue.push_back(target_fs);
             }
         }
     }
 
     // Transitively load all shared `.notc` modules through `resources`.
-    while let Some(target_rel) = queue.pop_front() {
-        let target_fs = vroot.join(&target_rel);
+    while let Some(target_fs) = queue.pop_front() {
         let Ok(bytes) = resources.read(&target_fs) else {
             // Missing modules will be reported with exact import spans during document check.
             continue;
@@ -1408,6 +1393,7 @@ fn compile_shared_notc_modules<R: Resources>(
         let Ok(text) = String::from_utf8(bytes) else {
             continue;
         };
+        all_paths.push(target_fs.clone());
         let source_arc: Arc<str> = Arc::from(text.as_str());
         let parsed = parse(&source_arc);
         for d in parsed.diagnostics {
@@ -1418,23 +1404,23 @@ fn compile_shared_notc_modules<R: Resources>(
                 Diagnostic::new(Phase::Syntax, range, d.message),
             ));
         }
-        let mut next_refs = Vec::new();
+        let parent = target_fs.parent().unwrap_or(resources.root());
         for decl in &parsed.program.root.declarations {
             if let Decl::Import(import) = decl {
-                next_refs.push(import.path.clone());
+                let next_fs = normalize(&parent.join(&import.path));
+                if visited.insert(next_fs.clone()) {
+                    queue.push_back(next_fs);
+                }
             }
         }
-        for next_path in &next_refs {
-            if let Ok(next_rel) = resolve_import_path(&target_rel, next_path)
-                && visited.insert(next_rel.clone())
-            {
-                queue.push_back(next_rel);
-            }
-        }
-        imports_by_file.insert(target_rel.clone(), next_refs);
-        parsed_modules.push((target_rel, target_fs, source_arc, parsed.program.root));
+        raw_modules.push((target_fs, source_arc, parsed.program.root));
     }
-    let _ = imports_by_file;
+
+    let vroot = common_root_dir(&all_paths);
+    let parsed_modules: Vec<(String, PathBuf, Arc<str>, Module)> = raw_modules
+        .into_iter()
+        .map(|(fs_path, src, module)| (to_virtual_path(&vroot, &fs_path), fs_path, src, module))
+        .collect();
 
     let meta_by_rel: HashMap<&str, (&Path, &str)> = parsed_modules
         .iter()

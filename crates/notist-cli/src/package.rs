@@ -49,7 +49,6 @@ pub(crate) struct Package {
 
 pub(crate) struct Prepared {
     pub files: Files,
-    pub config: PathBuf,
     pub options: notist_ssg::SiteConfig,
 }
 
@@ -81,15 +80,14 @@ fn read(path: &Path) -> Result<Manifest, String> {
     if manifest.package.is_none() && manifest.workspace.is_none() {
         return Err("manifest requires [package] or [workspace]".into());
     }
-    if let Some(package) = &manifest.package {
-        if package.name.is_empty()
+    if let Some(package) = &manifest.package
+        && (package.name.is_empty()
             || !package
                 .name
                 .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
-            return Err("invalid package name: use ASCII letters, digits, '-' or '_'".into());
-        }
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+    {
+        return Err("invalid package name: use ASCII letters, digits, '-' or '_'".into());
     }
     if manifest
         .workspace
@@ -303,13 +301,12 @@ impl Package {
         let mut inputs = BTreeSet::from([self.manifest.clone()]);
         if let Some(path) = &self.workspace {
             inputs.insert(path.clone());
-            if let Ok(manifest) = read(path) {
-                if let Some(workspace) = manifest.workspace {
-                    for member in workspace.members {
-                        let path =
-                            normalize(&path.parent().unwrap().join(member).join("Notist.toml"));
-                        inputs.insert(std::fs::canonicalize(&path).unwrap_or(path));
-                    }
+            if let Ok(manifest) = read(path)
+                && let Some(workspace) = manifest.workspace
+            {
+                for member in workspace.members {
+                    let path = normalize(&path.parent().unwrap().join(member).join("Notist.toml"));
+                    inputs.insert(std::fs::canonicalize(&path).unwrap_or(path));
                 }
             }
         }
@@ -354,22 +351,21 @@ impl Package {
             .map_err(|e: toml::de::Error| format!("{}: {e}", self.manifest.display()))?;
         options.validate().map_err(|e| e.to_string())?;
         let content = normalize(&self.root.join(&options.content));
-        if let Ok(relative) = scope.output_root.strip_prefix(&content) {
-            if !relative.as_os_str().is_empty() {
-                options
-                    .exclude
-                    .push(relative.to_string_lossy().replace('\\', "/"));
-                options.exclude.push(format!(
-                    "{}/**",
-                    relative.to_string_lossy().replace('\\', "/")
-                ));
-            }
+        if let Ok(relative) = scope.output_root.strip_prefix(&content)
+            && !relative.as_os_str().is_empty()
+        {
+            options
+                .exclude
+                .push(relative.to_string_lossy().replace('\\', "/"));
+            options.exclude.push(format!(
+                "{}/**",
+                relative.to_string_lossy().replace('\\', "/")
+            ));
         }
         let mut inputs = fresh.inputs();
         inputs.extend(scope.packages.iter().map(|p| p.manifest.clone()));
         Ok(Prepared {
             files: Files::new(&self.root).with_inputs(inputs),
-            config: self.manifest.clone(),
             options,
         })
     }

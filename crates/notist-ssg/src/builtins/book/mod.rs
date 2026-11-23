@@ -207,13 +207,13 @@ impl SiteExtension for Book {
         let entries = &self.entries;
         fn validate(entries: &[structure::Entry], pages: &[Page]) -> Result<(), Error> {
             for entry in entries {
-                if let Some(source) = &entry.source {
-                    if !pages.iter().any(|p| &p.route.source == source) {
-                        return Err(Error::Message(format!(
-                            "book navigation references removed page `{}`",
-                            source.display()
-                        )));
-                    }
+                if let Some(source) = &entry.source
+                    && !pages.iter().any(|p| &p.route.source == source)
+                {
+                    return Err(Error::Message(format!(
+                        "book navigation references removed page `{}`",
+                        source.display()
+                    )));
                 }
                 validate(&entry.children, pages)?;
             }

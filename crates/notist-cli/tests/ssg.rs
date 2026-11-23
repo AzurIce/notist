@@ -182,7 +182,7 @@ for line in sys.stdin:
             "external/nested/response.json",
             r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Generated"}}"##,
         );
-        wait("<h1 id=\"generated\">Generated");
+        wait("<section id=\"generated\"><h1>Generated");
         write(
             temp.path(),
             "external/nested/response.json",
@@ -229,12 +229,12 @@ fn preview_watches_concrete_hidden_data_inputs() {
     write(
         root,
         "content/index.not",
-        "#import \"../lib.notc\" as data;\n#data.view()\n",
+        "#import \"../lib.notc\" as data\n#data.view()\n",
     );
     write(
         root,
         "lib.notc",
-        "fn view() -> InlineContent { [#text(text: read_text(p\"content/.data/value.txt\"))] }",
+        "fn view() -> Inline { text(read_text(\"./.data/value.txt\")) }",
     );
     write(root, "content/.data/value.txt", "original hidden value");
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -384,7 +384,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
                 std::thread::sleep(Duration::from_millis(30));
             }
         };
-        let home = wait("<h1 id=\"home\">Home");
+        let home = wait("<section id=\"home\"><h1>Home");
         assert!(home.contains("/style.css"));
         assert!(!home.contains("https://example.com"));
         assert!(home.contains("_notist/serve/client.js"));

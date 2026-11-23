@@ -190,11 +190,15 @@ impl Document {
             }
         }
 
-        let mut ids: BTreeSet<String> = root
-            .ids()
-            .into_iter()
-            .map(|(id, _)| id.to_string())
-            .collect();
+        let mut ids = BTreeSet::new();
+        for (id, _) in root.ids() {
+            if !ids.insert(id.to_string()) {
+                return Err(Error::Message(format!(
+                    "{}: duplicate explicit id `{id}`",
+                    route.path.display()
+                )));
+            }
+        }
         let mut heading_ids = Vec::new();
         let mut outline = Vec::new();
         collect_headings(&root, &mut ids, &mut heading_ids, &mut outline);

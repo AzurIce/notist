@@ -1,10 +1,7 @@
-//! A narrow synchronous view of host-owned, immutable compilation inputs.
-//! Implementations own authorization, bounded loading and per-batch caching.
-use crate::resource::ResourcePath;
+//! Synchronous view of host-owned, immutable compilation input reads.
 use std::{fmt, sync::Arc};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InputError {
     NotFound,
     AccessDenied,
@@ -15,6 +12,7 @@ pub enum InputError {
     Unavailable,
     Io(String),
 }
+
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -29,6 +27,7 @@ impl fmt::Display for InputError {
         })
     }
 }
+
 impl std::error::Error for InputError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,11 +36,4 @@ pub enum InputRead {
     Failed(InputError),
     /// The host must prepare this input and retry with a new immutable view.
     Pending,
-}
-
-pub trait EvaluationInputs {
-    fn file(&self, path: &ResourcePath) -> InputRead;
-    fn data_cache(&self) -> Option<&dyn crate::data::ParsedDataCache> {
-        None
-    }
 }

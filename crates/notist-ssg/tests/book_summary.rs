@@ -307,7 +307,7 @@ fn declared_structure_orders_pages_and_chapters_without_pages() {
 
 #[test]
 fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
-    let native = "= 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.not)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n= 附录\n\n- @(collapsed: true)#node[Notist 组件]\n  - [组件](components/widget.not)\n- 空章节\n- [草稿]()";
+    let native = "= 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.not)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n= 附录\n\n- @(collapsed: true)Notist 组件\n  - [组件](components/widget.not)\n- 空章节\n- [草稿]()";
     let markdown = native
         .replace("= 目录", "# 目录")
         .replace("= 附录", "# 附录");
@@ -530,7 +530,7 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
             "[Directory](guide/)\n\n- [Home](README.not)",
             "must reference a single document",
         ),
-        ("+ [Home](README.not)", "use unordered markers"),
+        ("1. [Home](README.not)", "use unordered markers"),
         (
             "= Summary\n\n```text\nUnexpected\n```\n\n- [Home](README.not)",
             "structure allows only",

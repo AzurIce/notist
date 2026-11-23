@@ -875,7 +875,11 @@ impl Block {
             close_top(&mut stack, &mut root);
         }
 
-        Block::fragment(root, self.0.attrs.clone(), self.0.span)
+        let outer_attrs = match &self.0.kind {
+            BlockKind::Fragment(_) => self.0.attrs.clone(),
+            _ => Attrs::empty(),
+        };
+        Block::fragment(root, outer_attrs, self.0.span)
     }
 
     pub fn rewrite_inlines<E>(

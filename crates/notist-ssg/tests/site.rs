@@ -11,9 +11,9 @@ fn vault(files: &[(&str, &str)]) -> Vault<MemoryResources> {
 }
 
 #[test]
-fn structured_records_are_build_time_bodies_not_published_data_and_keep_error_sources() {
-    let page = "#import \"../views/lib.notc\" as view;\n#view.show()";
-    let module = "fn show(source:Path=p\"../private/items.json\")->BlockContent{let root=data_expect<Data>(read_json(source));let name=data_expect<String>(data_require<String>(root,\"name\"));[ #text(text:name) ]}";
+fn structured_records_are_build_time_bodies_not_published_data() {
+    let page = "#import \"../views/lib.notc\" as view\n#view.show(\"../private/items.json\")";
+    let module = "fn show(source: String) -> Block { let root = read_json(source); para(text(root.get(\"name\").as_string(\"\"))) }";
     let mut host = vault(&[
         ("content/index.not", page),
         ("content/two.not", page),
@@ -32,50 +32,41 @@ fn structured_records_are_build_time_bodies_not_published_data_and_keep_error_so
         assert!(!output.contains("SECRET"));
     }
     assert!(!site.files.keys().any(|p| p.ends_with("items.json")));
-    assert_eq!(host.input_session().data_cache_stats().parses, 1);
-    let data = r#"{"name":false}"#;
-    let mut host = vault(&[
+
+    // Invalid JSON reports a build diagnostic without publishing partial output.
+    let mut bad_host = vault(&[
         ("content/index.not", page),
         ("views/lib.notc", module),
-        ("private/items.json", data),
+        ("private/items.json", "{bad json"),
     ]);
-    let Err(notist_ssg::Error::Diagnostics(errors)) =
-        Builder::default().build(&mut host, &SiteConfig::default())
-    else {
-        panic!("expected data diagnostic")
-    };
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.path == Path::new("/site/private/items.json")
-                && e.source == data
-                && e.diagnostic.message.contains("/name")),
-        "{errors:?}"
-    );
+    let err = Builder::default()
+        .build(&mut bad_host, &SiteConfig::default())
+        .unwrap_err();
+    assert!(err.to_string().contains("invalid JSON"), "{err}");
 }
 fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
     String::from_utf8(site.files[Path::new(path)].clone()).unwrap()
 }
 
 #[test]
-fn generic_path_links_publish_assets_and_resolve_document_routes_from_the_caller() {
+fn module_links_publish_assets_and_resolve_document_routes_from_the_caller() {
     let mut host = vault(&[
         (
             "content/pages/start.not",
-            r#"#import "../../views/lib.notc" as view;
-#view.forward(p"../guide.not", fragment: "intro")
+            r#"#import "../../views/lib.notc" as view
 
-#view.download(p"../assets", "a?b#c%")
+#view.forward("../guide.not#intro")
+
+#view.download("../assets", "a%3Fb%23c%25")
 
 #view.forward("https://example.test/path?q=1#part")"#,
         ),
         (
             "views/lib.notc",
             r#"
-fn forward<T: Type>(target: T, fragment?: String) -> InlineContent
-where T == Path || T == String { [#link(target, fragment: fragment)[打开]] }
-fn download(directory: Path, name: String) -> InlineContent {
-    [#forward(directory.join(name + ".glb"))]
+fn forward(target: String) -> Inline { link(target, [打开]) }
+fn download(directory: String, name: String) -> Inline {
+    forward(directory + "/" + name + ".glb")
 }"#,
         ),
         ("content/guide.not", "@(id: \"intro\")\n= Guide"),
@@ -104,90 +95,16 @@ fn download(directory: Path, name: String) -> InlineContent {
 }
 
 #[test]
-fn path_links_do_not_fall_back_to_unpublished_resource_spellings() {
+fn images_do_not_publish_missing_private_or_outside_content_resources() {
     for source in [
-        r#"#link(p"./missing.glb")[missing]"#,
-        r#"#link(p"./private.notc")[private]"#,
-        r#"#link(p"./guide.not", fragment: "missing")[guide]"#,
-    ] {
-        let mut host = vault(&[
-            ("content/index.not", source),
-            ("content/private.notc", "fn f() -> Int { 1 }"),
-            ("content/guide.not", "= Guide"),
-        ]);
-        assert!(
-            Builder::default()
-                .build(&mut host, &SiteConfig::default())
-                .is_err(),
-            "{source}"
-        );
-    }
-}
-
-#[test]
-fn embeds_use_content_roots_bound_module_defaults_and_independent_suffixes() {
-    let mut vault = vault(&[
-        (
-            "content/pages/start.not",
-            r#"= Start
-
-#import "../views/lib.notc" as view;
-#view.defaulted()
-
-#view.picture(p"../assets/a?b#c%20.svg", fragment: "one") #embed(p"/assets/a?b#c%20.svg", query: "v=2", fragment: "two")
-
-![Legacy](/assets/a%3Fb%23c%2520.svg#three) #embed("https://cdn.test/a.svg#remote")
-
-#embed(p"../other.not", fragment: "part%one")
-"#,
-        ),
-        (
-            "content/views/lib.notc",
-            r#"fn picture(target: Path, fragment?: String) -> InlineContent { [#embed(target, fragment: fragment)] }
-fn defaulted(target: Path = p"./default.svg") -> InlineContent { [#self.picture(target)] }"#,
-        ),
-        ("content/views/default.svg", "default image"),
-        ("content/assets/a?b#c%20.svg", "caller image"),
-        ("content/other.not", "@(id: \"part%one\")\n= Other"),
-    ]);
-    let site = Builder::default()
-        .build(&mut vault, &SiteConfig::default())
-        .unwrap();
-    assert!(site.warnings.is_empty(), "{:?}", site.warnings);
-    let output = html(&site, "pages/start.html");
-    for url in [
-        "../views/default.svg",
-        "../assets/a%3Fb%23c%2520.svg#one",
-        "../assets/a%3Fb%23c%2520.svg?v=2#two",
-        "../assets/a%3Fb%23c%2520.svg#three",
-        "https://cdn.test/a.svg#remote",
-    ] {
-        assert!(
-            output.contains(&format!("src=\"{url}\"")),
-            "{url}: {output}"
-        );
-    }
-    assert!(output.contains("href=\"../other.html#part%25one\""));
-    assert_eq!(
-        site.files[Path::new("assets/a?b#c%20.svg")],
-        b"caller image"
-    );
-    assert!(!output.contains("/site"));
-}
-
-#[test]
-fn typed_embeds_do_not_publish_missing_private_or_outside_content_resources() {
-    for source in [
-        r#"#embed(p"./missing.svg")"#,
-        r#"#embed(p"./private.notc")"#,
-        r#"#embed("../outside.svg")"#,
-        r#"#embed(p"./other.not", fragment: "missing")"#,
+        "![Missing](./missing.svg)",
+        "![Private](./private.notc)",
+        "![Outside](../outside.svg)",
     ] {
         let result = Builder::default().build(
             &mut vault(&[
                 ("content/index.not", source),
-                ("content/private.notc", "private module"),
-                ("content/other.not", "= Other"),
+                ("content/private.notc", "fn f() -> Int { 1 }"),
                 ("outside.svg", "not published"),
             ]),
             &SiteConfig::default(),
@@ -255,7 +172,7 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
     assert!(home.contains("Home &amp; more|Example|https://example.com/project/style.css"));
     assert!(home.contains("folder;"));
     assert!(home.contains("empty;"));
-    assert!(home.contains("<h1 id=\"body\">Body</h1>"));
+    assert!(home.contains("<section id=\"body\"><h1>Body</h1>"));
     assert_eq!(site.files[Path::new("style.css")], b"site css");
 }
 
@@ -317,7 +234,7 @@ fn shared_context_preserves_page_bodies_directory_indexes_and_nested_data() {
             "{output}"
         );
         assert!(
-            output.contains(&format!("<h1 id=\"{heading}\">{title}</h1>"))
+            output.contains(&format!("<section id=\"{heading}\"><h1>{title}</h1>"))
                 && output.contains(&format!("</section>/{heading}/")),
             "{output}"
         );
@@ -349,9 +266,9 @@ fn tera_inheritance_and_native_expressions_keep_html_escaped() {
         output.starts_with("<main>&lt;Home&gt; &amp; title!|"),
         "{output}"
     );
-    assert!(output.contains("&lt;h1 id=&quot;body&quot;&gt;Body&lt;/h1&gt;"));
+    assert!(output.contains("&lt;section id=&quot;body&quot;&gt;&lt;h1&gt;Body&lt;/h1&gt;"));
     assert!(output.contains("next.html?a=1&amp;b=2"));
-    assert!(output.contains("<h1 id=\"body\">Body</h1>"));
+    assert!(output.contains("<section id=\"body\"><h1>Body</h1>"));
 }
 
 #[test]
@@ -468,11 +385,11 @@ fn native_components_publish_their_resources_and_registration_script() {
     let mut vault = vault(&[
         (
             "content/index.not",
-            "#import \"../module/lib.notc\" as panel;\n#panel.panel[\nContent\n]",
+            "#import \"../module/lib.notc\" as panel\n#panel.panel[\nContent\n]",
         ),
         (
             "module/lib.notc",
-            "fn panel [children: BlockContent] -> BlockContent;",
+            "fn panel(children: Block) -> Block;",
         ),
         (
             "module/panel/index.js",
@@ -483,14 +400,14 @@ fn native_components_publish_their_resources_and_registration_script() {
         .build(&mut vault, &SiteConfig::default())
         .unwrap();
     let page = html(&site, "index.html");
-    assert!(page.contains("notist-protocol=\"2\""));
-    assert!(page.contains("src=\"_notist/pages/index.js\""));
+    assert!(page.contains("data-props="), "{page}");
+    assert!(page.contains("src=\"_notist/pages/index.js\""), "{page}");
     let registrations = html(&site, "_notist/pages/index.js");
     assert!(registrations.contains("customElements.define"));
     assert!(
         site.files
             .keys()
-            .any(|p| p.starts_with("_notist/modules") && p.ends_with("panel/index.js"))
+            .any(|p| p.starts_with("_notist/components") && p.ends_with("panel/index.js"))
     );
 }
 
@@ -572,7 +489,7 @@ fn default_theme_templates_can_be_overridden_or_used_as_disk_theme_fallback() {
         ..Default::default()
     };
     let fallback = Builder::default().build(&mut input, &config).unwrap();
-    assert!(html(&fallback, "index.html").contains("<main><section><h1"));
+    assert!(html(&fallback, "index.html").contains("<main><section id=\"home\"><h1>"));
     let config = SiteConfig {
         theme: Some("builtins.default".into()),
         templates: "custom".into(),

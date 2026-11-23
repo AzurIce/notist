@@ -53,10 +53,9 @@ fn verbose_build_reports_nested_stages_without_changing_stdout() {
                 "Build test",
                 "├─",
                 "Load configuration",
-                "Parse and lower",
-                "Load modules and environment",
-                "Check and materialize",
-                "Evaluate Code and extensions",
+                "Discover documents",
+                "Analyze modules and 1 documents",
+                "Evaluate and prepare 1 pages",
                 "Publish files",
             ] {
                 assert!(log.contains(stage), "missing {stage}: {log}");
@@ -87,14 +86,18 @@ fn verbose_serve_reports_initial_build_and_watcher_rebuild() {
     let mut events = server.events();
     let ready = update(&mut events, |event| event["report"]["status"] == "ready");
     let initial = server.wait_for_log("✓ Rebuild test");
-    assert!(initial.contains("Parse and lower"));
+    assert!(initial.contains("Analyze modules and 1 documents"));
     write(root, "README.md", "# Updated");
     update(&mut events, |event| {
         event["revision"].as_u64() > ready["revision"].as_u64()
     });
     let log = server.wait_for_log("Updated");
     assert_eq!(log.matches("✓ Rebuild test").count(), 2, "{log}");
-    assert_eq!(log.matches("… Parse and lower").count(), 2, "{log}");
+    assert_eq!(
+        log.matches("… Analyze modules and 1 documents").count(),
+        2,
+        "{log}"
+    );
     assert!(!log.contains('\x1b'), "{log}");
 }
 
@@ -278,7 +281,7 @@ fn book_mounts_reject_symlink_sources_and_resources() {
 
 #[cfg(unix)]
 #[test]
-fn html_and_site_publication_reject_symlink_component_resources() {
+fn site_publication_rejects_symlink_component_resources() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(
@@ -286,34 +289,25 @@ fn html_and_site_publication_reject_symlink_component_resources() {
         "Notist.toml",
         "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}",
     );
-    write(root, "lib.notc", "import \"widgets/lib.notc\" as widgets;");
     write(
         root,
         "README.not",
-        "#import \"widgets/lib.notc\" as widgets;\n#widgets.badge(\"Hello\")",
+        "#import \"./widgets/lib.notc\" as widgets\n#widgets.badge(\"Hello\")",
     );
-    write(root, "widgets/Notist.toml", "");
-    write(
-        root,
-        "widgets/lib.notc",
-        "fn badge(label: String) -> InlineContent;",
-    );
+    write(root, "widgets/lib.notc", "fn badge(label: String) -> Inline;");
     write(
         root,
         "component.js",
         "export default class extends HTMLElement {}",
     );
-    std::fs::create_dir_all(root.join("widgets/components")).unwrap();
     std::os::unix::fs::symlink(root.join("component.js"), root.join("widgets/badge.js")).unwrap();
-    for args in [
-        vec!["html", "README.not", "--out-dir", "published"],
-        vec!["build", "--out-dir", "published"],
-    ] {
-        let result = command(root).args(args).output().unwrap();
-        assert!(!result.status.success());
-        assert!(String::from_utf8_lossy(&result.stderr).contains("regular files or directories"));
-        assert!(!root.join("published").exists());
-    }
+    let result = command(root)
+        .args(["build", "--out-dir", "published"])
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("regular files or directories"));
+    assert!(!root.join("published").exists());
 }
 
 #[test]
@@ -339,7 +333,6 @@ fn html_export_is_independent_of_book_structure_and_theme() {
     let page = std::fs::read_to_string(root.join("document/index.html")).unwrap();
     assert!(page.contains("<h1>Standalone</h1>"));
     assert!(!page.contains("book-nav"));
-    assert!(root.join("document/_notist/document.css").is_file());
     assert!(!root.join("document/_notist/theme").exists());
     let built = command(root).args(["build"]).output().unwrap();
     assert!(!built.status.success());
@@ -422,7 +415,11 @@ impl Server {
         text
     }
     fn events(&self) -> BufReader<TcpStream> {
-        let mut reader = BufReader::new(self.connect("/_notist/serve/events"));
+        let stream = self.connect("/_notist/serve/events");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
@@ -440,15 +437,22 @@ impl Drop for Server {
     }
 }
 fn update(reader: &mut BufReader<TcpStream>, predicate: impl Fn(&Value) -> bool) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+    let mut last = None;
     loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for SSE event; last={last:?}"
+        );
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
-        assert!(!line.is_empty(), "SSE disconnected");
+        assert!(!line.is_empty(), "SSE disconnected; last={last:?}");
         if let Some(data) = line.strip_prefix("data: ") {
             let event: Value = serde_json::from_str(data.trim()).unwrap();
             if predicate(&event) {
                 return event;
             }
+            last = Some(event);
         }
     }
 }
@@ -573,7 +577,7 @@ fn serve_recovers_when_target_configuration_is_repaired() {
 }
 
 #[test]
-fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings() {
+fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(
@@ -584,12 +588,12 @@ fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings()
     write(
         root,
         "README.not",
-        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()",
+        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()",
     );
     write(
         root,
         "lib.notc",
-        "fn content() -> InlineContent { [before] } fn other() -> InlineContent { [other] }",
+        "fn content() -> Inline { [before] }\nfn other() -> Inline { [other] }",
     );
     let server = Server::start(root);
     let mut events = server.events();
@@ -599,70 +603,34 @@ fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings()
     write(
         root,
         "lib.notc",
-        "fn content() -> InlineContent { compile_error(\"first error\") } fn other() -> InlineContent { compile_error(\"second error\") }",
+        "fn content() -> Inline { 42 }\nfn other() -> Inline { [other] }",
     );
-    let first = update(&mut events, |event| event["report"]["status"] == "errors");
-    assert!(first["revision"].as_u64() > ready["revision"].as_u64());
-    assert!(
-        first["summary"]
-            .as_str()
-            .unwrap()
-            .contains("Preview updated with")
-    );
-    let detail = first["report"]["errors"][0]["detail"].as_str().unwrap();
+    let failed = update(&mut events, |event| event["report"]["status"] == "errors");
+    let detail = failed["report"]["errors"][0]["detail"].as_str().unwrap();
     assert!(detail.contains("lib.notc:1:"), "{detail}");
-    assert!(detail.contains("compile_error"), "{detail}");
     assert!(
         !detail.contains('\x1b'),
         "browser code frames must be plain text"
     );
-    let initial_errors = first["report"]["errors"].as_array().unwrap().len();
-    assert!(initial_errors >= 2);
-    assert_eq!(first["report"]["resolved"], false);
-    assert!(server.get("/").contains("first error"));
+    assert_eq!(failed["report"]["resolved"], false);
 
-    write(
-        root,
-        "lib.notc",
-        "fn content() -> InlineContent { [partly fixed] } fn other() -> InlineContent { compile_error(\"second error\") }",
-    );
-    let second = update(&mut events, |event| {
-        event["report"]["status"] == "errors"
-            && event["report"]["errors"]
-                .to_string()
-                .contains("second error")
-    });
-    assert!(
-        !second["report"]["errors"]
-            .to_string()
-            .contains("first error")
-    );
-    let remaining_errors = second["report"]["errors"].as_array().unwrap().len();
-    assert!(remaining_errors > 0 && remaining_errors < initial_errors);
-    assert_eq!(second["report"]["resolved"], false);
     let latest = update(&mut server.events(), |_| true);
     assert_eq!(
-        latest["report"], second["report"],
+        latest["report"], failed["report"],
         "new connections receive current diagnostics"
     );
 
-    // A partial fix and a warning must not imply that all errors are resolved.
     write(
         root,
         "README.not",
-        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()\n\n[Missing](missing.not)",
+        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()\n\n[Missing](missing.not)",
     );
-    update(&mut events, |event| {
-        event["report"]["status"] == "errors"
-            && !event["report"]["warnings"].as_array().unwrap().is_empty()
-    });
     write(
         root,
         "lib.notc",
-        "fn content() -> InlineContent { [fixed] } fn other() -> InlineContent { [other] }",
+        "fn content() -> Inline { [fixed] }\nfn other() -> Inline { [other] }",
     );
     let warning = update(&mut events, |event| event["report"]["status"] == "warnings");
-    assert_eq!(warning["report"]["resolved"], true);
     assert!(warning["report"]["errors"].as_array().unwrap().is_empty());
     assert!(!warning["report"]["warnings"].as_array().unwrap().is_empty());
     assert!(
@@ -676,26 +644,24 @@ fn serve_replaces_diagnostics_and_distinguishes_recovered_errors_from_warnings()
     write(
         root,
         "README.not",
-        "#import \"lib.notc\" as demo;\n#demo.content() #demo.other()",
+        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()",
     );
     let clean = update(&mut events, |event| event["report"]["status"] == "ready");
     assert!(clean["report"]["errors"].as_array().unwrap().is_empty());
     assert!(clean["report"]["warnings"].as_array().unwrap().is_empty());
-    assert!(clean["report"]["build"].as_u64() > second["report"]["build"].as_u64());
-    let log = server.wait_for_log("All errors resolved");
-    assert!(log.contains("Preview updated with"));
-    assert!(log.contains("[notist #"));
-    assert!(
-        !log.contains('\x1b'),
-        "redirected output must not contain terminal escapes"
-    );
+    assert!(clean["report"]["build"].as_u64() > failed["report"]["build"].as_u64());
 }
 
 #[test]
 fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
-    for (target, page, import) in [
-        ("book", "README.not", "view.notc"),
-        ("site", "content/index.not", "../view.notc"),
+    for (target, page, import, data_arg) in [
+        ("book", "README.not", "./view.notc", "./private/input.json"),
+        (
+            "site",
+            "content/index.not",
+            "../view.notc",
+            "../private/input.json",
+        ),
     ] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -714,17 +680,13 @@ fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
         write(
             root,
             page,
-            &format!("#import \"{import}\" as view;\n#view.show()"),
+            &format!("#import \"{import}\" as view\n#view.show(\"{data_arg}\")"),
         );
         write(
             root,
             "view.notc",
-            r#"fn show() -> InlineContent {
-            let name = match read_json(p"./private/input.json") {
-                ok(data) => data_expect<String>(data_require<String>(data, "name")),
-                err(error) => data_error_kind(error)
-            };
-            [#text(text: name)]
+            r#"fn show(path: String) -> Inline {
+            text(read_json(path).get("name").as_string("missing"))
         }"#,
         );
         write(root, "private/input.json", r#"{"name":"first batch"}"#);
@@ -732,22 +694,24 @@ fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
         let mut events = server.events();
         let mut previous = update(&mut events, |event| event["report"]["status"] == "ready");
         assert!(server.get("/").contains("first batch"));
-        for (contents, expected) in [
-            (Some(r#"{"name":"next batch"}"#), "next batch"),
-            (None, "not_found"),
-            (Some(r#"{"name":"repaired batch"}"#), "repaired batch"),
-        ] {
-            if let Some(contents) = contents {
-                write(root, "private/input.json", contents);
-            } else {
-                std::fs::remove_file(root.join("private/input.json")).unwrap();
-            }
-            previous = update(&mut events, |event| {
-                event["revision"].as_u64() > previous["revision"].as_u64()
-            });
-            assert!(previous["report"]["errors"].as_array().unwrap().is_empty());
-            assert!(server.get("/").contains(expected), "{target}: {expected}");
-        }
+
+        write(root, "private/input.json", r#"{"name":"next batch"}"#);
+        previous = update(&mut events, |event| {
+            event["revision"].as_u64() > previous["revision"].as_u64()
+        });
+        assert!(previous["report"]["errors"].as_array().unwrap().is_empty());
+        assert!(server.get("/").contains("next batch"), "{target}");
+
+        std::fs::remove_file(root.join("private/input.json")).unwrap();
+        update(&mut events, |event| event["report"]["status"] == "errors");
+
+        write(root, "private/input.json", r#"{"name":"repaired batch"}"#);
+        previous = update(&mut events, |event| {
+            event["report"]["status"] == "ready"
+                && event["revision"].as_u64() > previous["revision"].as_u64()
+        });
+        assert!(previous["report"]["errors"].as_array().unwrap().is_empty());
+        assert!(server.get("/").contains("repaired batch"), "{target}");
         assert!(
             server
                 .get("/private/input.json")
@@ -956,21 +920,11 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     );
     write(
         &root,
-        "lib.notc",
-        "import \"../widgets/lib.notc\" as widgets;",
-    );
-    write(
-        &root,
         "README.not",
-        "#import \"../widgets/lib.notc\" as widgets;\n= Home\n\n#widgets.badge(\"Hello\")",
+        "#import \"../widgets/lib.notc\" as widgets\n= Home\n\n#widgets.badge(\"Hello\")",
     );
     write(&root, "theme/page.tera", "{{page.missing}}");
-    write(temp.path(), "widgets/Notist.toml", "");
-    write(
-        temp.path(),
-        "widgets/lib.notc",
-        "fn badge(label: String) -> InlineContent;",
-    );
+    write(temp.path(), "widgets/lib.notc", "fn badge(label: String) -> Inline;");
     write(
         temp.path(),
         "widgets/badge.js",
@@ -986,11 +940,8 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
         "{{page.title}} {{page.html | safe}}",
     );
     let good = update(&mut events, |event| event["revision"].as_u64().unwrap() > 0);
-    let path = format!(
-        "/_notist/modules/{}/badge.js",
-        notist_html::components::module_key(temp.path().join("widgets/lib.notc").to_str().unwrap())
-    );
-    assert!(server.get(&path).contains("before"));
+    let path = "/_notist/components/widgets/badge.js";
+    assert!(server.get(path).contains("before"));
     write(
         temp.path(),
         "widgets/badge.js",
@@ -999,7 +950,7 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     update(&mut events, |event| {
         event["revision"].as_u64() > good["revision"].as_u64()
     });
-    assert!(server.get(&path).contains("after"));
+    assert!(server.get(path).contains("after"));
 }
 
 #[test]

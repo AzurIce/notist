@@ -1,7 +1,6 @@
 //! Optional build-time code highlighting. Enable the `highlight` Cargo feature
-//! and install [`code`] with [`crate::Renderer::with_code_renderer`]. The host
-//! publishes [`CSS`] or supplies its own styles for the `z-` scope classes.
-use notist_core::item::{Item, Value};
+//! and call [`highlight_str`]. The host publishes [`CSS`] or supplies its own
+//! styles for the `z-` scope classes.
 use std::sync::OnceLock;
 use syntect::{
     html::{ClassStyle, ClassedHTMLGenerator},
@@ -15,21 +14,9 @@ mod native;
 /// document root overrides the system preference. No script is required.
 pub const CSS: &str = include_str!("highlight.css");
 
-/// Highlight a raw node's text without replacing its pre/code shell. Only the
-/// first comma- or whitespace-separated language tag is used; detection is
-/// never implicit.
-/// Missing, unknown and explicit plain-text languages select escaped fallback.
-pub fn code(item: &Item) -> Option<String> {
-    let Value::Str(language) = item.field("lang")? else {
-        return None;
-    };
-    let Value::Str(text) = item.field("text")? else {
-        return None;
-    };
-    highlight_str(language, text)
-}
-
-/// Highlight code text for a language tag without replacing the surrounding `<pre><code>` shell.
+/// Highlight code text for a language tag without replacing the surrounding
+/// `<pre><code>` shell. Only the first comma- or whitespace-separated language
+/// tag is used; missing, unknown, and plain-text languages return `None`.
 pub fn highlight_str(language: &str, text: &str) -> Option<String> {
     let language = crate::code_language(language)?.to_ascii_lowercase();
     match language.as_str() {

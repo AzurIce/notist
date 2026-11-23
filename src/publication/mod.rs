@@ -1,45 +1,16 @@
-//! Resource planning shared by HTML document exports and book publication.
+//! Resource planning shared by HTML document exports and site publication.
 //! This module returns owned files; filesystem mutation belongs to the host.
-use self::url::relative_url;
-use crate::{Environment, FunctionId, Resources, resources::ResourceError};
-use notist_html::Component;
+use crate::{Resources, resources::ResourceError};
 use std::{
     collections::BTreeMap,
+    fmt,
     path::{Path, PathBuf},
 };
-
-use std::fmt;
 
 mod index;
 mod plan;
 pub mod url;
 pub use plan::{OutputDirectory, OutputEntry, OutputPlan, PlannedFile};
-
-/// Ordinary template data, distinct from bit-exact component/IR wire values.
-/// Resource identities and private data views are never exposed to templates.
-pub fn presentation_value(value: &crate::Value) -> serde_json::Value {
-    use crate::Value;
-    use serde_json::{Value as Json, json};
-    match value {
-        Value::Unit | Value::None | Value::Path(_) | Value::Data(_) | Value::DataError(_) => {
-            Json::Null
-        }
-        Value::Bool(value) => json!(value),
-        Value::Int(value) => json!(value),
-        Value::Float(value) => json!(value),
-        Value::Str(value) => json!(value.as_str()),
-        Value::Array(values) => Json::Array(values.iter().map(presentation_value).collect()),
-        Value::Dict(values) => Json::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.to_owned(), presentation_value(value)))
-                .collect(),
-        ),
-        Value::Some(value) => presentation_value(value),
-        Value::Ok(value) => json!({"ok": presentation_value(value)}),
-        Value::Err(value) => json!({"err": presentation_value(value)}),
-    }
-}
 
 #[derive(Debug)]
 pub enum Error {
@@ -253,67 +224,11 @@ impl Assets {
         }
         Ok(false)
     }
-    pub fn components(
-        &mut self,
-        resources: &(impl Resources + ?Sized),
-        environment: &Environment,
-        components: &[Component],
-        page: &Path,
-    ) -> Result<String, Error> {
-        let mut registrations = String::new();
-        let mut tags = BTreeMap::<String, (FunctionId, PathBuf)>::new();
-        for (index, component) in components.iter().enumerate() {
-            let definition_module = &environment.modules()[&component.id.module_id()];
-            let root = definition_module.path.parent().unwrap();
-            let source = component.module.resource().ok_or_else(|| {
-                Error::Message(format!(
-                    "cannot publish URL-only component `{}`",
-                    component.id
-                ))
-            })?;
-            let relative = source.strip_prefix(root).map_err(|_| {
-                Error::Message("component is outside its defining module resource root".into())
-            })?;
-            let destination = PathBuf::from("_notist/modules")
-                .join(notist_html::components::module_key(&component.id.module))
-                .join(relative);
-            if let Some(previous) =
-                tags.insert(component.tag.clone(), (component.id.clone(), source.into()))
-            {
-                if previous != (component.id.clone(), source.into()) {
-                    return Err(Error::Message(format!(
-                        "conflicting component tag `{}`",
-                        component.tag
-                    )));
-                }
-                continue;
-            }
-            if source.file_name().is_some_and(|name| name == "index.js") {
-                self.copy(
-                    resources,
-                    source.parent().unwrap(),
-                    destination.parent().unwrap(),
-                )?;
-            } else {
-                self.copy(resources, source, &destination)?;
-            }
-            let url = relative_url(page, &destination, false);
-            let url = if url.starts_with('.') {
-                url
-            } else {
-                format!("./{url}")
-            };
-            let url = serde_json::to_string(&url).unwrap();
-            let tag = serde_json::to_string(&component.tag).unwrap();
-            registrations.push_str(&format!("import Component{index} from {url};\n{{ const tag = {tag}; const existing = customElements.get(tag); if (existing && existing !== Component{index}) throw new Error(`Conflicting Notist component: ${{tag}}`); if (!existing) customElements.define(tag, Component{index}); }}\n"));
-        }
-        Ok(registrations)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Assets, presentation_value};
+    use super::Assets;
 
     #[test]
     fn additional_destinations_validate_without_mutating_reserved_or_written_files() {
@@ -341,30 +256,6 @@ mod tests {
         let files = assets.finish().unwrap();
         assert_eq!(files[Path::new("page/index.html")], b"page");
         assert_eq!(files[Path::new("extra.bin")], [255]);
-    }
-
-    #[test]
-    fn template_values_preserve_scalars_and_variants_without_exporting_resources() {
-        use crate::Value;
-        let private = crate::ResourcePath::resolve("/private", "doc.not", "data.txt").unwrap();
-        let values: Value = Value::Array(
-            vec![
-                Value::Unit,
-                Value::None,
-                Value::Bool(false),
-                Value::Int(i64::MAX),
-                Value::Float(f64::INFINITY),
-                Value::Str("中文 \"<&>".into()),
-                Value::Some(Box::new(Value::Ok(Box::new(Value::Err(Box::new(
-                    Value::Path(private),
-                )))))),
-            ]
-            .into(),
-        );
-        assert_eq!(
-            presentation_value(&values),
-            serde_json::json!([null, null, false, i64::MAX, null, "中文 \"<&>", {"ok":{"err":null}}])
-        );
     }
 
     #[test]

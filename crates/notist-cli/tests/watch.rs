@@ -91,7 +91,7 @@ fn excluded_events_do_not_rebuild_and_manifest_changes_refresh_the_watch_tree() 
     write(root, "content/excluded/deep/page.not", "= Excluded");
     write(root, "content/skip.not", "= Skipped file");
     let mut preview = Preview::start(root);
-    let initial = preview.wait("/", "<h1 id=\"original\"");
+    let initial = preview.wait("/", "<section id=\"original\"><h1>Original</h1>");
     write(root, "content/excluded/deep/page.not", "= Excluded edit");
     write(root, "content/skip.not", "= Excluded file edit");
     std::thread::sleep(Duration::from_millis(700));
@@ -148,7 +148,7 @@ fn wine_style_symlinks_and_excluded_trees_consume_no_inotify_watches() {
     )
     .unwrap();
     let mut preview = Preview::start(&root);
-    preview.wait("/", "<h1 id=\"ready\"");
+    preview.wait("/", "<section id=\"ready\"><h1>Ready</h1>");
     let mut watched = Vec::new();
     for entry in std::fs::read_dir(format!("/proc/{}/fdinfo", preview.child.id()))
         .unwrap()

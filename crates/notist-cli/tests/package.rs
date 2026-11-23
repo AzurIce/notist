@@ -193,22 +193,20 @@ fn document_extensions_belong_to_the_nearest_package_only() {
 }
 
 #[test]
-fn site_and_single_file_commands_use_the_same_real_manifest_and_extension_paths() {
+fn site_and_single_file_commands_use_the_same_module_imports() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(
-        root,
-        "docs/Notist.toml",
-        &format!(
-            "{BOOK}\n[[extensions]]\nkind='replace'\nimports={{custom='custom.notc'}}\nfrom='notist.math'\nto='custom.math'"
-        ),
-    );
+    write(root, "docs/Notist.toml", BOOK);
     write(
         root,
         "docs/custom.notc",
-        "fn math<C: Type = InlineContent>(text: String) -> C { [replaced] }",
+        "fn formula(expr: String) -> Inline { [replaced] }",
     );
-    write(root, "docs/README.not", "= Math\n\n$x$");
+    write(
+        root,
+        "docs/README.not",
+        "#import \"./custom.notc\" as custom\n\n= Math\n\n#custom.formula(\"x\")",
+    );
     success(run(root, &["build", "--config", "docs/Notist.toml"]));
     success(run(
         root,
@@ -268,7 +266,7 @@ fn site_requires_package_identity_but_does_not_accept_target_or_document_layers(
 }
 
 #[test]
-fn obsolete_manifest_shapes_are_rejected_by_both_build_and_document_commands() {
+fn obsolete_manifest_shapes_are_rejected_by_build() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "README.not", "= Home");
@@ -280,10 +278,6 @@ fn obsolete_manifest_shapes_are_rejected_by_both_build_and_document_commands() {
     ] {
         write(root, "Notist.toml", manifest);
         failure(run(root, &["build"]), "use [package] and optional [site]");
-        failure(
-            run(root, &["check", "README.not"]),
-            "use [package] and optional [site]",
-        );
     }
 }
 

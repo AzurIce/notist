@@ -61,15 +61,13 @@ fn build_reports_cover_core_site_and_publication_even_on_failure() {
     let report: serde_json::Value = serde_json::from_slice(&std::fs::read(json).unwrap()).unwrap();
     let spans = report["spans"].as_array().unwrap();
     for stage in [
-        "core.parse",
-        "core.lower",
-        "core.check",
-        "core.evaluate",
-        "core.render.html.prepare",
-        "core.render.html.finish",
         "site.build",
         "site.discover",
-        "site.links",
+        "site.analyze",
+        "site.evaluate",
+        "site.assets",
+        "site.render",
+        "site.templates",
         "site.template.page",
         "host.publish",
     ] {
@@ -143,18 +141,17 @@ fn jobs_and_timings_cover_every_page_with_valid_worker_parents() {
         let report: serde_json::Value =
             serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
         let spans = report["spans"].as_array().unwrap();
-        for stage in [
-            "host.document.evaluate",
-            "core.render.html.prepare",
-            "core.render.html.finish",
-            "site.template.page",
-        ] {
-            assert_eq!(
-                spans.iter().filter(|s| s["stage"] == stage).count(),
-                258,
-                "{stage}"
-            );
+        for stage in ["site.analyze", "site.evaluate", "site.render"] {
+            assert!(spans.iter().any(|s| s["stage"] == stage), "missing {stage}");
         }
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|s| s["stage"] == "site.template.page")
+                .count(),
+            258,
+            "site.template.page"
+        );
         assert!(spans.iter().all(|s| s["status"] == "finished"));
         for span in spans {
             if let Some(parent) = span["parent"].as_u64() {

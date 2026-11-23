@@ -1,6 +1,6 @@
 use crate::ast::{BinaryOp, Span, UnaryOp};
 use crate::builtin::BuiltinFn;
-use crate::check::{CheckedExpr, CheckedProgram, FunctionId};
+use crate::check::{CheckedExpr, CheckedFunction, CheckedProgram, FunctionId};
 use crate::content::{
     AttrValue, Attrs, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind,
 };
@@ -37,9 +37,37 @@ pub enum ExecutionError {
 }
 
 struct EvalCtx<'a> {
-    program: &'a CheckedProgram,
+    shared_functions: &'a [CheckedFunction],
+    extra_functions: &'a [CheckedFunction],
     doc_path: &'a str,
     host: &'a dyn DataHost,
+}
+
+impl<'a> EvalCtx<'a> {
+    #[inline]
+    fn function(&self, id: FunctionId) -> &'a CheckedFunction {
+        if id.0 < self.shared_functions.len() {
+            &self.shared_functions[id.0]
+        } else {
+            &self.extra_functions[id.0 - self.shared_functions.len()]
+        }
+    }
+}
+
+pub(crate) fn eval_expr_with_shared(
+    shared_functions: &[CheckedFunction],
+    extra_functions: &[CheckedFunction],
+    body: &CheckedExpr,
+    doc_path: &str,
+    host: &dyn DataHost,
+) -> Result<Value, ExecutionError> {
+    let ctx = EvalCtx {
+        shared_functions,
+        extra_functions,
+        doc_path,
+        host,
+    };
+    evaluate(&ctx, body, &mut Vec::new(), 0, 1)
 }
 
 impl CheckedProgram {
@@ -63,12 +91,7 @@ impl CheckedProgram {
         if function.arity != 0 {
             return Err(ExecutionError::EntryRequiresArguments(function.arity));
         }
-        let ctx = EvalCtx {
-            program: self,
-            doc_path,
-            host,
-        };
-        evaluate(&ctx, &function.body, &mut Vec::new(), 0, 1)
+        eval_expr_with_shared(&self.functions, &[], &function.body, doc_path, host)
     }
 }
 
@@ -309,13 +332,7 @@ fn call_value(
         Value::Function(FunctionValue(id)) => {
             let frame = stack.len();
             stack.extend(values);
-            let result = evaluate(
-                ctx,
-                &ctx.program.functions[id.0].body,
-                stack,
-                frame,
-                depth + 1,
-            );
+            let result = evaluate(ctx, &ctx.function(id).body, stack, frame, depth + 1);
             stack.truncate(frame);
             result
         }

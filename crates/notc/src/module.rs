@@ -9,12 +9,13 @@
 
 use crate::ast::{DOC_ENTRY, Decl, Import, ImportKind, Module, Span, Type};
 use crate::check::{
-    Binding, CheckedDecl, CheckedProgram, FunctionSig, InstanceKey, InterfaceView, MethodSig,
-    ModuleId, ModuleScope, TypeError, check_module_bodies, collect_module_interface,
-    specialize_roots, specialize_roots_with_extra,
+    Binding, CheckedDecl, CheckedExpr, CheckedFunction, CheckedProgram, FunctionSig, InstanceKey,
+    InterfaceView, MethodSig, ModuleId, ModuleScope, SharedLowered, TypeError, check_module_bodies,
+    collect_module_interface, specialize_document_against_shared, specialize_roots,
+    specialize_shared_modules,
 };
 use crate::content::Block;
-use crate::eval::{ExecutionError, Value};
+use crate::eval::{ExecutionError, Value, eval_expr_with_shared};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::parse_file;
 use std::collections::HashMap;
@@ -41,9 +42,34 @@ pub enum ProjectDiagnosticKind {
     },
 }
 
+/// A statically checked and specialized standalone document (`.not` or `.md`)
+/// that borrows pre-lowered shared functions from its parent `CheckedProject`
+/// without duplicating them. Safe to produce in parallel and evaluate later.
+#[derive(Debug)]
+pub struct CheckedDocument {
+    doc_path: String,
+    entry_body: CheckedExpr,
+    extra_functions: Vec<CheckedFunction>,
+}
+
+impl CheckedDocument {
+    /// Normalized virtual path of this checked document.
+    pub fn path(&self) -> &str {
+        &self.doc_path
+    }
+
+    /// Number of document-local or newly instantiated generic functions owned
+    /// exclusively by this document (0 when only pre-lowered shared functions
+    /// are called).
+    pub fn extra_function_count(&self) -> usize {
+        self.extra_functions.len()
+    }
+}
+
 /// Checked multi-module semantic result. All modules and declarations have been
-/// statically checked; execution specializes and lowers only the subgraph
-/// reachable from a chosen `(module, entry)`.
+/// statically checked, and monomorphic shared declarations have been pre-lowered
+/// once so standalone documents can reference them by `FunctionId` without
+/// duplication.
 ///
 /// Immutable and `Sync`, so any number of standalone `.not`/`.md` documents can
 /// be checked and evaluated against it in parallel without cloning shared modules.
@@ -55,6 +81,7 @@ pub struct CheckedProject {
     signatures: Vec<Vec<FunctionSig>>,
     local_methods: Vec<HashMap<(Type, String), MethodSig>>,
     decls: Vec<Vec<CheckedDecl>>,
+    shared_lowered: SharedLowered,
 }
 
 impl CheckedProject {
@@ -135,15 +162,17 @@ impl CheckedProject {
         }
     }
 
-    /// Check, specialize, and evaluate a standalone `.not` or `.md` document against
-    /// this immutable pre-checked shared `.notc` project without mutating or cloning
-    /// shared modules. Safe to call concurrently from many threads.
-    pub fn check_and_eval_standalone_document(
+    /// Statically check and specialize a standalone `.not` or `.md` document
+    /// against this immutable pre-checked shared `.notc` project without
+    /// evaluating it or performing any `DataHost` IO.
+    ///
+    /// Safe to call concurrently from many threads. Pre-lowered shared functions
+    /// are referenced by `FunctionId` without cloning.
+    pub fn check_standalone_document(
         &self,
         doc_path: &str,
         doc_module: &Module,
-        host: &dyn crate::json::DataHost,
-    ) -> Result<Block, DocumentError> {
+    ) -> Result<CheckedDocument, Vec<ProjectDiagnostic>> {
         let doc_path_norm = normalize_path(doc_path).unwrap_or_else(|| doc_path.to_owned());
         let doc_id = ModuleId(self.module_paths.len());
         let mut diagnostics = Vec::new();
@@ -301,7 +330,7 @@ impl CheckedProject {
         }
 
         if !diagnostics.is_empty() {
-            return Err(DocumentError::Diagnostics(diagnostics));
+            return Err(diagnostics);
         }
 
         let scope = ModuleScope { bindings, methods };
@@ -324,54 +353,93 @@ impl CheckedProject {
                     },
                 });
             }
-            return Err(DocumentError::Diagnostics(diagnostics));
+            return Err(diagnostics);
         }
 
         let Some(&Binding::Function(root_id)) = scope.bindings.get(DOC_ENTRY) else {
-            return Err(DocumentError::Execution(ExecutionError::UnknownEntry(
-                format!("{doc_path}::{DOC_ENTRY}"),
-            )));
+            diagnostics.push(ProjectDiagnostic {
+                module: doc_path_norm,
+                kind: ProjectDiagnosticKind::Type {
+                    declaration: DOC_ENTRY.to_owned(),
+                    span: Span::DUMMY,
+                    error: TypeError::UnknownName(DOC_ENTRY.to_owned()),
+                },
+            });
+            return Err(diagnostics);
         };
-        let roots = [(
-            DOC_ENTRY.to_owned(),
-            InstanceKey {
-                decl: root_id,
-                type_args: Vec::new(),
-            },
-        )];
-        let program = specialize_roots_with_extra(&self.decls, Some(&doc_decls), &roots).map_err(
-            |errs| {
-                let diags = errs
-                    .into_iter()
-                    .map(|(module_id, diag)| {
-                        let module = if module_id == doc_id {
-                            doc_path_norm.clone()
-                        } else {
-                            self.module_paths[module_id.0].clone()
-                        };
-                        ProjectDiagnostic {
-                            module,
-                            kind: ProjectDiagnosticKind::Type {
-                                declaration: diag.declaration,
-                                span: diag.span,
-                                error: diag.error,
-                            },
-                        }
-                    })
-                    .collect();
-                DocumentError::Diagnostics(diags)
-            },
-        )?;
+        let root_key = InstanceKey {
+            decl: root_id,
+            type_args: Vec::new(),
+        };
+        let lowered = specialize_document_against_shared(
+            &self.decls,
+            &self.shared_lowered,
+            &doc_decls,
+            root_key,
+        )
+        .map_err(|errs| {
+            errs.into_iter()
+                .map(|(module_id, diag)| {
+                    let module = if module_id == doc_id {
+                        doc_path_norm.clone()
+                    } else {
+                        self.module_paths[module_id.0].clone()
+                    };
+                    ProjectDiagnostic {
+                        module,
+                        kind: ProjectDiagnosticKind::Type {
+                            declaration: diag.declaration,
+                            span: diag.span,
+                            error: diag.error,
+                        },
+                    }
+                })
+                .collect::<Vec<_>>()
+        })?;
 
-        match program
-            .run_with_host(DOC_ENTRY, &doc_path_norm, host)
-            .map_err(DocumentError::Execution)?
-        {
+        Ok(CheckedDocument {
+            doc_path: doc_path_norm,
+            entry_body: lowered.entry_body,
+            extra_functions: lowered.extra_functions,
+        })
+    }
+
+    /// Evaluate a previously checked standalone document against this project's
+    /// pre-lowered shared functions and a read-only external `DataHost`.
+    /// Safe to call concurrently from many threads.
+    pub fn eval_checked_document(
+        &self,
+        doc: &CheckedDocument,
+        host: &dyn crate::json::DataHost,
+    ) -> Result<Block, ExecutionError> {
+        match eval_expr_with_shared(
+            &self.shared_lowered.functions,
+            &doc.extra_functions,
+            &doc.entry_body,
+            &doc.doc_path,
+            host,
+        )? {
             Value::Block(block) => Ok(block),
-            _ => Err(DocumentError::Execution(ExecutionError::UnknownEntry(
-                format!("{doc_path}::{DOC_ENTRY}"),
+            _ => Err(ExecutionError::UnknownEntry(format!(
+                "{}::{DOC_ENTRY}",
+                doc.doc_path
             ))),
         }
+    }
+
+    /// Convenience helper combining `check_standalone_document` and
+    /// `eval_checked_document`.
+    pub fn check_and_eval_standalone_document(
+        &self,
+        doc_path: &str,
+        doc_module: &Module,
+        host: &dyn crate::json::DataHost,
+    ) -> Result<Block, DocumentError> {
+        let checked = self
+            .check_standalone_document(doc_path, doc_module)
+            .map_err(DocumentError::Diagnostics)?;
+        self.eval_checked_document(&checked, host)
+            .map_err(DocumentError::Execution)
     }
 }
 
@@ -654,38 +722,39 @@ pub fn check_parsed_modules(
         return Err(diagnostics);
     }
 
-    // Validate that no concrete specialization reachable from any monomorphic
-    // declaration hits `compile_error(...)`.
+    // Pre-lower all concrete monomorphic shared declarations (and everything they
+    // transitively call) once, validating that no reachable specialization hits
+    // `compile_error(...)`. Standalone documents reuse this table by FunctionId.
     let mut mono_roots = Vec::new();
     for (m_idx, mod_decls) in decls.iter().enumerate() {
         for (d_idx, decl) in mod_decls.iter().enumerate() {
             if decl.type_params.is_empty() {
-                mono_roots.push((
-                    format!("{m_idx}:{d_idx}"),
-                    InstanceKey {
-                        decl: crate::check::DeclId {
-                            module: ModuleId(m_idx),
-                            index: d_idx,
-                        },
-                        type_args: Vec::new(),
+                mono_roots.push(InstanceKey {
+                    decl: crate::check::DeclId {
+                        module: ModuleId(m_idx),
+                        index: d_idx,
                     },
-                ));
+                    type_args: Vec::new(),
+                });
             }
         }
     }
-    if let Err(spec_errors) = specialize_roots(&decls, &mono_roots) {
-        for (module_id, diag) in spec_errors {
-            diagnostics.push(ProjectDiagnostic {
-                module: module_paths[module_id.0].clone(),
-                kind: ProjectDiagnosticKind::Type {
-                    declaration: diag.declaration,
-                    span: diag.span,
-                    error: diag.error,
-                },
-            });
+    let shared_lowered = match specialize_shared_modules(&decls, &mono_roots) {
+        Ok(lowered) => lowered,
+        Err(spec_errors) => {
+            for (module_id, diag) in spec_errors {
+                diagnostics.push(ProjectDiagnostic {
+                    module: module_paths[module_id.0].clone(),
+                    kind: ProjectDiagnosticKind::Type {
+                        declaration: diag.declaration,
+                        span: diag.span,
+                        error: diag.error,
+                    },
+                });
+            }
+            return Err(diagnostics);
         }
-        return Err(diagnostics);
-    }
+    };
 
     Ok(CheckedProject {
         module_paths,
@@ -694,6 +763,7 @@ pub fn check_parsed_modules(
         signatures,
         local_methods,
         decls,
+        shared_lowered,
     })
 }
 

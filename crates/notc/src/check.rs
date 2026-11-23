@@ -300,6 +300,18 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     })
 }
 
+#[derive(Debug)]
+pub(crate) struct SharedLowered {
+    pub(crate) mapping: HashMap<InstanceKey, FunctionId>,
+    pub(crate) functions: Vec<CheckedFunction>,
+}
+
+#[derive(Debug)]
+pub(crate) struct LoweredDocument {
+    pub(crate) entry_body: CheckedExpr,
+    pub(crate) extra_functions: Vec<CheckedFunction>,
+}
+
 #[derive(Clone, Copy)]
 struct DeclStore<'a> {
     shared: &'a [Vec<CheckedDecl>],
@@ -316,6 +328,123 @@ impl<'a> DeclStore<'a> {
     }
 }
 
+struct LowerCtx<'a> {
+    decls: DeclStore<'a>,
+    shared_mapping: Option<&'a HashMap<InstanceKey, FunctionId>>,
+    id_offset: usize,
+    mapping: HashMap<InstanceKey, FunctionId>,
+    order: Vec<InstanceKey>,
+    queue: VecDeque<InstanceKey>,
+}
+
+impl<'a> LowerCtx<'a> {
+    fn new(
+        decls: DeclStore<'a>,
+        shared_mapping: Option<&'a HashMap<InstanceKey, FunctionId>>,
+        id_offset: usize,
+    ) -> Self {
+        Self {
+            decls,
+            shared_mapping,
+            id_offset,
+            mapping: HashMap::new(),
+            order: Vec::new(),
+            queue: VecDeque::new(),
+        }
+    }
+
+    fn intern(&mut self, key: InstanceKey) -> FunctionId {
+        if let Some(&id) = self.shared_mapping.and_then(|m| m.get(&key)) {
+            return id;
+        }
+        match self.mapping.entry(key) {
+            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let next = FunctionId(self.id_offset + self.order.len());
+                let key_clone = e.key().clone();
+                e.insert(next);
+                self.order.push(key_clone.clone());
+                self.queue.push_back(key_clone);
+                next
+            }
+        }
+    }
+
+    fn drain_queue(
+        &mut self,
+        errors: &mut Vec<(ModuleId, Diagnostic)>,
+    ) -> Vec<CheckedFunction> {
+        let mut lowered_bodies: Vec<Option<CheckedFunction>> = Vec::new();
+        while let Some(instance) = self.queue.pop_front() {
+            let fn_id = self.mapping[&instance];
+            let local_idx = fn_id.0 - self.id_offset;
+            let decl = self.decls.get(instance.decl);
+            match lower_specialized_expr(
+                self,
+                &decl.body,
+                &decl.type_params,
+                &instance.type_args,
+            ) {
+                Ok(body) => {
+                    if lowered_bodies.len() <= local_idx {
+                        lowered_bodies.resize_with(local_idx + 1, || None);
+                    }
+                    lowered_bodies[local_idx] = Some(CheckedFunction {
+                        arity: decl.arity,
+                        body,
+                    });
+                }
+                Err((span, error)) => {
+                    errors.push((
+                        instance.decl.module,
+                        Diagnostic {
+                            declaration: decl.name.clone(),
+                            span,
+                            error,
+                        },
+                    ));
+                }
+            }
+        }
+        if !errors.is_empty() {
+            return Vec::new();
+        }
+        lowered_bodies
+            .into_iter()
+            .map(|slot| slot.expect("every queued instance was lowered"))
+            .collect()
+    }
+}
+
+/// Pre-lower all concrete monomorphic shared declarations (and everything they
+/// transitively call) once into a `SharedLowered` table that standalone documents
+/// can reference by `FunctionId` without duplicating shared functions.
+pub(crate) fn specialize_shared_modules(
+    decls: &[Vec<CheckedDecl>],
+    roots: &[InstanceKey],
+) -> Result<SharedLowered, Vec<(ModuleId, Diagnostic)>> {
+    let mut ctx = LowerCtx::new(
+        DeclStore {
+            shared: decls,
+            extra: None,
+        },
+        None,
+        0,
+    );
+    for key in roots {
+        ctx.intern(key.clone());
+    }
+    let mut errors = Vec::new();
+    let functions = ctx.drain_queue(&mut errors);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(SharedLowered {
+        mapping: ctx.mapping,
+        functions,
+    })
+}
+
 /// Specialize a set of concrete root instances and all transitively reachable
 /// instances into a dense `CheckedProgram`, collapsing `TypeMatch` statically
 /// and rejecting any reachable `compile_error(...)`.
@@ -323,100 +452,72 @@ pub(crate) fn specialize_roots(
     decls: &[Vec<CheckedDecl>],
     roots: &[(String, InstanceKey)],
 ) -> Result<CheckedProgram, Vec<(ModuleId, Diagnostic)>> {
-    specialize_roots_with_extra(decls, None, roots)
+    let keys: Vec<InstanceKey> = roots.iter().map(|(_, key)| key.clone()).collect();
+    let lowered = specialize_shared_modules(decls, &keys)?;
+    let mut function_names = HashMap::with_capacity(roots.len());
+    for (entry_name, key) in roots {
+        function_names.insert(entry_name.clone(), lowered.mapping[key]);
+    }
+    Ok(CheckedProgram {
+        function_names,
+        functions: lowered.functions,
+    })
 }
 
-/// Specialize roots against an immutable shared module table plus one extra
-/// standalone document module (zero cloning of shared modules).
-pub(crate) fn specialize_roots_with_extra(
+/// Specialize a standalone document entry against pre-lowered shared functions.
+/// Any shared function already present in `shared_lowered.mapping` is referenced
+/// directly by `FunctionId` without cloning; only document-local helpers or new
+/// generic instantiations are lowered into the returned `extra_functions`.
+pub(crate) fn specialize_document_against_shared(
     shared_decls: &[Vec<CheckedDecl>],
-    extra_decls: Option<&[CheckedDecl]>,
-    roots: &[(String, InstanceKey)],
-) -> Result<CheckedProgram, Vec<(ModuleId, Diagnostic)>> {
+    shared_lowered: &SharedLowered,
+    doc_decls: &[CheckedDecl],
+    root_key: InstanceKey,
+) -> Result<LoweredDocument, Vec<(ModuleId, Diagnostic)>> {
     let decls = DeclStore {
         shared: shared_decls,
-        extra: extra_decls,
+        extra: Some(doc_decls),
     };
-    let mut mapping: HashMap<InstanceKey, FunctionId> = HashMap::new();
-    let mut order: Vec<InstanceKey> = Vec::new();
-    let mut queue: VecDeque<InstanceKey> = VecDeque::new();
-    let mut function_names = HashMap::with_capacity(roots.len());
-
-    for (entry_name, key) in roots {
-        let id = match mapping.entry(key.clone()) {
-            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-            std::collections::hash_map::Entry::Vacant(e) => {
-                let next = FunctionId(order.len());
-                e.insert(next);
-                order.push(key.clone());
-                queue.push_back(key.clone());
-                next
-            }
-        };
-        function_names.insert(entry_name.clone(), id);
-    }
-
-    let mut lowered_bodies: Vec<Option<CheckedFunction>> = Vec::new();
-    let mut errors: Vec<(ModuleId, Diagnostic)> = Vec::new();
-
-    while let Some(instance) = queue.pop_front() {
-        let fn_id = mapping[&instance];
-        let decl = decls.get(instance.decl);
-        let body = lower_specialized_expr(
-            decls,
-            &decl.body,
-            &decl.type_params,
-            &instance.type_args,
-            &mut mapping,
-            &mut order,
-            &mut queue,
-        );
-        match body {
-            Ok(body) => {
-                if lowered_bodies.len() <= fn_id.0 {
-                    lowered_bodies.resize_with(fn_id.0 + 1, || None);
-                }
-                lowered_bodies[fn_id.0] = Some(CheckedFunction {
-                    arity: decl.arity,
-                    body,
-                });
-            }
-            Err((span, error)) => {
-                errors.push((
-                    instance.decl.module,
-                    Diagnostic {
-                        declaration: decl.name.clone(),
-                        span,
-                        error,
-                    },
-                ));
-            }
+    let mut ctx = LowerCtx::new(
+        decls,
+        Some(&shared_lowered.mapping),
+        shared_lowered.functions.len(),
+    );
+    let root_decl = decls.get(root_key.decl);
+    let entry_body = match lower_specialized_expr(
+        &mut ctx,
+        &root_decl.body,
+        &root_decl.type_params,
+        &root_key.type_args,
+    ) {
+        Ok(body) => body,
+        Err((span, error)) => {
+            return Err(vec![(
+                root_key.decl.module,
+                Diagnostic {
+                    declaration: root_decl.name.clone(),
+                    span,
+                    error,
+                },
+            )]);
         }
-    }
-
+    };
+    let mut errors = Vec::new();
+    let extra_functions = ctx.drain_queue(&mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
-
-    let functions = lowered_bodies
-        .into_iter()
-        .map(|slot| slot.expect("every queued instance was lowered"))
-        .collect();
-
-    Ok(CheckedProgram {
-        function_names,
-        functions,
+    Ok(LoweredDocument {
+        entry_body,
+        extra_functions,
     })
 }
 
 fn lower_specialized_expr(
-    decls: DeclStore<'_>,
+    ctx: &mut LowerCtx<'_>,
     expr: &ModuleExpr,
     type_params: &[String],
     type_args: &[Type],
-    mapping: &mut HashMap<InstanceKey, FunctionId>,
-    order: &mut Vec<InstanceKey>,
-    queue: &mut VecDeque<InstanceKey>,
 ) -> Result<CheckedExpr, (Span, TypeError)> {
     use CheckedExpr as C;
     use ModuleExpr as M;
@@ -433,7 +534,7 @@ fn lower_specialized_expr(
                 .iter()
                 .map(|ty| substitute_type(ty, type_params, type_args))
                 .collect();
-            let target_decl = decls.get(key.decl);
+            let target_decl = ctx.decls.get(key.decl);
             if let Some(where_expr) = &target_decl.where_clause
                 && eval_where(where_expr, &target_decl.type_params, &concrete_args) != Some(true)
             {
@@ -444,65 +545,31 @@ fn lower_specialized_expr(
                     },
                 ));
             }
-            let concrete_key = InstanceKey {
+            let id = ctx.intern(InstanceKey {
                 decl: key.decl,
                 type_args: concrete_args,
-            };
-            let id = match mapping.entry(concrete_key.clone()) {
-                std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let next = FunctionId(order.len());
-                    e.insert(next);
-                    order.push(concrete_key.clone());
-                    queue.push_back(concrete_key);
-                    next
-                }
-            };
+            });
             C::Function(id)
         }
         M::Builtin(builtin, span) => C::Builtin(*builtin, *span),
         M::InlineFragment(items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(
-                    decls,
-                    item,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
             }
             C::InlineFragment(lowered, attrs.clone(), *span)
         }
         M::BlockFragment(items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(
-                    decls,
-                    item,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
             }
             C::BlockFragment(lowered, attrs.clone(), *span)
         }
         M::BlockList(ordered, items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(
-                    decls,
-                    item,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
             }
             C::BlockList(*ordered, lowered, attrs.clone(), *span)
         }
@@ -514,29 +581,13 @@ fn lower_specialized_expr(
         } => {
             let mut lowered_headers = Vec::with_capacity(headers.len());
             for cell in headers {
-                lowered_headers.push(lower_specialized_expr(
-                    decls,
-                    cell,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered_headers.push(lower_specialized_expr(ctx, cell, type_params, type_args)?);
             }
             let mut lowered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let mut lowered_row = Vec::with_capacity(row.len());
                 for cell in row {
-                    lowered_row.push(lower_specialized_expr(
-                        decls,
-                        cell,
-                        type_params,
-                        type_args,
-                        mapping,
-                        order,
-                        queue,
-                    )?);
+                    lowered_row.push(lower_specialized_expr(ctx, cell, type_params, type_args)?);
                 }
                 lowered_rows.push(lowered_row);
             }
@@ -550,37 +601,18 @@ fn lower_specialized_expr(
         M::List(items) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(
-                    decls,
-                    item,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
             }
             C::List(lowered)
         }
         M::For(iterable, body) => C::For(
             Box::new(lower_specialized_expr(
-                decls,
+                ctx,
                 iterable,
                 type_params,
                 type_args,
-                mapping,
-                order,
-                queue,
             )?),
-            Box::new(lower_specialized_expr(
-                decls,
-                body,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
+            Box::new(lower_specialized_expr(ctx, body, type_params, type_args)?),
         ),
         M::CustomNode {
             return_ty,
@@ -597,15 +629,7 @@ fn lower_specialized_expr(
             };
             let mut lowered_props = Vec::with_capacity(props.len());
             for (k, v) in props {
-                let lv = lower_specialized_expr(
-                    decls,
-                    v,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?;
+                let lv = lower_specialized_expr(ctx, v, type_params, type_args)?;
                 lowered_props.push((Arc::clone(k), lv));
             }
             C::CustomNode {
@@ -618,117 +642,44 @@ fn lower_specialized_expr(
         }
         M::AttachAttrs(target, attrs) => C::AttachAttrs(
             Box::new(lower_specialized_expr(
-                decls,
+                ctx,
                 target,
                 type_params,
                 type_args,
-                mapping,
-                order,
-                queue,
             )?),
             attrs.clone(),
         ),
         M::Let(init, body) => C::Let(
-            Box::new(lower_specialized_expr(
-                decls,
-                init,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
-            Box::new(lower_specialized_expr(
-                decls,
-                body,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
+            Box::new(lower_specialized_expr(ctx, init, type_params, type_args)?),
+            Box::new(lower_specialized_expr(ctx, body, type_params, type_args)?),
         ),
         M::Seq(first, second) => C::Seq(
+            Box::new(lower_specialized_expr(ctx, first, type_params, type_args)?),
             Box::new(lower_specialized_expr(
-                decls,
-                first,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
-            Box::new(lower_specialized_expr(
-                decls,
+                ctx,
                 second,
                 type_params,
                 type_args,
-                mapping,
-                order,
-                queue,
             )?),
         ),
         M::Unary(op, operand) => C::Unary(
             *op,
             Box::new(lower_specialized_expr(
-                decls,
+                ctx,
                 operand,
                 type_params,
                 type_args,
-                mapping,
-                order,
-                queue,
             )?),
         ),
         M::Binary(op, left, right) => C::Binary(
             *op,
-            Box::new(lower_specialized_expr(
-                decls,
-                left,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
-            Box::new(lower_specialized_expr(
-                decls,
-                right,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
+            Box::new(lower_specialized_expr(ctx, left, type_params, type_args)?),
+            Box::new(lower_specialized_expr(ctx, right, type_params, type_args)?),
         ),
         M::If(cond, yes, no) => C::If(
-            Box::new(lower_specialized_expr(
-                decls,
-                cond,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
-            Box::new(lower_specialized_expr(
-                decls,
-                yes,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
-            Box::new(lower_specialized_expr(
-                decls,
-                no,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?),
+            Box::new(lower_specialized_expr(ctx, cond, type_params, type_args)?),
+            Box::new(lower_specialized_expr(ctx, yes, type_params, type_args)?),
+            Box::new(lower_specialized_expr(ctx, no, type_params, type_args)?),
         ),
         M::TypeMatch {
             param_index,
@@ -741,40 +692,16 @@ fn lower_specialized_expr(
                 .find(|(pat_ty, _)| substitute_type(pat_ty, type_params, type_args) == *concrete_ty)
                 .map(|(_, body)| body)
                 .unwrap_or(wildcard.as_ref());
-            lower_specialized_expr(
-                decls,
-                selected,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?
+            lower_specialized_expr(ctx, selected, type_params, type_args)?
         }
         M::CompileError { message, span } => {
             return Err((*span, TypeError::CompileError(message.clone())));
         }
         M::Call(callee, args) => {
-            let callee = lower_specialized_expr(
-                decls,
-                callee,
-                type_params,
-                type_args,
-                mapping,
-                order,
-                queue,
-            )?;
+            let callee = lower_specialized_expr(ctx, callee, type_params, type_args)?;
             let mut lowered_args = Vec::with_capacity(args.len());
             for arg in args {
-                lowered_args.push(lower_specialized_expr(
-                    decls,
-                    arg,
-                    type_params,
-                    type_args,
-                    mapping,
-                    order,
-                    queue,
-                )?);
+                lowered_args.push(lower_specialized_expr(ctx, arg, type_params, type_args)?);
             }
             C::Call(Box::new(callee), lowered_args)
         }

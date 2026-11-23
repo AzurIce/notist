@@ -5,7 +5,7 @@ use crate::{
     templates,
 };
 use notc::{
-    DataHost, Decl, DocumentError, DocumentFrontend, JsonValue, Module, NotistFrontend,
+    CheckedDocument, DataHost, Decl, DocumentFrontend, JsonValue, Module, NotistFrontend,
     ProjectDiagnosticKind, check_parsed_modules, format_type_error, parse,
     parse_file_with_frontends, resolve_import_path,
 };
@@ -654,47 +654,40 @@ pub(crate) fn build<R: Resources + Send>(
             };
 
             let analysis_stage = notist::progress::Span::stage("site.analyze", || {
-                "Compile shared notc modules".into()
+                format!("Analyze modules and {} documents", routes.len())
             });
             let (vroot, shared_project, shared_errors) =
                 compile_shared_notc_modules(vault.resources(), &routes, &input.documents)?;
             errors.extend(shared_errors);
-            analysis_stage.finish();
-
-            let mut diagnostics = vec![];
-            if !errors.is_empty() {
-                if recover {
-                    diagnostics.extend(std::mem::take(&mut errors));
-                } else {
-                    return Err(Error::Diagnostics(errors));
-                }
+            if !errors.is_empty() && !recover {
+                analysis_stage.finish();
+                return Err(Error::Diagnostics(errors));
             }
 
-            let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
-                format!("Parse, evaluate and prepare {} pages", routes.len())
-            });
-            let data_host = SsgDataHost::new(vroot.clone(), vault.resources());
+            struct AnalyzedPage {
+                route: crate::Route,
+                source: Arc<str>,
+                checked: Option<CheckedDocument>,
+            }
             let doc_inputs: Vec<(crate::Route, String)> = routes
                 .into_iter()
                 .zip(input.documents.into_values())
                 .collect();
-            let eval_chunk_size = doc_inputs.len().div_ceil(executor.jobs()).max(64);
-            let eval_chunks = executor.map_chunks(
+            let page_count = doc_inputs.len();
+            let analyze_chunk_size = page_count.div_ceil(executor.jobs()).max(64);
+            let analyze_chunks = executor.map_chunks(
                 &doc_inputs,
-                eval_chunk_size,
-                |_, chunk| -> Result<(Vec<PreparedPage>, Vec<SourceDiagnostic>), Error> {
-                    let mut chunk_docs = Vec::with_capacity(chunk.len());
+                analyze_chunk_size,
+                |_, chunk| -> (Vec<AnalyzedPage>, Vec<SourceDiagnostic>) {
+                    let frontends: [&dyn DocumentFrontend; 2] =
+                        [&NotistFrontend, &MarkdownFrontend];
+                    let mut chunk_checked = Vec::with_capacity(chunk.len());
                     let mut chunk_errors = Vec::new();
                     for (route, text) in chunk {
                         let virtual_path = to_virtual_path(&vroot, &route.source);
                         let source_arc: Arc<str> = Arc::from(text.as_str());
-                        let frontends: [&dyn DocumentFrontend; 2] =
-                            [&NotistFrontend, &MarkdownFrontend];
-                        let parsed = parse_file_with_frontends(
-                            &virtual_path,
-                            &source_arc,
-                            &frontends,
-                        );
+                        let parsed =
+                            parse_file_with_frontends(&virtual_path, &source_arc, &frontends);
                         if !parsed.diagnostics.is_empty() {
                             for d in parsed.diagnostics {
                                 let range = TextRange::new(d.span.start.into(), d.span.end.into());
@@ -705,23 +698,25 @@ pub(crate) fn build<R: Resources + Send>(
                                 ));
                             }
                             if recover {
-                                chunk_docs.push(PreparedPage::new(
-                                    route.clone(),
-                                    source_arc,
-                                    notc::Block::empty(notc::Span::DUMMY),
-                                    &config.title,
-                                    math_tag,
-                                )?);
+                                chunk_checked.push(AnalyzedPage {
+                                    route: route.clone(),
+                                    source: source_arc,
+                                    checked: None,
+                                });
                             }
                             continue;
                         }
-                        let block = match shared_project.check_and_eval_standalone_document(
-                            &virtual_path,
-                            &parsed.program.root,
-                            &data_host,
-                        ) {
-                            Ok(block) => block,
-                            Err(DocumentError::Diagnostics(diags)) => {
+                        match shared_project
+                            .check_standalone_document(&virtual_path, &parsed.program.root)
+                        {
+                            Ok(checked_doc) => {
+                                chunk_checked.push(AnalyzedPage {
+                                    route: route.clone(),
+                                    source: source_arc,
+                                    checked: Some(checked_doc),
+                                });
+                            }
+                            Err(diags) => {
                                 for diag in diags {
                                     let (phase, span, msg) = match diag.kind {
                                         ProjectDiagnosticKind::Parse(p) => {
@@ -745,39 +740,76 @@ pub(crate) fn build<R: Resources + Send>(
                                     ));
                                 }
                                 if recover {
-                                    chunk_docs.push(PreparedPage::new(
-                                        route.clone(),
-                                        source_arc,
-                                        notc::Block::empty(notc::Span::DUMMY),
-                                        &config.title,
-                                        math_tag,
-                                    )?);
-                                }
-                                continue;
-                            }
-                            Err(DocumentError::Execution(err)) => {
-                                if recover {
-                                    chunk_errors.push(diagnostic(
-                                        &route.source,
-                                        &source_arc,
-                                        Diagnostic::new(
-                                            Phase::Semantic,
-                                            TextRange::empty(0.into()),
-                                            format!("runtime error evaluating document: {err:?}"),
-                                        ),
-                                    ));
-                                    notc::Block::empty(notc::Span::DUMMY)
-                                } else {
-                                    return Err(Error::Message(format!(
-                                        "{}: runtime error evaluating document: {err:?}",
-                                        route.path.display()
-                                    )));
+                                    chunk_checked.push(AnalyzedPage {
+                                        route: route.clone(),
+                                        source: source_arc,
+                                        checked: None,
+                                    });
                                 }
                             }
+                        }
+                    }
+                    (chunk_checked, chunk_errors)
+                },
+            );
+            drop(doc_inputs);
+            let mut checked_pages = Vec::with_capacity(page_count);
+            for (chunk_checked, chunk_errors) in analyze_chunks {
+                errors.extend(chunk_errors);
+                checked_pages.extend(chunk_checked);
+            }
+            analysis_stage.finish();
+
+            let mut diagnostics = vec![];
+            if !errors.is_empty() {
+                if recover {
+                    diagnostics.extend(std::mem::take(&mut errors));
+                } else {
+                    return Err(Error::Diagnostics(errors));
+                }
+            }
+
+            let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
+                format!("Evaluate and prepare {} pages", checked_pages.len())
+            });
+            let data_host = SsgDataHost::new(vroot.clone(), vault.resources());
+            let eval_chunk_size = checked_pages.len().div_ceil(executor.jobs()).max(64);
+            let eval_chunks = executor.map_chunks(
+                &checked_pages,
+                eval_chunk_size,
+                |_, chunk| -> Result<(Vec<PreparedPage>, Vec<SourceDiagnostic>), Error> {
+                    let mut chunk_docs = Vec::with_capacity(chunk.len());
+                    let mut chunk_errors = Vec::new();
+                    for page in chunk {
+                        let block = match &page.checked {
+                            Some(doc) => match shared_project.eval_checked_document(doc, &data_host)
+                            {
+                                Ok(block) => block,
+                                Err(err) => {
+                                    if recover {
+                                        chunk_errors.push(diagnostic(
+                                            &page.route.source,
+                                            &page.source,
+                                            Diagnostic::new(
+                                                Phase::Semantic,
+                                                TextRange::empty(0.into()),
+                                                format!("runtime error evaluating document: {err:?}"),
+                                            ),
+                                        ));
+                                        notc::Block::empty(notc::Span::DUMMY)
+                                    } else {
+                                        return Err(Error::Message(format!(
+                                            "{}: runtime error evaluating document: {err:?}",
+                                            page.route.path.display()
+                                        )));
+                                    }
+                                }
+                            },
+                            None => notc::Block::empty(notc::Span::DUMMY),
                         };
                         let prepared = PreparedPage::new(
-                            route.clone(),
-                            source_arc,
+                            page.route.clone(),
+                            Arc::clone(&page.source),
                             block,
                             &config.title,
                             math_tag,
@@ -787,7 +819,7 @@ pub(crate) fn build<R: Resources + Send>(
                     Ok((chunk_docs, chunk_errors))
                 },
             );
-            drop(doc_inputs);
+            drop(checked_pages);
             let mut documents = Vec::with_capacity(outputs.len());
             for chunk in eval_chunks {
                 let (chunk_docs, chunk_errors) = chunk?;

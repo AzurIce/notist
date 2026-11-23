@@ -202,3 +202,61 @@ fn statically_rejects_bad_list_and_for_types() {
         }
     ));
 }
+
+#[test]
+fn standalone_document_check_reuses_shared_lowered_functions_and_splits_eval() {
+    let shared_src = r#"
+fn load_item(source: String) -> Block {
+    let data = read_json(source);
+    para(text(data.get("name").as_string("missing")))
+}
+
+fn wrap<C: Type>(content: C) -> C
+where C == Inline || C == Block
+{
+    match C {
+        Inline => strong(content),
+        Block => callout("note", content),
+        _ => compile_error("unreachable"),
+    }
+}
+"#;
+    let project = check_project(&[("lib/shared.notc", shared_src)]).expect("shared project checks");
+
+    let doc1 = notc::parse_document(
+        "#import \"../lib/shared.notc\" as shared\n#shared.load_item(\"./item.json\")\n",
+    );
+    assert!(doc1.diagnostics.is_empty());
+    // Pure static check: no DataHost needed, and zero extra functions duplicated!
+    let checked1 = project
+        .check_standalone_document("content/a.not", &doc1.program.root)
+        .expect("static check succeeds without DataHost");
+    assert_eq!(checked1.path(), "content/a.not");
+    assert_eq!(checked1.extra_function_count(), 0);
+
+    // Evaluation happens separately and hits DataHost only now.
+    let err = project
+        .eval_checked_document(&checked1, &notc::NoDataHost)
+        .expect_err("evaluating without JSON fails at runtime");
+    assert!(matches!(err, notc::ExecutionError::HostError(_)));
+
+    let host = MemoryDataHost::new(&[("content/item.json", r#"{"name": "Potion"}"#)]);
+    let block1 = project
+        .eval_checked_document(&checked1, &host)
+        .expect("evaluating with JSON succeeds");
+    assert_eq!(block1.plain_text(), "Potion");
+
+    // Document calling a shared generic function lowers only that new specialization.
+    let doc2 = notc::parse_document(
+        "#import \"../lib/shared.notc\" as shared\n#shared.wrap[\nHello\n]\n",
+    );
+    assert!(doc2.diagnostics.is_empty());
+    let checked2 = project
+        .check_standalone_document("content/b.not", &doc2.program.root)
+        .expect("generic document checks");
+    assert_eq!(checked2.extra_function_count(), 1);
+    let block2 = project
+        .eval_checked_document(&checked2, &notc::NoDataHost)
+        .expect("generic document evaluates");
+    assert_eq!(block2.plain_text(), "Hello");
+}

@@ -289,3 +289,46 @@ fn catalog_page(source: String) -> Block {
     assert!(item2.contains(r#"<h1 id="fire-shard">Fire Shard</h1>"#));
     assert!(item2.contains(r#"<div id="meta" class="item-meta"><p><strong>ID</strong> 2</p></div>"#));
 }
+
+#[test]
+fn static_analysis_barrier_rejects_type_errors_before_evaluating_any_document() {
+    let views = r#"
+fn load(source: String) -> Block {
+    let data = read_json(source);
+    para(text(data.get("name").as_string("")))
+}
+"#;
+    // `a.not` is statically valid, but evaluating it would fail with a runtime HostError
+    // because `./does-not-exist.json` does not exist.
+    // `b.not` has a static type error (`Int` passed where `String` is required).
+    // The static barrier between `site.analyze` and `site.evaluate` must report `b.not`'s
+    // static type diagnostic and NEVER evaluate `a.not`.
+    let mut v = vault(&[
+        ("modules/views.notc", views),
+        (
+            "content/a.not",
+            "#import \"../modules/views.notc\" as views\n#views.load(\"./does-not-exist.json\")\n",
+        ),
+        (
+            "content/b.not",
+            "#import \"../modules/views.notc\" as views\n#views.load(123)\n",
+        ),
+    ]);
+
+    let err = Builder::default()
+        .build(&mut v, &SiteConfig::default())
+        .expect_err("static type error in b.not must fail build before evaluating a.not");
+    let Error::Diagnostics(diags) = err else {
+        panic!("expected static Error::Diagnostics (not runtime eval error), got {err:?}");
+    };
+    assert_eq!(diags.len(), 1);
+    assert!(diags[0].path.ends_with("content/b.not"));
+    assert!(
+        diags[0]
+            .diagnostic
+            .message
+            .contains("expected `String`, found `Int`"),
+        "unexpected diagnostic: {:?}",
+        diags[0]
+    );
+}

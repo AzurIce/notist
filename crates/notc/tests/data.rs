@@ -5,27 +5,47 @@ use notc::{
 use std::collections::HashMap;
 
 struct MemoryDataHost {
-    files: HashMap<String, JsonValue>,
+    json_files: HashMap<String, JsonValue>,
+    text_files: HashMap<String, String>,
 }
 
 impl MemoryDataHost {
     fn new(entries: &[(&str, &str)]) -> Self {
-        let mut files = HashMap::new();
+        let mut json_files = HashMap::new();
         for &(path, raw) in entries {
-            files.insert(
+            json_files.insert(
                 path.to_owned(),
                 JsonValue::parse(raw).expect("valid test json"),
             );
         }
-        Self { files }
+        Self {
+            json_files,
+            text_files: HashMap::new(),
+        }
+    }
+
+    fn with_texts(mut self, entries: &[(&str, &str)]) -> Self {
+        for &(path, raw) in entries {
+            self.text_files.insert(path.to_owned(), raw.to_owned());
+        }
+        self
     }
 }
 
 impl DataHost for MemoryDataHost {
+    fn read_text(&self, from_doc: &str, rel_path: &str) -> Result<String, String> {
+        let resolved = notc::resolve_import_path(from_doc, rel_path)
+            .map_err(|_| format!("invalid path `{rel_path}` from `{from_doc}`"))?;
+        self.text_files
+            .get(&resolved)
+            .cloned()
+            .ok_or_else(|| format!("missing text `{resolved}`"))
+    }
+
     fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
         let resolved = notc::resolve_import_path(from_doc, rel_path)
             .map_err(|_| format!("invalid path `{rel_path}` from `{from_doc}`"))?;
-        self.files
+        self.json_files
             .get(&resolved)
             .cloned()
             .ok_or_else(|| format!("missing json `{resolved}`"))
@@ -259,4 +279,46 @@ where C == Inline || C == Block
         .eval_checked_document(&checked2, &notc::NoDataHost)
         .expect("generic document evaluates");
     assert_eq!(block2.plain_text(), "Hello");
+}
+
+#[test]
+fn read_text_and_panic_builtins_work_with_never_coercion() {
+    let lib = r#"
+fn checked_text(path: String, must_exist: Bool) -> Block {
+    let raw = if must_exist {
+        read_text(path)
+    } else {
+        panic("refused to load: " + path)
+    };
+    para(text(raw))
+}
+"#;
+    let doc_ok = r#"
+#import "./lib.notc" as lib
+#lib.checked_text("./.data/greeting.txt", true)
+"#;
+    let doc_panic = r#"
+#import "./lib.notc" as lib
+#lib.checked_text("./.data/greeting.txt", false)
+"#;
+    let project = check_project(&[
+        ("lib.notc", lib),
+        ("ok.not", doc_ok),
+        ("fail.not", doc_panic),
+    ])
+    .expect("checks with Never coercion");
+    let host = MemoryDataHost::new(&[]).with_texts(&[(".data/greeting.txt", "Hello from text!")]);
+
+    let ok = project
+        .eval_document_with_host("ok.not", &host)
+        .expect("read_text evaluates");
+    assert_eq!(ok.plain_text(), "Hello from text!");
+
+    let err = project
+        .eval_document_with_host("fail.not", &host)
+        .expect_err("panic aborts evaluation");
+    assert_eq!(
+        err,
+        notc::ExecutionError::Panic("refused to load: ./.data/greeting.txt".into())
+    );
 }

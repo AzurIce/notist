@@ -1,6 +1,7 @@
 use crate::ast::{
     AttrEntry, AttrLiteral, BinaryOp, BlockPiece, Decl, Expr, ExprKind, Function, InlinePiece,
-    Method, Module, Program, Span, Type, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
+    Method, Module, Program, Span, TableAlign, Type, TypePattern, UnaryOp, WhereExpr,
+    WhereExprKind,
 };
 use crate::builtin::{BuiltinFn, lookup_builtin_method, lookup_prelude_function};
 use crate::content::{AttrValue, Attrs};
@@ -57,9 +58,10 @@ pub(crate) enum CheckedExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
-    BlockList(bool, Vec<Self>, Attrs, Span),
+    BlockList(bool, u64, Vec<Self>, Attrs, Span),
     BlockTable {
         headers: Vec<Self>,
+        alignments: Arc<[TableAlign]>,
         rows: Vec<Vec<Self>>,
         attrs: Attrs,
         span: Span,
@@ -97,9 +99,10 @@ pub(crate) enum ModuleExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
-    BlockList(bool, Vec<Self>, Attrs, Span),
+    BlockList(bool, u64, Vec<Self>, Attrs, Span),
     BlockTable {
         headers: Vec<Self>,
+        alignments: Arc<[TableAlign]>,
         rows: Vec<Vec<Self>>,
         attrs: Attrs,
         span: Span,
@@ -566,15 +569,16 @@ fn lower_specialized_expr(
             }
             C::BlockFragment(lowered, attrs.clone(), *span)
         }
-        M::BlockList(ordered, items, attrs, span) => {
+        M::BlockList(ordered, start, items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
                 lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
             }
-            C::BlockList(*ordered, lowered, attrs.clone(), *span)
+            C::BlockList(*ordered, *start, lowered, attrs.clone(), *span)
         }
         M::BlockTable {
             headers,
+            alignments,
             rows,
             attrs,
             span,
@@ -593,6 +597,7 @@ fn lower_specialized_expr(
             }
             C::BlockTable {
                 headers: lowered_headers,
+                alignments: Arc::clone(alignments),
                 rows: lowered_rows,
                 attrs: attrs.clone(),
                 span: *span,
@@ -2046,6 +2051,13 @@ impl<'a> Checker<'a> {
                     vec![inner],
                 ))
             }
+            InlinePiece::Strike(items, span) => {
+                let inner = self.check_inline_pieces(items, *span)?;
+                Ok(M::Call(
+                    Box::new(M::Builtin(BuiltinFn::Strike, *span)),
+                    vec![inner],
+                ))
+            }
             InlinePiece::Raw(text, span) => Ok(M::Call(
                 Box::new(M::Builtin(BuiltinFn::Raw, *span)),
                 vec![M::String(Arc::from(text.as_str()))],
@@ -2145,6 +2157,7 @@ impl<'a> Checker<'a> {
             }
             BlockPiece::List {
                 ordered,
+                start,
                 items,
                 attrs,
                 span,
@@ -2154,7 +2167,7 @@ impl<'a> Checker<'a> {
                     checked_items.push(self.check_block_pieces(item, *span)?);
                 }
                 let lowered = lower_attrs(attrs);
-                return Ok(M::BlockList(*ordered, checked_items, lowered, *span));
+                return Ok(M::BlockList(*ordered, *start, checked_items, lowered, *span));
             }
             BlockPiece::Quote { body, attrs, span } => {
                 let inner = self.check_block_pieces(body, *span)?;
@@ -2167,6 +2180,7 @@ impl<'a> Checker<'a> {
             }
             BlockPiece::Table {
                 headers,
+                alignments,
                 rows,
                 attrs,
                 span,
@@ -2185,6 +2199,7 @@ impl<'a> Checker<'a> {
                 }
                 return Ok(M::BlockTable {
                     headers: checked_headers,
+                    alignments: Arc::from(alignments.as_slice()),
                     rows: checked_rows,
                     attrs: lower_attrs(attrs),
                     span: *span,

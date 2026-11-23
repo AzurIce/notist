@@ -1534,7 +1534,9 @@ impl<'a> SemanticIndexer<'a> {
             | InlinePiece::Raw(_, _)
             | InlinePiece::Math(_, _)
             | InlinePiece::Image { .. } => {}
-            InlinePiece::Strong(items, _) | InlinePiece::Emph(items, _) => {
+            InlinePiece::Strong(items, _)
+            | InlinePiece::Emph(items, _)
+            | InlinePiece::Strike(items, _) => {
                 for item in items {
                     self.index_inline_piece(item);
                 }
@@ -1835,6 +1837,7 @@ fn inline_pieces_plain_text(pieces: &[InlinePiece]) -> String {
             }
             InlinePiece::Strong(xs, _)
             | InlinePiece::Emph(xs, _)
+            | InlinePiece::Strike(xs, _)
             | InlinePiece::Link { label: xs, .. } => {
                 out.push_str(&inline_pieces_plain_text(xs));
             }

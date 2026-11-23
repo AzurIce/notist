@@ -2,7 +2,7 @@
 //! sharing (`Arc`), canonical flattening of unannotated fragments, attributes,
 //! `sectionize`, and immutable tree rewriting.
 
-use crate::ast::Span;
+use crate::ast::{Span, TableAlign};
 use std::fmt;
 use std::sync::Arc;
 
@@ -104,6 +104,8 @@ pub enum InlineKind {
     Text(Arc<str>),
     Strong(Inline),
     Emph(Inline),
+    Strike(Inline),
+    Underline(Inline),
     Raw(Arc<str>),
     Math(Arc<str>),
     Link { target: Arc<str>, label: Inline },
@@ -192,7 +194,10 @@ impl Inline {
                 }
             }
             InlineKind::Text(s) | InlineKind::Raw(s) | InlineKind::Math(s) => out.push_str(s),
-            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.push_plain_text(out),
+            InlineKind::Strong(inner)
+            | InlineKind::Emph(inner)
+            | InlineKind::Strike(inner)
+            | InlineKind::Underline(inner) => inner.push_plain_text(out),
             InlineKind::Link { label, .. } => label.push_plain_text(out),
             InlineKind::Image { alt, .. } => out.push_str(alt),
             InlineKind::Custom(custom) => {
@@ -214,7 +219,10 @@ impl Inline {
                     child.collect_links(out);
                 }
             }
-            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_links(out),
+            InlineKind::Strong(inner)
+            | InlineKind::Emph(inner)
+            | InlineKind::Strike(inner)
+            | InlineKind::Underline(inner) => inner.collect_links(out),
             InlineKind::Link { target, label } => {
                 out.push((Arc::clone(target), self.0.span));
                 label.collect_links(out);
@@ -242,7 +250,10 @@ impl Inline {
                     child.collect_images(out);
                 }
             }
-            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_images(out),
+            InlineKind::Strong(inner)
+            | InlineKind::Emph(inner)
+            | InlineKind::Strike(inner)
+            | InlineKind::Underline(inner) => inner.collect_images(out),
             InlineKind::Link { label, .. } => label.collect_images(out),
             InlineKind::Image { target, alt } => {
                 out.push((Arc::clone(target), Arc::clone(alt), self.0.span));
@@ -270,7 +281,10 @@ impl Inline {
                     child.collect_ids(out);
                 }
             }
-            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_ids(out),
+            InlineKind::Strong(inner)
+            | InlineKind::Emph(inner)
+            | InlineKind::Strike(inner)
+            | InlineKind::Underline(inner) => inner.collect_ids(out),
             InlineKind::Link { label, .. } => label.collect_ids(out),
             InlineKind::Custom(custom) => {
                 for (_, val) in custom.props.iter() {
@@ -330,6 +344,30 @@ impl Inline {
                 } else {
                     Inline::new(
                         InlineKind::Emph(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            InlineKind::Strike(inner) => {
+                let rewritten = inner.rewrite_bottom_up(f)?;
+                if rewritten.ptr_eq(inner) {
+                    self.clone()
+                } else {
+                    Inline::new(
+                        InlineKind::Strike(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            InlineKind::Underline(inner) => {
+                let rewritten = inner.rewrite_bottom_up(f)?;
+                if rewritten.ptr_eq(inner) {
+                    self.clone()
+                } else {
+                    Inline::new(
+                        InlineKind::Underline(rewritten),
                         self.0.attrs.clone(),
                         self.0.span,
                     )
@@ -420,11 +458,12 @@ pub enum BlockKind {
     Heading { level: u8, title: Inline },
     Callout { kind: Arc<str>, body: Block },
     CodeBlock { lang: Arc<str>, text: Arc<str> },
-    List { ordered: bool, items: Arc<[Block]> },
+    List { ordered: bool, start: u64, items: Arc<[Block]> },
     Quote(Block),
     Divider,
     Table {
         headers: Arc<[Inline]>,
+        alignments: Arc<[TableAlign]>,
         rows: Arc<[Arc<[Inline]>]>,
     },
     Math(Arc<str>),
@@ -527,7 +566,7 @@ impl Block {
             BlockKind::CodeBlock { text, .. } | BlockKind::Math(text) => {
                 out.push(text.to_string())
             }
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table { headers, rows, .. } => {
                 for cell in headers.iter() {
                     out.push(cell.plain_text());
                 }
@@ -621,7 +660,7 @@ impl Block {
                     item.collect_links(out);
                 }
             }
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table { headers, rows, .. } => {
                 for cell in headers.iter() {
                     cell.collect_links(out);
                 }
@@ -673,7 +712,7 @@ impl Block {
                     item.collect_images(out);
                 }
             }
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table { headers, rows, .. } => {
                 for cell in headers.iter() {
                     cell.collect_images(out);
                 }
@@ -728,7 +767,7 @@ impl Block {
                     item.collect_ids(out);
                 }
             }
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table { headers, rows, .. } => {
                 for cell in headers.iter() {
                     cell.collect_ids(out);
                 }
@@ -902,7 +941,7 @@ impl Block {
                     )
                 }
             }
-            BlockKind::List { ordered, items } => {
+            BlockKind::List { ordered, start, items } => {
                 let mut changed = false;
                 let mut next = Vec::with_capacity(items.len());
                 for item in items.iter() {
@@ -916,6 +955,7 @@ impl Block {
                     Block::new(
                         BlockKind::List {
                             ordered: *ordered,
+                            start: *start,
                             items: Arc::from(next),
                         },
                         self.0.attrs.clone(),
@@ -974,7 +1014,11 @@ impl Block {
                     )
                 }
             }
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table {
+                headers,
+                alignments,
+                rows,
+            } => {
                 let mut changed = false;
                 let mut next_headers = Vec::with_capacity(headers.len());
                 for cell in headers.iter() {
@@ -1000,6 +1044,7 @@ impl Block {
                     Block::new(
                         BlockKind::Table {
                             headers: Arc::from(next_headers),
+                            alignments: Arc::clone(alignments),
                             rows: Arc::from(next_rows),
                         },
                         self.0.attrs.clone(),
@@ -1086,7 +1131,7 @@ impl Block {
                     )
                 }
             }
-            BlockKind::List { ordered, items } => {
+            BlockKind::List { ordered, start, items } => {
                 let mut changed = false;
                 let mut next = Vec::with_capacity(items.len());
                 for item in items.iter() {
@@ -1100,6 +1145,7 @@ impl Block {
                     Block::new(
                         BlockKind::List {
                             ordered: *ordered,
+                            start: *start,
                             items: Arc::from(next),
                         },
                         self.0.attrs.clone(),
@@ -1225,6 +1271,8 @@ impl fmt::Display for Inline {
             InlineKind::Text(s) => write!(f, "Text({s:?})"),
             InlineKind::Strong(inner) => write!(f, "Strong({inner})"),
             InlineKind::Emph(inner) => write!(f, "Emph({inner})"),
+            InlineKind::Strike(inner) => write!(f, "Strike({inner})"),
+            InlineKind::Underline(inner) => write!(f, "Underline({inner})"),
             InlineKind::Raw(s) => write!(f, "Raw({s:?})"),
             InlineKind::Math(s) => write!(f, "Math({s:?})"),
             InlineKind::Link { target, label } => write!(f, "Link({target:?}, {label})"),
@@ -1261,7 +1309,7 @@ impl fmt::Display for Block {
             BlockKind::Heading { level, title } => write!(f, "Heading(h{level}, {title})"),
             BlockKind::Callout { kind, body } => write!(f, "Callout({kind:?}, {body})"),
             BlockKind::CodeBlock { lang, text } => write!(f, "CodeBlock({lang:?}, {text:?})"),
-            BlockKind::List { ordered, items } => {
+            BlockKind::List { ordered, items, .. } => {
                 write!(f, "{}[", if *ordered { "OrderedList" } else { "List" })?;
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
@@ -1273,7 +1321,7 @@ impl fmt::Display for Block {
             }
             BlockKind::Quote(body) => write!(f, "Quote({body})"),
             BlockKind::Divider => write!(f, "Divider"),
-            BlockKind::Table { headers, rows } => {
+            BlockKind::Table { headers, rows, .. } => {
                 write!(f, "Table({} cols, {} rows)", headers.len(), rows.len())
             }
             BlockKind::Math(s) => write!(f, "BlockMath({s:?})"),

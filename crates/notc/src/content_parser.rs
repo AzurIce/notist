@@ -6,6 +6,7 @@
 
 use crate::ast::{
     AttrEntry, AttrLiteral, BlockPiece, Decl, Expr, ExprKind, InlinePiece, Module, Span,
+    TableAlign,
 };
 use crate::frontend::build_document_module;
 use crate::lexer::ParseDiagnostic;
@@ -157,11 +158,13 @@ pub(crate) fn attach_block_attrs(
                     },
                     BlockPiece::List {
                         ordered,
+                        start,
                         items,
                         attrs,
                         span,
                     } => BlockPiece::List {
                         ordered,
+                        start,
                         items: items
                             .into_iter()
                             .map(|item| attach_block_attrs(item, diagnostics))
@@ -176,6 +179,7 @@ pub(crate) fn attach_block_attrs(
                     },
                     BlockPiece::Table {
                         headers,
+                        alignments,
                         rows,
                         attrs,
                         span,
@@ -184,6 +188,7 @@ pub(crate) fn attach_block_attrs(
                             .into_iter()
                             .map(|cell| attach_inline_attrs(cell, diagnostics))
                             .collect(),
+                        alignments,
                         rows: rows
                             .into_iter()
                             .map(|row| {
@@ -285,6 +290,9 @@ pub(crate) fn attach_inline_attrs(
                     InlinePiece::Emph(inner, span) => {
                         InlinePiece::Emph(attach_inline_attrs(inner, diagnostics), span)
                     }
+                    InlinePiece::Strike(inner, span) => {
+                        InlinePiece::Strike(attach_inline_attrs(inner, diagnostics), span)
+                    }
                     InlinePiece::Link {
                         target,
                         label,
@@ -357,6 +365,7 @@ fn inline_piece_span(piece: &InlinePiece) -> Span {
         | InlinePiece::Text(_, span)
         | InlinePiece::Strong(_, span)
         | InlinePiece::Emph(_, span)
+        | InlinePiece::Strike(_, span)
         | InlinePiece::Raw(_, span)
         | InlinePiece::Link { span, .. }
         | InlinePiece::Image { span, .. }
@@ -752,7 +761,7 @@ fn parse_list_at(
     while first_trimmed < len && matches!(bytes[first_trimmed], b' ' | b'\t' | b'\r') {
         first_trimmed += 1;
     }
-    let (ordered, _) = list_marker_at(bytes, first_trimmed).expect("checked list marker");
+    let (ordered, start_num, _) = list_marker_at(bytes, first_trimmed).expect("checked list marker");
     let list_start = first_trimmed;
     let mut list_end = first_trimmed;
     let mut items: Vec<Vec<BlockPiece>> = Vec::new();
@@ -769,7 +778,7 @@ fn parse_list_at(
         if line_indent != base_indent {
             break;
         }
-        let Some((item_ordered, content_start)) = list_marker_at(bytes, scan) else {
+        let Some((item_ordered, _, content_start)) = list_marker_at(bytes, scan) else {
             break;
         };
         if item_ordered != ordered {
@@ -844,6 +853,7 @@ fn parse_list_at(
     (
         BlockPiece::List {
             ordered,
+            start: start_num,
             items,
             attrs: Vec::new(),
             span: mk_span(base, list_start, list_end),
@@ -953,6 +963,21 @@ fn try_parse_table_at(
 
     let sep_start = next_line(bytes, h_end);
     let sep_end = find_line_end(bytes, sep_start);
+    let sep_line = &text[sep_start..sep_end];
+    let alignments: Vec<TableAlign> = split_table_cells(sep_line)
+        .into_iter()
+        .map(|(cs, ce)| {
+            let cell = sep_line[cs..ce].trim();
+            let left = cell.starts_with(':');
+            let right = cell.ends_with(':');
+            match (left, right) {
+                (true, true) => TableAlign::Center,
+                (true, false) => TableAlign::Left,
+                (false, true) => TableAlign::Right,
+                (false, false) => TableAlign::None,
+            }
+        })
+        .collect();
     let mut cursor = next_line(bytes, sep_end);
     let mut table_end = sep_end;
     let mut rows: Vec<Vec<Vec<InlinePiece>>> = Vec::new();
@@ -979,6 +1004,7 @@ fn try_parse_table_at(
     Some((
         BlockPiece::Table {
             headers,
+            alignments,
             rows,
             attrs: Vec::new(),
             span: mk_span(base, first, table_end),
@@ -1071,8 +1097,8 @@ fn is_divider_line(text: &str, bytes: &[u8], i: usize) -> bool {
 }
 
 /// If `bytes[i..]` starts with an unordered (`- `, `* `) or ordered (`1. `, `1) `)
-/// list marker, returns `(ordered, content_start)`.
-fn list_marker_at(bytes: &[u8], i: usize) -> Option<(bool, usize)> {
+/// list marker, returns `(ordered, start_number, content_start)`.
+fn list_marker_at(bytes: &[u8], i: usize) -> Option<(bool, u64, usize)> {
     let len = bytes.len();
     if i >= len {
         return None;
@@ -1083,7 +1109,7 @@ fn list_marker_at(bytes: &[u8], i: usize) -> Option<(bool, usize)> {
         while s < len && matches!(bytes[s], b' ' | b'\t') {
             s += 1;
         }
-        return Some((false, s));
+        return Some((false, 1, s));
     }
     if bytes[i].is_ascii_digit() {
         let mut j = i;
@@ -1095,11 +1121,15 @@ fn list_marker_at(bytes: &[u8], i: usize) -> Option<(bool, usize)> {
             && j + 1 < len
             && matches!(bytes[j + 1], b' ' | b'\t')
         {
+            let start_num = std::str::from_utf8(&bytes[i..j])
+                .ok()
+                .and_then(|digits| digits.parse::<u64>().ok())
+                .unwrap_or(1);
             let mut s = j + 1;
             while s < len && matches!(bytes[s], b' ' | b'\t') {
                 s += 1;
             }
-            return Some((true, s));
+            return Some((true, start_num, s));
         }
     }
     None
@@ -1220,6 +1250,21 @@ fn parse_inlines(
                 text_buf.push('_');
                 i += 1;
             }
+            b'~' if i + 1 < len && bytes[i + 1] == b'~' => {
+                if let Some(close) = find_closing_double_tilde(bytes, i + 2) {
+                    flush_text(&mut pieces, &mut text_buf, text_start, i);
+                    let inner =
+                        parse_inlines(&text[i + 2..close], base + i + 2, depth, diagnostics);
+                    pieces.push(InlinePiece::Strike(inner, mk_span(base, i, close + 2)));
+                    i = close + 2;
+                    continue;
+                }
+                if text_buf.is_empty() {
+                    text_start = i;
+                }
+                text_buf.push('~');
+                i += 1;
+            }
             b'$' => {
                 if i + 1 < len
                     && !matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n' | b'$')
@@ -1308,6 +1353,21 @@ fn parse_inlines(
 
     flush_text(&mut pieces, &mut text_buf, text_start, len);
     pieces
+}
+
+fn find_closing_double_tilde(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'~' && bytes[i + 1] == b'~' && i > start {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 fn find_closing_delim(bytes: &[u8], start: usize, delim: u8) -> Option<usize> {

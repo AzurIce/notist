@@ -228,6 +228,15 @@ pub struct AttrEntry {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableAlign {
+    #[default]
+    None,
+    Left,
+    Center,
+    Right,
+}
+
 #[derive(Debug)]
 pub enum InlinePiece {
     /// Unattached inline attribute annotation `@(...)` waiting for the unified
@@ -239,6 +248,7 @@ pub enum InlinePiece {
     Text(String, Span),
     Strong(Vec<InlinePiece>, Span),
     Emph(Vec<InlinePiece>, Span),
+    Strike(Vec<InlinePiece>, Span),
     Raw(String, Span),
     Link {
         target: String,
@@ -286,6 +296,7 @@ pub enum BlockPiece {
     },
     List {
         ordered: bool,
+        start: u64,
         items: Vec<Vec<BlockPiece>>,
         attrs: Vec<AttrEntry>,
         span: Span,
@@ -301,6 +312,7 @@ pub enum BlockPiece {
     },
     Table {
         headers: Vec<Vec<InlinePiece>>,
+        alignments: Vec<TableAlign>,
         rows: Vec<Vec<Vec<InlinePiece>>>,
         attrs: Vec<AttrEntry>,
         span: Span,

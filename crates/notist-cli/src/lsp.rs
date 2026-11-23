@@ -491,7 +491,9 @@ fn collect_block_link_paths(block: &BlockPiece, out: &mut Vec<String>) {
 
 fn collect_inline_link_paths(inline: &InlinePiece, out: &mut Vec<String>) {
     match inline {
-        InlinePiece::Strong(xs, _) | InlinePiece::Emph(xs, _) => {
+        InlinePiece::Strong(xs, _)
+        | InlinePiece::Emph(xs, _)
+        | InlinePiece::Strike(xs, _) => {
             for x in xs {
                 collect_inline_link_paths(x, out);
             }

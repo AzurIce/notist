@@ -8,6 +8,8 @@ pub enum BuiltinFn {
     Text,
     Strong,
     Emph,
+    Strike,
+    Underline,
     Raw,
     Math,
     Link,
@@ -25,8 +27,10 @@ pub enum BuiltinFn {
     Div,
     Section,
     Blocks,
-    // Data host
+    // Data host & control
     ReadJson,
+    ReadText,
+    Panic,
     // Scalar methods
     IntToString,
     FloatToString,
@@ -66,6 +70,8 @@ pub(crate) fn lookup_prelude_function(name: &str) -> Option<(BuiltinFn, Vec<Type
         "text" => (BuiltinFn::Text, vec![String], Inline),
         "strong" => (BuiltinFn::Strong, vec![Inline], Inline),
         "emph" => (BuiltinFn::Emph, vec![Inline], Inline),
+        "strike" => (BuiltinFn::Strike, vec![Inline], Inline),
+        "underline" => (BuiltinFn::Underline, vec![Inline], Inline),
         "raw" => (BuiltinFn::Raw, vec![String], Inline),
         "math" => (BuiltinFn::Math, vec![String], Inline),
         "link" => (BuiltinFn::Link, vec![String, Inline], Inline),
@@ -90,6 +96,8 @@ pub(crate) fn lookup_prelude_function(name: &str) -> Option<(BuiltinFn, Vec<Type
         "section" => (BuiltinFn::Section, vec![Block], Block),
         "blocks" => (BuiltinFn::Blocks, vec![List(Box::new(Block))], Block),
         "read_json" => (BuiltinFn::ReadJson, vec![String], Json),
+        "read_text" => (BuiltinFn::ReadText, vec![String], String),
+        "panic" => (BuiltinFn::Panic, vec![String], Never),
         _ => return None,
     })
 }
@@ -99,6 +107,8 @@ pub(crate) fn all_prelude_functions() -> Vec<(&'static str, BuiltinFn, Vec<Type>
         "text",
         "strong",
         "emph",
+        "strike",
+        "underline",
         "raw",
         "math",
         "link",
@@ -116,6 +126,8 @@ pub(crate) fn all_prelude_functions() -> Vec<(&'static str, BuiltinFn, Vec<Type>
         "section",
         "blocks",
         "read_json",
+        "read_text",
+        "panic",
     ];
     NAMES
         .iter()

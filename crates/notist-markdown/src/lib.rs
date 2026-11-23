@@ -16,9 +16,9 @@ use std::sync::Arc;
 
 use notc::{
     AttrEntry, BlockPiece, Decl, DocumentFrontend, InlinePiece, ParseDiagnostic, ParseResult,
-    Program, Span, build_document_module, embedded,
+    Program, Span, TableAlign, build_document_module, embedded,
 };
-use rushdown::ast::{Arena, KindData, Node, NodeRef, TextQualifier};
+use rushdown::ast::{Arena, KindData, Node, NodeRef, TableCellAlignment, TextQualifier};
 use rushdown::parser::{
     AnyBlockParser, InlineParser, NoParserOptions, Options, Parser, ParserExtension,
     gfm_strikethrough, gfm_table, parser_extension,
@@ -328,6 +328,11 @@ impl<'a> Lowerer<'a> {
                 }
                 KindData::List(list) => {
                     let ordered = list.is_ordered();
+                    let start = if ordered {
+                        u64::from(list.start())
+                    } else {
+                        1
+                    };
                     let mut items = Vec::new();
                     let mut item = self.node(c).first_child();
                     while let Some(it) = item {
@@ -336,6 +341,7 @@ impl<'a> Lowerer<'a> {
                     }
                     blocks.push(BlockPiece::List {
                         ordered,
+                        start,
                         items,
                         attrs: Vec::new(),
                         span,
@@ -343,6 +349,7 @@ impl<'a> Lowerer<'a> {
                 }
                 KindData::Table(_) => {
                     let mut headers: Vec<Vec<InlinePiece>> = Vec::new();
+                    let mut alignments: Vec<TableAlign> = Vec::new();
                     let mut rows: Vec<Vec<Vec<InlinePiece>>> = Vec::new();
                     let mut section = self.node(c).first_child();
                     while let Some(sec) = section {
@@ -351,13 +358,25 @@ impl<'a> Lowerer<'a> {
                         let mut row_node = self.node(sec).first_child();
                         while let Some(r) = row_node {
                             let mut cells = Vec::new();
+                            let mut row_aligns = Vec::new();
                             let mut cell_node = self.node(r).first_child();
                             while let Some(cell) = cell_node {
+                                if is_header && alignments.is_empty()
+                                    && let KindData::TableCell(tc) = self.node(cell).kind_data()
+                                {
+                                    row_aligns.push(match tc.alignment() {
+                                        TableCellAlignment::Left => TableAlign::Left,
+                                        TableCellAlignment::Center => TableAlign::Center,
+                                        TableCellAlignment::Right => TableAlign::Right,
+                                        TableCellAlignment::None | _ => TableAlign::None,
+                                    });
+                                }
                                 cells.push(self.lower_inlines(cell));
                                 cell_node = self.node(cell).next_sibling();
                             }
                             if is_header && headers.is_empty() {
                                 headers = cells;
+                                alignments = row_aligns;
                             } else {
                                 rows.push(cells);
                             }
@@ -367,6 +386,7 @@ impl<'a> Lowerer<'a> {
                     }
                     blocks.push(BlockPiece::Table {
                         headers,
+                        alignments,
                         rows,
                         attrs: Vec::new(),
                         span,
@@ -505,7 +525,7 @@ impl<'a> Lowerer<'a> {
                 KindData::Strikethrough(_) => {
                     flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let inner = self.lower_inlines(c);
-                    pieces.extend(inner);
+                    pieces.push(InlinePiece::Strike(inner, span));
                 }
                 KindData::RawHtml(_) => {}
                 _ => {

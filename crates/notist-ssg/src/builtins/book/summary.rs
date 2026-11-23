@@ -95,7 +95,10 @@ fn collect_inline_links<'a>(inline: &'a Inline, out: &mut Vec<&'a Inline>, has_i
                 collect_inline_links(child, out, has_image);
             }
         }
-        InlineKind::Strong(inner) | InlineKind::Emph(inner) => {
+        InlineKind::Strong(inner)
+        | InlineKind::Emph(inner)
+        | InlineKind::Strike(inner)
+        | InlineKind::Underline(inner) => {
             collect_inline_links(inner, out, has_image);
         }
         InlineKind::Link { .. } => out.push(inline),
@@ -182,7 +185,7 @@ fn interpret_label(
 }
 
 fn chapter_list(list: &Block, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
-    let BlockKind::List { ordered, items } = &list.node().kind else {
+    let BlockKind::List { ordered, items, .. } = &list.node().kind else {
         return Vec::new();
     };
     if *ordered {

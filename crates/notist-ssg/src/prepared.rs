@@ -5,7 +5,9 @@ use crate::{
     Error, Page, Route,
     document::{Document, diagnostic},
 };
-use notc::{AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span};
+use notc::{
+    AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span, TableAlign,
+};
 use notist::{Diagnostic, Phase, SourceDiagnostic, TextRange};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -272,7 +274,7 @@ fn collect_block_references(
                 collect_block_references(item, origin, source_text, out, customs, has_math);
             }
         }
-        BlockKind::Table { headers, rows } => {
+        BlockKind::Table { headers, rows, .. } => {
             for cell in headers.iter() {
                 collect_inline_references(cell, origin, source_text, out, customs, has_math);
             }
@@ -317,7 +319,10 @@ fn collect_inline_references(
                 collect_inline_references(child, origin, source_text, out, customs, has_math);
             }
         }
-        InlineKind::Strong(inner) | InlineKind::Emph(inner) => {
+        InlineKind::Strong(inner)
+        | InlineKind::Emph(inner)
+        | InlineKind::Strike(inner)
+        | InlineKind::Underline(inner) => {
             collect_inline_references(inner, origin, source_text, out, customs, has_math);
         }
         InlineKind::Link { target, label } => {
@@ -542,9 +547,16 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
             render_inline(inline, ctx, out);
             out.push_str("</p>");
         }
-        BlockKind::List { ordered, items } => {
+        BlockKind::List {
+            ordered,
+            start,
+            items,
+        } => {
             let tag = if *ordered { "ol" } else { "ul" };
             let _ = write!(out, "<{tag}");
+            if *ordered && *start != 1 {
+                let _ = write!(out, " start=\"{start}\"");
+            }
             write_common_attrs(&node.attrs, false, out);
             out.push('>');
             for item in items.iter() {
@@ -582,18 +594,24 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
         BlockKind::Divider => {
             out.push_str("<hr>");
         }
-        BlockKind::Table { headers, rows } => {
+        BlockKind::Table {
+            headers,
+            alignments,
+            rows,
+        } => {
             out.push_str("<table");
             write_common_attrs(&node.attrs, false, out);
             out.push_str("><thead><tr>");
-            for cell in headers.iter() {
-                render_table_cell("th", cell, ctx, out);
+            for (idx, cell) in headers.iter().enumerate() {
+                let align = alignments.get(idx).copied().unwrap_or(TableAlign::None);
+                render_table_cell("th", cell, align, ctx, out);
             }
             out.push_str("</tr></thead><tbody>");
             for row in rows.iter() {
                 out.push_str("<tr>");
-                for cell in row.iter() {
-                    render_table_cell("td", cell, ctx, out);
+                for (idx, cell) in row.iter().enumerate() {
+                    let align = alignments.get(idx).copied().unwrap_or(TableAlign::None);
+                    render_table_cell("td", cell, align, ctx, out);
                 }
                 out.push_str("</tr>");
             }
@@ -652,9 +670,21 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
     }
 }
 
-fn render_table_cell(tag: &str, cell: &Inline, ctx: &mut RenderCtx<'_>, out: &mut String) {
+fn render_table_cell(
+    tag: &str,
+    cell: &Inline,
+    align: TableAlign,
+    ctx: &mut RenderCtx<'_>,
+    out: &mut String,
+) {
     let node = cell.node();
     let _ = write!(out, "<{tag}");
+    match align {
+        TableAlign::None => {}
+        TableAlign::Left => out.push_str(" style=\"text-align:left\""),
+        TableAlign::Center => out.push_str(" style=\"text-align:center\""),
+        TableAlign::Right => out.push_str(" style=\"text-align:right\""),
+    }
     let lift_attrs = matches!(node.kind, InlineKind::Text(_) | InlineKind::Fragment(_))
         && has_html_wrapper_attrs(&node.attrs);
     if lift_attrs {
@@ -719,6 +749,20 @@ fn render_inline(inline: &Inline, ctx: &mut RenderCtx<'_>, out: &mut String) {
             out.push('>');
             render_inline(inner, ctx, out);
             out.push_str("</em>");
+        }
+        InlineKind::Strike(inner) => {
+            out.push_str("<del");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            render_inline(inner, ctx, out);
+            out.push_str("</del>");
+        }
+        InlineKind::Underline(inner) => {
+            out.push_str("<u");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            render_inline(inner, ctx, out);
+            out.push_str("</u>");
         }
         InlineKind::Raw(code) => {
             out.push_str("<code");

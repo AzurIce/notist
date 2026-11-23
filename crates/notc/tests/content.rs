@@ -566,3 +566,77 @@ wrapped
     );
     assert_eq!(inl.plain_text(), "soft wrapped");
 }
+
+#[test]
+fn strike_underline_ordered_list_start_and_table_alignments() {
+    let doc_src = r#"
+Text with ~~deleted~~ and #strike[also deleted] and #underline[underlined].
+
+3. Third item
+4. Fourth item
+
+| Left | Center | Right | Plain |
+| :--- | :---: | ---: | --- |
+| a | b | c | d |
+"#;
+    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.not").expect("evaluates");
+    let BlockKind::Fragment(children) = &doc.node().kind else {
+        panic!("expected fragment, got {doc}");
+    };
+
+    // Paragraph with strike and underline
+    let BlockKind::Paragraph(inl) = &children[0].node().kind else {
+        panic!("expected paragraph");
+    };
+    let InlineKind::Fragment(parts) = &inl.node().kind else {
+        panic!("expected inline fragment");
+    };
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|p| matches!(p.node().kind, InlineKind::Strike(_)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        parts
+            .iter()
+            .filter(|p| matches!(p.node().kind, InlineKind::Underline(_)))
+            .count(),
+        1
+    );
+
+    // Ordered list starting at 3
+    let BlockKind::List {
+        ordered: true,
+        start,
+        items,
+    } = &children[1].node().kind
+    else {
+        panic!("expected ordered list, got {}", children[1]);
+    };
+    assert_eq!(*start, 3);
+    assert_eq!(items.len(), 2);
+
+    // Pipe table with alignments
+    let BlockKind::Table {
+        headers,
+        alignments,
+        rows,
+    } = &children[2].node().kind
+    else {
+        panic!("expected table, got {}", children[2]);
+    };
+    assert_eq!(headers.len(), 4);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        alignments.as_ref(),
+        &[
+            notc::TableAlign::Left,
+            notc::TableAlign::Center,
+            notc::TableAlign::Right,
+            notc::TableAlign::None,
+        ]
+    );
+}

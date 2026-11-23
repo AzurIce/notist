@@ -19,8 +19,8 @@ mod parser;
 
 pub use ast::{
     AttrEntry, AttrLiteral, BinaryOp, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function,
-    Import, ImportKind, ImportMember, InlinePiece, Method, Module, Param, Program, Span, Type,
-    TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
+    Import, ImportKind, ImportMember, InlinePiece, Method, Module, Param, Program, Span,
+    TableAlign, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
 };
 pub use builtin::BuiltinFn;
 pub use check::{

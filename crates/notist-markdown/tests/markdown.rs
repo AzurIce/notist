@@ -127,3 +127,61 @@ fn markdown_supports_inline_and_block_attrs_plus_mid_doc_import_and_ide_analysis
     let syms = analysis.document_symbols("doc.md");
     assert!(!syms.is_empty(), "expected markdown headings in outline");
 }
+
+#[test]
+fn markdown_preserves_gfm_strikethrough_ordered_list_start_and_table_alignments() {
+    let md = r#"
+Some ~~removed~~ text.
+
+5. Fifth
+6. Sixth
+
+| L | C | R | D |
+| :--- | :---: | ---: | --- |
+| 1 | 2 | 3 | 4 |
+"#;
+    let parsed = parse_markdown_document(md);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let project = notc::check_parsed_modules(&[("post.md", &parsed.program.root)])
+        .expect("checks cleanly");
+    let doc = project.eval_document("post.md").expect("evaluates");
+    let BlockKind::Fragment(children) = &doc.node().kind else {
+        panic!("expected fragment");
+    };
+    let BlockKind::Paragraph(inl) = &children[0].node().kind else {
+        panic!("expected paragraph");
+    };
+    let notc::InlineKind::Fragment(parts) = &inl.node().kind else {
+        panic!("expected inline fragment");
+    };
+    assert!(
+        parts
+            .iter()
+            .any(|p| matches!(p.node().kind, notc::InlineKind::Strike(_))),
+        "expected GFM strikethrough in {inl}"
+    );
+
+    let BlockKind::List {
+        ordered: true,
+        start,
+        items,
+    } = &children[1].node().kind
+    else {
+        panic!("expected ordered list, got {}", children[1]);
+    };
+    assert_eq!(*start, 5);
+    assert_eq!(items.len(), 2);
+
+    let BlockKind::Table { alignments, .. } = &children[2].node().kind else {
+        panic!("expected table, got {}", children[2]);
+    };
+    assert_eq!(
+        alignments.as_ref(),
+        &[
+            notc::TableAlign::Left,
+            notc::TableAlign::Center,
+            notc::TableAlign::Right,
+            notc::TableAlign::None,
+        ]
+    );
+}

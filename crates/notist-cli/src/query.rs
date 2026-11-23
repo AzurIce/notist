@@ -61,6 +61,8 @@ pub fn inline_ctor_name(kind: &InlineKind) -> &str {
         InlineKind::Text(_) => "text",
         InlineKind::Strong(_) => "strong",
         InlineKind::Emph(_) => "emph",
+        InlineKind::Strike(_) => "strike",
+        InlineKind::Underline(_) => "underline",
         InlineKind::Raw(_) => "raw",
         InlineKind::Math(_) => "math",
         InlineKind::Link { .. } => "link",
@@ -106,7 +108,10 @@ pub fn serialize_inline(inline: &Inline, source: &str) -> Value {
         InlineKind::Text(t) => {
             obj.insert("value".into(), json!(t.as_ref()));
         }
-        InlineKind::Strong(inner) | InlineKind::Emph(inner) => {
+        InlineKind::Strong(inner)
+        | InlineKind::Emph(inner)
+        | InlineKind::Strike(inner)
+        | InlineKind::Underline(inner) => {
             obj.insert("children".into(), Value::Array(vec![serialize_inline(inner, source)]));
         }
         InlineKind::Raw(code) | InlineKind::Math(code) => {
@@ -162,8 +167,15 @@ pub fn serialize_block(block: &Block, source: &str) -> Value {
         BlockKind::Math(expr) => {
             obj.insert("value".into(), json!(expr.as_ref()));
         }
-        BlockKind::List { ordered, items } => {
+        BlockKind::List {
+            ordered,
+            start,
+            items,
+        } => {
             obj.insert("ordered".into(), json!(ordered));
+            if *ordered && *start != 1 {
+                obj.insert("start".into(), json!(start));
+            }
             obj.insert(
                 "children".into(),
                 Value::Array(items.iter().map(|b| serialize_block(b, source)).collect()),
@@ -173,10 +185,28 @@ pub fn serialize_block(block: &Block, source: &str) -> Value {
             obj.insert("children".into(), Value::Array(vec![serialize_block(body, source)]));
         }
         BlockKind::Divider => {}
-        BlockKind::Table { headers, rows } => {
+        BlockKind::Table {
+            headers,
+            alignments,
+            rows,
+        } => {
             obj.insert(
                 "headers".into(),
                 Value::Array(headers.iter().map(|c| serialize_inline(c, source)).collect()),
+            );
+            obj.insert(
+                "alignments".into(),
+                Value::Array(
+                    alignments
+                        .iter()
+                        .map(|a| match a {
+                            notc::TableAlign::None => json!("none"),
+                            notc::TableAlign::Left => json!("left"),
+                            notc::TableAlign::Center => json!("center"),
+                            notc::TableAlign::Right => json!("right"),
+                        })
+                        .collect(),
+                ),
             );
             obj.insert(
                 "rows".into(),
@@ -246,7 +276,10 @@ fn collect_inline_matches(
                 collect_inline_matches(item, kind, needle, source, out);
             }
         }
-        InlineKind::Strong(inner) | InlineKind::Emph(inner) => {
+        InlineKind::Strong(inner)
+        | InlineKind::Emph(inner)
+        | InlineKind::Strike(inner)
+        | InlineKind::Underline(inner) => {
             collect_inline_matches(inner, kind, needle, source, out);
         }
         InlineKind::Link { label, .. } => {
@@ -306,7 +339,7 @@ fn collect_block_matches(
         | BlockKind::SectionBox(body) => {
             collect_block_matches(body, kind, needle, source, out);
         }
-        BlockKind::Table { headers, rows } => {
+        BlockKind::Table { headers, rows, .. } => {
             for cell in headers.iter() {
                 collect_inline_matches(cell, kind, needle, source, out);
             }

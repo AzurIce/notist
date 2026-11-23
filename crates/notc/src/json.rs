@@ -8,6 +8,13 @@ use std::sync::Arc;
 pub trait DataHost: Sync {
     /// Read and parse a JSON document located at `rel_path` relative to `from_doc`.
     fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String>;
+
+    /// Read a UTF-8 plain-text file located at `rel_path` relative to `from_doc`.
+    fn read_text(&self, _from_doc: &str, rel_path: &str) -> Result<String, String> {
+        Err(format!(
+            "cannot read text `{rel_path}`: data host does not support text reads"
+        ))
+    }
 }
 
 /// Default `DataHost` that rejects external data reads.
@@ -17,6 +24,12 @@ impl DataHost for NoDataHost {
     fn read_json(&self, _from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
         Err(format!(
             "cannot read JSON `{rel_path}`: no data host configured"
+        ))
+    }
+
+    fn read_text(&self, _from_doc: &str, rel_path: &str) -> Result<String, String> {
+        Err(format!(
+            "cannot read text `{rel_path}`: no data host configured"
         ))
     }
 }

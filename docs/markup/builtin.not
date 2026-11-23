@@ -4,8 +4,8 @@
 
 `notc` 采用**不可变单节点内容模型**，所有内容值底层均由 `Arc` 共享指针支撑：
 
-- `Inline`（`Arc<InlineNode>`）：`Fragment`、`Text`、`Strong`、`Emph`、`Raw`、`Math`、`Link`、`Image`、`Custom`
-- `Block`（`Arc<BlockNode>`）：`Fragment`、`Paragraph`、`Heading`、`Callout`、`CodeBlock`、`List`、`Quote`、`Divider`、`Table`、`Math`、`Div`、`SectionBox`、`Section`、`Custom`
+- `Inline`（`Arc<InlineNode>`）：`Fragment`、`Text`、`Strong`、`Emph`、`Strike`、`Underline`、`Raw`、`Math`、`Link`、`Image`、`Custom`
+- `Block`（`Arc<BlockNode>`）：`Fragment`、`Paragraph`、`Heading`、`Callout`、`CodeBlock`、`List`（含 `ordered` 与 `start`）、`Quote`、`Divider`、`Table`（含列对齐 `alignments`）、`Math`、`Div`、`SectionBox`、`Section`、`Custom`
 
 == 核心不变式
 
@@ -19,7 +19,7 @@
 | 函数 | 签名 |
 | --- | --- |
 | `text` | `(String) -> Inline` |
-| `strong` / `emph` | `(Inline) -> Inline` |
+| `strong` / `emph` / `strike` / `underline` | `(Inline) -> Inline` |
 | `raw` / `math` | `(String) -> Inline` |
 | `link` | `(String, Inline) -> Inline` |
 | `image` | `(String, String) -> Inline` |
@@ -33,7 +33,9 @@
 | `divider` | `() -> Block` |
 | `table` | `(List<Inline>, List<List<Inline>>) -> Block` |
 | `blocks` | `(List<Block>) -> Block` |
+| `read_text` | `(String) -> String` |
 | `read_json` | `(String) -> Json` |
+| `panic` | `(String) -> Never` |
 
 == 内置方法
 

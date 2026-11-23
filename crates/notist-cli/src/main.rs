@@ -393,11 +393,8 @@ impl FsDataHost {
     fn new(vroot: PathBuf) -> Self {
         Self { vroot }
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-impl notc::DataHost for FsDataHost {
-    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<notc::JsonValue, String> {
+    fn read_regular_text(&self, from_doc: &str, rel_path: &str, kind: &str) -> Result<String, String> {
         let target_fs = if rel_path.starts_with('/') {
             notist::resources::normalize(&self.vroot.join(rel_path.trim_start_matches('/')))
         } else {
@@ -406,14 +403,25 @@ impl notc::DataHost for FsDataHost {
             notist::resources::normalize(&parent.join(rel_path))
         };
         let meta = std::fs::symlink_metadata(&target_fs)
-            .map_err(|err| format!("failed to read JSON `{rel_path}`: {err}"))?;
+            .map_err(|err| format!("failed to read {kind} `{rel_path}`: {err}"))?;
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(format!(
-                "JSON `{rel_path}` must be a regular file (symlinks and directories are not allowed)"
+                "{kind} `{rel_path}` must be a regular file (symlinks and directories are not allowed)"
             ));
         }
-        let text = std::fs::read_to_string(&target_fs)
-            .map_err(|err| format!("failed to read JSON `{rel_path}`: {err}"))?;
+        std::fs::read_to_string(&target_fs)
+            .map_err(|err| format!("failed to read {kind} `{rel_path}`: {err}"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl notc::DataHost for FsDataHost {
+    fn read_text(&self, from_doc: &str, rel_path: &str) -> Result<String, String> {
+        self.read_regular_text(from_doc, rel_path, "text")
+    }
+
+    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<notc::JsonValue, String> {
+        let text = self.read_regular_text(from_doc, rel_path, "JSON")?;
         notc::JsonValue::parse(&text)
             .map_err(|err| format!("invalid JSON in `{rel_path}`: {err}"))
     }
@@ -738,6 +746,8 @@ fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSe
             }
             notc::InlineKind::Strong(inner)
             | notc::InlineKind::Emph(inner)
+            | notc::InlineKind::Strike(inner)
+            | notc::InlineKind::Underline(inner)
             | notc::InlineKind::Link { label: inner, .. } => walk_inline(inner, out),
             notc::InlineKind::Custom(custom) => {
                 for (_, v) in custom.props.iter() {
@@ -768,7 +778,7 @@ fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSe
             collect_local_images(heading, out);
             collect_local_images(body, out);
         }
-        notc::BlockKind::Table { headers, rows } => {
+        notc::BlockKind::Table { headers, rows, .. } => {
             for cell in headers.iter() {
                 walk_inline(cell, out);
             }

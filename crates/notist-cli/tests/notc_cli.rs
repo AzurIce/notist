@@ -161,3 +161,116 @@ let x = 1;
     );
     assert!(html_out_dir.join("pic.svg").is_file(), "local image should be published");
 }
+
+#[test]
+#[cfg(unix)]
+fn serve_rebuilds_live_on_external_notc_and_hidden_data_file_changes() {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn http_get(address: &str, path: &str) -> Option<String> {
+        let mut stream = TcpStream::connect(address).ok()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut out = String::new();
+        stream.read_to_string(&mut out).ok()?;
+        Some(out)
+    }
+
+    fn wait_for_body(address: &str, path: &str, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut last = String::new();
+        while Instant::now() < deadline {
+            if let Some(resp) = http_get(address, path) {
+                if resp.contains(needle) {
+                    return resp;
+                }
+                last = resp;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("preview at {path} did not contain `{needle}` in time; last:\n{last}");
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(root, "Notist.toml", "[package]\nname = \"live-demo\"\n[site]\n");
+    write(
+        root,
+        "modules/ui.notc",
+        r#"
+fn banner(txt_path: String, json_path: String) -> Block {
+    let raw = read_text(txt_path);
+    let data = read_json(json_path);
+    let tag = data.get("tag").as_string("none");
+    para(text("V1:" + raw + ":" + tag))
+}
+"#,
+    );
+    write(root, "content/.data/value.txt", "alpha");
+    write(root, "content/.data/value.json", r#"{"tag":"j1"}"#);
+    write(
+        root,
+        "content/index.md",
+        r#"# Live Demo
+
+Intro text.
+
+#import "../modules/ui.notc" as ui
+
+#ui.banner("./.data/value.txt", "./.data/value.json")
+"#,
+    );
+
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+    let child = Command::new(notist_bin())
+        .current_dir(root)
+        .args(["serve", "--address", &address, "--no-clear-screen"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _guard = ChildGuard(child);
+
+    // 1. Initial build serves content from external `.notc` + hidden `.data/*` files.
+    wait_for_body(&address, "/", "V1:alpha:j1");
+
+    // 2. Editing external `.notc` module triggers hot rebuild.
+    write(
+        root,
+        "modules/ui.notc",
+        r#"
+fn banner(txt_path: String, json_path: String) -> Block {
+    let raw = read_text(txt_path);
+    let data = read_json(json_path);
+    let tag = data.get("tag").as_string("none");
+    para(text("V2:" + raw + ":" + tag))
+}
+"#,
+    );
+    wait_for_body(&address, "/", "V2:alpha:j1");
+
+    // 3. Editing hidden `.data/value.txt` (`read_text`) and `.data/value.json` (`read_json`) triggers hot rebuild.
+    write(root, "content/.data/value.txt", "beta");
+    write(root, "content/.data/value.json", r#"{"tag":"j2"}"#);
+    wait_for_body(&address, "/", "V2:beta:j2");
+}

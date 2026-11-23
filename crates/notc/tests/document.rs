@@ -63,7 +63,7 @@ Visit [the guide](./other.not#intro) with ![logo](./logo.png).
     };
     assert!(matches!(children[0].node().kind, BlockKind::Heading { level: 1, .. }));
     assert!(matches!(children[1].node().kind, BlockKind::Paragraph(_)));
-    assert!(matches!(children[2].node().kind, BlockKind::List { ordered: false, ref items } if items.len() == 2));
+    assert!(matches!(children[2].node().kind, BlockKind::List { ordered: false, ref items, .. } if items.len() == 2));
     assert!(matches!(children[3].node().kind, BlockKind::Quote(_)));
     assert!(matches!(children[4].node().kind, BlockKind::Divider));
     assert!(matches!(children[5].node().kind, BlockKind::Callout { ref kind, .. } if kind.as_ref() == "tip"));
@@ -160,7 +160,7 @@ $ \sum_{i=1}^n i = \frac{n(n+1)}{2} $
     ));
 
     // Table
-    let BlockKind::Table { headers, rows } = &children[3].node().kind else {
+    let BlockKind::Table { headers, rows, .. } = &children[3].node().kind else {
         panic!("expected Table, got {}", children[3]);
     };
     assert_eq!(headers.len(), 2);
@@ -169,7 +169,7 @@ $ \sum_{i=1}^n i = \frac{n(n+1)}{2} $
     assert_eq!(rows[1][1].plain_text(), "Block");
 
     // Nested List
-    let BlockKind::List { ordered: false, items } = &children[4].node().kind else {
+    let BlockKind::List { ordered: false, items, .. } = &children[4].node().kind else {
         panic!("expected List, got {}", children[4]);
     };
     assert_eq!(items.len(), 2);
@@ -177,7 +177,7 @@ $ \sum_{i=1}^n i = \frac{n(n+1)}{2} $
         panic!("expected nested list inside first list item, got {}", items[0]);
     };
     assert!(matches!(parent_parts[0].node().kind, BlockKind::Paragraph(_)));
-    assert!(matches!(parent_parts[1].node().kind, BlockKind::List { ordered: false, ref items } if items.len() == 2));
+    assert!(matches!(parent_parts[1].node().kind, BlockKind::List { ordered: false, ref items, .. } if items.len() == 2));
 
     // Custom Block
     let BlockKind::Custom(ref panel) = children[5].node().kind else {

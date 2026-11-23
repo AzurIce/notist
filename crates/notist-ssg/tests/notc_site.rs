@@ -332,3 +332,48 @@ fn load(source: String) -> Block {
         diags[0]
     );
 }
+
+#[test]
+fn ssg_renders_strike_underline_list_start_table_alignments_read_text_and_mid_doc_imports() {
+    let mut v = vault(&[
+        (
+            "modules/ui.notc",
+            r#"
+fn note_from(path: String) -> Block {
+    para(underline(text(read_text(path))))
+}
+"#,
+        ),
+        ("content/.data/snippet.txt", "Hidden text payload"),
+        (
+            "content/index.md",
+            r#"# Title
+
+Some ~~struck~~ text.
+
+3. Third
+4. Fourth
+
+| L | C | R |
+| :--- | :---: | ---: |
+| a | b | c |
+
+#import "../modules/ui.notc" as ui
+
+#ui.note_from("./.data/snippet.txt")
+"#,
+        ),
+    ]);
+
+    let out = Builder::default()
+        .build(&mut v, &SiteConfig::default())
+        .expect("site with mid-doc import and read_text builds cleanly");
+    let html = String::from_utf8(out.files[Path::new("index.html")].clone()).unwrap();
+    assert!(html.contains("<del>struck</del>"), "html: {html}");
+    assert!(html.contains("<ol start=\"3\">"), "html: {html}");
+    assert!(html.contains("<th style=\"text-align:left\">L</th>"), "html: {html}");
+    assert!(html.contains("<th style=\"text-align:center\">C</th>"), "html: {html}");
+    assert!(html.contains("<th style=\"text-align:right\">R</th>"), "html: {html}");
+    assert!(html.contains("<td style=\"text-align:right\">c</td>"), "html: {html}");
+    assert!(html.contains("<u>Hidden text payload</u>"), "html: {html}");
+}

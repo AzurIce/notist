@@ -1237,13 +1237,14 @@ fn has_math_component_entry<R: Resources>(resources: &R, math_component: &Path) 
     }
 }
 
-/// Thread-safe cached JSON data host for `notc` evaluation inside `notist-ssg`.
-/// Parses each referenced JSON file at most once across all parallel page workers.
+/// Thread-safe cached data host for `notc` evaluation inside `notist-ssg`.
+/// Reads each referenced file at most once across all parallel page workers.
 struct SsgDataHost {
     vroot: PathBuf,
     project_root: PathBuf,
     reader: Option<Arc<dyn ResourceReader>>,
-    cache: RwLock<HashMap<PathBuf, JsonValue>>,
+    json_cache: RwLock<HashMap<PathBuf, JsonValue>>,
+    text_cache: RwLock<HashMap<PathBuf, String>>,
 }
 
 impl SsgDataHost {
@@ -1254,64 +1255,96 @@ impl SsgDataHost {
             vroot,
             project_root,
             reader,
-            cache: RwLock::new(HashMap::new()),
+            json_cache: RwLock::new(HashMap::new()),
+            text_cache: RwLock::new(HashMap::new()),
         }
     }
-}
 
-impl DataHost for SsgDataHost {
-    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
-        let target_fs = if rel_path.starts_with('/') {
+    fn resolve_target(&self, from_doc: &str, rel_path: &str) -> PathBuf {
+        if rel_path.starts_with('/') {
             normalize(&self.project_root.join(rel_path.trim_start_matches('/')))
         } else {
             let doc_fs = self.vroot.join(from_doc);
             let parent = doc_fs.parent().unwrap_or(&self.vroot);
             normalize(&parent.join(rel_path))
-        };
-
-        if let Some(cached) = self.cache.read().unwrap().get(&target_fs) {
-            return Ok(cached.clone());
         }
+    }
 
+    fn read_utf8(&self, target_fs: &Path, rel_path: &str, kind: &str) -> Result<String, String> {
         let Some(reader) = &self.reader else {
             return Err(format!(
-                "cannot read JSON `{rel_path}`: resource backend does not support rooted data reads"
+                "cannot read {kind} `{rel_path}`: resource backend does not support rooted data reads"
             ));
         };
         let rel_to_root = target_fs.strip_prefix(&self.project_root).map_err(|_| {
             format!(
-                "JSON path `{rel_path}` escapes project root `{}`",
+                "{kind} path `{rel_path}` escapes project root `{}`",
                 self.project_root.display()
             )
         })?;
-        const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
-        let bytes = match reader.read_bounded(rel_to_root, MAX_JSON_BYTES) {
+        const MAX_DATA_BYTES: usize = 64 * 1024 * 1024;
+        let bytes = match reader.read_bounded(rel_to_root, MAX_DATA_BYTES) {
             InputRead::Ready(bytes) => bytes,
             InputRead::Failed(err) => {
-                return Err(format!("failed to read JSON `{rel_path}`: {err:?}"));
+                return Err(format!("failed to read {kind} `{rel_path}`: {err:?}"));
             }
             InputRead::Pending => {
-                return Err(format!("JSON `{rel_path}` is unavailable"));
+                return Err(format!("{kind} `{rel_path}` is unavailable"));
             }
         };
-        let text = std::str::from_utf8(bytes.as_ref())
-            .map_err(|_| format!("JSON `{rel_path}` is not valid UTF-8"))?;
-        let parsed = JsonValue::parse(text)
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_| format!("{kind} `{rel_path}` is not valid UTF-8"))
+    }
+}
+
+impl DataHost for SsgDataHost {
+    fn read_text(&self, from_doc: &str, rel_path: &str) -> Result<String, String> {
+        let target_fs = self.resolve_target(from_doc, rel_path);
+        if let Some(cached) = self.text_cache.read().unwrap().get(&target_fs) {
+            return Ok(cached.clone());
+        }
+        let text = self.read_utf8(&target_fs, rel_path, "text")?;
+        let mut guard = self.text_cache.write().unwrap();
+        Ok(guard.entry(target_fs).or_insert(text).clone())
+    }
+
+    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
+        let target_fs = self.resolve_target(from_doc, rel_path);
+        if let Some(cached) = self.json_cache.read().unwrap().get(&target_fs) {
+            return Ok(cached.clone());
+        }
+        let text = self.read_utf8(&target_fs, rel_path, "JSON")?;
+        let parsed = JsonValue::parse(&text)
             .map_err(|err| format!("invalid JSON in `{rel_path}`: {err}"))?;
-        let mut guard = self.cache.write().unwrap();
+        let mut guard = self.json_cache.write().unwrap();
         Ok(guard.entry(target_fs).or_insert(parsed).clone())
     }
 }
 
-/// Fast lexical scan of leading preamble `#import "..."` paths in a `.not`/`.md`
-/// document so shared `.notc` modules can be discovered and compiled ONCE before
-/// fanning out document parsing and evaluation across worker threads.
-fn scan_leading_import_paths(source: &str) -> Vec<String> {
+/// Fast lexical scan of `#import "..."` paths anywhere in a `.not`/`.md`
+/// document (skipping fenced code blocks) so shared `.notc` modules can be
+/// discovered and compiled ONCE before fanning out document parsing and
+/// evaluation across worker threads.
+fn scan_import_paths(source: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let mut fence: Option<(u8, usize)> = None;
     for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("@!(") {
+        let trimmed = line.trim_start();
+        if let Some((fch, flen)) = fence {
+            let count = trimmed.bytes().take_while(|&b| b == fch).count();
+            if count >= flen && trimmed[count..].trim().is_empty() {
+                fence = None;
+            }
             continue;
+        }
+        let first = trimmed.as_bytes().first().copied();
+        if matches!(first, Some(b'`' | b'~')) {
+            let fch = first.unwrap();
+            let count = trimmed.bytes().take_while(|&b| b == fch).count();
+            if count >= 3 {
+                fence = Some((fch, count));
+                continue;
+            }
         }
         if let Some(rest) = trimmed.strip_prefix("#import") {
             let rest = rest.trim_start();
@@ -1320,9 +1353,7 @@ fn scan_leading_import_paths(source: &str) -> Vec<String> {
             {
                 out.push(after_quote[..end_quote].to_owned());
             }
-            continue;
         }
-        break;
     }
     out
 }
@@ -1350,9 +1381,9 @@ fn compile_shared_notc_modules<R: Resources>(
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut imports_by_file: HashMap<String, Vec<String>> = HashMap::new();
 
-    // Seed shared `.notc` module discovery from every document's leading `#import` lines.
+    // Seed shared `.notc` module discovery from every document's `#import` lines.
     for (text, route) in documents.values().zip(routes.iter()) {
-        let import_paths = scan_leading_import_paths(text);
+        let import_paths = scan_import_paths(text);
         if import_paths.is_empty() {
             continue;
         }

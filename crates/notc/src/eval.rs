@@ -34,6 +34,7 @@ pub enum ExecutionError {
     IntegerOverflow,
     DivisionByZero,
     HostError(String),
+    Panic(String),
 }
 
 struct EvalCtx<'a> {
@@ -136,7 +137,7 @@ fn evaluate(
             }
             Ok(Value::Block(Block::fragment(blocks, attrs.clone(), *span)))
         }
-        C::BlockList(ordered, items, attrs, span) => {
+        C::BlockList(ordered, start, items, attrs, span) => {
             let mut blocks = Vec::with_capacity(items.len());
             for item in items {
                 let Value::Block(block) = evaluate(ctx, item, stack, base, depth)? else {
@@ -147,6 +148,7 @@ fn evaluate(
             Ok(Value::Block(Block::new(
                 BlockKind::List {
                     ordered: *ordered,
+                    start: *start,
                     items: Arc::from(blocks),
                 },
                 attrs.clone(),
@@ -155,6 +157,7 @@ fn evaluate(
         }
         C::BlockTable {
             headers,
+            alignments,
             rows,
             attrs,
             span,
@@ -180,6 +183,7 @@ fn evaluate(
             Ok(Value::Block(Block::new(
                 BlockKind::Table {
                     headers: Arc::from(eval_headers),
+                    alignments: Arc::clone(alignments),
                     rows: Arc::from(eval_rows),
                 },
                 attrs.clone(),
@@ -422,6 +426,18 @@ fn eval_builtin(
             let inner = take_inline(&mut args);
             Value::Inline(Inline::new(InlineKind::Emph(inner), Attrs::empty(), span))
         }
+        BuiltinFn::Strike => {
+            let inner = take_inline(&mut args);
+            Value::Inline(Inline::new(InlineKind::Strike(inner), Attrs::empty(), span))
+        }
+        BuiltinFn::Underline => {
+            let inner = take_inline(&mut args);
+            Value::Inline(Inline::new(
+                InlineKind::Underline(inner),
+                Attrs::empty(),
+                span,
+            ))
+        }
         BuiltinFn::Raw => {
             let code = take_string(&mut args);
             Value::Inline(Inline::new(InlineKind::Raw(code), Attrs::empty(), span))
@@ -527,6 +543,7 @@ fn eval_builtin(
             Value::Block(Block::new(
                 BlockKind::Table {
                     headers: Arc::from(headers),
+                    alignments: Arc::from([]),
                     rows: Arc::from(rows),
                 },
                 Attrs::empty(),
@@ -563,6 +580,18 @@ fn eval_builtin(
                 .read_json(ctx.doc_path, &path)
                 .map_err(ExecutionError::HostError)?;
             Value::Json(json)
+        }
+        BuiltinFn::ReadText => {
+            let path = take_string(&mut args);
+            let text = ctx
+                .host
+                .read_text(ctx.doc_path, &path)
+                .map_err(ExecutionError::HostError)?;
+            Value::String(Arc::from(text))
+        }
+        BuiltinFn::Panic => {
+            let message = take_string(&mut args);
+            return Err(ExecutionError::Panic(message.to_string()));
         }
         BuiltinFn::IntToString => Value::String(Arc::from(take_int(&mut args).to_string())),
         BuiltinFn::FloatToString => Value::String(Arc::from(take_float(&mut args).to_string())),

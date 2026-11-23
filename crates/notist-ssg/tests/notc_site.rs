@@ -182,4 +182,40 @@ fn fallback_box(body: Block) -> Block;
     let reg_js = html(&output, "_notist/pages/index.js");
     assert!(reg_js.contains("customElements.define(\"notist-components-badge\""));
     assert!(reg_js.contains("customElements.define(\"notist-components-panel\""));
+    // Web component attributes include notist-<prop> and notist-content for modules/* compatibility
+    assert!(index_html.contains(r#"notist-content="inline""#));
+    assert!(index_html.contains(r#"notist-label="new""#));
+    assert!(index_html.contains(r#"notist-count="3""#));
+}
+
+#[test]
+fn ssg_routes_math_nodes_to_configured_math_component_and_supports_collapsed_plain_summary() {
+    let mut v = vault(&[
+        ("math/index.js", "export default class MathEl extends HTMLElement {}"),
+        ("math/helper.js", "export const ok = true;"),
+        (
+            "content/SUMMARY.not",
+            "= Book\n\n- @(collapsed: true)Section Group\n  - [Intro](./intro.md)\n",
+        ),
+        (
+            "content/intro.md",
+            "@!(title: \"Math Intro\")\n\n# Math Intro\n\nInline $x + 1$ and block:\n\n$$\ny = x^2\n$$\n",
+        ),
+    ]);
+
+    let mut config = SiteConfig::default();
+    config.math_component = Some("math/index.js".into());
+
+    let output = Builder::default()
+        .build(&mut v, &config)
+        .expect("site with math_component and collapsed plain summary should build");
+
+    let intro_html = html(&output, "intro.html");
+    assert!(intro_html.contains("<title>Math Intro · Site</title>"));
+    assert!(intro_html.contains(r#"<notist-math notist-content="inline" notist-text="x + 1"></notist-math>"#));
+    assert!(intro_html.contains(r#"<notist-math notist-content="block" notist-text="y = x^2"></notist-math>"#));
+    assert!(output.files.contains_key(Path::new("_notist/components/math/index.js")));
+    assert!(output.files.contains_key(Path::new("_notist/components/math/helper.js")));
+    let reg_js = html(&output, "_notist/pages/intro.js");
+    assert!(reg_js.contains("customElements.define(\"notist-math\""));
 }

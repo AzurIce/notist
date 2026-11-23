@@ -839,6 +839,25 @@ pub(crate) fn build<R: Resources + Send>(
                         page_web_components.insert((module_rel.clone(), name.clone()), tag);
                     }
                 }
+                let mut math_tag: Option<&str> = None;
+                if document.has_math
+                    && let Some(math_comp) = &config.math_component
+                    && let Some(entry_out) = resolve_ssg_math_component(
+                        vault.resources(),
+                        math_comp,
+                        &mut assets,
+                        &mut published_component_files,
+                    )?
+                {
+                    let import_rel = relative_url(&component_path, &entry_out, false);
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut page_registrations,
+                        format_args!(
+                            "import * as _c_math from \"./{import_rel}\";\nif (!customElements.get(\"notist-math\")) {{ const C = _c_math.default ?? Object.values(_c_math).find(v => typeof v === 'function'); if (C) customElements.define(\"notist-math\", C); }}\n",
+                        ),
+                    );
+                    math_tag = Some("notist-math");
+                }
                 if !page_registrations.is_empty() {
                     components.insert(
                         document.page.route.path.clone(),
@@ -846,7 +865,7 @@ pub(crate) fn build<R: Resources + Send>(
                     );
                     assets.generated(component_path, page_registrations.into_bytes())?;
                 }
-                let html = document.render_html(&resolved, &page_web_components);
+                let html = document.render_html(&resolved, &page_web_components, math_tag);
                 let mut page = document.page;
                 page.html = html;
                 pages.push(page);
@@ -949,6 +968,47 @@ fn resolve_ssg_web_component<R: Resources>(
         sanitize_tag_part(name)
     );
     Ok(Some((tag, entry_out)))
+}
+
+fn resolve_ssg_math_component<R: Resources>(
+    resources: &R,
+    math_component: &Path,
+    assets: &mut Assets,
+    published: &mut BTreeSet<PathBuf>,
+) -> Result<Option<PathBuf>, Error> {
+    let entry_fs = resources.resolve(math_component);
+    let kind = resources.kind(&entry_fs)?;
+    let out_base = PathBuf::from("_notist/components/math");
+    match kind {
+        Some(ResourceKind::File) => {
+            if entry_fs.file_name().is_some_and(|n| n == "index.js")
+                && let Some(dir) = entry_fs.parent()
+            {
+                copy_component_dir(resources, dir, &out_base, assets, published)?;
+                Ok(Some(out_base.join("index.js")))
+            } else {
+                let file_name = entry_fs
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("math.js"));
+                let file_out = out_base.join(file_name);
+                if published.insert(file_out.clone()) {
+                    assets.copy(resources, &entry_fs, &file_out)?;
+                }
+                Ok(Some(file_out))
+            }
+        }
+        Some(ResourceKind::Directory) => {
+            let index = entry_fs.join("index.js");
+            if resources.kind(&index)? == Some(ResourceKind::File) {
+                copy_component_dir(resources, &entry_fs, &out_base, assets, published)?;
+                Ok(Some(out_base.join("index.js")))
+            } else {
+                Ok(None)
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 fn copy_component_dir<R: Resources>(

@@ -1,1 +1,2 @@
-fn math<C: Type = InlineContent>(text: String) -> C;
+fn math(text: String) -> Inline;
+fn math_block(text: String) -> Block;

@@ -463,3 +463,83 @@ fn attributes_equality_escapes_and_first_class_builtins() {
     assert!(matches!(inner.node().kind, InlineKind::Emph(_)));
     assert_eq!(inner.plain_text(), "Alpha");
 }
+
+#[test]
+fn markdown_preamble_quotes_links_and_safe_hash_calls() {
+    let ui = r#"
+fn note(body: Block) -> Block {
+    callout("note", body)
+}
+fn tag(label: String) -> Inline {
+    strong(text(label))
+}
+"#;
+    let md = r#"
+@!(title: "MD Title", draft: false)
+#import "./ui.notc" as ui
+
+# Heading One
+
+> Quoted link [line ref](https://github.com/org/repo/blob/main/a.rs#L1-L27) and _italic #not_a_call_.
+
+Paragraph with #tag_plain and #ui.tag("ok") and [link #L10](https://example.com#L10).
+
+#ui.note[
+    Inside callout.
+]
+"#;
+    let project = notc::check_project(&[("ui.notc", ui), ("post.md", md)])
+        .expect("md project checks cleanly");
+    let doc = project.eval_document("post.md").expect("md evaluates");
+    assert_eq!(
+        doc.node().attrs.get("title"),
+        Some(&AttrValue::String("MD Title".into()))
+    );
+    let plain = doc.plain_text();
+    assert!(plain.contains("Heading One"), "plain: {plain}");
+    assert!(plain.contains("line ref"), "plain: {plain}");
+    assert!(plain.contains("#not_a_call"), "plain: {plain}");
+    assert!(plain.contains("#tag_plain"), "plain: {plain}");
+    assert!(plain.contains("ok"), "plain: {plain}");
+    assert!(plain.contains("Inside callout."), "plain: {plain}");
+}
+
+#[test]
+fn plain_text_inline_attrs_and_single_line_block_attr_expr() {
+    let doc_src = r#"
+- @(collapsed: true)待整理
+  - [Sub](./sub.not)
+
+@(id: "box-1", aria-label: "Info")#callout("info")[
+    Body text.
+]
+"#;
+    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.not").expect("evaluates");
+    let BlockKind::Fragment(children) = &doc.node().kind else {
+        panic!("expected fragment");
+    };
+    assert_eq!(children.len(), 2);
+    let BlockKind::List { items, .. } = &children[0].node().kind else {
+        panic!("expected list");
+    };
+    let BlockKind::Fragment(item_blocks) = &items[0].node().kind else {
+        panic!("expected list item fragment");
+    };
+    let BlockKind::Paragraph(label) = &item_blocks[0].node().kind else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(
+        label.node().attrs.get("collapsed"),
+        Some(&AttrValue::Bool(true))
+    );
+    assert_eq!(label.plain_text(), "待整理");
+    assert_eq!(
+        children[1].node().attrs.get("id"),
+        Some(&AttrValue::String("box-1".into()))
+    );
+    assert_eq!(
+        children[1].node().attrs.get("aria-label"),
+        Some(&AttrValue::String("Info".into()))
+    );
+}

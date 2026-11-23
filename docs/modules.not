@@ -1,157 +1,31 @@
-#import "../modules/grammar/lib.notc" as grammar;
-#import "../modules/katex/lib.notc" as katex;
-#import "../modules/mermaid/lib.notc" as mermaid;
-#import "../modules/pele/lib.notc" as pele;
-#import "../modules/shader/lib.notc" as shader;
-= 本地模块
+@!(title: "模块与外部声明")
 
-Code 模块是一份 .notc 源文件，通过相对路径 import 其他模块，公开顶层函数与导入的绑定。函数类型与求值规则见 [Code 函数系统](code/functions.not)。
+= 模块与外部声明
 
-== 导入与名称解析
+每个 `.notc` 文件是一个模块，模块间通过相对路径静态构成有向无环图（DAG），循环依赖在编译期报错。
+
+== 六种 `import` 形式
 
 ```notc
-import "../modules/mermaid/lib.notc" as diagrams;
-import "./cards.notc";
-
-fn overview() -> BlockContent {
-    [ #diagrams.diagram("graph LR; Source --> Item") ]
-}
+import "./math.notc";                 // 默认以文件 stem `math` 作为命名空间
+import "./math.notc" as m;            // 显式命名空间别名
+import "./math.notc": inc;            // 导入单个函数
+import "./math.notc": inc, add as s;  // 导入多个并重命名
+import "./math.notc": *;              // 通配导入所有公开绑定
 ```
 
-import 只允许模块顶层声明，路径必须是相对于当前源文件的字符串字面量。支持以下形式；每行表示一个独立的导入选择：
+在 `.not` 文档顶部使用 `#import`（分号可选），规则完全相同。模块中定义的类型关联方法会自动随 `import` 传播到导入方作用域。
+
+== 无函数体的外部内容声明
+
+当一个内容节点需要交由下游后端（例如 SSG Web Component、PDF 渲染器等）按约定处理时，可以在 `.notc` 中只写类型签名，以分号结尾：
 
 ```notc
-import "issue.notc";                    // 绑定命名空间 issue
-import "issue.notc" as issues;          // 绑定命名空间 issues
-import "issue.notc": issue;             // 绑定函数或公开命名空间 issue
-import "issue.notc": issue as ticket;   // 重命名本地绑定
-import "issue.notc": issue, other;       // 选择多个公开成员
-import "issue.notc": *;                 // 导入所有公开绑定
+fn badge(label: String, count: Int) -> Inline;
+fn panel(title: String, body: Block) -> Block;
+fn diagram(source: String) -> Block;
 ```
 
-成员列表允许尾逗号与注释，成员名为单个标识符；命名空间可先导入再逐级访问。模块别名形式与成员选择形式各自独立，`*` 必须单独使用。所有声明保留结尾分号。成员导入无需从文件名生成绑定，因此文件名本身可以不是合法标识符。
-
-每个模块公开自身顶层函数和导入的绑定，包括重命名的函数、命名空间及通配导入展开的绑定。`: *` 只展开这一层的公开名称；公开命名空间保持命名空间，内部成员仍通过点访问。隐式内置 prelude 不属于模块导出。`: member` 只查目标模块的公开表，缺失成员报错，不回落到 prelude。
-
-每份文件使用统一的名称表：本模块函数、模块别名、直接导入的成员和通配展开的名称彼此不可重名；即使绑定指向同一个函数，重复导入仍报错。显式与通配导入采用同样的规则，声明顺序不产生覆盖关系。冲突诊断标明本次导入的文件与成员、已有绑定来源及源码范围；任一冲突使环境加载失败。
-
-导入名称须为合法标识符。`notist`、`self`、`true`、`false`、Code 关键字，以及语言内建的 `some`、`none`、`compile_error`、`Array` 是保留名称。此限制同时适用于模块别名、成员的本地名与通配展开的名称；具有这些名称的公开函数可通过成员重命名导入。其余同名内置 prelude 函数允许被本模块函数或导入绑定遮蔽。
-
-普通调用名称先查当前函数的局部绑定，再查当前文件的函数与静态导入，未绑定的裸名回落到内置 prelude。局部值遮蔽同名函数和命名空间；命名空间本身不可调用。`self.name` 显式查询当前文件的公开绑定，`notist.name` 显式查询内置定义；限定路径不回落 prelude。Markup 语法糖显式使用 notist，因此同名导入不改变普通文本、强调等语法糖的含义。
-
-`diagrams.diagram` 访问导入模块的公开成员。Markup 使用当前文件的导入作用域；Code 函数体使用定义模块的作用域。调用分别写作 `#diagrams.diagram(...)` 与 `diagrams.diagram(...)`。
-
-模块由规范路径标识，函数由模块与函数名标识。别名和成员重命名保留原函数身份。循环导入、缺失文件与无效声明会报告源码位置并阻止加载。
-
-== 文件入口与作用域
-
-每份 Markup 文件通过文件级声明导入需要的模块：
-
-```not
-#import "./widgets.notc" as widgets;
-
-#widgets.panel[ 内容 ]
-```
-
-`#import` 独占一行，允许出现在文件顶层任意位置，绑定对整个文件有效。它产生静态模块声明，不产生 Item、内容调用边界或空段落。字符串、注释、转义与代码块中的相同文字保持普通内容。内容函数的 children、列表、表格等嵌套位置以及 Code 内容字面量不能声明 import；字面量使用定义模块的词法作用域。
-
-Code 使用同一份 import 语法，省略 Markup 的 `#`。引用其他文件的定义需显式导入；未限定的调用先查当前文件的绑定，再查内置 prelude。
-
-模块加载、绑定与 Context 的 Rust 接口见 [Code 管线](designs/pipeline/code.not) 与 [文档管线](designs/pipeline.not)。
-
-== 输出配置
-
-Notist.toml 保存显式函数映射与站点选项。宿主可选择最近的配置，CLI 可通过 --config 指定；配置不合并父级配置。每条映射通过自身的 imports 声明输出依赖，不向文档提供绑定。
-
-```toml
-[[extensions]]
-kind = "replace"
-imports = { typst = "../modules/typst/lib.notc" }
-from = "notist.math"
-to = "typst.math"
-
-[package]
-name = "notes"
-
-[site]
-title = "My Notes"
-content = "."
-theme = "builtins.book"
-extensions.builtins.book = {}
-```
-
-每条规则有独立的 import 表，路径相对于配置文件，from / to 在该表中解析。上例让文档中的 math 使用 Typst 渲染；文档中仍可直接写 `$...$` 或 `#math(...)`。完整契约见 [函数映射](designs/extensions.not)。
-
-项目可以只声明内容函数，由输出规则选择实现，无须为原声明提供 Web Component。本仓库的 [components.diagram](components/README.not#diagram) 使用同签名规则选择 Pele 或 Mermaid；正文保留项目函数身份，HTML 绑定选中的渲染器。下方模块示例直接调用各自实现，以展示模块本身。
-
-== 原生组件与资源
-
-```text
-widgets/
-├── lib.notc
-├── cards.notc
-├── README.not
-├── badge.js
-└── panel/
-    ├── index.js
-    └── style.js
-```
-
-原生内容函数的 HTML 实现与声明文件同目录；badge 使用 badge.js，panel 可使用 panel/index.js。入口选择、冲突检查与注册协议见 [内容函数与输出绑定](designs/content-functions.not)。
-
-组件标签和发布资源路径从规范模块身份生成；模块别名、成员重命名及通配导入都保留定义文件对应的资源根。输出映射继续按原始函数身份选择实现，同一函数的不同导入写法共享组件注册和发布资源。同名函数来自不同目录时可以共存；目录组件的辅助资源保持相对路径。具体映射与参数协议见 [Content Function Extensions](designs/content-functions.not)。
-
-Code 模块和组件资源可以位于文档目录之外。资源读取与发布的 Rust 接口见 [资源输入与求值](designs/resource-inputs.not)。
-
-仓库的 modules/ 提供以下可复用模块及其实现资源。
-
-== 实现与示例
-
-| 模块 | 内容 |
-| --- | --- |
-| [grammar](https://github.com/AzurIce/notist/blob/main/modules/grammar/README.not) | #node[ 文法记法的 Rust / WASM 解析与铁路图可视化
-
-#grammar.diagram(r#"lex Digit -> [`0`-`9`];"#)
-] |
-| [mermaid](https://github.com/AzurIce/notist/blob/main/modules/mermaid/README.not) | #node[ Mermaid 图形组件
-
-#mermaid.diagram(r#"""
-stateDiagram-v2
-    direction LR
-    [*] --> s1
-    s1 --> [*]
-"""#)
-] |
-| [pele](https://github.com/AzurIce/notist/blob/main/modules/pele/README.not) | #node[ Mermaid 语法、CSS 主题与自适应 SVG
-
-#pele.diagram("flowchart LR; Source[源码] --> IR([Expr 森林]); IR --> Item([Item 树])")
-] |
-| [katex](https://github.com/AzurIce/notist/blob/main/modules/katex/README.not) | #node[ LaTeX 数学呈现
-
-#katex.math<BlockContent>(r#"""
-f(\relax{x}) = \int_{-\infty}^\infty
-\hat{f}(\xi)\,e^{2 \pi i \xi x}
-\,d\xi
-"""#)
-]|
-| [typst](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not) | #node[ Typst 数学与通用源码经 WASM 编译为 SVG，支持运行时导入 Typst 包
-
-$ e^(i pi) = -1 $
-] |
-| [shader](https://github.com/AzurIce/notist/blob/main/modules/shader/README.not) | #node[ WebGPU / WGSL 全屏 shader、动画与交互
-
-#shader.canvas(r#"""
-fn palette(t: f32) -> vec3f {
-  return 0.5 + 0.5 * cos(6.283185 * (vec3f(t) + vec3f(0.0, 0.33, 0.67)));
-}
-
-fn mainImage(fragCoord: vec2f) -> vec4f {
-  let uv = (2.0 * fragCoord - uniforms.iResolution.xy) / uniforms.iResolution.y;
-  let time = uniforms.iTime;
-  let wave = sin(uv.x * 4.0 + time) * cos(uv.y * 4.0 - time * 0.7);
-  let rings = sin(length(uv) * 10.0 - time * 2.0 + wave);
-  let color = palette(rings * 0.18 + length(uv) * 0.15 + time * 0.05);
-  return vec4f(color, 1.0);
-}
-"""#)
-] |
+- 外部声明必须返回 `Inline` 或 `Block`（或受限的类型参数），参数不能为函数类型。
+- `notc` 内核对调用做完整的静态类型检查，并在求值时产出纯数据节点 `CustomNode { module, name, props }`。
+- `notc` 本身完全不感知 HTML、JS 或 Web Components；具体呈现完全交由渲染后端决定。

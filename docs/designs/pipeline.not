@@ -1,289 +1,59 @@
-#import "../../modules/typst/lib.notc" as typst;
-= 文档管线
+@!(title: "编译与构建管线")
 
-一份 .not 文档、一个 .notc 模块，如何变成最终呈现的内容树？本文跟着源码把这条管线走一遍。读完应该能回答四个问题：哪一段不依赖环境、名字在哪里变成函数、两种语言在哪里汇合、求值发生在哪。
+= 编译与构建管线
+
+一份 `.not` / `.md` 文档与一组 `.notc` 模块如何变成最终的静态站点 HTML 或编辑器 LSP 语义反馈？整个过程在解析之后迅速汇合为同一条 `notc` 管线。
 
 == 一图总览
 
-#typst.svg(r#"""
-#import "@preview/fletcher:0.5.8": diagram, node, edge
-
-#set page(fill: none, margin: 8pt)
-#set text(size: 14pt, fill: rgb("#293b34"))
-#set par(leading: 3pt)
-#let ink = rgb("#6c7d73")
-#let bg = rgb("#faf8f4")
-#let border = rgb("#becbc1")
-#let surface = rgb("#f5f4ee")
-#let data-fill = rgb("#eef4ed")
-#let phase-one = rgb("#39735e")
-#let phase-two = rgb("#446f91")
-#let point(x, y) = (x * 1pt, -y * 1pt)
-#let data(name, x, y, label, w: 210, h: 52) = node(
-  point(x, y), label, name: name, width: w * 1pt, height: h * 1pt,
-  inset: 6pt, shape: rect, corner-radius: 18pt, fill: data-fill,
-)
-#let process(name, x, y, label, w: 200, h: 50) = node(
-  point(x, y), label, name: name, width: w * 1pt, height: h * 1pt,
-  inset: 5pt, shape: rect, corner-radius: 4pt, fill: white,
-)
-#let frame(name, x, y, w, h, title) = node(
-  point(x, y), align(top + left, text(size: 11pt, fill: ink, title)),
-  name: name, width: w * 1pt, height: h * 1pt, inset: 8pt,
-  shape: rect, corner-radius: 5pt, fill: surface, stroke: border + 0.65pt,
-  layer: -2, snap: false,
-)
-#let caption(x, y, label, color: ink, size: 10.5, fill: bg) = node(
-  point(x, y), text(size: size * 1pt, fill: color, label),
-  stroke: none, fill: fill, inset: 2pt, shape: rect, layer: 3, snap: false,
-)
-#let flow(..args) = edge(..args, "-|>", crossing: true)
-#let environment(..args) = edge(..args, "-|>", stroke: (paint: ink, thickness: 0.6pt, dash: "dashed"), crossing: true)
-
-#scale(x: 132%, y: 132%, reflow: true, diagram(
-  node-stroke: border + 0.7pt,
-  edge-stroke: ink + 0.75pt,
-  edge-corner-radius: 4pt,
-  node-inset: 5pt,
-  crossing-fill: bg,
-  crossing-thickness: 6,
-
-  caption(100, -28, [Markup · 文档语义], size: 15, color: phase-one, fill: none),
-  caption(400, -28, [Code · 函数体与实例], size: 15, color: phase-two, fill: none),
-  node(point(100, 0), name: <document-start>, shape: circle, radius: 3pt, fill: ink, stroke: none),
-  node(point(400, 0), name: <code-start>, shape: circle, radius: 3pt, fill: ink, stroke: none),
-  data(<markup-source>, 100, 34, [Markup 源码\ .not / .md / …], h: 44),
-  data(<code-source>, 400, 34, [Code 源码\ .notc], h: 44),
-  frame(<markup-parse>, 100, 100, 220, 64, [Parse]),
-  process(<not-frontend>, 32, 114, [.not], w: 56, h: 24),
-  process(<md-frontend>, 100, 114, [.md], w: 56, h: 24),
-  process(<other-frontend>, 168, 114, […], w: 56, h: 24),
-  data(<markup-cst>, 100, 157, [前端语法树], w: 190, h: 26),
-  frame(<markup-lower>, 100, 214, 220, 64, [Lower]),
-  process(<not-lower>, 32, 228, [.not], w: 56, h: 24),
-  process(<md-lower>, 100, 228, [.md], w: 56, h: 24),
-  process(<other-lower>, 168, 228, […], w: 56, h: 24),
-  process(<code-parse>, 400, 100, [Code Parse], w: 170, h: 24),
-  data(<code-cst>, 400, 157, [Code CST\ 内容语法树 side list], w: 200, h: 40),
-  process(<code-lower>, 400, 214, [Code Lower], w: 170, h: 24),
-  data(<markup-ir>, 100, 286, [Markup IR₁\ Expr 森林 / 注解 side list], h: 56),
-  node(point(400, 286), align(top + left, [CodeModule]), name: <module>,
-    width: 220pt, height: 104pt, inset: 8pt, shape: rect,
-    corner-radius: 18pt, fill: data-fill, layer: -1, snap: false),
-  data(<code-ir>, 400, 286, [函数体 Expr 树 · Code IR\ #text(size: 10.5pt)[Content 内嵌 Markup IR₁]], w: 196, h: 46),
-  caption(400, 322, [签名 / imports / 来源], size: 10.5, fill: data-fill),
-
-  // Both languages use one mutable Checker session, with an immutable Context.
-  frame(<markup-pipeline>, 100, 488, 240, 332, [Markup 共享后端]),
-  process(<resolve>, 100, 372, [Resolve\ #text(size: 10.5pt)[名称 / 类型 / 调用实例]], w: 190, h: 42),
-  data(<resolved-ir>, 100, 436, [IR₂ · RExpr], w: 190, h: 30),
-  process(<shape>, 100, 496, [Shape], w: 190, h: 34),
-  data(<shaped-ir>, 100, 556, [IR₂′ · 结构定稿], w: 190, h: 30),
-  process(<materialize>, 100, 619, [Materialize\ #text(size: 10.5pt)[注解挂载 / Item 生成]], w: 190, h: 40),
-  process(<check>, 400, 475, [Code 实例检查\ Expr → TypedExpr\ #text(size: 10.5pt)[Context / 当前模块\ 编译期实参 / 参数类型\ 局部绑定 / 已选分支]], h: 110),
-  caption(400, 379, [按实例读取函数体\ 经 Context.CodeProgram], size: 11),
-
-  data(<forest>, 100, 690, [求值前 Item 森林], h: 46),
-  node(point(400, 690), align(top + left, text(size: 12pt)[CheckedProgram · 实例缓存]),
-    name: <checked-program>, width: 220pt, height: 104pt, inset: 8pt,
-    shape: rect, corner-radius: 18pt, fill: data-fill, layer: -1, snap: false),
-  caption(400, 671, [ResolvedInstance → InstanceRecord], size: 10.5, fill: data-fill),
-  data(<typed-ir>, 400, 706, [body: TypedExpr\ #text("Content(Vec<Item>)")], w: 196, h: 46),
-  process(<document-root>, 100, 767, [文档入口\ 附加 Doc 根 / 挂载模块属性], h: 52),
-  frame(<analysis>, 250, 882, 520, 122, [Analysis]),
-  data(<semantic>, 100, 882, [求值前 Item 树\ #text(size: 10.5pt)[语义树 · children:C]], h: 54),
-  data(<checked>, 400, 882, [CheckedProgram\ #text(size: 10.5pt)[具体实例 / TypedExpr]], h: 54),
-  caption(250, 925, [诊断 / 来源源码], size: 11, fill: surface),
-  process(<evaluate>, 250, 997, [Evaluate · 子树替换\ Context / 同签名目标选择], w: 280, h: 52),
-  data(<result>, 250, 1077, [求值后 Item 树\ 表示树 · children:O], h: 52),
-
-  flow(<document-start>, <markup-source>),
-  flow(<code-start>, <code-source>),
-  flow(<markup-source.south>, <markup-parse.north>),
-  flow(<markup-parse.south>, <markup-cst.north>),
-  flow(<markup-cst.south>, <markup-lower.north>),
-  flow(<markup-lower.south>, <markup-ir.north>),
-  flow(<code-source.south>, <code-parse.north>),
-  flow(<code-parse.south>, <code-cst.north>),
-  flow(<code-cst.south>, <code-lower.north>),
-  flow(<code-lower.south>, <module.north>),
-  flow(<markup-ir.south>, <resolve.north>),
-  flow(<resolve.south>, <resolved-ir.north>),
-  flow(<resolved-ir.south>, <shape.north>),
-  flow(<shape.south>, <shaped-ir.north>),
-  flow(<shaped-ir.south>, <materialize.north>),
-  flow(<materialize.south>, <forest.north>),
-  flow(<module.south>, <check.north>),
-  flow(<check.south>, <checked-program.north>),
-  caption(400, 584, [缓存具体实例], size: 11),
-  flow(<forest.south>, <document-root.north>),
-  flow(<document-root.south>, <semantic.north>),
-  flow(<checked-program.south>, <checked.north>),
-  flow(<semantic.south>, point(100, 957), point(210, 957), point(210, 971)),
-  flow(<checked.south>, point(400, 957), point(290, 957), point(290, 971)),
-  flow(<evaluate.south>, <result.north>),
-
-  // Code crosses into the frontend twice: content literals are parsed and
-  // bounded by the frontend (CST returns to the side list), then lowered by
-  // the frontend during Code lowering; the resulting IR₁ embeds into Expr.
-  flow(<code-parse.west>, <markup-parse.east>, stroke: phase-one + 0.9pt),
-  caption(258, 100, [① 内容 Parse · 定界], color: phase-one),
-  flow(<markup-cst.east>, <code-cst.west>, stroke: phase-one + 0.9pt),
-  caption(248, 157, [① 语法树返回], color: phase-one),
-  flow(<code-lower.west>, <markup-lower.east>, stroke: phase-one + 0.9pt),
-  caption(258, 214, [② 字面量 Lower], color: phase-one),
-  flow(<markup-ir.east>, <code-ir.west>, stroke: phase-one + 0.9pt),
-  caption(242, 286, [② 字面量 IR₁ 嵌入], color: phase-one),
-
-  // Resolve can request a Code instance; Code content uses the same lexical session.
-  flow(<resolve.east>, point(285, 372), point(285, 440), point(305, 440)),
-  caption(285, 404, [调用实例]),
-  flow(<check.west>, point(250, 475), point(250, 336), point(170, 336), point(170, 351), stroke: phase-two + 0.9pt),
-  caption(268, 475, [IR₁\ + 词法绑定], color: phase-two),
-  flow(<forest.east>, point(250, 690), point(250, 510), point(305, 510), stroke: phase-two + 0.9pt),
-  caption(250, 600, [Item 森林\ 返回检查器], color: phase-two),
-))
-"""#)
-
-读法：圆角是数据，矩形是处理，嵌套表示包含关系。左列跟随一份 Markup 文档，右列跟随一个 Code 模块，两列在 Checker 会话汇合。
-
-- 绿色是 Code 对所选前端的两次借用，每轮往返共用一个编号：① 定界并解析字面量，② 把字面量 Lower 成 IR₁。
-- 蓝色是 Checker 会话内的往返：检查器交出字面量的 IR₁ 和当前词法绑定，收回已完成的 Item 森林。
-
-== 两条入口，一个后端
-
-Markup 经 Parse 生成前端语法树，Lower 成未解析的 Expr 森林（IR₁）与注解列表。共享后端依次完成 Resolve（名称与契约检查）、Shape（节与内容槽整理）、Materialize（挂载注解并生成 Item）。文档入口添加 Doc 根。阶段契约见 [Markup 管线](pipeline/markup.not)。
-
-Code 将 `[ ... ]` 的正文交给所选 Markup 前端：ContentParser 解析字面量边界与语法，ContentLowering 将其转为 IR₁，嵌入函数体：
-
 ```text
-函数体 Expr（Code IR，还不认识任何名字）
-└─ Content
-   ├─ forest: Vec<Expr>   ← 完整的 Markup IR₁
-   ├─ annotations: Vec<Annotation>
-   └─ body / span
+  .not / .md 文档源码                      .notc 模块源码
+         │                                       │
+         ▼                                       ▼
+  parse_document /                        parse (lexer + parser +
+  parse_markdown_document                 flank [inline] / [ block ])
+  (@!(...) + #import + 正文)                     │
+  合成 fn __doc__() -> Block                     │
+         │                                       │
+         └───────────────► 统一的 notc::Module ◄──┘
+                                   │
+                ┌──────────────────┴──────────────────┐
+                │       三层静态分析（纯内存、无 IO）    │
+                │  1a. collect_module_interface       │
+                │      提取函数/方法签名（不读函数体）   │
+                │  1b. topological_order (DAG/环检测)  │
+                │  1c. 构建每模块 exports + ModuleScope │
+                │  2.  check_module_bodies            │
+                │      每模块独立全量类型检查 → ModuleExpr│
+                │      校验单态可达泛型特化             │
+                └────────┬────────────────────┬───────┘
+                         │                    │
+         ┌───────────────┘                    └───────────────┐
+         ▼ (LSP 路径：不求值)                                  ▼ (SSG 路径)
+  WorkspaceAnalysis                                  CheckedProject::eval_document
+  容错 AST 语义索引                                    1. lower_entry("__doc__")
+  → Diagnostics / Symbols                               仅特化并 lower 可达子图
+  → Hover / GotoDef                                  2. eval::evaluate 求值
+  → 类型感知 Completions                                → 不可变单节点树 notc::Block
+                                                               │
+                                                               ▼
+                                                    Document::from_block
+                                                    • 显式调用 block.sectionize()
+                                                    • 提取 attrs / title / Heading slug
+                                                               │
+                                                               ▼
+                                                    全站链接、资源与 Web Components
+                                                    • DocumentIndex 校验跨页链接与 #anchor
+                                                    • 按约定加载 Custom 节点对应 JS 组件
+                                                    • PreparedPage::render_html + 代码高亮
+                                                               │
+                                                               ▼
+                                                    Tera 模板 & 主题 → BuildOutput
 ```
 
-两种语言的 Parse / Lower 都处理语法结构，名称绑定与类型检查在装配环境后进行。
+== 关键设计决策
 
-== Checker 会话：名字在这里变成实例
-
-分析从一份装配好的 Context 开始（签名注册表、未检查函数体、模块作用域、ExtensionPlan，只读），Checker 会话在其上按需工作。两个方向都会用到它：
-
-- 文档 Resolve 遇到 Code 调用（如 `#diagrams.diagram(...)`）时，向会话请求具体实例，并按其签名检查调用。
-- 会话根据编译期实参、参数类型与局部绑定，将函数体 Expr 检查为 TypedExpr。遇到 `Expr::Content` 时，将 IR₁ 与词法绑定交给共享后端，返回的 Item 森林嵌入已检查表达式：
-
-```text
-已检查的函数体：TypedExpr
-├─ ty: Option<Type>
-└─ kind: ExprKind::Content(Vec<Item>)
-```
-
-Item 既是共享内容后端的输出，也可嵌入已检查的 Code 表达式。实例结果保存在 CheckedProgram；泛型分支按编译期条件选择，只检查选中分支。
-
-== 求值
-
-Analysis 保存求值前 Item 树与实例缓存，Evaluate 在其上工作：按节点的 `NodeContent::Expr` 与已检查调用执行内容实现，replace 扩展在此挑选同签名目标，结果森林替换调用边界内的 children。它保留原语义树、不重新 Shape；失败在内容边界恢复，其余内容继续。契约见 [Code 类型与函数系统](../code/functions.not#对-item-与-shape-的契约) 与 [函数映射](extensions.not)。CLI 的 core / json / query 默认看求值前，`--eval` 看求值后。
-
-== 对象速查
-
-| 对象 | 职责 | 生命周期 |
-| --- | --- | --- |
-| CodeModule | 单个 .notc 的 Parse / Lower 结果：签名、函数体、静态 imports | Context 装配前产生 |
-| 函数体 Expr | 未检查表达式树，字面量位置为 `Expr::Content` | 与实例无关，可复用 |
-| Markup IR₁ | 未解析 Expr 森林与注解 side list | Lower 后固定，各实例共享 |
-| Environment | 宿主装配结果：模块源码、配置位置、Context | 宿主持有，不可变 |
-| Context | Registry、CodeProgram、模块作用域、ExtensionPlan | 装配完成后只读 |
-| Checker | 当前模块、编译期实参、局部绑定、诊断、CheckedProgram | 每次会话创建 |
-| TypedExpr | 实例的已检查表达式树，内容分支是 Item 森林 | 存于 InstanceRecord.body |
-| CheckedProgram | ResolvedInstance → 签名、TypedExpr、诊断、状态；伴随源码与定义名称快照 | 随 Analysis 保留；独立检查只导出报告 |
-
-Context 保存模块作用域；Checker.scope 保存局部绑定与当前实例的编译期实参。
-
-宿主入口只有几个：`analyze` / `inspect` 跑完整文档（inspect 额外保留解析树与中间 IR），`compile_module` 只出 CodeModule，`analyze_content_literal` 一次编译单个字面量，`evaluate` 求值；`Vault.analyze_code` 是宿主侧的 Code 文件检查入口。
-
-== 宿主装配：Context 从哪来
-
-#typst.svg(r#"""
-#import "@preview/fletcher:0.5.8": diagram, node, edge
-#set page(fill: none, margin: 8pt)
-#set text(size: 14pt, fill: rgb("#293b34"))
-#set par(leading: 3pt)
-#let ink = rgb("#6c7d73")
-#let bg = rgb("#faf8f4")
-#let border = rgb("#becbc1")
-#let data-fill = rgb("#eef4ed")
-#let point(x, y) = (x * 1pt, -y * 1pt)
-#let data(name, x, y, label, w: 180, h: 58) = node(
-  point(x, y), label, name: name, width: w * 1pt, height: h * 1pt,
-  inset: 6pt, shape: rect, corner-radius: 18pt, fill: data-fill,
-)
-#let process(name, x, y, label, w: 180, h: 58) = node(
-  point(x, y), label, name: name, width: w * 1pt, height: h * 1pt,
-  inset: 6pt, shape: rect, corner-radius: 4pt, fill: white,
-)
-#let caption(x, y, label, size: 10.5, fill: bg) = node(
-  point(x, y), text(size: size * 1pt, fill: ink, label),
-  stroke: none, fill: fill, inset: 2pt, shape: rect, layer: 3, snap: false,
-)
-#let flow(..args) = edge(..args, "-|>", crossing: true)
-#scale(x: 120%, y: 120%, reflow: true, diagram(
-  node-stroke: border + 0.7pt, edge-stroke: ink + 0.75pt,
-  edge-corner-radius: 4pt, crossing-fill: bg, crossing-thickness: 6,
-  data(<document-imports>, 85, 40, [Markup 的 imports], w: 170, h: 52),
-  data(<code-entry>, 285, 40, [Code 入口源码], w: 170, h: 52),
-  data(<config>, 485, 40, [Notist.toml\ #text(size: 10.5pt)[输出规则 / 局部 imports]], w: 170, h: 52),
-  process(<load>, 285, 145, [宿主加载 / 装配\ #text(size: 11pt)[Resources 读取模块 / Parse / Lower\ 安装 CodeModule / 绑定 import 作用域\ 校验文档输出规则]], w: 260, h: 90),
-  node(point(285, 325), align(top + left, [Environment · 宿主结果]), name: <environment>,
-    width: 420pt, height: 210pt, inset: 8pt, shape: rect,
-    corner-radius: 18pt, fill: data-fill, layer: -1, snap: false),
-  data(<context>, 285, 315, [Context · 纯分析输入\ #text(size: 12pt)[Registry：函数签名与定义\ CodeProgram：未检查 Expr / 模块作用域\ ExtensionPlan：有序文档扩展与执行映射]], w: 380, h: 130),
-  caption(285, 405, [配置位置 / 已加载模块的路径与源码], size: 11, fill: data-fill),
-  process(<document-analysis>, 110, 490, [文档分析入口\ analyze_lowered]),
-  process(<code-analysis>, 460, 490, [Code 文件检查入口\ #text(size: 11pt)[check_module / 报告装配]], w: 190),
-  data(<document-result>, 110, 580, [Analysis\ #text(size: 11pt)[Item 语义树 / 实例缓存\ 诊断 / 来源源码]], h: 62),
-  data(<code-result>, 460, 580, [CodeAnalysis\ #text(size: 11pt)[声明 / 诊断 / 来源源码]], w: 190, h: 62),
-  flow(<document-imports.south>, point(85, 145), <load.west>),
-  flow(<code-entry.south>, <load.north>),
-  flow(<config.south>, point(485, 145), <load.east>),
-  caption(485, 102, [仅文档入口]),
-  flow(<load.south>, <environment.north>),
-  flow(<context.west>, point(50, 315), point(50, 448), point(110, 448), <document-analysis.north>),
-  flow(<context.east>, point(520, 315), point(520, 448), point(460, 448), <code-analysis.north>),
-  flow(<document-analysis.south>, <document-result.north>),
-  flow(<code-analysis.south>, <code-result.north>),
-))
-"""#)
-
-装配以当前文件为入口。Markup 文档先经前端拿到 import 列表，宿主沿相对路径递归加载 .notc（读取、Parse / Lower、安装、绑定作用域），得到这份文档的 Environment。配置里每条输出规则带自己的 imports 表，独立加载、独立校验签名，不碰文档和其他规则的绑定；规则语义见 [本地模块](../modules.not)。纯 Pipeline 不碰文件：读取与缓存都在宿主，内存输入与 Worker 输入走同一加载路径。
-
-Vault 按规范路径与文档源码快照缓存不可变的 Environment：同一文件无论经相对、绝对还是含 `.` / `..` 的写法都共享身份；输入变化时创建新的资源视图与 Vault，缓存不做变更追踪。
-
-LSP 与 CLI 的 Code 检查共用 `Vault.analyze_code`：用编辑中的源码覆盖资源视图，`Environment.load_from` 只加载该模块自身的 import 图，再以 `check_module` 检查——以编译期参数均有默认值的函数为种子，其余实例在调用处按需触发。CodeAnalysis 只导出声明、诊断与来源源码，不读输出配置、不创建 Doc 根、不求值。
-
-宿主负责资源取得、环境装配与文档间关系，以下边界由 Vault 统一维护。
-
-@(id: "vault-内容边界与索引")
-== Vault 内容边界与索引
-
-=== 三个目录范围
-
-| 范围 | 确定方式 | 作用 |
-| --- | --- | --- |
-| Vault 内容根 | `Resources.root` | 确定可纳入正文与本地引用的内容边界 |
-| 文档输出配置 | 最近的 Notist.toml，或显式 --config | 选择输出规则及其局部 imports；文档名称绑定由源码 import 决定 |
-| 索引扫描目录 | `Vault.index` 的扫描输入 | 确定首先扫描哪些文档；随后补载实际链接到的 Vault 内正文 |
-
-扫描子目录不缩小 Vault 内容边界。Code 模块和组件实现资源可以位于 Vault 外；Resources 的根表示内容边界，资源访问范围由宿主实现决定。导入模块不会自动把其文档加入正文索引。
-
-=== 引用检查
-
-本地 link 与 embed 按文档目录解析并规范化。最终目标越过 Vault 根时，在引用节点产生 Semantic 诊断，并停止补载该目标；`../` 在最终目标仍位于 Vault 内时合法。带 scheme 或 #raw("//") 的外部 URL 保持外部链接，不作为 Vault 正文读取或发布。
-
-边界诊断附加到 `Vault.analyze` / `inspect` 的 Analysis，供查询与语言服务等宿主共用。纯 Pipeline 接收源码与 Context；内容边界检查由持有 Vault 根的宿主执行。`VaultIndex.from_documents` 对显式传入的根执行相同检查，已有诊断不重复添加。
-
-`Vault.index` 从各文档处理结果派生 VaultIndex，保存索引、诊断、链接与 backlinks。它扫描指定目录，再补载 Vault 内实际链接到的正文；检查结果和 backlinks 的路径均相对于 Vault 根。
-
-== 文档扩展边界
-
-静态 import 装配后，before_check 接收可变 IR₁、节点注解与文档属性；修改结果完整进入 Resolve、Shape 与 Materialize。after_check 校验只读语义 Item，after_evaluate 编辑具体输出 Item。ExtensionPlan 调度有序 hooks 与同签名执行映射；内容字面量与 Code 模块不触发文档 hooks。契约与失败处理见 [文档扩展](extensions.not)。
+- *没有求值前/求值后两棵树*：`.not` 文档就是返回 `Block` 的零参入口函数 `__doc__()`，静态检查只产出带 `InstanceKey` 的 `ModuleExpr`，求值直接构造不可变 `Block` / `Inline` 节点树。
+- *`sectionize()` 移出编译器*：标题折节是 `Block` 上的纯库方法，只在需要章节层次的下游（如 SSG）显式调用，不污染类型检查器。
+- *泛型按定义点全量检查*：`<T: Type>` + `where` 守卫 + `match T` 在定义点即验证所有分支；执行时仅按入口可达性做单态化与 lowering。
+- *Web Components 归属 SSG 层*：`notc` 中的外部声明只生成 `CustomNode` 数据；JS 组件发现、脚本打包与 `<script type="module">` 注册全部在 SSG 阶段按目录约定完成。

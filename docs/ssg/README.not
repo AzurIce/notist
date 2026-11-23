@@ -1,121 +1,16 @@
-= Notist SSG
+@!(title: "静态站点生成 (SSG)")
 
-Notist SSG 将源文档渲染为正文，再套用模板，在输出目录的对应位置生成 HTML。源文件决定内容与路径，模板决定页面布局；data 可以向模板补充额外信息。
+= 静态站点生成（SSG）
 
-== 构建与预览
+`notist-ssg` 将内容目录中的 `.not` 与 `.md` 文档连同它们导入的 `.notc` 模块整体编译，并结合路由、链接校验、静态资源、Sass 与 Tera 模板发布为静态站点。
 
-在包的 Notist.toml 中声明 site：
+== 构建流程
 
-```toml
-[package]
-name = "example"
+1. *发现源文件*：按 `include` / `exclude` 和 `mounts` 收集文档与静态资源。
+2. *站点前置扩展*：运行配置的 `before_compile` 扩展（如 `builtins.book` 解析 `SUMMARY.not` 并筛选页面）。
+3. *全站 `notc` 编译*：解析全部文档与递归导入的 `.notc` 模块，执行一次性静态类型检查，逐页求值并调用 `sectionize()`。
+4. *全站链接与资源校验*：汇总全站页面路由与元素 `id`，解析相对链接、校验 `#anchor`、按需拷贝引用资源（缺失本地图片直接报错，断链发出告警）。
+5. *HTML 渲染与 Web Components*：单遍将 `notc::Block` 渲染为 HTML，代码块走构建期语法高亮；对存在同目录 JS 实现的 `Custom` 节点按约定生成自定义元素标签并打包注册脚本。
+6. *模板渲染*：运行 `before_template` 扩展，通过 Tera 模板（支持内置或自定义主题覆盖）并行渲染全部页面并输出。
 
-[site]
-title = "My Site"
-```
-
-默认从 content 读取文档，使用 templates 中的模板。没有自定义模板时，使用内置的极简 page 模板，可以直接构建，但没有导航、侧栏等站点布局。
-
-```sh
-notist build
-notist serve --port 8000
-```
-
-build 默认输出到 workspace 根的 notist-output/example/；独立包则使用包根。serve 提供本地预览，文件变化后自动重建；失败时保留上次成功预览。
-
-`notist build -j 8` 与 `notist serve -j 8` 为全部构建阶段设置统一的工作线程数上限；`-j 1` 使用串行求值与模板渲染。默认使用可用 CPU 数。求值和模板共用线程池，serve 重建复用该线程池，其他阶段仍保留自己的先后依赖。
-
-目录与其他配置见 [Notist.toml 配置](../configuration.not#site)，命令行选项见 [Notist CLI](../cli.not)。
-
-== 源文件与输出
-
-文档保留相对于 content 的目录结构，只将扩展名替换为 .html；图片等资源原样复制：
-
-```text
-content/index.not          → index.html
-content/about.md           → about.html
-content/guide/start.not    → guide/start.html
-content/guide/image.svg    → guide/image.svg
-```
-
-文档间的本地链接会指向对应的 HTML 页面。
-
-== 模板
-
-模板使用 Tera，放在 templates 下，文件扩展名为 .tera。默认使用 page，创建 `templates/page.tera` 即可覆盖内置模板：
-
-```tera
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>{{page.title}} · {{site.title}}</title>
-    <link rel="stylesheet" href="{{assets.highlight}}">
-  </head>
-  <body>
-    <main>{{page.html | safe}}</main>
-    {% if assets.components %}
-      <script type="module" src="{{assets.components}}"></script>
-    {% endif %}
-  </body>
-</html>
-```
-
-模板可以访问当前页面与整站信息：
-
-| 名称 | 用途 |
-| --- | --- |
-| `page.title` / `page.html` | 当前页面的标题与已渲染正文。正文使用 safe 输出，避免再次转义。 |
-| `page.attrs` | 文档自定义属性。 |
-| `page.route` / `page.headings` | 页面路径、URL 与标题列表，可用于链接和目录。 |
-| `site.title` / `site.base_url` | 站点标题与链接前缀。 |
-| `site.pages` / `site.directories` | 整站页面与目录，可用于组织导航。 |
-| `site.data` | data 目录加载的额外信息。 |
-| `assets.highlight` / `assets.components` | 代码高亮样式与组件脚本的地址；自定义模板按上例加载。 |
-
-模板可以使用 include 和 extends 拆分、复用布局；引用模板名时不带 .tera。`url(path='index.html')` 可以生成带 base_url 的站点链接。
-
-=== 页面属性
-
-文档可以指定标题、模板及其他信息：
-
-```not
-@!(title: "About", template: "article", description: "About this project")
-= About
-
-Page content.
-```
-
-这里使用 `templates/article.tera`，模板中通过 `page.attrs.description` 访问描述。未指定时，标题取第一个标题或文件名，模板使用站点配置中的 template（默认为 page）。
-
-== 额外数据
-
-data 目录中的 TOML / JSON 会加载到 `site.data`，让模板可以访问文档以外的信息，例如项目资料、导航配置或外部数据。
-
-例如 `data/project.toml`：
-
-```toml
-repository = "https://github.com/example/project"
-```
-
-模板中即可使用：
-
-```tera
-<a href="{{site.data.project.repository}}">源码</a>
-```
-
-数据键是去掉扩展名的相对路径，例如 `data/folder/example.json` 通过 `site.data["folder/example"]` 访问。
-
-== 样式与主题
-
-- static 下的文件复制到输出目录，可放 CSS、图片等资源。
-- sass 下的 .scss / .sass 编译为对应路径的 .css；以 _ 开头的文件仅用于导入。
-- theme 可以指定一个包含 templates、static、sass 的主题目录；站点中的同名文件优先于主题。
-
-例如 `static/site.css` 输出为 `site.css`，模板中用 `{{url(path='site.css')}}` 引用。
-
-== 站点扩展（Experimental）
-
-扩展可以在构建前增删改文档源码和模板数据，例如读取 Cargo.toml，自动生成 examples 页面。生成内容不写回源目录，仍按相同路径规则构建。
-
-配置与协议见 [SSG 站点扩展](extensions.not)，完整示例见 [从 Cargo examples 生成站点](../cookbook/ssg-extensions.not)。
+相关文档：[Book 导航与主题](../book.not)、[站点扩展](extensions.not)、[HTML 渲染](../html.not)、[Web Components 约定](../components/README.not)。

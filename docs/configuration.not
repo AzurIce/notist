@@ -1,135 +1,23 @@
-= Notist.toml 配置
+@!(title: "配置参考")
 
-一份 Notist.toml 可以定义 package、workspace，或同时定义两者。每个 package 最多一个可选的 site。包组织见 [Package 与站点组织](packages.not)，命令见 [Notist CLI](cli.not)，章节组织见 [Notist Book](book.not)。
+= 配置参考（`Notist.toml`）
 
-== 文件发现
+`Notist.toml` 描述包、工作区与静态站点配置。
 
-build / serve 从当前目录向上寻找最近的 Notist.toml，并查找声明成员关系的祖先 workspace。包根是包清单目录；workspace 不继承扩展、主题或站点选项。单文件命令从输入文件所在目录向上寻找最近清单。--config 显式指定清单，相对调用者当前工作目录。
-
-workspace 内通过 `notist build -p notist-site` 按包名选择成员。--config 即使指向成员，仍识别所属 workspace，默认输出根不变。
-
-== Package
-
-```toml
-[package]
-name = "my-docs"
-```
-
-name 必填，非空，只允许 ASCII 字母、数字、减号和下划线。它标识包，并作为默认发布子目录名，但不决定网页标题。包可以没有 site，供内容模块与单文件命令使用；build / serve 要求存在 site。暂不定义版本、依赖和导出字段。
-
-== Workspace
-
-```toml
-[workspace]
-members = ["book", "website", "content-library"]
-# output = "notist-output"
-```
-
-members 是相对 workspace 根的显式包目录列表，不解释 glob。成员必须位于 workspace 根内，不能重复，不支持嵌套 workspace；workspace 内包名必须唯一。根清单同时声明 package 时，根包自动成为成员。
-
-output 指定产物集合目录，相对 workspace 根，默认为 notist-output；集合目录不能包含成员输入根。每个站点默认发布到集合目录下的 package.name 子目录。没有 site 的模块包不生成发布目录。
-
-== Site
-
-```toml
-[site]
-title = "My Site"
-```
+== `[site]` 常用字段
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| output | `<workspace 根>/notist-output/<package.name>` | 显式配置时是相对包根的最终发布目录；独立包以包根作为 workspace 根 |
-| title | `"Site"` | 站点标题 |
-| base_url | `"/"` | url helper 的 HTTP(S) 或根相对前缀，不能带 query / fragment |
-| content | `"content"` | 内容目录；`"."` 表示包根 |
-| include / exclude | `["**"]` / `[]` | 内容相对路径的发现 glob；* 不跨目录，** 跨目录 |
-| directory_urls | false | README / index 映射为目录首页，其他页面为 `<stem>/index.html` |
-| copy_content_assets | true | 复制非文档内容文件；混合源码目录建议 false，仅发布正文显式引用资源 |
-| theme | 无 | 内置主题或文件系统主题目录；省略时使用极简 page 模板 |
-| templates | `"templates"` | 覆盖主题同名模板 |
-| static_dir | `"static"` | 覆盖主题同名静态资源 |
-| data | `"data"` | TOML / JSON 数据目录，映射为 site.data |
-| sass | `"sass"` | Sass 编译入口目录，partial 仅作为输入 |
-| template | `"page"` | 默认模板名，文档根 template 属性可覆盖 |
-| styles / scripts | `[]` | 按声明顺序暴露为 assets.styles / assets.scripts，Book 主题自动加载 |
-| extension_order | 扩展名排序 | 所有配置站点扩展名的完整排列，不依赖 TOML 书写顺序 |
-
-所有目录字段相对包根，styles / scripts 相对 content。点开头的条目、target、node_modules、输出目录及主题输入不参与内容发现。未知字段和无效 glob 会报错。
-
-serve 注册内容目录监听时使用相同的 exclude 规则，排除目录在遍历前剪枝；挂载路径按 mounts.path 匹配。模板及显式构建依赖的必要监听不受内容发现过滤取消，见 [预览](cli.not)。
-
-=== 外部目录挂载
-
-```toml
-[[site.mounts]]
-source = "../art"
-path = "art"
-```
-
-source 相对包根，或为绝对路径。path 是内容命名空间内的非空相对目录；不能包含上级跳转、占用 _notist、遮盖已有内容或与其他挂载重叠。源目录必须存在，不能与 content 或输出互相包含。挂载保留文档真实源身份，不扩大数据读取授权。文件系统宿主拒绝符号链接资源。
-
-== Book 扩展与主题
-
-```toml
-[package]
-name = "handbook"
-
-[site]
-title = "Project Handbook"
-content = "."
-theme = "builtins.book"
-directory_urls = true
-copy_content_assets = false
-
-[site.extensions.builtins.book]
-summary = "SUMMARY.not"
-select = true
-```
-
-summary 相对 content；省略时发现 SUMMARY.not 或 SUMMARY.md，同时存在会报歧义。没有结构文件时按目录组织导航。select 默认 false，仅组织导航；为 true 时同时只编译、发布 SUMMARY 选择的页面。结构文件本身不发布。
-
-扩展表存在即注册，全部默认参数可写 `extensions.builtins.book = {}`。扩展与主题独立选择，互不隐式启用。
-
-== 扩展
-
-文档扩展位于顶层，作用于包内的文档构建和单文件命令：
-
-```toml
-[[extensions]]
-kind = "replace"
-imports = { typst = "modules/typst/lib.notc" }
-from = "notist.math"
-to = "typst.math"
-```
-
-imports 与文档命令 CWD 相对清单目录；绑定不进入文档导入作用域。支持 replace 和 command，接口见 [扩展 Notist](extensions.not)。文档规则统一配置于顶层。
-
-站点扩展是命名字典：
-
-```toml
-[site.extensions.generate]
-command = ["python3", "scripts/generate.py"]
-watch = ["Cargo.toml", "examples"]
-```
-
-builtins 是保留命名空间。外部表必须提供非空 command 数组，可选 watch 数组，不接受 kind / stages 等未知字段。command 直接执行，不经过 shell；CWD 和 watch 相对包根。
-
-各阶段先按 Builder.with_extension 注册顺序运行原生扩展，再按 extension_order 或完整名称排序运行配置扩展。before_compile 只修改源码集合；before_template 读取最终 Pages，只修改模板 data。一次构建的两个事件复用同一实例或命令进程，命令使用 JSON Lines 通信。watch 在失败构建中也生效，Rust Resources 读取的依赖由宿主记录。协议见 [SSG 站点扩展](ssg/extensions.not)。
-
-== 路径基准
-
-| 配置 | 基准 |
-| --- | --- |
-| workspace.members、workspace.output | workspace 清单所在目录 |
-| content、theme、templates、static_dir、data、sass、output、mounts.source | 包清单所在目录；显式绝对路径除外 |
-| include、exclude、summary、styles、scripts、mounts.path | content 命名空间 |
-| 文档扩展 imports、文档命令 CWD、站点命令 CWD、watch | 包清单所在目录 |
-| --config、--out-dir | 调用者当前工作目录 |
-
-== 输出
-
-默认输出到 workspace 根的 notist-output / package.name；独立包输出到包根的 notist-output / package.name。workspace.output 可改变集合目录名。site.output 与 --out-dir 都指定最终网站根，不追加包名；--out-dir 相对当前工作目录，优先于 site.output，且要求只构建一个站点。
-
-包名和 workspace 根由 CLI 的包装配层解析。直接调用 Rust Builder 不发现清单或拼接包名，应在 SiteConfig.output 中提供最终发布目录。
-
-发布整目录替换，输出必须为空或包含有效的 _notist/publication.json。重建清理过期产物，失败保留旧产物。构建前校验整个 workspace 的包名和输出归属；输出不能覆盖任一成员的输入根或 workspace 清单，包输出之间不能重叠。产物集合目录不参与内容发现。workspace 不授予成员之间的内容发布权限。
+| `title` | `"Site"` | 站点标题 |
+| `base_url` | `"/"` | 站点的根路径或 `http(s)://` 地址 |
+| `content` | `"content"` | 文档源目录 |
+| `output` | `"public"` | 构建输出目录 |
+| `theme` | 无 | 内置主题（如 `"builtins.book"`）或本地主题目录 |
+| `templates` | `"templates"` | 站点自定义 Tera 模板目录（按文件名覆盖主题模板） |
+| `static_dir` | `"static"` | 原样复制到输出根目录的静态资源 |
+| `data` | `"data"` | 注入到 `site.data` 的 TOML / JSON 数据目录 |
+| `sass` | `"sass"` | 自动编译的 `.scss` / `.sass` 样式目录 |
+| `directory_urls` | `false` | 将 `README.not` / `index.not` 映射为目录 URL |
+| `copy_content_assets` | `true` | 是否全量复制内容目录中的非文档资源；设为 `false` 时仅复制被显式引用的资源 |
+| `include` / `exclude` | `["**"]` / `[]` | 内容目录相对路径 glob 过滤 |
+| `mounts` | `[]` | 将外部目录挂载到站点内容路径下 |

@@ -1,9 +1,7 @@
-fn panel(title: String = "Panel", expanded: Bool = true)[children: BlockContent] -> BlockContent;
-fn badge(label: String, count: Int = 1) -> InlineContent;
-fn diagram(source: String, theme: String = "auto") -> BlockContent;
+// Pure external content declarations — zero HTML or JS knowledge inside `notc`.
+// When building an SSG site, `notist-ssg` resolves matching `./badge.js`,
+// `./panel/index.js`, etc. by convention as Web Components.
 
-fn notc(source: String) -> BlockContent {
-    #node[
-        #raw(source, intline: true)
-    ]
-}
+fn badge(label: String, count: Int) -> Inline;
+fn panel(title: String, body: Block) -> Block;
+fn diagram(source: String) -> Block;

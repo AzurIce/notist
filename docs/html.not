@@ -1,146 +1,21 @@
-= HTML Rendering
+@!(title: "HTML 渲染")
 
-`notist-html` 将求值后的 Item 树渲染为 HTML 片段。.not 与 Markdown 共用同一个 renderer。输入树由 [Markup 管线](designs/pipeline/markup.not) 分析后求值得到，节点契约见 [Builtin](markup/builtin.not)。
+= HTML 渲染
 
-== 使用
+HTML 渲染属于后端展示层，独立于 `notc` 语言内核，直接消费求值并 `sectionize()` 后的不可变 `notc::Block` 树：
 
-```rust
-let context = notist::Context::default();
-let pipeline = notist::Pipeline::default();
-let analysis = pipeline.analyze("example.not", source, &context)?;
-let evaluated = pipeline.evaluate(&analysis, &context);
-let html = notist_html::render(&evaluated.root);
-```
-
-仓库中可使用 `cargo run --example html -- document.not` 或 `.md` / `.notmd` / `.nmd` 输出片段；HTML 写入 stdout，源码与渲染诊断写入 stderr。
-
-`render(&Item) -> String` 是默认入口。需要渲染诊断时使用 `Renderer.new().render_with_diagnostics(&Item) -> RenderResult`；结果包含 html、diagnostics、source_map 与 used_components，渲染诊断携带原节点的源码范围，使用 Semantic 阶段。调用者分别保留源码分析与渲染产生的诊断。
-
-renderer 按内容树的顺序输出，保留正文空白，并为错误节点提供可显示的占位。
-
-== 节点映射
-
-| 构造器 | HTML |
+| `notc` 节点 | HTML 输出 |
 | --- | --- |
-| Doc | children；有可映射属性时使用 div |
-| paragraph | p；行内组件的 light DOM 含块内容时使用 div.notist-paragraph，避免浏览器自动闭合 p |
-| heading | h1 至 h6；更深层级使用带 role 与 aria-level 的 div |
-| section | section；heading 仍是其第一个 child |
-| text | 转义文本；有可映射属性时使用 span |
-| strong / emph / strike | strong / em / del |
-| raw | 行内 code；类别为 Block 时 pre 内嵌 code |
-| math | 行内 span.notist-math；类别为 Block 时 div.notist-math；默认显示转义后的公式文本 |
-| link | a；无 children 时以 target 作为文字 |
-| embed | span.notist-embed；默认包含通用资源链接 |
-| list / item | ul 或 ol / li；有序列表保留 start |
-| callout | kind 为 quote 时 blockquote；其他为 div.notist-callout |
-| divider | hr |
-| table / row / cell | table / tr / td 或 th；表格上下文决定 cell 的映射 |
-| node | children；有可映射属性时按内容使用 span 或 div |
-| 已求值的 Interpolation | children；有可映射属性时按内容使用 span 或 div，Item 中的分组保持不变 |
-| Extension | 按 HtmlRegistry 的规范函数身份生成组件；缺少目标时保留 children 并诊断 |
-| Custom | 保留 children 的恢复容器，并产生渲染诊断 |
+| `Section` | `<section>...</section>` |
+| `Heading` | `<h1..h6 id="...">...</h1..h6>`（显式 `@(id: ...)` 优先，否则自动生成唯一 slug） |
+| `Paragraph` | `<p>...</p>` |
+| `List` | `<ul>` / `<ol>` 与 `<li>`（支持任意嵌套） |
+| `Quote` / `Divider` | `<blockquote>` / `<hr>` |
+| `Table` | `<table><thead>...</thead><tbody>...</tbody></table>` |
+| `Callout` | `<aside class="callout callout-{kind}">...</aside>` |
+| `CodeBlock` | `<pre><code class="language-...">`（构建期经 `notist-html` 高亮，配套 `_notist/highlight.css`） |
+| `Math`（行内 / 块级） | `<span class="notist-math">` / `<div class="notist-math">` |
+| `Link` / `Image` | 经安全 URL 校验后输出 `<a href>` / `<img src alt>` |
+| `Custom` | SSG 存在对应 JS 实现时输出自定义元素标签，否则输出语义回退容器 |
 
-连续的开头 header 行进入 thead，余下行进入 tbody；后续 header 行保持原位置并使用 th。表头 cell 带 scope，table.align 逐列生成 text-align 样式。单元格的段落与其他块内容均保留。列表统一保留 item 中的段落，不依赖 Markdown tight 标记。
-
-raw 的 lang 字段取首个逗号或空白分隔片段生成 language-* 类，正文原样转义，不裁掉末尾换行。默认 HTML 片段不附带样式表、代码高亮或公式引擎。
-
-@(id: "属性")
-== 属性
-
-- id、title、lang、dir：字符串值映射为同名 HTML 属性。
-- class：字符串或字符串数组，与 renderer 自带的 class 合并。
-- tags：字符串数组，映射为 data-notist-tags。
-- data-* 与 aria-*：保留同名 HTML 属性。
-- 其他自定义属性统一映射到 data-*，例如 status 映射为 data-status，human 映射为 data-human。显式 data-* 优先于映射到同名属性的普通注解。
-
-可输出的属性名由小写 ASCII 字母、数字、短横线、下划线、点与冒号组成。data-notist-* 与 aria-level 留给 renderer；映射后占用 data-notist-* 的普通名称同样保留。不能映射的名称仍保存在 Item.attrs 中。
-
-自定义属性的字符串与标量使用文本编码，Unit 为 null；数组与字典沿用 [组件参数编码](designs/content-functions.not#参数编码) 的 typed JSON v1 编码。所有输出值均经过 HTML 转义。onclick、style、href 等自定义注解分别输出为 data-onclick、data-style、data-href，不成为事件、样式或链接。link / embed 的显式 title 字段在 attrs 没有字符串 title 时输出。
-
-[Path](code/path.not) 是编译输入的逻辑资源身份，不是公开 URL。含 Path 的属性或组件数据（包括嵌套集合）不会输出，并产生渲染诊断；IR 调试 JSON 使用显式 Path 标记，不将其隐式转成字符串。
-
-普通 node 和求值后的分组，无属性时只输出 children，有属性时生成包装元素。list、table、row 中的分组展开为 item、row、cell；分组本身的属性无法放在合法的 HTML 包装上，因此省略并报告诊断，子节点属性照常保留。
-
-@(id: "内容状态")
-=== 内容状态
-
-status 注解标记内容状态：draft（讨论中）、staged（等待实现）、outdate（已过时）。标注一段内容时使用带注解的 `#node[ ... ]`。
-
-共享的 status.css 根据 data-status 呈现块级细框与标签、行内细下划线以及 cell 内侧留有间隙的边框；outdate 的行内标记为红色波浪线。样式支持明暗主题、打印与无 JavaScript 页面。静态站点自动发布该样式，Web 预览加载同一份 CSS；直接使用 Renderer 的宿主可通过 notist_html.STATUS_CSS 取得样式。可运行示例见 [内容状态](components/README.not#内容状态)。
-
-== 代码高亮
-
-notist-html 的可选 Cargo feature highlight 提供构建期高亮。基础 Renderer 默认仍输出转义文本；宿主显式安装代码回调，并发布样式：
-
-```rust
-let renderer = notist_html::Renderer::new()
-    .with_code_renderer(notist_html::highlight::code);
-let html = renderer.render(&root);
-let css = notist_html::highlight::CSS;
-```
-
-回调为块级 pre/code 生成高亮内容，保留外层属性与源码映射。支持 Rust、JavaScript、TypeScript / TSX、JSON、TOML、Shell、YAML、Dockerfile 和 Notist 等语言。语言标签取首个逗号或空白之前的名称，因此 rust,ignore、rust,no_run 均使用 Rust 高亮。
-
-没有语言、未知语言，以及 text / txt / plaintext / plain / none / nohighlight 均回退到普通转义文本，不自动猜测语言。高亮保留原始源码、空白与末尾换行，输出带 z- 前缀的作用域 class；样式通过 --notist-code-* CSS 变量配置颜色，默认跟随系统明暗，根元素的 data-theme=light / dark 可覆盖。静态 HTML 无需高亮脚本。
-
-Book 与 SSG 自动为正文接入高亮。SSG 的自定义模板通过 assets.highlight 加载默认配色，也可提供自己的样式。
-
-== 资源与数学扩展
-
-```rust
-let renderer = notist_html::Renderer::new()
-    .with_embed_renderer(|item| {
-        // 根据 target、description、title 及 attrs 选择资源呈现。
-        // Some(html) 替换 span.notist-embed 内部；None 使用默认资源链接。
-        None
-    })
-    .with_math_renderer(|item| {
-        // Some(html) 替换 span / div.notist-math 内部；None 显示公式文本。
-        None
-    });
-let result = renderer.render_with_diagnostics(analysis.root());
-```
-
-回调接收完整 Item，可以借用应用状态；外层元素及属性由 renderer 保留。数学回调可按 Item.level 选择行内或显示公式排版。返回值是应用生成的可信 HTML，不再转义或清洗；调用者拼接源码字段时使用公开的 escape_text、escape_attribute 和 is_safe_url。
-
-默认 embed 不推断文件类型，同一个 IR 节点可以由应用转换为图片、音视频或其他资源。target 可以是已绑定的 Path 或远程 URL 字符串；query／fragment 是独立字段。自定义回调必须使用宿主资源映射，不能将 Path 转成 URL 字符串；选定基础 URL 后可调用 notist.embed.append_suffix 组合后缀。默认 math 保留公式文本，实际排版通过回调接入。
-
-== 转义与链接
-
-文本中的 &、小于号和大于号被转义，属性值额外转义单双引号；NUL 替换为 Unicode replacement character。直接处理 IR 已解码的值，不再次解码 Markdown 的字符引用或标点转义。
-
-默认 URL 输出支持相对路径、fragment、HTTP(S)、mailto、tel、FTP；其他 scheme 不输出 href，并产生诊断。scheme 检查考虑浏览器移除的 ASCII tab / 换行与开头控制字符。renderer 保留目标字符串，不重写文档扩展名；资源位置与发布路径由应用决定。
-
-Renderer.with_url_resolver 接收完整 Item 与原目标字符串，返回 Some(URL) 改写 link 或远程 embed 的目标，或 None 保留原值。原目标与改写结果均经过 URL 安全检查；该回调不修改 IR，也不解释组件参数中的路径。
-
-link 与 embed 的 Path 只传给 Renderer.with_resource_resolver：回调接收 Item 与 ResourcePath，返回宿主选定的基础公开 URL。renderer 在安全检查后附加独立的 query／fragment 并转义 HTML；同一资源的不同引用可以使用不同后缀。None 产生 UnpublishedResource 诊断并省略 href，不回退到逻辑路径或文件系统路径。Path 不会传给字符串 URL 回调。
-
-```rust
-let renderer = notist_html::Renderer::new()
-    .with_resource_resolver(|_, path| published_urls.get(path).cloned());
-let result = renderer.render_with_diagnostics(&evaluated.root);
-```
-
-资源授权、存在性与发布由宿主负责，绑定回调本身不触发核心 IO。Vault 的普通预览仅为 Vault 内资源选择相对 URL，不复制文件或要求资源已落盘；越界资源诊断一次。Book 与 SSG 对实际发布的 embed 执行其各自的资源检查和映射；错误边界隐藏的资源与 Expanded 包装原来的输入不参与发布。link 的 String 目标与既有校验规则保持独立。
-
-结构映射参照 [HTML table content model](https://html.spec.whatwg.org/multipage/tables.html#the-table-element) 与 [HTML grouping content](https://html.spec.whatwg.org/multipage/grouping-content.html)。
-
-== 模块组件与完整页面
-
-HtmlRegistry.default 装配原生内置 handler；bind_component(function_def, ModuleLocator) 将同一语义签名绑定到约定标签，Renderer.with_registry 使用装配结果。renderer 不导入 module，只输出组件和 used_components；后者覆盖嵌套 children 并按函数身份去重。
-
-组件的命名、notist-protocol="2" 参数协议及目标冲突规则见 [内容函数与输出绑定](designs/content-functions.not)。Item.level 已保存分析类别，渲染无须重新读取 lib.notc。组件通过 slot 展示 light DOM children，其内部 DOM 不进入 IR。
-
-组件字段使用执行目标实例的编译期实参替换签名中的类型参数后检查。错误 Item 优先呈现为错误占位；列表、表格等结构位置保留合法的外围 HTML 容器。
-
-Vault.render_html 沿源码 import 装配签名与实现，完成分析和求值后，只为结果树实际需要的原生目标查找 HTML 入口。未使用的声明、未返回的输入和错误节点隐藏的 children 不参与绑定。它返回原始 analysis、evaluation 表示树及完整 rendered 结果；[函数映射](designs/extensions.not) 在 Evaluate 中选择目标，renderer 消费结果树。ModuleLocator 区分逻辑资源路径与浏览器 URL；with_module_urls 由宿主设置发布映射。HTML 的 component_entries / select_component_entry 定义入口规则，顶层驱动 IO，HtmlRegistry.from_bindings 引用同一 Registry 的 FunctionDef。
-
-CLI 的 html 命令将完整页面及实际使用的资源写入目录：组件位于 _notist/modules/，本地嵌入文件位于 _notist/resources/。资源缺失、越界或为符号链接时导出失败，保留原有输出。完整书籍与站点的构建见 [Notist Book](book.not) 和 [Notist SSG](ssg/README.not)。例如：
-
-```sh
-cargo run -p notist-cli -- html docs/components/README.not --out-dir target/components-demo
-python3 -m http.server
-```
-
-访问 /target/components-demo/ 查看 [Vault 组件示例](components/README.not)；/web/ 提供带项目配置的 HTML 预览。
+所有文本与属性均经转义处理，不安全协议 URL 会被过滤。

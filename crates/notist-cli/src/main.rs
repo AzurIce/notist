@@ -1,4 +1,5 @@
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
@@ -16,15 +17,13 @@ mod ssg;
 mod timings;
 
 #[cfg(not(target_arch = "wasm32"))]
-use notist::Resources;
-#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use codespan_reporting::diagnostic::{Diagnostic, Label, Severity};
-use codespan_reporting::files::{SimpleFile, SimpleFiles};
+use codespan_reporting::files::SimpleFile;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self, Config};
 
@@ -330,60 +329,7 @@ fn run(cli: Cli) -> ExitCode {
             }
             Err(code) => code,
         },
-        Command::Html { file, out_dir } => {
-            let mut vault = load_vault(config);
-            let src = match read(&file) {
-                Ok(src) => src,
-                Err(code) => return code,
-            };
-            let analysis = match vault.analyze(&file, &src) {
-                Ok(analysis) => analysis,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            if !analysis.diagnostics().is_empty() {
-                emit_diagnostics(&file, &src, analysis.diagnostics());
-                return ExitCode::FAILURE;
-            }
-            let evaluation = match vault.evaluate(&file, &analysis) {
-                Ok(evaluation) => evaluation,
-                Err(error) => return emit_vault_error(error),
-            };
-            if !evaluation.diagnostics.is_empty() {
-                emit_diagnostics(&file, &src, &evaluation.diagnostics);
-                return ExitCode::FAILURE;
-            }
-            let (registry, environment) =
-                match vault.html_registry_and_environment(&file, &src, &evaluation.root) {
-                    Ok(binding) => binding,
-                    Err(error) => return emit_vault_error(error),
-                };
-            let resources = publication::Files::new(vault.resources().root());
-            let publication = html::assemble(
-                &evaluation.root,
-                &evaluation.sources,
-                registry,
-                &environment,
-                &resources,
-                &file,
-                &out_dir,
-            );
-            match publication.and_then(|publication| {
-                publication::publish(&publication, &out_dir, vault.resources().root())?;
-                Ok(out_dir.join("index.html"))
-            }) {
-                Ok(result) => {
-                    println!("{}", result.display());
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
+        Command::Html { file, out_dir } => render_html_notc(&file, &out_dir),
         #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
         Command::Lsp => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -427,43 +373,144 @@ fn print_result(file: &Path, mut f: impl FnMut(&str) -> Result<String, ExitCode>
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn check(file: &Path, config: Option<&Path>) -> ExitCode {
-    if file.is_dir() {
-        return check_dir(file, config);
-    }
-    let src = match read(file) {
-        Ok(src) => src,
-        Err(code) => return code,
+fn load_notc_graph(
+    entry: &Path,
+) -> Result<(PathBuf, String, Vec<(String, PathBuf, String)>), ExitCode> {
+    use std::collections::{HashSet, VecDeque};
+    let abs = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    let root = if abs.is_dir() {
+        abs.clone()
+    } else {
+        abs.parent().unwrap_or(Path::new(".")).to_path_buf()
     };
-    if is_module(file) {
-        let vault = load_vault(config);
-        let analysis = match vault.analyze_code(file, &src) {
-            Ok(analysis) => analysis,
-            Err(error) => return emit_vault_error(error),
-        };
-        let diagnostics = analysis.diagnostics;
-        emit_diagnostics(file, &src, &diagnostics);
-        return if diagnostics.is_empty() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
+
+    let mut files: Vec<(String, PathBuf, String)> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+
+    if abs.is_dir() {
+        fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for p in paths {
+                if p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                {
+                    continue;
+                }
+                if p.is_dir() {
+                    walk_dir(root, &p, out);
+                } else if p
+                    .extension()
+                    .is_some_and(|e| e == "not" || e == "notc" || e == "md")
+                {
+                    out.push(p);
+                }
+            }
+        }
+        let mut discovered = Vec::new();
+        walk_dir(&root, &abs, &mut discovered);
+        for fs_path in discovered {
+            let rel = fs_path
+                .strip_prefix(&root)
+                .unwrap_or(&fs_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if let Ok(src) = std::fs::read_to_string(&fs_path)
+                && visited.insert(rel.clone())
+            {
+                queue.push_back(rel.clone());
+                files.push((rel, fs_path, src));
+            }
+        }
+    } else {
+        let src = read(&abs)?;
+        let rel = abs
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        visited.insert(rel.clone());
+        queue.push_back(rel.clone());
+        files.push((rel, abs.clone(), src));
     }
-    let mut vault = load_vault(config);
-    let mut document = match vault.analyze(file, &src) {
-        Ok(document) => document,
-        Err(error) => return emit_vault_error(error),
+
+    let entry_rel = files.first().map(|(r, _, _)| r.clone()).unwrap_or_default();
+
+    // Transitively load imported `.notc` modules.
+    while let Some(rel) = queue.pop_front() {
+        let Some(src) = files.iter().find(|(r, _, _)| r == &rel).map(|(_, _, s)| s.clone()) else {
+            continue;
+        };
+        let parsed = notc::parse_file(&rel, &src);
+        for decl in &parsed.program.root.declarations {
+            if let notc::Decl::Import(import) = decl
+                && let Ok(target_rel) = notc::resolve_import_path(&rel, &import.path)
+                && visited.insert(target_rel.clone())
+            {
+                let target_fs = root.join(&target_rel);
+                if let Ok(target_src) = std::fs::read_to_string(&target_fs) {
+                    queue.push_back(target_rel.clone());
+                    files.push((target_rel, target_fs, target_src));
+                }
+            }
+        }
+    }
+
+    Ok((root, entry_rel, files))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emit_notc_diagnostics(
+    files: &[(String, PathBuf, String)],
+    diagnostics: &[notc::ide::IdeDiagnostic],
+) {
+    let writer = StandardStream::stderr(stderr_color_choice());
+    let mut lock = writer.lock();
+    let cfg = Config::default();
+    for d in diagnostics {
+        let (display_path, src) = files
+            .iter()
+            .find(|(rel, _, _)| rel == &d.module)
+            .map(|(_, fs, s)| (fs.display().to_string(), s.as_str()))
+            .unwrap_or_else(|| (d.module.clone(), ""));
+        let simple = SimpleFile::new(display_path, src);
+        let phase = match d.phase {
+            notc::ide::DiagnosticPhase::Parse => "syntax",
+            notc::ide::DiagnosticPhase::Type => "type",
+        };
+        let start = (d.span.start as usize).min(src.len());
+        let end = (d.span.end as usize).min(src.len()).max(start);
+        let diag = Diagnostic::error()
+            .with_code(phase)
+            .with_message(&d.message)
+            .with_labels(vec![Label::primary((), start..end)]);
+        let _ = term::emit(&mut lock, &cfg, &simple, &diag);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
+    let Ok((_, _, files)) = load_notc_graph(file) else {
+        return ExitCode::FAILURE;
     };
-    notist::vault_index::check_document(file, &mut document);
-    let diagnostics = document.diagnostics();
-    emit_diagnostics(file, &src, diagnostics);
-    if diagnostics.is_empty() {
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
+        .collect();
+    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+    let diags = analysis.diagnostics();
+    if diags.is_empty() {
         ExitCode::SUCCESS
     } else {
+        emit_notc_diagnostics(&files, diags);
         eprintln!(
             "check: {} issue{} in {}",
-            diagnostics.len(),
-            if diagnostics.len() == 1 { "" } else { "s" },
+            diags.len(),
+            if diags.len() == 1 { "" } else { "s" },
             file.display()
         );
         ExitCode::FAILURE
@@ -471,51 +518,45 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn check_dir(dir: &Path, config: Option<&Path>) -> ExitCode {
-    let mut vault = load_vault(config);
-    let library = match vault.index(dir) {
-        Ok(library) => library,
-        Err(error) => return emit_vault_error(error),
+fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
+    let Ok((_, entry_rel, files)) = load_notc_graph(file) else {
+        return ExitCode::FAILURE;
     };
-    let vault_root = vault.resources().root();
-    let diagnostics = library.check();
-    let mut files = SimpleFiles::new();
-    let mut ids = std::collections::HashMap::new();
-    let writer = StandardStream::stderr(stderr_color_choice());
-    let config = Config::default();
-    for (path, d) in &diagnostics {
-        let diagnostic_path = d
-            .source
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.clone());
-        let id = *ids.entry(diagnostic_path).or_insert_with(|| {
-            let full = d
-                .source
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| vault_root.join(path));
-            let src = std::fs::read_to_string(&full).unwrap_or_default();
-            files.add(full.display().to_string(), src)
-        });
-        let range = usize::from(d.span.start())..usize::from(d.span.end());
-        let diagnostic = Diagnostic::error()
-            .with_code(d.phase.to_string())
-            .with_message(&d.message)
-            .with_labels(vec![Label::primary(id, range)]);
-        let _ = term::emit(&mut writer.lock(), &config, &files, &diagnostic);
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
+        .collect();
+    let project = match notc::check_project(&pairs) {
+        Ok(project) => project,
+        Err(_) => {
+            let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+            emit_notc_diagnostics(&files, analysis.diagnostics());
+            return ExitCode::FAILURE;
+        }
+    };
+    let block = match project.eval_document(&entry_rel) {
+        Ok(block) => block,
+        Err(err) => {
+            eprintln!("error evaluating `{}`: {err:?}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let body = notist_ssg::render_standalone_html(&block);
+    let html_doc = format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<style>{}</style>\n</head>\n<body>\n<main>{body}</main>\n</body>\n</html>\n",
+        notist_html::highlight::CSS
+    );
+    if let Err(err) = std::fs::create_dir_all(out_dir) {
+        eprintln!("{err}");
+        return ExitCode::FAILURE;
     }
-    if diagnostics.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        eprintln!(
-            "check: {} issue{} under {}",
-            diagnostics.len(),
-            if diagnostics.len() == 1 { "" } else { "s" },
-            dir.display()
-        );
-        ExitCode::FAILURE
+    let out_file = out_dir.join("index.html");
+    if let Err(err) = std::fs::write(&out_file, html_doc) {
+        eprintln!("{err}");
+        return ExitCode::FAILURE;
     }
+    println!("{}", out_file.display());
+    ExitCode::SUCCESS
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -597,6 +638,7 @@ fn write_source(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn emit_diagnostics(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
     for diagnostic in diagnostics {
         let located = notist::SourceDiagnostic::locate(path, source, diagnostic.clone());

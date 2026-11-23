@@ -10,7 +10,7 @@ use crate::{
     mounts::Mounts,
 };
 pub use layout::{Navigation, PageLink};
-use notist::{DiagnosticCode, SourceDiagnostic, Vault, resources::ResourceKind};
+use notist::{Diagnostic, Phase, SourceDiagnostic, TextRange, resources::ResourceKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -89,30 +89,72 @@ impl SiteExtension for Book {
             let source = summary_source
                 .map(Ok)
                 .unwrap_or_else(|| context.resources.source(&path))?;
-            // SUMMARY is parsed as data, never evaluated or transformed by document extensions.
-            let mut vault = Vault::new(context.resources);
-            let analysis = vault.analyze(&path, &source)?;
-            let mut errors: Vec<_> = analysis
-                .diagnostics()
-                .iter()
-                .filter(|d| d.code != Some(DiagnosticCode::OutsideVault))
-                .cloned()
+            // SUMMARY is parsed declaratively via `notc`, never evaluated with side effects.
+            let is_md = path.extension().is_some_and(|e| e == "md");
+            let parsed = if is_md {
+                notc::parse_markdown_document(&source)
+            } else {
+                notc::parse_document(&source)
+            };
+            let mut errors: Vec<Diagnostic> = parsed
+                .diagnostics
+                .into_iter()
+                .map(|d| {
+                    Diagnostic::new(
+                        Phase::Syntax,
+                        TextRange::new(d.span.start.into(), d.span.end.into()),
+                        d.message,
+                    )
+                })
                 .collect();
+            let virtual_name = if is_md { "SUMMARY.md" } else { "SUMMARY.not" };
+            let block = match notc::check_parsed_modules(&[(virtual_name, &parsed.program.root)]) {
+                Ok(project) => match project.eval_document(virtual_name) {
+                    Ok(block) => Some(block),
+                    Err(err) => {
+                        errors.push(Diagnostic::new(
+                            Phase::Semantic,
+                            TextRange::default(),
+                            format!("failed to evaluate summary: {err:?}"),
+                        ));
+                        None
+                    }
+                },
+                Err(diags) => {
+                    for d in diags {
+                        let (phase, span, msg) = match d.kind {
+                            notc::ProjectDiagnosticKind::Parse(p) => {
+                                (Phase::Syntax, p.span, p.message)
+                            }
+                            notc::ProjectDiagnosticKind::Type { span, error, .. } => {
+                                (Phase::Type, span, notc::format_type_error(&error))
+                            }
+                        };
+                        errors.push(Diagnostic::new(
+                            phase,
+                            TextRange::new(span.start.into(), span.end.into()),
+                            msg,
+                        ));
+                    }
+                    None
+                }
+            };
             let sources: BTreeSet<_> = input
                 .documents
                 .keys()
                 .map(|p| mounts.resolve(&content.join(p)))
                 .collect();
-            let plan = summary::interpret(analysis.root()).and_then(|entries| {
-                summary::resolve(&entries, &path, &sources, &context.resources, &mounts)
-            });
-            let plan = match plan {
-                Ok(plan) => Some(plan),
-                Err(diagnostics) => {
-                    errors.extend(diagnostics);
-                    None
+            let plan = block.and_then(|block| {
+                match summary::interpret(&block).and_then(|entries| {
+                    summary::resolve(&entries, &path, &sources, &context.resources, &mounts)
+                }) {
+                    Ok(plan) => Some(plan),
+                    Err(diagnostics) => {
+                        errors.extend(diagnostics);
+                        None
+                    }
                 }
-            };
+            });
             if !errors.is_empty() {
                 return Err(Error::Diagnostics(
                     errors

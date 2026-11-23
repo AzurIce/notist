@@ -1,6 +1,6 @@
 use crate::{Error, Route};
-use notist::publication::presentation_value as value;
-use notist::{Ctor, Diagnostic, Item, SourceDiagnostic, Sources, Value};
+use notc::{AttrValue, Block, BlockKind};
+use notist::{Diagnostic, SourceDiagnostic};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -29,23 +29,23 @@ pub struct Page {
 
 pub(crate) struct Document {
     pub page: Page,
-    pub root: Item,
-    pub sources: Sources,
+    pub root: Block,
     pub ids: BTreeSet<String>,
+    pub heading_ids: Vec<String>,
 }
 
 pub(crate) fn diagnostic(path: &Path, source: &str, d: Diagnostic) -> SourceDiagnostic {
     SourceDiagnostic::locate(path, source, d)
 }
 
-fn text(item: &Item) -> String {
-    item.descendants()
-        .filter(|n| matches!(n.ctor(), Ctor::Text | Ctor::RawInline | Ctor::Math))
-        .filter_map(|n| match n.field("text") {
-            Some(Value::Str(s)) => Some(s.as_str()),
-            _ => None,
-        })
-        .collect()
+fn attr_to_json(value: &AttrValue) -> serde_json::Value {
+    match value {
+        AttrValue::Bool(b) => serde_json::Value::Bool(*b),
+        AttrValue::Int(n) => serde_json::Value::Number((*n).into()),
+        AttrValue::Float(f) => serde_json::Number::from_f64(*f)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        AttrValue::String(s) => serde_json::Value::String(s.to_string()),
+    }
 }
 
 fn slug(text: &str) -> String {
@@ -65,97 +65,84 @@ fn slug(text: &str) -> String {
     }
 }
 
-fn headings(
-    item: &mut Item,
-    inherited: Option<String>,
+fn collect_headings(
+    block: &Block,
     ids: &mut BTreeSet<String>,
+    heading_ids: &mut Vec<String>,
     out: &mut Vec<Heading>,
 ) {
-    if item.is_error() {
-        return;
-    }
-    if item.ctor() == Ctor::Heading {
-        let title = text(item);
-        let inherited_target = item.attrs.get("id").is_none() && inherited.is_some();
-        let explicit = match item.attrs.get("id") {
-            Some(Value::Str(id)) => Some(id.to_string()),
-            _ => inherited,
-        };
-        let id = explicit.unwrap_or_else(|| {
-            let base = slug(&title);
-            let mut candidate = base.clone();
-            let mut n = 2;
-            while !ids.insert(candidate.clone()) {
-                candidate = format!("{base}-{n}");
-                n += 1;
+    match &block.node().kind {
+        BlockKind::Fragment(children) => {
+            for child in children.iter() {
+                collect_headings(child, ids, heading_ids, out);
             }
-            candidate
-        });
-        // A section's explicit ID already provides the heading's link target.
-        if !inherited_target {
-            item.attrs.insert("id", Value::Str(id.clone().into()));
         }
-        let level = match item.field("level") {
-            Some(Value::Int(n)) => *n,
-            _ => 1,
-        };
-        out.push(Heading {
-            title,
-            anchor: notist::publication::url::fragment(&id),
-            id,
-            level,
-        });
-    }
-    let section_id = if item.ctor() == Ctor::Section {
-        match item.attrs.get("id") {
-            Some(Value::Str(id)) => Some(id.to_string()),
-            _ => None,
+        BlockKind::Heading { level, title } => {
+            let title_text = title.plain_text();
+            let explicit = match block.node().attrs.get("id") {
+                Some(AttrValue::String(id)) => Some(id.to_string()),
+                _ => None,
+            };
+            let id = explicit.unwrap_or_else(|| {
+                let base = slug(&title_text);
+                let mut candidate = base.clone();
+                let mut n = 2;
+                while !ids.insert(candidate.clone()) {
+                    candidate = format!("{base}-{n}");
+                    n += 1;
+                }
+                candidate
+            });
+            ids.insert(id.clone());
+            heading_ids.push(id.clone());
+            out.push(Heading {
+                title: title_text,
+                anchor: notist::publication::url::fragment(&id),
+                id,
+                level: i64::from(*level),
+            });
         }
-    } else {
-        None
-    };
-    // Mutable child access detaches shared storage, even for an empty Vec.
-    if !item.children().is_empty() {
-        for (n, child) in item.children_mut().into_iter().flatten().enumerate() {
-            headings(
-                child,
-                if n == 0 { section_id.clone() } else { None },
-                ids,
-                out,
-            );
+        BlockKind::Section { heading, body } => {
+            collect_headings(heading, ids, heading_ids, out);
+            collect_headings(body, ids, heading_ids, out);
         }
+        BlockKind::Callout { body, .. } | BlockKind::Quote(body) => {
+            collect_headings(body, ids, heading_ids, out);
+        }
+        BlockKind::List { items, .. } => {
+            for item in items.iter() {
+                collect_headings(item, ids, heading_ids, out);
+            }
+        }
+        BlockKind::Custom(custom) => {
+            for (_, val) in custom.props.iter() {
+                if let notc::CustomValue::Block(b) = val {
+                    collect_headings(b, ids, heading_ids, out);
+                }
+            }
+        }
+        BlockKind::Paragraph(_)
+        | BlockKind::CodeBlock { .. }
+        | BlockKind::Table { .. }
+        | BlockKind::Math(_)
+        | BlockKind::Divider => {}
     }
 }
 
 impl Document {
-    pub(crate) fn new(
+    pub(crate) fn from_block(
         route: Route,
-        mut root: Item,
-        source: &str,
-        sources: Sources,
+        block: Block,
+        site_title: &str,
     ) -> Result<Self, Error> {
-        let mut errors = vec![];
-        for (key, value) in root.attrs.iter() {
-            if value.contains_data_views() {
-                errors.push(Diagnostic::new(notist::Phase::Type, root.span, format!("Data or DataError in template attribute `{key}` must be decoded to ordinary values")));
-            }
-        }
-        let index = notist::index::Index::build(&root, &sources, &mut errors);
-        if !errors.is_empty() {
-            return Err(Error::Diagnostics(
-                errors
-                    .into_iter()
-                    .map(|d| diagnostic(&route.source, source, d))
-                    .collect(),
-            ));
-        }
-        let mut ids = index.ids().map(str::to_owned).collect();
-        let mut outline = vec![];
-        headings(&mut root, None, &mut ids, &mut outline);
-        let attrs: BTreeMap<String, _> = root
+        let root = block.sectionize();
+
+        let attrs: BTreeMap<String, serde_json::Value> = root
+            .node()
             .attrs
+            .entries()
             .iter()
-            .map(|(k, v)| (k.into(), value(v)))
+            .map(|(k, v)| (k.to_string(), attr_to_json(v)))
             .collect();
         for key in ["title", "template"] {
             if attrs.get(key).is_some_and(|v| !v.is_string()) {
@@ -165,11 +152,22 @@ impl Document {
                 )));
             }
         }
+
+        let mut ids: BTreeSet<String> = root
+            .ids()
+            .into_iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
+        let mut heading_ids = Vec::new();
+        let mut outline = Vec::new();
+        collect_headings(&root, &mut ids, &mut heading_ids, &mut outline);
+
         let title = attrs
             .get("title")
             .and_then(|v| v.as_str())
             .map(str::to_owned)
             .or_else(|| outline.first().map(|h| h.title.clone()))
+            .or_else(|| (route.url == "/").then(|| site_title.to_owned()))
             .unwrap_or_else(|| {
                 route
                     .path
@@ -178,6 +176,7 @@ impl Document {
                     .to_string_lossy()
                     .into_owned()
             });
+
         let directory = route
             .path
             .parent()
@@ -192,6 +191,7 @@ impl Document {
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
         ancestors.reverse();
+
         Ok(Self {
             page: Page {
                 route,
@@ -203,69 +203,43 @@ impl Document {
                 ancestors,
             },
             root,
-            sources,
             ids,
+            heading_ids,
         })
     }
 }
 
 #[cfg(test)]
-#[path = "document_allocation_tests.rs"]
-mod allocation_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use notc::check_project;
+    use std::path::PathBuf;
 
     #[test]
-    fn headings_keep_leaf_storage_and_inherited_and_generated_targets() {
-        let heading = || {
-            Item::new(Ctor::Heading, Default::default())
-                .with_field("level", Value::Int(2))
-                .with_children(vec![Item::text("Same title".into(), Default::default())])
-        };
-        let mut section =
-            Item::new(Ctor::Section, Default::default()).with_children(vec![heading()]);
-        section.attrs.insert("id", Value::Str("section-id".into()));
-        let mut root = Item::new(Ctor::Doc, Default::default()).with_children(vec![
-            section,
-            heading(),
-            heading(),
-            Item::new(Ctor::Error("ignored".into()), Default::default())
-                .with_children(vec![heading()]),
-            Item::new(Ctor::Divider, Default::default()),
-        ]);
-        let original = root.clone();
-        let mut ids = BTreeSet::from(["section-id".into()]);
-        let mut out = Vec::new();
-        headings(&mut root, None, &mut ids, &mut out);
+    fn extracts_explicit_and_generated_heading_ids() {
+        let doc = r#"
+@!(title: "Doc Title")
+
+@(id: "custom")
+= Same title
+
+== Same title
+
+== Same title
+"#;
+        let project = check_project(&[("index.not", doc)]).unwrap();
+        let block = project.eval_document("index.not").unwrap();
+        let route = Route::plan(PathBuf::from("content/index.not"), Path::new("content"), true).unwrap();
+        let document = Document::from_block(route, block, "Site").unwrap();
+        assert_eq!(document.page.title, "Doc Title");
         assert_eq!(
-            out.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
-            ["section-id", "same-title", "same-title-2"]
+            document
+                .page
+                .headings
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
+            ["custom", "same-title", "same-title-2"]
         );
-        assert!(out.iter().all(|h| h.title == "Same title" && h.level == 2));
-        assert!(root.children()[0].children()[0].attrs.is_empty());
-        assert!(original.children()[1].attrs.is_empty());
-        for (changed, original) in root.descendants().zip(original.descendants()) {
-            assert_eq!(changed.origin, original.origin);
-            if original.children().is_empty() {
-                assert!(
-                    changed
-                        .as_item()
-                        .unwrap()
-                        .children
-                        .shares_storage(&original.as_item().unwrap().children)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn result_variants_survive_template_projection() {
-        let nested = Value::Ok(Box::new(Value::Err(Box::new(Value::Str("bad".into())))));
-        assert_eq!(value(&nested), serde_json::json!({"ok":{"err":"bad"}}));
-        let path = notist::ResourcePath::resolve("/private", "doc.not", "data.txt").unwrap();
-        let nested = Value::Err(Box::new(Value::Path(path)));
-        assert_eq!(value(&nested), serde_json::json!({"err":null}));
     }
 }

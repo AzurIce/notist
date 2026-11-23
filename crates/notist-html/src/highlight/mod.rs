@@ -26,6 +26,11 @@ pub fn code(item: &Item) -> Option<String> {
     let Value::Str(text) = item.field("text")? else {
         return None;
     };
+    highlight_str(language, text)
+}
+
+/// Highlight code text for a language tag without replacing the surrounding `<pre><code>` shell.
+pub fn highlight_str(language: &str, text: &str) -> Option<String> {
     let language = crate::code_language(language)?.to_ascii_lowercase();
     match language.as_str() {
         "not" | "notist" => return Some(native::render(text, false)),

@@ -1,4 +1,4 @@
-// Export modules/typst/README.not to target/typst-demo and serve the repository.
+// Export modules/typst/README.md to target/typst-demo and serve the repository.
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
@@ -112,10 +112,10 @@ const { chromium } = require("playwright");
     // The existing Worker pipeline can replace native math with this module.
     await page.goto(`${base}/web/`);
     await page.waitForSelector("#core .kind");
-    await page.route('**/modules/typst/test.toml', route => route.fulfill({ body: "[[extensions]]\nkind='replace'\nimports={typst='./lib.notc'}\nfrom='notist.math'\nto='typst.math'" }));
+    await page.route('**/modules/typst/test.toml', route => route.fulfill({ body: "[[extensions]]\nkind='replace'\nimports={typst='./lib.not'}\nfrom='notist.math'\nto='typst.math'" }));
     await page.fill("#root-url", "../modules/typst/");
     await page.fill("#config-url", "test.toml");
-    await page.fill("#path", "README.not");
+    await page.fill("#path", "README.md");
     await page.click("#load-project");
     const preview = count => page.waitForFunction(count => {
       const doc = document.querySelector("#preview").contentDocument;
@@ -124,16 +124,16 @@ const { chromium } = require("playwright");
         node.shadowRoot?.querySelector("svg")?.getAttribute("aria-label") === node.getAttribute("notist-text"));
     }, count, { timeout: 90000 });
     await preview(6);
-    assert.match(await page.locator("#core").textContent(), /lib.notc.math/);
+    assert.match(await page.locator("#core").textContent(), /lib.not.math/);
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     await page.fill("#path", "math.md");
     await page.locator("#path").dispatchEvent("change");
-    await page.fill("#src", '#import "lib.notc" as typst;\n$frac(a, b)$ and $alpha + beta$\n\n$ sqrt(x) $');
+    await page.fill("#src", '#import "lib.not" as typst;\n$frac(a, b)$ and $alpha + beta$\n\n$ sqrt(x) $');
     await preview(3);
     assert.equal(await page.frameLocator("#preview").locator('[notist-function$=math][notist-content="block"]').count(), 1);
     assert.equal(await page.frameLocator("#preview").locator('[notist-function$=math][notist-content="block"]').evaluate(node => node.closest("p")), null);
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     assert.deepEqual(errors, []);
-    console.log("Typst SVG, concurrency, lifecycle, errors, scaling and .not/.md Worker extensions passed.");
+    console.log("Typst SVG, concurrency, lifecycle, errors, scaling and .md/.md Worker extensions passed.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

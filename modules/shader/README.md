@@ -1,11 +1,11 @@
-#import "./lib.notc" as shader;
-= WebGPU Shader
+#import "./lib.not" as shader;
+# WebGPU Shader
 
 这个 模块 在文档中运行 ShaderToy 风格的全屏 fragment shader。源码使用 [WGSL](https://www.w3.org/TR/WGSL/)，组件负责创建 WebGPU 管线、传入 uniform 和驱动动画，无需构建步骤或 CDN 依赖。
 
-== 调用
+## 调用
 
-```notc
+```markdown
 fn canvas(source: String, width: Int = 960, height: Int = 540, paused: Bool = false) -> BlockContent;
 ```
 
@@ -15,11 +15,11 @@ width 和 height 是 1 到 16384 之间的整数，设置最大 CSS 宽度和宽
 
 使用者在自己的 Code 入口导入，Markup 调用写 `#shader.canvas(...)`：
 
-```notc
-import "../modules/shader/lib.notc" as shader;
+```markdown
+import "../modules/shader/lib.not" as shader;
 ```
 
-== 动态色场
+## 动态色场
 
 #shader.canvas(r#"""
 fn palette(t: f32) -> vec3f {
@@ -38,7 +38,7 @@ fn mainImage(fragCoord: vec2f) -> vec4f {
 
 展开“源码”可编辑当前画面，点击“编译并运行”或按 Ctrl / ⌘ + Enter 重新编译。改动仅作用于当前浏览器组件；要保存到文档，请修改调用中的 source。工具栏提供暂停 / 播放、重置时间与帧数、全屏。控制区与编辑区继承页面的主题颜色和字体，随站点的明暗主题切换。
 
-== 鼠标光晕
+## 鼠标光晕
 
 移动鼠标或拖动触屏指针改变光晕位置，按住主按钮改变颜色。这个例子初始暂停，鼠标仍能更新画面。
 
@@ -54,7 +54,7 @@ fn mainImage(fragCoord: vec2f) -> vec4f {
 }
 """#, width: 720, height: 360, paused: true)
 
-== Uniform
+## Uniform
 
 所有字段通过只读 uniform 变量 uniforms 访问，例如 `uniforms.iTime`：
 
@@ -72,7 +72,7 @@ iMouse 与 fragCoord 使用相同的左下角像素坐标；首次交互前为�
 
 源码可以包含辅助函数、常量与开头的 WGSL 指令。uniforms、NotistShaderUniforms、notistShaderVertex、notistShaderFragment 由宿主保留。此版本提供单 pass 的程序化画面；纹理 / 音频 channel 与 Buffer 多 pass 尚未提供。ShaderToy 的 GLSL 源码需要改写为 WGSL。
 
-== 生命周期与错误
+## 生命周期与错误
 
 源码属性更新重新编译，成功后重置时间、帧数和鼠标。尺寸与 paused 更新复用 GPU 管线。错误显示在组件内，编译错误带源码行列号，最后成功的画面保留；后续有效源码可以恢复。宿主声明引起的入口错误标记为“入口 / uniform”。
 
@@ -80,21 +80,21 @@ iMouse 与 fragCoord 使用相同的左下角像素坐标；首次交互前为�
 
 浏览器需要支持 [WebGPU](https://www.w3.org/TR/webgpu/)，通过 HTTPS 或 localhost 访问。缺少 API、适配器或安全上下文时，组件显示原因。
 
-== 构建与预览
+## 构建与预览
 
 在仓库根目录执行：
 
 ```sh
-cargo run -p notist-cli -- check modules/shader/README.not
-cargo run -p notist-cli -- html modules/shader/README.not --out-dir target/shader-demo
+cargo run -p notist-cli -- check modules/shader/README.md
+cargo run -p notist-cli -- html modules/shader/README.md --out-dir target/shader-demo
 python3 -m http.server
 ```
 
 通过 localhost 打开 /target/shader-demo/。目录组件入口及 renderer.js、style.js 随 HTML 一起发布。
 
-Web 预览先运行 ./web/build.sh，通过 localhost 打开 /web/，资源根填 ../modules/shader/，输出配置留空，源码路径填 README.not，点击“载入项目”。
+Web 预览先运行 ./web/build.sh，通过 localhost 打开 /web/，资源根填 ../modules/shader/，输出配置留空，源码路径填 README.md，点击“载入项目”。
 
-== 验证
+## 验证
 
 modules/shader/tests/browser.cjs 通过 GPU buffer 回读验证实际像素，同时验证 uniform、时间与暂停、鼠标和缩放、编辑与错误恢复、组件重连、设备丢失、静态导出与 Worker 预览。像素回读发生在当前 canvas texture 呈现之前，避免依赖平台 compositor 的截图行为。
 

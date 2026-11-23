@@ -378,6 +378,26 @@ pub(crate) fn build(
     names: &[String],
     jobs: Option<std::num::NonZeroUsize>,
 ) -> ExitCode {
+    run_site(config, output, all, names, jobs, false)
+}
+
+pub(crate) fn check(
+    config: Option<&Path>,
+    all: bool,
+    names: &[String],
+    jobs: Option<std::num::NonZeroUsize>,
+) -> ExitCode {
+    run_site(config, None, all, names, jobs, true)
+}
+
+fn run_site(
+    config: Option<&Path>,
+    output: Option<&Path>,
+    all: bool,
+    names: &[String],
+    jobs: Option<std::num::NonZeroUsize>,
+    dry_run: bool,
+) -> ExitCode {
     let result = (|| {
         let current = locate(config)?;
         let mut scope = discover(&current)?;
@@ -431,7 +451,11 @@ pub(crate) fn build(
         }
         let executor = crate::ssg::executor(jobs)?;
         for index in indices {
-            let result = crate::ssg::build_package(&scope.packages[index], &executor);
+            let result = if dry_run {
+                crate::ssg::check_package(&scope.packages[index], &executor)
+            } else {
+                crate::ssg::build_package(&scope.packages[index], &executor)
+            };
             if result != ExitCode::SUCCESS {
                 return Ok(result);
             }

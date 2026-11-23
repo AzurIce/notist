@@ -1,5 +1,5 @@
 [workspace]
-members = ["examples/site", "examples/ssg-extensions", "examples/extensions"]
+members = ["examples/site", "examples/ssg-extensions"]
 
 [package]
 name = "notist"

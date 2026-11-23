@@ -32,24 +32,24 @@ try {
   await writeFile(join(vault, 'custom/last.css'), ':root[data-brand="custom"] { --accent: #7040b8; }');
   await writeFile(join(vault, 'custom/first.js'), 'window.readerExtensions = ["first"]; window.themeReady = document.documentElement.classList.contains("js");');
   await writeFile(join(vault, 'custom/last.js'), 'window.readerExtensions.push("last");');
-  await writeFile(join(vault, 'lib.notc'), `import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.notc')))} as grammar;`);
-  await writeFile(join(vault, 'README.not'), `= 文字、代码与思考
+  await writeFile(join(vault, 'lib.not'), `import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.not')))} as grammar;`);
+  await writeFile(join(vault, 'README.md'), `# 文字、代码与思考
 
 好的工具让表达变得自然。这里记录关于语言、软件与写作的思考：让技术清晰，也让文字保有自己的节奏。
 
-== 从一篇文章开始
+## 从一篇文章开始
 
 我们相信，文档不只是功能的说明。它也可以是一场有条理的对话：先交代问题，再展开推理，最后留下值得继续探索的线索。
 
-[阅读文章](notes/essay.md) · [阅读原生文档](notes/native.not)
+[阅读文章](notes/essay.md) · [阅读原生文档](notes/native.md)
 
-== 简单，但不单薄
+## 简单，但不单薄
 
 - 留白不是空缺，而是给思考留出空间。
 - 代码与文字并置，各自保持清晰。
 - 阅读路径明确，界面退到内容之后。
 
-== 写下来，慢慢想
+## 写下来，慢慢想
 
 一段文字，一小段代码，一次更清楚的理解。构建工具应当让这些事情变得容易，而不是让它们看起来复杂。
 `);
@@ -107,14 +107,14 @@ ${paragraph}
 
 ${paragraph}
 
-Read the [native document](native.not#中文%20%26%3F%23%2F) or return [home](../README.not).
+Read the [native document](native.md#中文%20%26%3F%23%2F) or return [home](../README.md).
 `);
-  await writeFile(join(vault, 'notes/native.not'), `@(id: "中文 &?#/")
-= 原生文档与特殊锚点
+  await writeFile(join(vault, 'notes/native.md'), `@(id: "中文 &?#/")
+# 原生文档与特殊锚点
 
 这是一个原生 Notist 页面，用来验证中文排版与锚点定位。
 
-== 技术细节
+## 技术细节
 
 代码应该保持可选择、可复制，也应该在窄屏上独立滚动。
 
@@ -122,51 +122,51 @@ Read the [native document](native.not#中文%20%26%3F%23%2F) or return [home](..
 hello, notist
 \`\`\`
 `);
-  await writeFile(join(vault, 'raw.not'), `= Raw and grammar source
+  await writeFile(join(vault, 'raw.md'), `# Raw and grammar source
 
 \`\`\`signature
 text(text: String) -> InlineContent
 \`\`\`
 
-#import "${relative(vault, join(repository, 'modules/grammar/lib.notc'))}" as grammar;\n#grammar.diagram(r#"""
+#import "${relative(vault, join(repository, 'modules/grammar/lib.not'))}" as grammar;\n#grammar.diagram(r#"""
 lex Token -> \`word\` | \`(\` Token \`)\`;
 syntax PlainText -> Token;
 """#)
 `);
   await writeFile(join(vault, 'plain.md'), 'A page without headings still has a complete reading surface.');
   await writeFile(join(vault, 'notes/README.md'), '# Notes\n\nWriting and examples.');
-  const grammarImport = `#import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.notc')))} as grammar;`;
+  const grammarImport = `#import ${JSON.stringify(relative(vault, join(repository, 'modules/grammar/lib.not')))} as grammar;`;
   const brokenGrammar = 'syntax Broken -> (';
   const unsafeGrammar = 'syntax Safe -> `<script>globalThis.grammarInjected = true</script>`;';
-  await writeFile(join(vault, 'broken.not'), `= Invalid grammar\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(brokenGrammar)})`);
-  await writeFile(join(vault, 'unsafe.not'), `= Literal grammar source\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(unsafeGrammar)})`);
+  await writeFile(join(vault, 'broken.md'), `# Invalid grammar\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(brokenGrammar)})`);
+  await writeFile(join(vault, 'unsafe.md'), `# Literal grammar source\n\n${grammarImport}\n#grammar.diagram(${JSON.stringify(unsafeGrammar)})`);
   await writeFile(join(vault, '_logs/entry.md'), '# Archive entry\n\nA short log entry.');
   for (let index = 1; index <= 45; index++) {
     const suffix = String(index).padStart(2, '0');
     await writeFile(join(vault, `_logs/more${suffix}.md`), `# Archive ${suffix}\n\nAnother log entry.`);
   }
-  await writeFile(join(vault, 'SUMMARY.not'), `= Summary
+  await writeFile(join(vault, 'SUMMARY.md'), `# Summary
 
-[Home](README.not)
+[Home](README.md)
 
-= Writing
+# Writing
 
 - [Notes](notes/)
   - [Essay](notes/essay.md)
   - Examples
-    - [Native](notes/native.not)
+    - [Native](notes/native.md)
 
-= Reference
+# Reference
 
-- [Raw](raw.not)
+- [Raw](raw.md)
 - [Plain](plain.md)
-- [Broken](broken.not)
-- [Unsafe](unsafe.not)
+- [Broken](broken.md)
+- [Unsafe](unsafe.md)
 - [Future chapter]()
 
 ---
 
-= Archive
+# Archive
 
 - @(collapsed: true)[History](_logs/)
 - [Empty](empty/)

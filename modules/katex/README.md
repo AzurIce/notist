@@ -1,20 +1,20 @@
-#import "./lib.notc" as katex;
-= KaTeX Math
+#import "./lib.not" as katex;
+# KaTeX Math
 
-lib.notc 定义数学函数：
+lib.not 定义数学函数：
 
-```notc
+```markdown
 fn math<C: Type = InlineContent>(text: String) -> C;
 ```
 
 text 是不带外围 `$` 的 LaTeX 数学源码。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。math.js 默认导出 HTMLElement 类，由 HTML host 按规范函数身份注册；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
 
-== 模块使用与输出选择
+## 模块使用与输出选择
 
-本页通过 `#import` 显式导入同目录 lib.notc，使用 katex.math 直接调用。其他项目的 Code 入口显式导入：
+本页通过 `#import` 显式导入同目录 lib.not，使用 katex.math 直接调用。其他项目的 Code 入口显式导入：
 
-```notc
-import "../modules/katex/lib.notc" as katex;
+```markdown
+import "../modules/katex/lib.not" as katex;
 ```
 
 Markup 可以直接写 `#katex.math("x")`。要让内置 math 及 `$...$` 使用此实现，在根 Notist.toml 显式选择同签名映射：
@@ -22,14 +22,14 @@ Markup 可以直接写 `#katex.math("x")`。要让内置 math 及 `$...$` 使用
 ```toml
 [[extensions]]
 kind = "replace"
-imports = { katex = "./lib.notc" }
+imports = { katex = "./lib.not" }
 from = "notist.math"
 to = "katex.math"
 ```
 
-import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.not)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/extensions.not)。
+import 不自动启用映射。替换保留原语义身份、公式原文与源码范围，不转换数学方言；Typst 使用 Typst 数学语法，KaTeX 使用 LaTeX。模块规则见 [本地模块](https://github.com/AzurIce/notist/blob/main/docs/modules.md)，映射规则见 [函数映射](https://github.com/AzurIce/notist/blob/main/docs/designs/extensions.md)。
 
-== Example
+## Example
 
 Pythagoras: #katex.math("x^2 + y^2 = z^2").
 
@@ -43,20 +43,20 @@ Builtin call: #katex.math("E = mc^2"). Direct call: #katex.math(r#"\frac{a}{b}"#
 
 #katex.math<BlockContent>(r#"\frac{a}{b}"#)
 
-== 组件行为
+## 组件行为
 
 模块延迟加载，同一模块实例共享加载任务。组件处理 `notist-text`、`notist-content` 属性更新与重连，过期任务不覆盖新内容；`notist-content` 为 `block` 时使用 KaTeX 的 displayMode。公式错误或依赖加载失败时保留原始公式文字并显示错误。输出包含 HTML 与 MathML，字体注册在文档与 shadow tree 中。
 
-== 构建与预览
+## 构建与预览
 
 无需单独构建 模块。在仓库根目录执行：
 
 ```sh
-cargo run -p notist-cli -- check modules/katex/README.not
-cargo run -p notist-cli -- html modules/katex/README.not --out-dir target/katex-demo
+cargo run -p notist-cli -- check modules/katex/README.md
+cargo run -p notist-cli -- html modules/katex/README.md --out-dir target/katex-demo
 python3 -m http.server
 ```
 
-通过 HTTP 打开 /target/katex-demo/。Web 预览资源根填写 ../modules/katex/，输出配置留空，源码路径为 README.not。
+通过 HTTP 打开 /target/katex-demo/。Web 预览资源根填写 ../modules/katex/，输出配置留空，源码路径为 README.md。
 
-首次呈现需要访问固定版本 CDN；离线分发时须提供本地依赖产物。与 [Typst Math](https://github.com/AzurIce/notist/blob/main/modules/typst/README.not) 切换时需注意数学方言，replace 不转换 LaTeX 与 Typst 语法。
+首次呈现需要访问固定版本 CDN；离线分发时须提供本地依赖产物。与 [Typst Math](https://github.com/AzurIce/notist/blob/main/modules/typst/README.md) 切换时需注意数学方言，replace 不转换 LaTeX 与 Typst 语法。

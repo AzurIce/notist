@@ -8,7 +8,7 @@
 | --- | --- |
 | `notist build` | 构建当前包或工作区静态站点（支持 `--out-dir`、`-j <N>`、`--timings`） |
 | `notist serve` | 启动本地 HTTP 预览服务，监听 `.md` / `.not` / 模板 / 资源变化并热重载 |
-| `notist check <file\|dir>` | 使用 `notc` 静态检查单个 `.md`/`.not` 文件或整个目录并输出源码级诊断 |
+| `notist check [file\|dir]` | 不带参数时按 `Notist.toml` 做全站干跑校验（含 `SUMMARY.md`、跨页链接/锚点、图片与模板，不写产物；支持 `--workspace`/`-p`）；带路径时仅做 `notc` 语言级静态检查 |
 | `notist cst <file>` | 打印由 `notc` 解析出的 `Module` AST |
 | `notist core <file>` | 输出静态分析诊断与声明；加 `--eval` 对文档或 `.not` 的 `main` 求值 |
 | `notist json <file>` | 输出包含诊断、符号与求值内容树的机器可读 JSON |

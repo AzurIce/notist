@@ -274,3 +274,43 @@ fn banner(txt_path: String, json_path: String) -> Block {
     write(root, "content/.data/value.json", r#"{"tag":"j2"}"#);
     wait_for_body(&address, "/", "V2:beta:j2");
 }
+
+#[test]
+fn check_without_file_dry_runs_site_without_writing_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root,
+        "Notist.toml",
+        "[package]\nname = \"dryrun\"\n[site]\ncontent = \"content\"\noutput = \"public\"\n",
+    );
+    write(root, "content/index.md", "# Home\n\n[Missing](./nope.md)\n");
+
+    let ok = Command::new(notist_bin())
+        .current_dir(root)
+        .args(["check"])
+        .output()
+        .unwrap();
+    assert!(
+        ok.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("checked 1 pages (dryrun)"));
+    assert!(String::from_utf8_lossy(&ok.stderr).contains("missing local reference"));
+    assert!(
+        !root.join("public").exists(),
+        "dry-run check must not write site output"
+    );
+
+    // Missing embedded image is a site-level error caught by `notist check`.
+    write(root, "content/index.md", "# Home\n\n![Missing](./gone.png)\n");
+    let bad = Command::new(notist_bin())
+        .current_dir(root)
+        .args(["check"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("gone.png"));
+    assert!(!root.join("public").exists());
+}

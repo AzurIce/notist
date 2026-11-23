@@ -1,4 +1,4 @@
-// Export modules/typst/README.not and serve the repository before running this suite.
+// Export modules/typst/README.md and serve the repository before running this suite.
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
@@ -109,12 +109,12 @@ const { chromium } = require("playwright");
     });
     assert.ok(responsive);
 
-    // The Worker-based Notist preview discovers the native svg entry for .not and .md.
+    // The Worker-based Notist preview discovers the native svg entry for .md and .md.
     await page.goto(`${base}/web/`);
     await page.waitForSelector("#core .kind");
     await page.fill("#root-url", "../modules/typst/");
     await page.fill("#config-url", "");
-    await page.fill("#path", "README.not");
+    await page.fill("#path", "README.md");
     await page.click("#load-project");
     const preview = () => page.waitForFunction(() => {
       const doc = document.querySelector("#preview").contentDocument;
@@ -125,11 +125,11 @@ const { chromium } = require("playwright");
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     await page.fill("#path", "drawing.md");
     await page.locator("#path").dispatchEvent("change");
-    await page.fill("#src", '#import "lib.notc" as typst;\n#typst.svg("中文 $sqrt(2)$")');
+    await page.fill("#src", '#import "lib.not" as typst;\n#typst.svg("中文 $sqrt(2)$")');
     await preview();
     assert.equal(await page.frameLocator("#preview").locator(selector).count(), 1);
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
     assert.deepEqual(errors, []);
-    console.log("Typst SVG: published worker, Chinese text, Fletcher runtime packages/cache, pages, lifecycle, errors, responsive sizing and .not/.md preview passed.");
+    console.log("Typst SVG: published worker, Chinese text, Fletcher runtime packages/cache, pages, lifecycle, errors, responsive sizing and .md/.md preview passed.");
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

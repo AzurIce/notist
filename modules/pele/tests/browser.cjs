@@ -11,7 +11,7 @@ const { chromium } = require("playwright");
     const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
     const errors = [];
     const libraries = [];
-    const selector = '[notist-function$="/pele/lib.notc.diagram"]';
+    const selector = '[notist-function$="/pele/lib.not.diagram"]';
     page.on("pageerror", error => errors.push(error.message));
     page.on("request", request => {
       if (request.url().includes("/npm/pele@")) libraries.push(request.url());
@@ -158,10 +158,10 @@ const { chromium } = require("playwright");
     await preview.waitForSelector("#core .kind");
     await preview.fill("#root-url", "../modules/pele/");
     await preview.fill("#config-url", "");
-    await preview.fill("#path", "README.not");
+    await preview.fill("#path", "README.md");
     await preview.click("#load-project");
     await preview.waitForFunction(() => {
-      const elements = [...(document.querySelector("#preview").contentDocument?.querySelectorAll('[notist-function$="/pele/lib.notc.diagram"]') ?? [])];
+      const elements = [...(document.querySelector("#preview").contentDocument?.querySelectorAll('[notist-function$="/pele/lib.not.diagram"]') ?? [])];
       return elements.length === 2 && elements.every(element => element.renderedSvg);
     });
     assert.equal(await preview.locator("#diags").textContent(), "✓ 无诊断");

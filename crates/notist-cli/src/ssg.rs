@@ -50,6 +50,39 @@ pub(crate) fn assemble(
         })
         .map_err(|e| (e, observed))
 }
+pub(crate) fn check_package(target: &Package, executor: &Arc<notist::Executor>) -> ExitCode {
+    let result = notist::progress::run_stage(
+        "host.check",
+        || format!("Check {}", target.name),
+        || assemble(target, false, executor).map_err(|(e, _)| e),
+    );
+    match result {
+        Ok(result) => {
+            crate::emit_source_diagnostics(
+                &result.artifact.warnings,
+                codespan_reporting::diagnostic::Severity::Warning,
+            );
+            println!(
+                "checked {} pages ({})",
+                result.artifact.pages.len(),
+                target.name
+            );
+            ExitCode::SUCCESS
+        }
+        Err(Error::Diagnostics(errors)) => {
+            crate::emit_source_diagnostics(
+                &errors,
+                codespan_reporting::diagnostic::Severity::Error,
+            );
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 pub(crate) fn build_package(target: &Package, executor: &Arc<notist::Executor>) -> ExitCode {
     let result = notist::progress::run_stage(
         "host.build",

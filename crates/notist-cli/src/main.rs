@@ -71,8 +71,17 @@ enum Command {
         #[arg(long)]
         no_clear_screen: bool,
     },
-    /// Parse and materialize a document, reporting every diagnostic
-    Check { file: PathBuf },
+    /// Check a document/directory, or dry-run check the current Notist.toml site
+    Check {
+        /// File or directory to check (omit to dry-run check the current package/workspace site)
+        file: Option<PathBuf>,
+        /// Check every workspace package that declares a site
+        #[arg(long, conflicts_with = "file")]
+        workspace: bool,
+        /// Select workspace packages by name (repeatable)
+        #[arg(short = 'p', long = "package", conflicts_with = "file")]
+        packages: Vec<String>,
+    },
     /// Print the lossless CST
     Cst { file: PathBuf },
     /// Print the desugared core tree
@@ -190,7 +199,14 @@ fn run(cli: Cli) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Check { file } => check(&file, config),
+        Command::Check {
+            file,
+            workspace,
+            packages,
+        } => match file {
+            Some(file) => check(&file, config),
+            None => package::check(config, workspace, &packages, cli.jobs),
+        },
         Command::Cst { file } => cmd_cst(&file),
         Command::Core { file } => cmd_core(&file, evaluate),
         Command::Json { file } => cmd_json(&file, evaluate),

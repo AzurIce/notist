@@ -7,53 +7,44 @@
 == 一图总览
 
 ```text
-  .not / .md 文档源码                      .notc 模块源码
-         │                                       │
-         ▼                                       ▼
-  parse_document /                        parse (lexer + parser +
-  parse_markdown_document                 flank [inline] / [ block ])
-  (@!(...) + #import + 正文)                     │
-  合成 fn __doc__() -> Block                     │
-         │                                       │
-         └───────────────► 统一的 notc::Module ◄──┘
-                                   │
-                ┌──────────────────┴──────────────────┐
-                │       三层静态分析（纯内存、无 IO）    │
-                │  1a. collect_module_interface       │
-                │      提取函数/方法签名（不读函数体）   │
-                │  1b. topological_order (DAG/环检测)  │
-                │  1c. 构建每模块 exports + ModuleScope │
-                │  2.  check_module_bodies            │
-                │      每模块独立全量类型检查 → ModuleExpr│
-                │      校验单态可达泛型特化             │
-                └────────┬────────────────────┬───────┘
-                         │                    │
-         ┌───────────────┘                    └───────────────┐
-         ▼ (LSP 路径：不求值)                                  ▼ (SSG 路径)
-  WorkspaceAnalysis                                  CheckedProject::eval_document
-  容错 AST 语义索引                                    1. lower_entry("__doc__")
-  → Diagnostics / Symbols                               仅特化并 lower 可达子图
-  → Hover / GotoDef                                  2. eval::evaluate 求值
-  → 类型感知 Completions                                → 不可变单节点树 notc::Block
-                                                               │
-                                                               ▼
-                                                    Document::from_block
-                                                    • 显式调用 block.sectionize()
-                                                    • 提取 attrs / title / Heading slug
-                                                               │
-                                                               ▼
-                                                    全站链接、资源与 Web Components
-                                                    • DocumentIndex 校验跨页链接与 #anchor
-                                                    • 按约定加载 Custom 节点对应 JS 组件
-                                                    • PreparedPage::render_html + 代码高亮
-                                                               │
-                                                               ▼
-                                                    Tera 模板 & 主题 → BuildOutput
+  .not 文档 (NotistFrontend)       .md 文档 (notist-markdown / rushdown)     .notc 模块源码
+         │                                       │                                 │
+         ▼                                       ▼                                 ▼
+  DocumentFrontend::parse_document        单向调用 notc::embedded           parse (lexer + parser +
+  (@!(...) + #import + 统一 AST 属性挂载)  (@!(...) + #import + #call)       flank [inline] / [ block ])
+         │                                       │                                 │
+         └───────────────────► 统一的 notc::Module ◄───────────────────────────────┘
+                                         │
+                ┌────────────────────────┴────────────────────────┐
+                │   site.analyze（严格静态屏障，零求值、零数据 IO） │
+                │  1. 共享 .notc 模块三层检查 + 预降级 SharedLowered│
+                │  2. 并行解析 & 静态检查全部文档 → CheckedDocument │
+                │     （直接复用共享 FunctionId，不重复降级共享函数）│
+                └────────┬────────────────────────────────┬───────┘
+                         │                                │
+         ┌───────────────┘                                └───────────────┐
+         ▼ (LSP 路径：不求值)                                              ▼ (SSG 路径：静态无错后进入)
+  WorkspaceAnalysis                                            site.evaluate（并行求值）
+  容错 AST 语义索引                                              CheckedProject::eval_checked_document
+  → Diagnostics / Symbols                                      + SsgDataHost（共享 JSON 分片缓存）
+  → Hover / GotoDef                                            → 不可变单节点树 notc::Block
+  → 类型感知 Completions                                        → Document::from_block (sectionize)
+                                                               → 预渲染 HtmlPlan 并即时释放树
+                                                                      │
+                                                                      ▼
+                                                               site.render（并行回填链接与组件）
+                                                               • DocumentIndex 校验跨页链接与 #anchor
+                                                               • 按约定加载 Custom 节点对应 JS 组件
+                                                               • 代码高亮（剥离围栏属性）
+                                                                      │
+                                                                      ▼
+                                                               site.templates (Tera) → BuildOutput
 ```
 
 == 关键设计决策
 
-- *没有求值前/求值后两棵树*：`.not` 文档就是返回 `Block` 的零参入口函数 `__doc__()`，静态检查只产出带 `InstanceKey` 的 `ModuleExpr`，求值直接构造不可变 `Block` / `Inline` 节点树。
-- *`sectionize()` 移出编译器*：标题折节是 `Block` 上的纯库方法，只在需要章节层次的下游（如 SSG）显式调用，不污染类型检查器。
-- *泛型按定义点全量检查*：`<T: Type>` + `where` 守卫 + `match T` 在定义点即验证所有分支；执行时仅按入口可达性做单态化与 lowering。
+- *可插拔单向前端边界*：`notc` 仅实现 `.notc` 与 `.not` 并暴露 `DocumentFrontend` 与 `notc::embedded` 细粒度钩子；`notist-markdown` 独立在 `notc` 之上基于 `rushdown` 降级到 `notc::Module`，代码中的 `[...]` 永远是 `.not` 语法，彻底消除双向 ping-pong。
+- *AST 级统一属性挂载*：所有前端仅产出 `Attr` 占位节点，由 `build_document_module` 内的统一 pass 挂载到紧随其后的第一个 AST 节点。
+- *严格静态屏障 + 共享函数预降级*：`CheckedProject` 预降级一次单态共享函数（`SharedLowered`）；`site.analyze` 先完成全站文档静态检查，存在任何语法/类型错误则立即终止、绝不触发求值或 `DataHost` IO。
+- *`sectionize()` 移出编译器*：标题折节是 `Block` 上的纯库方法，只在下游显式调用，并将标题属性提升到外层 `Section`。
 - *Web Components 归属 SSG 层*：`notc` 中的外部声明只生成 `CustomNode` 数据；JS 组件发现、脚本打包与 `<script type="module">` 注册全部在 SSG 阶段按目录约定完成。

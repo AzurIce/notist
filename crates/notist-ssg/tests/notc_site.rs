@@ -219,3 +219,73 @@ fn ssg_routes_math_nodes_to_configured_math_component_and_supports_collapsed_pla
     let reg_js = html(&output, "_notist/pages/intro.js");
     assert!(reg_js.contains("customElements.define(\"notist-math\""));
 }
+
+#[test]
+fn ssg_evaluates_data_driven_pages_with_cached_json_host_lists_tables_and_containers() {
+    let views = r#"
+fn item_page(source: String, idx: Int) -> Block {
+    let items = read_json(source);
+    let rec = items.at(idx);
+    let id = rec.at(0).as_string("");
+    let name = rec.at(1).as_string("");
+    [
+        @(id: "item-detail")#section[
+            #heading(1, text(name))
+            @(id: "meta", class: "item-meta")#div[
+                #para(strong[ID] + text(" " + id))
+            ]
+        ]
+    ]
+}
+
+fn catalog_page(source: String) -> Block {
+    let page = read_json(source);
+    let count = page.get("count").as_int(0);
+    let rows = for rec in page.get("items").as_list() {
+        let id = rec.at(0).as_string("");
+        let name = rec.at(1).as_string("");
+        #[
+            text(id).with_attr("class", "numeric"),
+            link("/items/" + id + ".html", text(name)),
+        ]
+    };
+    [
+        = Items
+
+        #para(text(count.to_string() + " total"))
+
+        @(class: "table-scroll")#div[
+            #table(#[text("ID"), text("Name")], rows)
+        ]
+
+        @(class: "pagination", aria-label: "Catalog Pages")
+        Page 1
+    ]
+}
+"#;
+    let mut v = vault(&[
+        ("modules/views.notc", views),
+        ("content/.data/shard.json", r#"[["1","Gil"],["2","Fire Shard"]]"#),
+        ("content/.data/catalog.json", r#"{"count":2,"items":[["1","Gil"],["2","Fire Shard"]]}"#),
+        ("content/items/index.not", "#import \"../../modules/views.notc\" as views;\n#views.catalog_page(\"../.data/catalog.json\")\n"),
+        ("content/items/1.not", "#import \"../../modules/views.notc\" as views;\n#views.item_page(\"../.data/shard.json\", 0)\n"),
+        ("content/items/2.not", "#import \"../../modules/views.notc\" as views;\n#views.item_page(\"../.data/shard.json\", 1)\n"),
+    ]);
+
+    let output = Builder::default()
+        .build(&mut v, &SiteConfig::default())
+        .expect("data-driven site builds cleanly");
+
+    assert!(output.warnings.is_empty(), "warnings: {:?}", output.warnings);
+    assert_eq!(output.pages.len(), 3);
+
+    let catalog = html(&output, "items/index.html");
+    assert!(catalog.contains("<p>2 total</p>"));
+    assert!(catalog.contains(r#"<div class="table-scroll"><table><thead><tr><th>ID</th><th>Name</th></tr></thead><tbody><tr><td class="numeric">1</td><td><a href="1.html">Gil</a></td></tr><tr><td class="numeric">2</td><td><a href="2.html">Fire Shard</a></td></tr></tbody></table></div>"#));
+    assert!(catalog.contains(r#"<p class="pagination" aria-label="Catalog Pages">Page 1</p>"#));
+
+    let item2 = html(&output, "items/2.html");
+    assert!(item2.contains(r#"<section id="item-detail">"#));
+    assert!(item2.contains(r#"<h1 id="fire-shard">Fire Shard</h1>"#));
+    assert!(item2.contains(r#"<div id="meta" class="item-meta"><p><strong>ID</strong> 2</p></div>"#));
+}

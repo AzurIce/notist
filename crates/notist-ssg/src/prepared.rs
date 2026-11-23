@@ -35,17 +35,46 @@ pub fn render_standalone_html(block: &Block) -> String {
     let sectioned = block.sectionize();
     let route = Route::plan(PathBuf::from("./index.not"), std::path::Path::new("."), false)
         .expect("valid route");
-    match PreparedPage::new(route, Arc::from(""), sectioned, "Notist") {
+    match PreparedPage::new(route, Arc::from(""), sectioned, "Notist", None) {
         Ok(prepared) => prepared.render_html(&[], &BTreeMap::new(), None),
         Err(_) => String::new(),
     }
 }
 
+enum HtmlPlan {
+    PreRendered {
+        buffer: Box<str>,
+        slots: Box<[HtmlSlot]>,
+    },
+    Deferred(Box<Block>),
+}
+
+struct HtmlSlot {
+    offset: u32,
+    ref_idx: u32,
+    kind: HtmlSlotKind,
+}
+
+enum HtmlSlotKind {
+    LinkOpen {
+        fallback: Box<str>,
+        attrs: Box<str>,
+    },
+    LinkClose {
+        fallback_safe: bool,
+    },
+    Image {
+        fallback: Box<str>,
+        alt: Box<str>,
+        attrs: Box<str>,
+    },
+}
+
 pub(crate) struct PreparedPage {
     pub page: Page,
-    pub root: Block,
+    plan: HtmlPlan,
     pub ids: BTreeSet<String>,
-    pub heading_ids: Vec<String>,
+    heading_ids: Vec<String>,
     pub references: Vec<Reference>,
     /// Unique `(module_virtual_path, name)` custom content declarations used on this page.
     /// Used strictly by SSG to resolve optional web-component JS modules by convention.
@@ -60,6 +89,7 @@ impl PreparedPage {
         source_text: Arc<str>,
         block: Block,
         site_title: &str,
+        math_tag: Option<&str>,
     ) -> Result<Self, Error> {
         let document = Document::from_block(route, block, site_title)?;
         let mut references = Vec::new();
@@ -73,11 +103,33 @@ impl PreparedPage {
             &mut custom_nodes,
             &mut has_math,
         );
+        let (plan, heading_ids) = if custom_nodes.is_empty() {
+            let mut buffer = String::new();
+            let mut slots = Vec::with_capacity(references.len() * 2);
+            let mut ctx = RenderCtx {
+                heading_ids: &document.heading_ids,
+                math_tag,
+                heading_cursor: 0,
+                ref_cursor: 0,
+                target: RenderTarget::Plan { slots: &mut slots },
+            };
+            render_block(&document.root, &mut ctx, &mut buffer);
+            // Drop `document.root` and `document.heading_ids` immediately so peak RSS stays bounded.
+            (
+                HtmlPlan::PreRendered {
+                    buffer: buffer.into_boxed_str(),
+                    slots: slots.into_boxed_slice(),
+                },
+                Vec::new(),
+            )
+        } else {
+            (HtmlPlan::Deferred(Box::new(document.root)), document.heading_ids)
+        };
         Ok(Self {
             page: document.page,
-            root: document.root,
+            plan,
             ids: document.ids,
-            heading_ids: document.heading_ids,
+            heading_ids,
             references,
             custom_nodes,
             has_math,
@@ -90,27 +142,102 @@ impl PreparedPage {
         web_components: &BTreeMap<(String, String), String>,
         math_tag: Option<&str>,
     ) -> String {
-        let mut html = String::new();
-        let mut ctx = RenderCtx {
-            heading_ids: &self.heading_ids,
-            resolved_urls,
-            web_components,
-            math_tag,
-            heading_cursor: 0,
-            ref_cursor: 0,
-        };
-        render_block(&self.root, &mut ctx, &mut html);
-        html
+        match &self.plan {
+            HtmlPlan::PreRendered { buffer, slots } => {
+                if slots.is_empty() {
+                    return buffer.to_string();
+                }
+                let mut out = String::with_capacity(buffer.len() + slots.len() * 32);
+                let mut cursor = 0usize;
+                for slot in slots.iter() {
+                    let pos = slot.offset as usize;
+                    out.push_str(&buffer[cursor..pos]);
+                    cursor = pos;
+                    let idx = slot.ref_idx as usize;
+                    match &slot.kind {
+                        HtmlSlotKind::LinkOpen { fallback, attrs } => {
+                            let url = resolved_urls
+                                .get(idx)
+                                .and_then(|u| u.as_deref())
+                                .unwrap_or(fallback.as_ref());
+                            if notist_html::is_safe_url(url) {
+                                let _ = write!(
+                                    out,
+                                    "<a href=\"{}\"{}>",
+                                    notist_html::escape_attribute(url),
+                                    attrs
+                                );
+                            }
+                        }
+                        HtmlSlotKind::LinkClose { fallback_safe } => {
+                            let is_safe = resolved_urls
+                                .get(idx)
+                                .and_then(|u| u.as_deref())
+                                .map(notist_html::is_safe_url)
+                                .unwrap_or(*fallback_safe);
+                            if is_safe {
+                                out.push_str("</a>");
+                            }
+                        }
+                        HtmlSlotKind::Image {
+                            fallback,
+                            alt,
+                            attrs,
+                        } => {
+                            let url = resolved_urls
+                                .get(idx)
+                                .and_then(|u| u.as_deref())
+                                .unwrap_or(fallback.as_ref());
+                            if notist_html::is_safe_url(url) {
+                                let _ = write!(
+                                    out,
+                                    "<img src=\"{}\" alt=\"{}\"{}>",
+                                    notist_html::escape_attribute(url),
+                                    alt,
+                                    attrs
+                                );
+                            }
+                        }
+                    }
+                }
+                out.push_str(&buffer[cursor..]);
+                out
+            }
+            HtmlPlan::Deferred(root) => {
+                let mut html = String::new();
+                let mut ctx = RenderCtx {
+                    heading_ids: &self.heading_ids,
+                    math_tag,
+                    heading_cursor: 0,
+                    ref_cursor: 0,
+                    target: RenderTarget::Direct {
+                        resolved_urls,
+                        web_components,
+                    },
+                };
+                render_block(root, &mut ctx, &mut html);
+                html
+            }
+        }
     }
+}
+
+enum RenderTarget<'a> {
+    Direct {
+        resolved_urls: &'a [Option<String>],
+        web_components: &'a BTreeMap<(String, String), String>,
+    },
+    Plan {
+        slots: &'a mut Vec<HtmlSlot>,
+    },
 }
 
 struct RenderCtx<'a> {
     heading_ids: &'a [String],
-    resolved_urls: &'a [Option<String>],
-    web_components: &'a BTreeMap<(String, String), String>,
     math_tag: Option<&'a str>,
     heading_cursor: usize,
     ref_cursor: usize,
+    target: RenderTarget<'a>,
 }
 
 fn collect_block_references(
@@ -300,7 +427,11 @@ fn render_custom_node(
 
     let props_json = serde_json::to_string(&scalar_props).unwrap_or_else(|_| "{}".into());
     let content_mode = if is_block { "block" } else { "inline" };
-    if let Some(tag) = ctx.web_components.get(&key) {
+    let tag_opt = match &ctx.target {
+        RenderTarget::Direct { web_components, .. } => web_components.get(&key).cloned(),
+        RenderTarget::Plan { .. } => None,
+    };
+    if let Some(tag) = tag_opt {
         let _ = write!(
             out,
             "<{tag} notist-content=\"{content_mode}\" data-props=\"{}\"",
@@ -603,38 +734,79 @@ fn render_inline(inline: &Inline, ctx: &mut RenderCtx<'_>, out: &mut String) {
         InlineKind::Link { target, label } => {
             let idx = ctx.ref_cursor;
             ctx.ref_cursor += 1;
-            let url = ctx
-                .resolved_urls
-                .get(idx)
-                .and_then(|u| u.as_deref())
-                .unwrap_or(target.as_ref());
-            if notist_html::is_safe_url(url) {
-                let _ = write!(out, "<a href=\"{}\"", notist_html::escape_attribute(url));
-                write_common_attrs(&node.attrs, false, out);
-                out.push('>');
-                render_inline(label, ctx, out);
-                out.push_str("</a>");
-            } else {
-                render_inline(label, ctx, out);
+            match &mut ctx.target {
+                RenderTarget::Direct { resolved_urls, .. } => {
+                    let url = resolved_urls
+                        .get(idx)
+                        .and_then(|u| u.as_deref())
+                        .unwrap_or(target.as_ref());
+                    if notist_html::is_safe_url(url) {
+                        let _ = write!(out, "<a href=\"{}\"", notist_html::escape_attribute(url));
+                        write_common_attrs(&node.attrs, false, out);
+                        out.push('>');
+                        render_inline(label, ctx, out);
+                        out.push_str("</a>");
+                    } else {
+                        render_inline(label, ctx, out);
+                    }
+                }
+                RenderTarget::Plan { slots } => {
+                    let mut attrs_buf = String::new();
+                    write_common_attrs(&node.attrs, false, &mut attrs_buf);
+                    slots.push(HtmlSlot {
+                        offset: out.len() as u32,
+                        ref_idx: idx as u32,
+                        kind: HtmlSlotKind::LinkOpen {
+                            fallback: target.as_ref().into(),
+                            attrs: attrs_buf.into_boxed_str(),
+                        },
+                    });
+                    render_inline(label, ctx, out);
+                    if let RenderTarget::Plan { slots } = &mut ctx.target {
+                        slots.push(HtmlSlot {
+                            offset: out.len() as u32,
+                            ref_idx: idx as u32,
+                            kind: HtmlSlotKind::LinkClose {
+                                fallback_safe: notist_html::is_safe_url(target.as_ref()),
+                            },
+                        });
+                    }
+                }
             }
         }
         InlineKind::Image { target, alt } => {
             let idx = ctx.ref_cursor;
             ctx.ref_cursor += 1;
-            let url = ctx
-                .resolved_urls
-                .get(idx)
-                .and_then(|u| u.as_deref())
-                .unwrap_or(target.as_ref());
-            if notist_html::is_safe_url(url) {
-                let _ = write!(
-                    out,
-                    "<img src=\"{}\" alt=\"{}\"",
-                    notist_html::escape_attribute(url),
-                    notist_html::escape_attribute(alt)
-                );
-                write_common_attrs(&node.attrs, false, out);
-                out.push('>');
+            match &mut ctx.target {
+                RenderTarget::Direct { resolved_urls, .. } => {
+                    let url = resolved_urls
+                        .get(idx)
+                        .and_then(|u| u.as_deref())
+                        .unwrap_or(target.as_ref());
+                    if notist_html::is_safe_url(url) {
+                        let _ = write!(
+                            out,
+                            "<img src=\"{}\" alt=\"{}\"",
+                            notist_html::escape_attribute(url),
+                            notist_html::escape_attribute(alt)
+                        );
+                        write_common_attrs(&node.attrs, false, out);
+                        out.push('>');
+                    }
+                }
+                RenderTarget::Plan { slots } => {
+                    let mut attrs_buf = String::new();
+                    write_common_attrs(&node.attrs, false, &mut attrs_buf);
+                    slots.push(HtmlSlot {
+                        offset: out.len() as u32,
+                        ref_idx: idx as u32,
+                        kind: HtmlSlotKind::Image {
+                            fallback: target.as_ref().into(),
+                            alt: notist_html::escape_attribute(alt).into_boxed_str(),
+                            attrs: attrs_buf.into_boxed_str(),
+                        },
+                    });
+                }
             }
         }
         InlineKind::Custom(custom) => {

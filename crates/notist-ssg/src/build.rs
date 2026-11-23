@@ -5,23 +5,23 @@ use crate::{
     templates,
 };
 use notc::{
-    Decl, Module, ProjectDiagnosticKind, check_parsed_modules, format_type_error, parse,
-    parse_document, parse_markdown_document, resolve_import_path,
+    DataHost, Decl, DocumentError, JsonValue, Module, ProjectDiagnosticKind, check_parsed_modules,
+    format_type_error, parse, parse_document, parse_markdown_document, resolve_import_path,
 };
 use notist::{
-    Diagnostic, DiagnosticCode, Phase, Resources, SourceDiagnostic, TextRange, Vault,
+    Diagnostic, DiagnosticCode, InputRead, Phase, Resources, SourceDiagnostic, TextRange, Vault,
     publication::{
         Assets,
         url::{fragment, relative_url},
     },
-    resources::{ResourceKind, normalize},
+    resources::{ResourceKind, ResourceReader, normalize},
 };
 use serde::Serialize;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 /// Owned, validated output. Publishing it is a separate host operation.
@@ -638,43 +638,166 @@ pub(crate) fn build<R: Resources + Send>(
                 }
             }
             let source_dirs: Vec<_> = source_dirs.into_iter().collect();
-            let mut documents = vec![];
             let mut errors = vec![];
             let mut outputs: BTreeSet<_> =
                 routes.iter().map(|route| route.output.clone()).collect();
-            let analysis_stage =
-                notist::progress::Span::stage("site.analyze", || "Compile documents with notc".into());
-            let (vroot, doc_entries, checked_project, compile_errors) =
-                compile_notc_site(vault.resources(), &routes, input.documents)?;
-            errors.extend(compile_errors);
+            let math_tag = if config
+                .math_component
+                .as_deref()
+                .is_some_and(|mc| has_math_component_entry(vault.resources(), mc))
+            {
+                Some("notist-math")
+            } else {
+                None
+            };
+
+            let analysis_stage = notist::progress::Span::stage("site.analyze", || {
+                "Compile shared notc modules".into()
+            });
+            let (vroot, shared_project, shared_errors) =
+                compile_shared_notc_modules(vault.resources(), &routes, &input.documents)?;
+            errors.extend(shared_errors);
             analysis_stage.finish();
 
-            let diagnostics = vec![];
-            let _ = recover;
+            let mut diagnostics = vec![];
             if !errors.is_empty() {
-                return Err(Error::Diagnostics(errors));
+                if recover {
+                    diagnostics.extend(std::mem::take(&mut errors));
+                } else {
+                    return Err(Error::Diagnostics(errors));
+                }
             }
 
             let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
-                "Evaluate and prepare pages".into()
+                format!("Parse, evaluate and prepare {} pages", routes.len())
             });
-            if let Some(project) = checked_project {
-                for (route, virtual_path, source_text) in doc_entries {
-                    let block = project.eval_document(&virtual_path).map_err(|err| {
-                        Error::Message(format!(
-                            "{}: runtime error evaluating document: {err:?}",
-                            route.path.display()
-                        ))
-                    })?;
-                    let prepared = notist::progress::run_stage(
-                        "site.document.prepare",
-                        || format!("Prepare {}", route.path.display()),
-                        || PreparedPage::new(route.clone(), source_text, block, &config.title),
-                    )?;
-                    documents.push(prepared);
+            let data_host = SsgDataHost::new(vroot.clone(), vault.resources());
+            let doc_inputs: Vec<(crate::Route, String)> = routes
+                .into_iter()
+                .zip(input.documents.into_values())
+                .collect();
+            let eval_chunk_size = doc_inputs.len().div_ceil(executor.jobs()).max(64);
+            let eval_chunks = executor.map_chunks(
+                &doc_inputs,
+                eval_chunk_size,
+                |_, chunk| -> Result<(Vec<PreparedPage>, Vec<SourceDiagnostic>), Error> {
+                    let mut chunk_docs = Vec::with_capacity(chunk.len());
+                    let mut chunk_errors = Vec::new();
+                    for (route, text) in chunk {
+                        let virtual_path = to_virtual_path(&vroot, &route.source);
+                        let source_arc: Arc<str> = Arc::from(text.as_str());
+                        let parsed = if route.source.extension().is_some_and(|e| e == "md") {
+                            parse_markdown_document(&source_arc)
+                        } else {
+                            parse_document(&source_arc)
+                        };
+                        if !parsed.diagnostics.is_empty() {
+                            for d in parsed.diagnostics {
+                                let range = TextRange::new(d.span.start.into(), d.span.end.into());
+                                chunk_errors.push(diagnostic(
+                                    &route.source,
+                                    &source_arc,
+                                    Diagnostic::new(Phase::Syntax, range, d.message),
+                                ));
+                            }
+                            if recover {
+                                chunk_docs.push(PreparedPage::new(
+                                    route.clone(),
+                                    source_arc,
+                                    notc::Block::empty(notc::Span::DUMMY),
+                                    &config.title,
+                                    math_tag,
+                                )?);
+                            }
+                            continue;
+                        }
+                        let block = match shared_project.check_and_eval_standalone_document(
+                            &virtual_path,
+                            &parsed.program.root,
+                            &data_host,
+                        ) {
+                            Ok(block) => block,
+                            Err(DocumentError::Diagnostics(diags)) => {
+                                for diag in diags {
+                                    let (phase, span, msg) = match diag.kind {
+                                        ProjectDiagnosticKind::Parse(p) => {
+                                            (Phase::Syntax, p.span, p.message)
+                                        }
+                                        ProjectDiagnosticKind::Type { span, error, .. } => {
+                                            (Phase::Type, span, format_type_error(&error))
+                                        }
+                                    };
+                                    let range = TextRange::new(span.start.into(), span.end.into());
+                                    let diag_path = vroot.join(&diag.module);
+                                    let diag_src = if diag.module == virtual_path {
+                                        source_arc.as_ref()
+                                    } else {
+                                        ""
+                                    };
+                                    chunk_errors.push(diagnostic(
+                                        &diag_path,
+                                        diag_src,
+                                        Diagnostic::new(phase, range, msg),
+                                    ));
+                                }
+                                if recover {
+                                    chunk_docs.push(PreparedPage::new(
+                                        route.clone(),
+                                        source_arc,
+                                        notc::Block::empty(notc::Span::DUMMY),
+                                        &config.title,
+                                        math_tag,
+                                    )?);
+                                }
+                                continue;
+                            }
+                            Err(DocumentError::Execution(err)) => {
+                                if recover {
+                                    chunk_errors.push(diagnostic(
+                                        &route.source,
+                                        &source_arc,
+                                        Diagnostic::new(
+                                            Phase::Semantic,
+                                            TextRange::empty(0.into()),
+                                            format!("runtime error evaluating document: {err:?}"),
+                                        ),
+                                    ));
+                                    notc::Block::empty(notc::Span::DUMMY)
+                                } else {
+                                    return Err(Error::Message(format!(
+                                        "{}: runtime error evaluating document: {err:?}",
+                                        route.path.display()
+                                    )));
+                                }
+                            }
+                        };
+                        let prepared = PreparedPage::new(
+                            route.clone(),
+                            source_arc,
+                            block,
+                            &config.title,
+                            math_tag,
+                        )?;
+                        chunk_docs.push(prepared);
+                    }
+                    Ok((chunk_docs, chunk_errors))
+                },
+            );
+            drop(doc_inputs);
+            let mut documents = Vec::with_capacity(outputs.len());
+            for chunk in eval_chunks {
+                let (chunk_docs, chunk_errors) = chunk?;
+                if recover {
+                    diagnostics.extend(chunk_errors);
+                } else {
+                    errors.extend(chunk_errors);
                 }
+                documents.extend(chunk_docs);
             }
             evaluation_stage.finish();
+            if !errors.is_empty() {
+                return Err(Error::Diagnostics(errors));
+            }
             let asset_stage =
                 notist::progress::Span::stage("site.assets", || "Prepare assets and Sass".into());
             let mut assets = Assets::new(output);
@@ -729,147 +852,159 @@ pub(crate) fn build<R: Resources + Send>(
             let rendering = notist::progress::Span::stage("site.render", || {
                 "Resolve links and render HTML".into()
             });
-            for document in documents {
-                let page_progress = notist::progress::Span::stage("site.document.render", || {
-                    format!("Render {}", document.page.route.path.display())
-                });
-                page_progress.attribute("source", || {
-                    document.page.route.source.display().to_string()
-                });
-                let links = notist::progress::Span::stage("site.links", || {
-                    "Resolve document links and resources".into()
-                });
-                let mut resolved = vec![None; document.references.len()];
-                for (key, node) in document.references.iter().enumerate() {
-                    let target = &node.target;
-                    let local = target.split(['?', '#']).next().unwrap_or("");
-                    let referenced = if local.is_empty()
+            // Pre-pass: copy any referenced local content assets not already published,
+            // and register per-page SSG Web Components / math components.
+            let mut page_web_component_maps: HashMap<usize, BTreeMap<(String, String), String>> =
+                HashMap::new();
+            for (doc_idx, document) in documents.iter().enumerate() {
+                for node in &document.references {
+                    let local = node.target.split(['?', '#']).next().unwrap_or("");
+                    if local.is_empty()
                         || local.starts_with("//")
                         || local.split('/').next().unwrap_or("").contains(':')
                     {
-                        None
-                    } else {
-                        percent_encoding::percent_decode_str(local)
-                            .decode_utf8()
-                            .ok()
-                            .map(|p| {
-                                if p.starts_with('/') {
-                                    normalize(&content.join(p.trim_start_matches('/')))
-                                } else {
-                                    normalize(&node.origin.parent().unwrap().join(p.as_ref()))
-                                }
-                            })
+                        continue;
+                    }
+                    let Ok(decoded) = percent_encoding::percent_decode_str(local).decode_utf8()
+                    else {
+                        continue;
                     };
-                    if let Some(source) = referenced {
-                        let source = mounts.resolve(&source);
-                        if let Some(destination) = mounts.path(&source) {
-                            if destination.starts_with("_notist") {
-                                errors.push(
-                                    node.issue(
-                                        "_notist is reserved for generated resources".into(),
-                                    ),
-                                );
-                                continue;
-                            }
-                            if !outputs.contains(&destination)
-                                && !vault.supports(&source)
-                                && !source.extension().is_some_and(|s| s == "notc")
-                                && !destination
-                                    .components()
-                                    .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
-                                && vault.resources().kind(&source)? == Some(ResourceKind::File)
-                            {
-                                assets.copy(vault.resources(), &source, &destination)?;
-                                outputs.insert(destination);
-                            }
-                        }
-                    }
-                    let mut local_warnings = Vec::new();
-                    match resolve_link(
-                        &document.page.route,
-                        target,
-                        node,
-                        &content,
-                        &by_source,
-                        &outputs,
-                        &mounts,
-                        config.directory_urls,
-                        &mut local_warnings,
-                    ) {
-                        Ok(Some(url)) => {
-                            resolved[key] = Some(url);
-                        }
-                        Ok(None) => {}
-                        Err(message) => {
-                            errors.push(node.issue(message));
-                        }
-                    }
-                    if node.is_image {
-                        errors.extend(local_warnings);
+                    let referenced = if decoded.starts_with('/') {
+                        normalize(&content.join(decoded.trim_start_matches('/')))
                     } else {
-                        warnings.extend(local_warnings);
+                        normalize(&node.origin.parent().unwrap().join(decoded.as_ref()))
+                    };
+                    let source = mounts.resolve(&referenced);
+                    if let Some(destination) = mounts.path(&source) {
+                        if destination.starts_with("_notist") {
+                            errors.push(
+                                node.issue("_notist is reserved for generated resources".into()),
+                            );
+                            continue;
+                        }
+                        if !outputs.contains(&destination)
+                            && !vault.supports(&source)
+                            && !source.extension().is_some_and(|s| s == "notc")
+                            && !destination
+                                .components()
+                                .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
+                            && vault.resources().kind(&source)? == Some(ResourceKind::File)
+                        {
+                            assets.copy(vault.resources(), &source, &destination)?;
+                            outputs.insert(destination);
+                        }
                     }
                 }
-                links.finish();
-                // SSG-only Web Component convention: for any bodyless `Custom` node
-                // declared in `<module>.notc`, check if `<module_dir>/<name>.js` or
-                // `<module_dir>/<name>/index.js` exists and publish it as a web component.
-                let mut page_web_components: BTreeMap<(String, String), String> = BTreeMap::new();
-                let mut page_registrations = String::new();
-                let component_path = PathBuf::from("_notist/pages")
-                    .join(&document.page.route.path)
-                    .with_extension("js");
-                for (module_rel, name) in &document.custom_nodes {
-                    if let Some((tag, entry_out)) = resolve_ssg_web_component(
-                        vault.resources(),
-                        &vroot,
-                        module_rel,
-                        name,
-                        &mut assets,
-                        &mut published_component_files,
-                    )? {
+                if !document.custom_nodes.is_empty() || (document.has_math && math_tag.is_some()) {
+                    let mut page_web_components: BTreeMap<(String, String), String> =
+                        BTreeMap::new();
+                    let mut page_registrations = String::new();
+                    let component_path = PathBuf::from("_notist/pages")
+                        .join(&document.page.route.path)
+                        .with_extension("js");
+                    for (module_rel, name) in &document.custom_nodes {
+                        if let Some((tag, entry_out)) = resolve_ssg_web_component(
+                            vault.resources(),
+                            &vroot,
+                            module_rel,
+                            name,
+                            &mut assets,
+                            &mut published_component_files,
+                        )? {
+                            let import_rel = relative_url(&component_path, &entry_out, false);
+                            let _ = std::fmt::Write::write_fmt(
+                                &mut page_registrations,
+                                format_args!(
+                                    "import * as _c_{idx} from \"./{import_rel}\";\nif (!customElements.get(\"{tag}\")) {{ const C = _c_{idx}.default ?? Object.values(_c_{idx}).find(v => typeof v === 'function'); if (C) customElements.define(\"{tag}\", C); }}\n",
+                                    idx = page_web_components.len(),
+                                ),
+                            );
+                            page_web_components.insert((module_rel.clone(), name.clone()), tag);
+                        }
+                    }
+                    if document.has_math
+                        && let Some(math_comp) = &config.math_component
+                        && let Some(entry_out) = resolve_ssg_math_component(
+                            vault.resources(),
+                            math_comp,
+                            &mut assets,
+                            &mut published_component_files,
+                        )?
+                    {
                         let import_rel = relative_url(&component_path, &entry_out, false);
                         let _ = std::fmt::Write::write_fmt(
                             &mut page_registrations,
                             format_args!(
-                                "import * as _c_{idx} from \"./{import_rel}\";\nif (!customElements.get(\"{tag}\")) {{ const C = _c_{idx}.default ?? Object.values(_c_{idx}).find(v => typeof v === 'function'); if (C) customElements.define(\"{tag}\", C); }}\n",
-                                idx = page_web_components.len(),
+                                "import * as _c_math from \"./{import_rel}\";\nif (!customElements.get(\"notist-math\")) {{ const C = _c_math.default ?? Object.values(_c_math).find(v => typeof v === 'function'); if (C) customElements.define(\"notist-math\", C); }}\n",
                             ),
                         );
-                        page_web_components.insert((module_rel.clone(), name.clone()), tag);
+                    }
+                    if !page_registrations.is_empty() {
+                        components.insert(
+                            document.page.route.path.clone(),
+                            relative_url(&document.page.route.output, &component_path, false),
+                        );
+                        assets.generated(component_path, page_registrations.into_bytes())?;
+                    }
+                    if !page_web_components.is_empty() {
+                        page_web_component_maps.insert(doc_idx, page_web_components);
                     }
                 }
-                let mut math_tag: Option<&str> = None;
-                if document.has_math
-                    && let Some(math_comp) = &config.math_component
-                    && let Some(entry_out) = resolve_ssg_math_component(
-                        vault.resources(),
-                        math_comp,
-                        &mut assets,
-                        &mut published_component_files,
-                    )?
-                {
-                    let import_rel = relative_url(&component_path, &entry_out, false);
-                    let _ = std::fmt::Write::write_fmt(
-                        &mut page_registrations,
-                        format_args!(
-                            "import * as _c_math from \"./{import_rel}\";\nif (!customElements.get(\"notist-math\")) {{ const C = _c_math.default ?? Object.values(_c_math).find(v => typeof v === 'function'); if (C) customElements.define(\"notist-math\", C); }}\n",
-                        ),
-                    );
-                    math_tag = Some("notist-math");
+            }
+
+            // Parallel link resolution and HTML splicing across all CPU cores.
+            let empty_wc: BTreeMap<(String, String), String> = BTreeMap::new();
+            let render_chunk_size = documents.len().div_ceil(executor.jobs()).max(128);
+            let render_chunks = executor.map_chunks(&documents, render_chunk_size, |start, chunk| {
+                let mut chunk_pages = Vec::with_capacity(chunk.len());
+                let mut chunk_warnings = Vec::new();
+                let mut chunk_errors = Vec::new();
+                let mut resolved = Vec::new();
+                for (offset, document) in chunk.iter().enumerate() {
+                    let doc_idx = start + offset;
+                    resolved.clear();
+                    resolved.resize(document.references.len(), None);
+                    for (key, node) in document.references.iter().enumerate() {
+                        let mut local_warnings = Vec::new();
+                        match resolve_link(
+                            &document.page.route,
+                            &node.target,
+                            node,
+                            &content,
+                            &by_source,
+                            &outputs,
+                            &mounts,
+                            config.directory_urls,
+                            &mut local_warnings,
+                        ) {
+                            Ok(Some(url)) => {
+                                resolved[key] = Some(url);
+                            }
+                            Ok(None) => {}
+                            Err(message) => {
+                                chunk_errors.push(node.issue(message));
+                            }
+                        }
+                        if node.is_image {
+                            chunk_errors.extend(local_warnings);
+                        } else {
+                            chunk_warnings.extend(local_warnings);
+                        }
+                    }
+                    let page_wcs = page_web_component_maps.get(&doc_idx).unwrap_or(&empty_wc);
+                    let page_math_tag = if document.has_math { math_tag } else { None };
+                    let html = document.render_html(&resolved, page_wcs, page_math_tag);
+                    let mut page = document.page.clone();
+                    page.html = html;
+                    chunk_pages.push(page);
                 }
-                if !page_registrations.is_empty() {
-                    components.insert(
-                        document.page.route.path.clone(),
-                        relative_url(&document.page.route.output, &component_path, false),
-                    );
-                    assets.generated(component_path, page_registrations.into_bytes())?;
-                }
-                let html = document.render_html(&resolved, &page_web_components, math_tag);
-                let mut page = document.page;
-                page.html = html;
-                pages.push(page);
-                page_progress.finish();
+                (chunk_pages, chunk_warnings, chunk_errors)
+            });
+            drop(documents);
+            for (chunk_pages, chunk_warnings, chunk_errors) in render_chunks {
+                pages.extend(chunk_pages);
+                warnings.extend(chunk_warnings);
+                errors.extend(chunk_errors);
             }
             if !errors.is_empty() {
                 return Err(Error::Diagnostics(errors));
@@ -1055,22 +1190,116 @@ fn sanitize_tag_part(raw: &str) -> String {
     }
 }
 
+fn has_math_component_entry<R: Resources>(resources: &R, math_component: &Path) -> bool {
+    let entry_fs = resources.resolve(math_component);
+    match resources.kind(&entry_fs).ok().flatten() {
+        Some(ResourceKind::File) => true,
+        Some(ResourceKind::Directory) => {
+            resources.kind(&entry_fs.join("index.js")).ok().flatten() == Some(ResourceKind::File)
+        }
+        None => false,
+    }
+}
+
+/// Thread-safe cached JSON data host for `notc` evaluation inside `notist-ssg`.
+/// Parses each referenced JSON file at most once across all parallel page workers.
+struct SsgDataHost {
+    vroot: PathBuf,
+    project_root: PathBuf,
+    reader: Option<Arc<dyn ResourceReader>>,
+    cache: RwLock<HashMap<PathBuf, JsonValue>>,
+}
+
+impl SsgDataHost {
+    fn new<R: Resources>(vroot: PathBuf, resources: &R) -> Self {
+        let project_root = resources.root().to_path_buf();
+        let reader = resources.read_root(&project_root).ok();
+        Self {
+            vroot,
+            project_root,
+            reader,
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl DataHost for SsgDataHost {
+    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
+        let target_fs = if rel_path.starts_with('/') {
+            normalize(&self.project_root.join(rel_path.trim_start_matches('/')))
+        } else {
+            let doc_fs = self.vroot.join(from_doc);
+            let parent = doc_fs.parent().unwrap_or(&self.vroot);
+            normalize(&parent.join(rel_path))
+        };
+
+        if let Some(cached) = self.cache.read().unwrap().get(&target_fs) {
+            return Ok(cached.clone());
+        }
+
+        let Some(reader) = &self.reader else {
+            return Err(format!(
+                "cannot read JSON `{rel_path}`: resource backend does not support rooted data reads"
+            ));
+        };
+        let rel_to_root = target_fs.strip_prefix(&self.project_root).map_err(|_| {
+            format!(
+                "JSON path `{rel_path}` escapes project root `{}`",
+                self.project_root.display()
+            )
+        })?;
+        const MAX_JSON_BYTES: usize = 64 * 1024 * 1024;
+        let bytes = match reader.read_bounded(rel_to_root, MAX_JSON_BYTES) {
+            InputRead::Ready(bytes) => bytes,
+            InputRead::Failed(err) => {
+                return Err(format!("failed to read JSON `{rel_path}`: {err:?}"));
+            }
+            InputRead::Pending => {
+                return Err(format!("JSON `{rel_path}` is unavailable"));
+            }
+        };
+        let text = std::str::from_utf8(bytes.as_ref())
+            .map_err(|_| format!("JSON `{rel_path}` is not valid UTF-8"))?;
+        let parsed = JsonValue::parse(text)
+            .map_err(|err| format!("invalid JSON in `{rel_path}`: {err}"))?;
+        let mut guard = self.cache.write().unwrap();
+        Ok(guard.entry(target_fs).or_insert(parsed).clone())
+    }
+}
+
+/// Fast lexical scan of leading preamble `#import "..."` paths in a `.not`/`.md`
+/// document so shared `.notc` modules can be discovered and compiled ONCE before
+/// fanning out document parsing and evaluation across worker threads.
+fn scan_leading_import_paths(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("@!(") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("#import") {
+            let rest = rest.trim_start();
+            if let Some(after_quote) = rest.strip_prefix('"')
+                && let Some(end_quote) = after_quote.find('"')
+            {
+                out.push(after_quote[..end_quote].to_owned());
+            }
+            continue;
+        }
+        break;
+    }
+    out
+}
+
 #[allow(clippy::type_complexity)]
-fn compile_notc_site<R: Resources>(
+fn compile_shared_notc_modules<R: Resources>(
     resources: &R,
     routes: &[crate::Route],
-    documents: BTreeMap<PathBuf, String>,
-) -> Result<
-    (
-        PathBuf,
-        Vec<(crate::Route, String, Arc<str>)>,
-        Option<notc::CheckedProject>,
-        Vec<SourceDiagnostic>,
-    ),
-    Error,
-> {
+    documents: &BTreeMap<PathBuf, String>,
+) -> Result<(PathBuf, notc::CheckedProject, Vec<SourceDiagnostic>), Error> {
     if routes.is_empty() {
-        return Ok((resources.root().to_path_buf(), Vec::new(), None, Vec::new()));
+        let empty = check_parsed_modules(&[]).expect("empty module set always checks");
+        return Ok((resources.root().to_path_buf(), empty, Vec::new()));
     }
 
     let mut all_paths: Vec<PathBuf> = vec![resources.root().to_path_buf()];
@@ -1080,83 +1309,65 @@ fn compile_notc_site<R: Resources>(
     let vroot = common_root_dir(&all_paths);
 
     let mut errors: Vec<SourceDiagnostic> = Vec::new();
-    let mut doc_entries: Vec<(crate::Route, String, Arc<str>)> = Vec::with_capacity(routes.len());
     let mut parsed_modules: Vec<(String, PathBuf, Arc<str>, Module)> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut imports_by_file: HashMap<String, Vec<String>> = HashMap::new();
 
-    for ((_, text), route) in documents.into_iter().zip(routes.iter().cloned()) {
-        let virtual_path = to_virtual_path(&vroot, &route.source);
-        let source_arc: Arc<str> = Arc::from(text.as_str());
-        let parsed = if route.source.extension().is_some_and(|e| e == "md") {
-            parse_markdown_document(&source_arc)
-        } else {
-            parse_document(&source_arc)
+    // Seed shared `.notc` module discovery from every document's leading `#import` lines.
+    for (text, route) in documents.values().zip(routes.iter()) {
+        let import_paths = scan_leading_import_paths(text);
+        if import_paths.is_empty() {
+            continue;
+        }
+        let doc_rel = to_virtual_path(&vroot, &route.source);
+        for import_path in import_paths {
+            let Ok(target_rel) = resolve_import_path(&doc_rel, &import_path) else {
+                continue;
+            };
+            if visited.insert(target_rel.clone()) {
+                queue.push_back(target_rel);
+            }
+        }
+    }
+
+    // Transitively load all shared `.notc` modules through `resources`.
+    while let Some(target_rel) = queue.pop_front() {
+        let target_fs = vroot.join(&target_rel);
+        let Ok(bytes) = resources.read(&target_fs) else {
+            // Missing modules will be reported with exact import spans during document check.
+            continue;
         };
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let source_arc: Arc<str> = Arc::from(text.as_str());
+        let parsed = parse(&source_arc);
         for d in parsed.diagnostics {
             let range = TextRange::new(d.span.start.into(), d.span.end.into());
             errors.push(diagnostic(
-                &route.source,
+                &target_fs,
                 &source_arc,
                 Diagnostic::new(Phase::Syntax, range, d.message),
             ));
         }
-        let mut refs = Vec::new();
+        let mut next_refs = Vec::new();
         for decl in &parsed.program.root.declarations {
             if let Decl::Import(import) = decl {
-                refs.push(import.path.clone());
+                next_refs.push(import.path.clone());
             }
         }
-        visited.insert(virtual_path.clone());
-        imports_by_file.insert(virtual_path.clone(), refs);
-        queue.push_back(virtual_path.clone());
-        doc_entries.push((route.clone(), virtual_path.clone(), Arc::clone(&source_arc)));
-        parsed_modules.push((virtual_path, route.source, source_arc, parsed.program.root));
-    }
-
-    // Transitively load all `.notc` modules imported by documents or other modules
-    // through `resources` so watch/serve automatically observes them.
-    while let Some(from_rel) = queue.pop_front() {
-        let Some(refs) = imports_by_file.remove(&from_rel) else {
-            continue;
-        };
-        for import_path in refs {
-            let Ok(target_rel) = resolve_import_path(&from_rel, &import_path) else {
-                continue;
-            };
-            if !visited.insert(target_rel.clone()) {
-                continue;
+        for next_path in &next_refs {
+            if let Ok(next_rel) = resolve_import_path(&target_rel, next_path)
+                && visited.insert(next_rel.clone())
+            {
+                queue.push_back(next_rel);
             }
-            let target_fs = vroot.join(&target_rel);
-            let Ok(bytes) = resources.read(&target_fs) else {
-                // Let `check_parsed_modules` report `MissingModule` at the exact import span.
-                continue;
-            };
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
-            };
-            let source_arc: Arc<str> = Arc::from(text.as_str());
-            let parsed = parse(&source_arc);
-            for d in parsed.diagnostics {
-                let range = TextRange::new(d.span.start.into(), d.span.end.into());
-                errors.push(diagnostic(
-                    &target_fs,
-                    &source_arc,
-                    Diagnostic::new(Phase::Syntax, range, d.message),
-                ));
-            }
-            let mut next_refs = Vec::new();
-            for decl in &parsed.program.root.declarations {
-                if let Decl::Import(import) = decl {
-                    next_refs.push(import.path.clone());
-                }
-            }
-            imports_by_file.insert(target_rel.clone(), next_refs);
-            queue.push_back(target_rel.clone());
-            parsed_modules.push((target_rel, target_fs, source_arc, parsed.program.root));
         }
+        imports_by_file.insert(target_rel.clone(), next_refs);
+        parsed_modules.push((target_rel, target_fs, source_arc, parsed.program.root));
     }
+    let _ = imports_by_file;
 
     let meta_by_rel: HashMap<&str, (&Path, &str)> = parsed_modules
         .iter()
@@ -1168,7 +1379,7 @@ fn compile_notc_site<R: Resources>(
         .collect();
 
     let checked = match check_parsed_modules(&module_refs) {
-        Ok(project) => Some(project),
+        Ok(project) => project,
         Err(project_diags) => {
             for diag in project_diags {
                 let (fs_path, src) = meta_by_rel
@@ -1184,11 +1395,11 @@ fn compile_notc_site<R: Resources>(
                 let range = TextRange::new(span.start.into(), span.end.into());
                 errors.push(diagnostic(fs_path, src, Diagnostic::new(phase, range, msg)));
             }
-            None
+            check_parsed_modules(&[]).expect("empty module set always checks")
         }
     };
 
-    Ok((vroot, doc_entries, checked, errors))
+    Ok((vroot, checked, errors))
 }
 
 fn common_root_dir(paths: &[PathBuf]) -> PathBuf {

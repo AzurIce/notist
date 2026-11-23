@@ -393,6 +393,7 @@ impl WorkspaceAnalysis {
             module_paths: &module_paths,
             exports: &exports,
             signatures: &signatures,
+            extra_signatures: None,
         };
         let mut checked_decls = Vec::with_capacity(count);
         let mut all_bodies_clean = true;

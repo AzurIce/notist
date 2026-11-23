@@ -11,13 +11,19 @@ use crate::ast::{DOC_ENTRY, Decl, Import, ImportKind, Module, Span, Type};
 use crate::check::{
     Binding, CheckedDecl, CheckedProgram, FunctionSig, InstanceKey, InterfaceView, MethodSig,
     ModuleId, ModuleScope, TypeError, check_module_bodies, collect_module_interface,
-    specialize_roots,
+    specialize_roots, specialize_roots_with_extra,
 };
 use crate::content::Block;
 use crate::eval::{ExecutionError, Value};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::parse_file;
 use std::collections::HashMap;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DocumentError {
+    Diagnostics(Vec<ProjectDiagnostic>),
+    Execution(ExecutionError),
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
@@ -38,10 +44,16 @@ pub enum ProjectDiagnosticKind {
 /// Checked multi-module semantic result. All modules and declarations have been
 /// statically checked; execution specializes and lowers only the subgraph
 /// reachable from a chosen `(module, entry)`.
+///
+/// Immutable and `Sync`, so any number of standalone `.not`/`.md` documents can
+/// be checked and evaluated against it in parallel without cloning shared modules.
 #[derive(Debug)]
 pub struct CheckedProject {
+    module_paths: Vec<String>,
     module_ids: HashMap<String, ModuleId>,
     exports: Vec<HashMap<String, Binding>>,
+    signatures: Vec<Vec<FunctionSig>>,
+    local_methods: Vec<HashMap<(Type, String), MethodSig>>,
     decls: Vec<Vec<CheckedDecl>>,
 }
 
@@ -119,6 +131,245 @@ impl CheckedProject {
             Value::Block(block) => Ok(block),
             _ => Err(ExecutionError::UnknownEntry(format!(
                 "{document_path}::{DOC_ENTRY}"
+            ))),
+        }
+    }
+
+    /// Check, specialize, and evaluate a standalone `.not` or `.md` document against
+    /// this immutable pre-checked shared `.notc` project without mutating or cloning
+    /// shared modules. Safe to call concurrently from many threads.
+    pub fn check_and_eval_standalone_document(
+        &self,
+        doc_path: &str,
+        doc_module: &Module,
+        host: &dyn crate::json::DataHost,
+    ) -> Result<Block, DocumentError> {
+        let doc_path_norm = normalize_path(doc_path).unwrap_or_else(|| doc_path.to_owned());
+        let doc_id = ModuleId(self.module_paths.len());
+        let mut diagnostics = Vec::new();
+
+        let interface = collect_module_interface(doc_id, doc_module, true);
+        for diag in interface.diagnostics {
+            diagnostics.push(ProjectDiagnostic {
+                module: doc_path_norm.clone(),
+                kind: ProjectDiagnosticKind::Type {
+                    declaration: diag.declaration,
+                    span: diag.span,
+                    error: diag.error,
+                },
+            });
+        }
+
+        let mut bindings = interface.bindings;
+        let mut methods = interface.methods.clone();
+        let mut imported_method_sources: HashMap<(Type, String), ModuleId> = HashMap::new();
+
+        for decl in &doc_module.declarations {
+            let Decl::Import(import) = decl else {
+                continue;
+            };
+            let target_id = match resolve_import_path(&doc_path_norm, &import.path) {
+                Ok(target_path) => match self.module_ids.get(&target_path) {
+                    Some(&id) => id,
+                    None => {
+                        diagnostics.push(ProjectDiagnostic {
+                            module: doc_path_norm.clone(),
+                            kind: ProjectDiagnosticKind::Type {
+                                declaration: format!("import \"{}\"", import.path),
+                                span: import.path_span,
+                                error: TypeError::MissingModule(target_path),
+                            },
+                        });
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    diagnostics.push(ProjectDiagnostic {
+                        module: doc_path_norm.clone(),
+                        kind: ProjectDiagnosticKind::Type {
+                            declaration: format!("import \"{}\"", import.path),
+                            span: import.path_span,
+                            error,
+                        },
+                    });
+                    continue;
+                }
+            };
+
+            let target_exports = &self.exports[target_id.0];
+            match &import.kind {
+                ImportKind::Default => match default_import_alias(&import.path) {
+                    Ok(alias) => insert_binding(
+                        &mut bindings,
+                        alias,
+                        Binding::Namespace(target_id),
+                        import.path_span,
+                        &doc_path_norm,
+                        import,
+                        &mut diagnostics,
+                    ),
+                    Err(error) => diagnostics.push(ProjectDiagnostic {
+                        module: doc_path_norm.clone(),
+                        kind: ProjectDiagnosticKind::Type {
+                            declaration: format!("import \"{}\"", import.path),
+                            span: import.path_span,
+                            error,
+                        },
+                    }),
+                },
+                ImportKind::Alias { alias, span } => insert_binding(
+                    &mut bindings,
+                    alias.clone(),
+                    Binding::Namespace(target_id),
+                    *span,
+                    &doc_path_norm,
+                    import,
+                    &mut diagnostics,
+                ),
+                ImportKind::Members(members) => {
+                    for member in members {
+                        match target_exports.get(&member.name) {
+                            Some(&binding) => insert_binding(
+                                &mut bindings,
+                                member.alias.clone(),
+                                binding,
+                                member.alias_span,
+                                &doc_path_norm,
+                                import,
+                                &mut diagnostics,
+                            ),
+                            None => diagnostics.push(ProjectDiagnostic {
+                                module: doc_path_norm.clone(),
+                                kind: ProjectDiagnosticKind::Type {
+                                    declaration: format!("import \"{}\"", import.path),
+                                    span: member.name_span,
+                                    error: TypeError::UnknownExport {
+                                        module: self.module_paths[target_id.0].clone(),
+                                        name: member.name.clone(),
+                                    },
+                                },
+                            }),
+                        }
+                    }
+                }
+                ImportKind::Wildcard { span } => {
+                    let mut entries: Vec<(&String, &Binding)> = target_exports
+                        .iter()
+                        .filter(|(name, _)| name.as_str() != DOC_ENTRY)
+                        .collect();
+                    entries.sort_by_key(|(a, _)| *a);
+                    for (name, &binding) in entries {
+                        insert_binding(
+                            &mut bindings,
+                            name.clone(),
+                            binding,
+                            *span,
+                            &doc_path_norm,
+                            import,
+                            &mut diagnostics,
+                        );
+                    }
+                }
+            }
+
+            let mut target_methods: Vec<(&(Type, String), &MethodSig)> =
+                self.local_methods[target_id.0].iter().collect();
+            target_methods.sort_by(|((_, a), _), ((_, b), _)| a.cmp(b));
+            for (key, sig) in target_methods {
+                if interface.methods.contains_key(key) {
+                    continue;
+                }
+                if let Some(&prev_module) = imported_method_sources.get(key) {
+                    if prev_module != target_id {
+                        diagnostics.push(ProjectDiagnostic {
+                            module: doc_path_norm.clone(),
+                            kind: ProjectDiagnosticKind::Type {
+                                declaration: format!("import \"{}\"", import.path),
+                                span: import.span,
+                                error: TypeError::AmbiguousMethod {
+                                    receiver: key.0.clone(),
+                                    method: key.1.clone(),
+                                },
+                            },
+                        });
+                    }
+                    continue;
+                }
+                imported_method_sources.insert(key.clone(), target_id);
+                methods.insert(key.clone(), sig.clone());
+            }
+        }
+
+        if !diagnostics.is_empty() {
+            return Err(DocumentError::Diagnostics(diagnostics));
+        }
+
+        let scope = ModuleScope { bindings, methods };
+        let view = InterfaceView {
+            module_paths: &self.module_paths,
+            exports: &self.exports,
+            signatures: &self.signatures,
+            extra_signatures: Some(&interface.signatures),
+        };
+        let (doc_decls, body_diags) =
+            check_module_bodies(&doc_path_norm, doc_module, &scope, &view);
+        if !body_diags.is_empty() {
+            for diag in body_diags {
+                diagnostics.push(ProjectDiagnostic {
+                    module: doc_path_norm.clone(),
+                    kind: ProjectDiagnosticKind::Type {
+                        declaration: diag.declaration,
+                        span: diag.span,
+                        error: diag.error,
+                    },
+                });
+            }
+            return Err(DocumentError::Diagnostics(diagnostics));
+        }
+
+        let Some(&Binding::Function(root_id)) = scope.bindings.get(DOC_ENTRY) else {
+            return Err(DocumentError::Execution(ExecutionError::UnknownEntry(
+                format!("{doc_path}::{DOC_ENTRY}"),
+            )));
+        };
+        let roots = [(
+            DOC_ENTRY.to_owned(),
+            InstanceKey {
+                decl: root_id,
+                type_args: Vec::new(),
+            },
+        )];
+        let program = specialize_roots_with_extra(&self.decls, Some(&doc_decls), &roots).map_err(
+            |errs| {
+                let diags = errs
+                    .into_iter()
+                    .map(|(module_id, diag)| {
+                        let module = if module_id == doc_id {
+                            doc_path_norm.clone()
+                        } else {
+                            self.module_paths[module_id.0].clone()
+                        };
+                        ProjectDiagnostic {
+                            module,
+                            kind: ProjectDiagnosticKind::Type {
+                                declaration: diag.declaration,
+                                span: diag.span,
+                                error: diag.error,
+                            },
+                        }
+                    })
+                    .collect();
+                DocumentError::Diagnostics(diags)
+            },
+        )?;
+
+        match program
+            .run_with_host(DOC_ENTRY, &doc_path_norm, host)
+            .map_err(DocumentError::Execution)?
+        {
+            Value::Block(block) => Ok(block),
+            _ => Err(DocumentError::Execution(ExecutionError::UnknownEntry(
+                format!("{doc_path}::{DOC_ENTRY}"),
             ))),
         }
     }
@@ -377,6 +628,7 @@ pub fn check_parsed_modules(
         module_paths: &module_paths,
         exports: &exports,
         signatures: &signatures,
+        extra_signatures: None,
     };
     let mut decls = Vec::with_capacity(modules.len());
     for (index, &(_, module)) in modules.iter().enumerate() {
@@ -436,8 +688,11 @@ pub fn check_parsed_modules(
     }
 
     Ok(CheckedProject {
+        module_paths,
         module_ids,
         exports,
+        signatures,
+        local_methods,
         decls,
     })
 }

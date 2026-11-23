@@ -175,11 +175,16 @@ pub(crate) struct InterfaceView<'a> {
     pub(crate) module_paths: &'a [String],
     pub(crate) exports: &'a [HashMap<String, Binding>],
     pub(crate) signatures: &'a [Vec<FunctionSig>],
+    pub(crate) extra_signatures: Option<&'a [FunctionSig]>,
 }
 
 impl InterfaceView<'_> {
     fn signature(&self, id: DeclId) -> &FunctionSig {
-        &self.signatures[id.module.0][id.index]
+        if id.module.0 == self.signatures.len() {
+            &self.extra_signatures.expect("extra module signatures")[id.index]
+        } else {
+            &self.signatures[id.module.0][id.index]
+        }
     }
 }
 
@@ -262,6 +267,7 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         module_paths: &paths,
         exports: &exports,
         signatures: &signatures,
+        extra_signatures: None,
     };
 
     let (checked_decls, body_diags) = check_module_bodies("<root>", &program.root, &scope, &view);
@@ -294,6 +300,22 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     })
 }
 
+#[derive(Clone, Copy)]
+struct DeclStore<'a> {
+    shared: &'a [Vec<CheckedDecl>],
+    extra: Option<&'a [CheckedDecl]>,
+}
+
+impl<'a> DeclStore<'a> {
+    fn get(self, id: DeclId) -> &'a CheckedDecl {
+        if id.module.0 == self.shared.len() {
+            &self.extra.expect("extra module decls")[id.index]
+        } else {
+            &self.shared[id.module.0][id.index]
+        }
+    }
+}
+
 /// Specialize a set of concrete root instances and all transitively reachable
 /// instances into a dense `CheckedProgram`, collapsing `TypeMatch` statically
 /// and rejecting any reachable `compile_error(...)`.
@@ -301,6 +323,20 @@ pub(crate) fn specialize_roots(
     decls: &[Vec<CheckedDecl>],
     roots: &[(String, InstanceKey)],
 ) -> Result<CheckedProgram, Vec<(ModuleId, Diagnostic)>> {
+    specialize_roots_with_extra(decls, None, roots)
+}
+
+/// Specialize roots against an immutable shared module table plus one extra
+/// standalone document module (zero cloning of shared modules).
+pub(crate) fn specialize_roots_with_extra(
+    shared_decls: &[Vec<CheckedDecl>],
+    extra_decls: Option<&[CheckedDecl]>,
+    roots: &[(String, InstanceKey)],
+) -> Result<CheckedProgram, Vec<(ModuleId, Diagnostic)>> {
+    let decls = DeclStore {
+        shared: shared_decls,
+        extra: extra_decls,
+    };
     let mut mapping: HashMap<InstanceKey, FunctionId> = HashMap::new();
     let mut order: Vec<InstanceKey> = Vec::new();
     let mut queue: VecDeque<InstanceKey> = VecDeque::new();
@@ -325,7 +361,7 @@ pub(crate) fn specialize_roots(
 
     while let Some(instance) = queue.pop_front() {
         let fn_id = mapping[&instance];
-        let decl = &decls[instance.decl.module.0][instance.decl.index];
+        let decl = decls.get(instance.decl);
         let body = lower_specialized_expr(
             decls,
             &decl.body,
@@ -374,7 +410,7 @@ pub(crate) fn specialize_roots(
 }
 
 fn lower_specialized_expr(
-    decls: &[Vec<CheckedDecl>],
+    decls: DeclStore<'_>,
     expr: &ModuleExpr,
     type_params: &[String],
     type_args: &[Type],
@@ -397,7 +433,7 @@ fn lower_specialized_expr(
                 .iter()
                 .map(|ty| substitute_type(ty, type_params, type_args))
                 .collect();
-            let target_decl = &decls[key.decl.module.0][key.decl.index];
+            let target_decl = decls.get(key.decl);
             if let Some(where_expr) = &target_decl.where_clause
                 && eval_where(where_expr, &target_decl.type_params, &concrete_args) != Some(true)
             {

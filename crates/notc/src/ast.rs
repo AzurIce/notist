@@ -69,13 +69,13 @@ pub struct Import {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportKind {
-    /// `import "./math.notc";` — alias derived from file stem.
+    /// `import "./math.not";` — alias derived from file stem.
     Default,
-    /// `import "./math.notc" as m;`
+    /// `import "./math.not" as m;`
     Alias { alias: String, span: Span },
-    /// `import "./math.notc": inc, add as sum;`
+    /// `import "./math.not": inc, add as sum;`
     Members(Vec<ImportMember>),
-    /// `import "./math.notc": *;`
+    /// `import "./math.not": *;`
     Wildcard { span: Span },
 }
 

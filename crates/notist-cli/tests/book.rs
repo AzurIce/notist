@@ -110,7 +110,7 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
         "Notist.toml",
         "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}\ntitle='Book'\noutput='public'",
     );
-    write(root, "README.not", "= Home\n\n[Guide](guide/README.md)");
+    write(root, "README.md", "# Home\n\n[Guide](guide/README.md)");
     write(root, "guide/README.md", "# Guide\n\nContent");
     let result = command(root).args(["build"]).output().unwrap();
     assert!(
@@ -121,11 +121,11 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
     let page = root.join("public/index.html");
     let original = std::fs::read(&page).unwrap();
     assert!(root.join("public/guide/index.html").is_file());
-    write(root, "README.not", "= Home\n\n![Missing](bad.png)");
+    write(root, "README.md", "# Home\n\n![Missing](bad.png)");
     let result = command(root).args(["build"]).output().unwrap();
     assert!(!result.status.success());
     assert_eq!(std::fs::read(&page).unwrap(), original);
-    write(root, "README.not", "= Updated");
+    write(root, "README.md", "# Updated");
     std::fs::remove_dir_all(root.join("guide")).unwrap();
     let result = command(root).args(["build"]).output().unwrap();
     assert!(
@@ -150,7 +150,7 @@ fn build_replaces_owned_sites_prunes_stale_pages_and_preserves_output_on_errors(
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(root.join("README.not").is_file());
+    assert!(root.join("README.md").is_file());
 }
 
 #[test]
@@ -291,10 +291,10 @@ fn site_publication_rejects_symlink_component_resources() {
     );
     write(
         root,
-        "README.not",
-        "#import \"./widgets/lib.notc\" as widgets\n#widgets.badge(\"Hello\")",
+        "README.md",
+        "#import \"./widgets/lib.not\" as widgets\n#widgets.badge(\"Hello\")",
     );
-    write(root, "widgets/lib.notc", "fn badge(label: String) -> Inline;");
+    write(root, "widgets/lib.not", "fn badge(label: String) -> Inline;");
     write(
         root,
         "component.js",
@@ -319,10 +319,10 @@ fn html_export_is_independent_of_book_structure_and_theme() {
         "Notist.toml",
         "[package]\nname='test'\n[site]\ncontent='.'\ntheme='missing-theme'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}\nstyles=['missing.css']",
     );
-    write(root, "README.not", "= Standalone\n\nBody");
-    write(root, "SUMMARY.not", "Not a valid book structure.");
+    write(root, "README.md", "# Standalone\n\nBody");
+    write(root, "SUMMARY.md", "Not a valid book structure.");
     let exported = command(root)
-        .args(["html", "README.not", "--out-dir", "document"])
+        .args(["html", "README.md", "--out-dir", "document"])
         .output()
         .unwrap();
     assert!(
@@ -506,7 +506,7 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
         "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}\noutput='public'",
     );
     write(root, "README.md", "# Home");
-    write(root, "guide/README.not", "= Guide");
+    write(root, "guide/README.md", "# Guide");
     let server = Server::start(root);
     let page = server.get("/guide/");
     assert!(page.starts_with("HTTP/1.1 200"));
@@ -532,8 +532,8 @@ fn serve_exposes_clean_urls_reload_events_and_last_successful_build() {
     let failed = update(&mut events, |event| event["report"]["status"] == "failed");
     assert_eq!(failed["revision"], changed["revision"]);
     assert!(server.get("/").contains("Updated"));
-    write(root, "new/README.not", "= New page");
-    write(root, "README.md", "# Recovered\n\n[New](new/README.not)");
+    write(root, "new/README.md", "# New page");
+    write(root, "README.md", "# Recovered\n\n[New](new/README.md)");
     update(&mut events, |event| {
         event["revision"].as_u64() > changed["revision"].as_u64()
     });
@@ -587,12 +587,12 @@ fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
     );
     write(
         root,
-        "README.not",
-        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()",
+        "README.md",
+        "#import \"./lib.not\" as demo\n#demo.content() #demo.other()",
     );
     write(
         root,
-        "lib.notc",
+        "lib.not",
         "fn content() -> Inline { [before] }\nfn other() -> Inline { [other] }",
     );
     let server = Server::start(root);
@@ -602,12 +602,12 @@ fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
 
     write(
         root,
-        "lib.notc",
+        "lib.not",
         "fn content() -> Inline { 42 }\nfn other() -> Inline { [other] }",
     );
     let failed = update(&mut events, |event| event["report"]["status"] == "errors");
     let detail = failed["report"]["errors"][0]["detail"].as_str().unwrap();
-    assert!(detail.contains("lib.notc:1:"), "{detail}");
+    assert!(detail.contains("lib.not:1:"), "{detail}");
     assert!(
         !detail.contains('\x1b'),
         "browser code frames must be plain text"
@@ -622,12 +622,12 @@ fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
 
     write(
         root,
-        "README.not",
-        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()\n\n[Missing](missing.not)",
+        "README.md",
+        "#import \"./lib.not\" as demo\n#demo.content() #demo.other()\n\n[Missing](missing.md)",
     );
     write(
         root,
-        "lib.notc",
+        "lib.not",
         "fn content() -> Inline { [fixed] }\nfn other() -> Inline { [other] }",
     );
     let warning = update(&mut events, |event| event["report"]["status"] == "warnings");
@@ -637,14 +637,14 @@ fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
         warning["report"]["warnings"][0]["detail"]
             .as_str()
             .unwrap()
-            .contains("README.not:")
+            .contains("README.md:")
     );
     assert!(server.get("/").contains("fixed"));
 
     write(
         root,
-        "README.not",
-        "#import \"./lib.notc\" as demo\n#demo.content() #demo.other()",
+        "README.md",
+        "#import \"./lib.not\" as demo\n#demo.content() #demo.other()",
     );
     let clean = update(&mut events, |event| event["report"]["status"] == "ready");
     assert!(clean["report"]["errors"].as_array().unwrap().is_empty());
@@ -655,11 +655,11 @@ fn serve_replaces_diagnostics_and_distinguishes_errors_from_warnings() {
 #[test]
 fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
     for (target, page, import, data_arg) in [
-        ("book", "README.not", "./view.notc", "./private/input.json"),
+        ("book", "README.md", "./view.not", "./private/input.json"),
         (
             "site",
-            "content/index.not",
-            "../view.notc",
+            "content/index.md",
+            "../view.not",
             "../private/input.json",
         ),
     ] {
@@ -684,7 +684,7 @@ fn book_and_site_rebuilds_refresh_runtime_data_and_missing_results() {
         );
         write(
             root,
-            "view.notc",
+            "view.not",
             r#"fn show(path: String) -> Inline {
             text(read_json(path).get("name").as_string("missing"))
         }"#,
@@ -756,7 +756,7 @@ fn serve_no_clear_screen_keeps_failed_and_resolved_build_output() {
 
 #[test]
 fn summary_limits_build_output_and_served_pages() {
-    for summary in ["SUMMARY.not", "SUMMARY.md"] {
+    for summary in ["SUMMARY.md", "SUMMARY.md"] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         write(
@@ -764,12 +764,12 @@ fn summary_limits_build_output_and_served_pages() {
             "Notist.toml",
             "[package]\nname='test'\n[site]\ncontent='.'\ntheme='builtins.book'\ndirectory_urls=true\ncopy_content_assets=false\nextensions.builtins.book={select=true}\noutput='public'",
         );
-        write(root, "README.not", "= Home");
+        write(root, "README.md", "# Home");
         write(root, "README.md", "# Unlisted route collision");
-        write(root, "ai/broken.not", "#missing[]");
+        write(root, "ai/broken.md", "#missing[]");
         write(root, "_logs/entry.md", "# Log entry");
         write(root, "later.md", "# Later");
-        write(root, summary, "- [Home](README.not)\n- [Logs](_logs/)");
+        write(root, summary, "- [Home](README.md)\n- [Logs](_logs/)");
         let result = command(root).args(["build"]).output().unwrap();
         assert!(
             result.status.success(),
@@ -790,7 +790,7 @@ fn summary_limits_build_output_and_served_pages() {
         write(
             root,
             summary,
-            "- [Home](README.not)\n- [Logs](_logs/)\n- [Later](later.md)",
+            "- [Home](README.md)\n- [Logs](_logs/)\n- [Later](later.md)",
         );
         let changed = update(&mut events, |event| {
             event["revision"].as_u64() > baseline["revision"].as_u64()
@@ -920,11 +920,11 @@ fn serve_recovers_from_initial_template_errors_and_watches_external_modules() {
     );
     write(
         &root,
-        "README.not",
-        "#import \"../widgets/lib.notc\" as widgets\n= Home\n\n#widgets.badge(\"Hello\")",
+        "README.md",
+        "#import \"../widgets/lib.not\" as widgets\n# Home\n\n#widgets.badge(\"Hello\")",
     );
     write(&root, "theme/page.tera", "{{page.missing}}");
-    write(temp.path(), "widgets/lib.notc", "fn badge(label: String) -> Inline;");
+    write(temp.path(), "widgets/lib.not", "fn badge(label: String) -> Inline;");
     write(
         temp.path(),
         "widgets/badge.js",

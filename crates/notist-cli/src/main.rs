@@ -217,11 +217,6 @@ fn read(file: &Path) -> Result<String, ExitCode> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn notc_frontends() -> [&'static dyn notc::DocumentFrontend; 2] {
-    [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend]
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn common_root_dir(paths: &[PathBuf]) -> PathBuf {
     use std::path::Component;
     let dirs: Vec<PathBuf> = paths
@@ -308,7 +303,7 @@ fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
                     walk_dir(&p, out);
                 } else if p
                     .extension()
-                    .is_some_and(|e| e == "not" || e == "notc" || e == "md")
+                    .is_some_and(|e| e == "not" || e == "md" || e == "markdown")
                 {
                     out.push(p);
                 }
@@ -333,10 +328,8 @@ fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
         raw_files.push((norm, src));
     }
 
-    let frontends = notc_frontends();
-
-    // Transitively load imported `.notc` modules using real normalized filesystem paths
-    // so parent-relative imports like `../lib/ui.notc` resolve cleanly.
+    // Transitively load imported `.not` modules using real normalized filesystem paths
+    // so parent-relative imports like `../lib/ui.not` resolve cleanly.
     while let Some(fs_path) = queue.pop_front() {
         let Some(src) = raw_files
             .iter()
@@ -350,7 +343,7 @@ fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let parsed = notc::parse_file_with_frontends(&hint, &src, &frontends);
+        let parsed = notc::parse_file(&hint, &src);
         let parent = fs_path.parent().unwrap_or(Path::new("."));
         for decl in &parsed.program.root.declarations {
             if let notc::Decl::Import(import) = decl {
@@ -431,15 +424,9 @@ impl notc::DataHost for FsDataHost {
 fn check_notc_project(
     files: &[(String, PathBuf, String)],
 ) -> Result<notc::CheckedProject, Vec<notc::ide::IdeDiagnostic>> {
-    let frontends = notc_frontends();
     let parsed_files: Vec<(String, notc::ParseResult)> = files
         .iter()
-        .map(|(rel, _, src)| {
-            (
-                rel.clone(),
-                notc::parse_file_with_frontends(rel, src, &frontends),
-            )
-        })
+        .map(|(rel, _, src)| (rel.clone(), notc::parse_file(rel, src)))
         .collect();
     let has_parse_errors = parsed_files.iter().any(|(_, p)| !p.diagnostics.is_empty());
     let pairs: Vec<(&str, &str)> = files
@@ -447,7 +434,7 @@ fn check_notc_project(
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
     if has_parse_errors {
-        let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+        let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
         return Err(analysis.diagnostics().to_vec());
     }
     let module_refs: Vec<(&str, &notc::Module)> = parsed_files
@@ -457,7 +444,7 @@ fn check_notc_project(
     match notc::check_parsed_modules(&module_refs) {
         Ok(project) => Ok(project),
         Err(_) => {
-            let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+            let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
             Err(analysis.diagnostics().to_vec())
         }
     }
@@ -473,8 +460,7 @@ fn cmd_cst(file: &Path) -> ExitCode {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let frontends = notc_frontends();
-    let parsed = notc::parse_file_with_frontends(&name, &src, &frontends);
+    let parsed = notc::parse_file(&name, &src);
     println!("{:#?}", parsed.program.root);
     if !parsed.diagnostics.is_empty() {
         for d in &parsed.diagnostics {
@@ -498,8 +484,7 @@ fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let frontends = notc_frontends();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
     let mut out = String::new();
     for d in analysis.diagnostics() {
         let phase = match d.phase {
@@ -552,7 +537,7 @@ fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
             }
         }
     } else if let Some((_, _, src)) = files.first() {
-        let parsed = notc::parse_file_with_frontends(&entry_rel, src, &frontends);
+        let parsed = notc::parse_file(&entry_rel, src);
         out.push_str(&format!("{:#?}\n", parsed.program.root));
     }
     print!("{out}");
@@ -573,8 +558,7 @@ fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let frontends = notc_frontends();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
     let diagnostics: Vec<serde_json::Value> = analysis
         .diagnostics()
         .iter()
@@ -715,8 +699,7 @@ fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let frontends = notc_frontends();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
     let diags = analysis.diagnostics();
     if diags.is_empty() {
         ExitCode::SUCCESS
@@ -895,7 +878,7 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn is_module(file: &Path) -> bool {
-    file.extension().is_some_and(|ext| ext == "notc")
+    file.extension().is_some_and(|ext| ext == "not")
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,19 +1,21 @@
-//! Standalone implementation of the notc language.
+//! Standalone implementation of the Notist `.not` language and frontend-agnostic content IR.
 //!
-//! Programs can be parsed from `.notc` source text, checked as a single module
-//! or as an explicit in-memory multi-file module graph, and lowered by entry
-//! reachability before evaluation; no document host or filesystem IO is required.
+//! Programs can be parsed from `.not` code modules and `.md` documents (or any
+//! custom [`DocumentFrontend`]), checked as a single module or an explicit
+//! in-memory multi-file module graph, and lowered by entry reachability before
+//! evaluation; no document host or filesystem IO is required.
 
 pub mod ast;
+mod attrs;
 mod builtin;
 mod check;
 pub mod content;
-mod content_parser;
 mod eval;
 pub mod frontend;
 pub mod ide;
 pub mod json;
 mod lexer;
+mod markdown;
 mod module;
 mod parser;
 
@@ -31,7 +33,9 @@ pub use content::{
     InlineNode,
 };
 pub use eval::{ExecutionError, FunctionValue, Value};
-pub use frontend::{DocumentFrontend, NotistFrontend, build_document_module, embedded};
+pub use frontend::{
+    DocumentFrontend, MarkdownFrontend, build_document_module, embedded, parse_markdown_document,
+};
 pub use json::{DataHost, JsonData, JsonValue, NoDataHost};
 pub use lexer::ParseDiagnostic;
 pub use module::{

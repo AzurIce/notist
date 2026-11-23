@@ -139,7 +139,7 @@ fn main() -> Int {
 fn supports_cross_module_generics_first_class_instances_and_reachability_lowering() {
     let project = check_project(&[
         (
-            "ops.notc",
+            "ops.not",
             r#"
 fn identity<T: Type>(x: T) -> T { x }
 
@@ -157,9 +157,9 @@ fn dead_generic<T: Type>(x: T) -> T { x }
 "#,
         ),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./ops.notc" as ops;
+import "./ops.not" as ops;
 
 fn apply(f: fn(Int) -> Int, x: Int) -> Int {
     f(x)
@@ -180,11 +180,11 @@ fn main() -> Int {
     ])
     .expect("cross-module generics should check");
 
-    assert!(matches!(project.run("main.notc", "main"), Ok(Value::Int(42))));
+    assert!(matches!(project.run("main.not", "main"), Ok(Value::Int(42))));
     // Lowered instances: main, apply, double<Int>, double<String>, identity<Int> = 5
     // (`dead_generic` and `double<Float>` are not lowered).
     let lowered = project
-        .lower_entry("main.notc", "main")
+        .lower_entry("main.not", "main")
         .expect("main should lower");
     assert_eq!(lowered.function_count(), 5);
 }
@@ -193,7 +193,7 @@ fn main() -> Int {
 fn rejects_cross_module_where_violation_at_call_site() {
     let errors = check_project(&[
         (
-            "ops.notc",
+            "ops.not",
             r#"
 fn only_int<T: Type>(x: T) -> T
 where T == Int {
@@ -202,9 +202,9 @@ where T == Int {
 "#,
         ),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./ops.notc": only_int;
+import "./ops.not": only_int;
 fn main() -> Bool { only_int(true) }
 "#,
         ),
@@ -212,7 +212,7 @@ fn main() -> Bool { only_int(true) }
     .unwrap_err();
 
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].module, "main.notc");
+    assert_eq!(errors[0].module, "main.not");
     assert!(matches!(
         errors[0].kind,
         ProjectDiagnosticKind::Type {

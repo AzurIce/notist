@@ -12,12 +12,12 @@ fn vault(files: &[(&str, &str)]) -> Vault<MemoryResources> {
 
 #[test]
 fn structured_records_are_build_time_bodies_not_published_data() {
-    let page = "#import \"../views/lib.notc\" as view\n#view.show(\"../private/items.json\")";
+    let page = "#import \"../views/lib.not\" as view\n#view.show(\"../private/items.json\")";
     let module = "fn show(source: String) -> Block { let root = read_json(source); para(text(root.get(\"name\").as_string(\"\"))) }";
     let mut host = vault(&[
-        ("content/index.not", page),
-        ("content/two.not", page),
-        ("views/lib.notc", module),
+        ("content/index.md", page),
+        ("content/two.md", page),
+        ("views/lib.not", module),
         (
             "private/items.json",
             r#"{"name":"static <&>","private":"SECRET"}"#,
@@ -35,8 +35,8 @@ fn structured_records_are_build_time_bodies_not_published_data() {
 
     // Invalid JSON reports a build diagnostic without publishing partial output.
     let mut bad_host = vault(&[
-        ("content/index.not", page),
-        ("views/lib.notc", module),
+        ("content/index.md", page),
+        ("views/lib.not", module),
         ("private/items.json", "{bad json"),
     ]);
     let err = Builder::default()
@@ -52,24 +52,24 @@ fn html(site: &notist_ssg::BuildOutput, path: &str) -> String {
 fn module_links_publish_assets_and_resolve_document_routes_from_the_caller() {
     let mut host = vault(&[
         (
-            "content/pages/start.not",
-            r#"#import "../../views/lib.notc" as view
+            "content/pages/start.md",
+            r#"#import "../../views/lib.not" as view
 
-#view.forward("../guide.not#intro")
+#view.forward("../guide.md#intro")
 
 #view.download("../assets", "a%3Fb%23c%25")
 
 #view.forward("https://example.test/path?q=1#part")"#,
         ),
         (
-            "views/lib.notc",
+            "views/lib.not",
             r#"
 fn forward(target: String) -> Inline { link(target, [打开]) }
 fn download(directory: String, name: String) -> Inline {
     forward(directory + "/" + name + ".glb")
 }"#,
         ),
-        ("content/guide.not", "@(id: \"intro\")\n= Guide"),
+        ("content/guide.md", "@(id: \"intro\")\n# Guide"),
         ("content/assets/a?b#c%.glb", "model"),
     ]);
     let site = Builder::default()
@@ -98,13 +98,13 @@ fn download(directory: String, name: String) -> Inline {
 fn images_do_not_publish_missing_private_or_outside_content_resources() {
     for source in [
         "![Missing](./missing.svg)",
-        "![Private](./private.notc)",
+        "![Private](./private.not)",
         "![Outside](../outside.svg)",
     ] {
         let result = Builder::default().build(
             &mut vault(&[
-                ("content/index.not", source),
-                ("content/private.notc", "fn f() -> Int { 1 }"),
+                ("content/index.md", source),
+                ("content/private.not", "fn f() -> Int { 1 }"),
                 ("outside.svg", "not published"),
             ]),
             &SiteConfig::default(),
@@ -117,17 +117,17 @@ fn images_do_not_publish_missing_private_or_outside_content_resources() {
 fn maps_sources_without_inventing_directory_pages_and_resolves_links() {
     let mut vault = vault(&[
         (
-            "content/index.not",
-            "= Home\n\n[Guide](guide/start.md?mode=1#topic)",
+            "content/index.md",
+            "# Home\n\n[Guide](guide/start.md?mode=1#topic)",
         ),
         (
             "content/guide/start.md",
-            "# Start\n\n## Topic\n\n[Home](../index.not)\n\n![Picture](a%20b.svg)",
+            "# Start\n\n## Topic\n\n[Home](../index.md)\n\n![Picture](a%20b.svg)",
         ),
         ("content/guide/a b.svg", "<svg/>"),
-        ("content/guide/module.notc", "private module"),
+        ("content/guide/module.not", "private module"),
         ("content/guide/.private", "private"),
-        ("content/README.not", "= Readme"),
+        ("content/README.md", "# Readme"),
     ]);
     let site = Builder::default()
         .build(&mut vault, &SiteConfig::default())
@@ -141,7 +141,7 @@ fn maps_sources_without_inventing_directory_pages_and_resolves_links() {
     assert!(guide.contains("<img src=\"a%20b.svg\" alt=\"Picture\">"));
     assert!(site.files.contains_key(Path::new("README.html")));
     assert!(!site.files.contains_key(Path::new("guide/index.html")));
-    assert!(!site.files.contains_key(Path::new("guide/module.notc")));
+    assert!(!site.files.contains_key(Path::new("guide/module.not")));
     assert!(!site.files.contains_key(Path::new("guide/.private")));
 }
 
@@ -149,10 +149,10 @@ fn maps_sources_without_inventing_directory_pages_and_resolves_links() {
 fn templates_consume_the_directory_tree_data_and_override_the_theme() {
     let mut vault = vault(&[
         (
-            "content/index.not",
-            "@!(title: \"Home & more\", template: \"home\")\n= Body",
+            "content/index.md",
+            "@!(title: \"Home & more\", template: \"home\")\n# Body",
         ),
-        ("content/folder/a.not", "= A"),
+        ("content/folder/a.md", "# A"),
         ("content/empty/asset.txt", "asset"),
         ("theme/templates/home.tera", "theme"),
         ("theme/templates/part.tera", "{{site.data.example.name}}"),
@@ -179,10 +179,10 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
 #[test]
 fn shared_template_context_keeps_page_directory_and_root_lookups_isolated() {
     let mut vault = vault(&[
-        ("content/index.not", "= Home"),
-        ("content/items/a.not", "@!(id: \"a\")\n= A"),
-        ("content/items/b.not", "@!(id: \"b\")\n= B"),
-        ("content/other/c.not", "@!(id: \"c\")\n= C"),
+        ("content/index.md", "# Home"),
+        ("content/items/a.md", "@!(id: \"a\")\n# A"),
+        ("content/items/b.md", "@!(id: \"b\")\n# B"),
+        ("content/other/c.md", "@!(id: \"c\")\n# C"),
         (
             "data/items.json",
             r#"{"a":"Apple & pear","b":"Berry","c":"Cherry"}"#,
@@ -207,9 +207,9 @@ fn shared_template_context_keeps_page_directory_and_root_lookups_isolated() {
 #[test]
 fn shared_context_preserves_page_bodies_directory_indexes_and_nested_data() {
     let mut vault = vault(&[
-        ("content/index.not", "= Home"),
-        ("content/folder/index.not", "= Folder"),
-        ("content/folder/leaf.not", "= Leaf"),
+        ("content/index.md", "# Home"),
+        ("content/folder/index.md", "# Folder"),
+        ("content/folder/leaf.md", "# Leaf"),
         ("content/empty/asset.txt", "asset"),
         (
             "data/values.json",
@@ -248,7 +248,7 @@ fn shared_context_preserves_page_bodies_directory_indexes_and_nested_data() {
 #[test]
 fn tera_inheritance_and_native_expressions_keep_html_escaped() {
     let mut vault = vault(&[
-        ("content/index.not", "@!(title: \"<Home> & title\")\n= Body"),
+        ("content/index.md", "@!(title: \"<Home> & title\")\n# Body"),
         (
             "templates/page.tera",
             "{% extends 'layouts/base' %}{% block body %}{% if page.title == '<Home> & title' and page.title is starting_with(pat='<') %}{{page.title ~ '!'}}{% endif %}|{{page.html}}|{{url(path='next.html?a=1&b=2')}}|{{page.html | safe}}{% endblock body %}",
@@ -284,7 +284,7 @@ fn tera_errors_and_unsafe_helper_urls_abort_publication() {
     ] {
         let result = Builder::default().build(
             &mut vault(&[
-                ("content/index.not", "= Home"),
+                ("content/index.md", "# Home"),
                 ("templates/page.tera", template),
             ]),
             &SiteConfig::default(),
@@ -296,7 +296,7 @@ fn tera_errors_and_unsafe_helper_urls_abort_publication() {
 #[test]
 fn sass_uses_the_supplied_resources_including_partials() {
     let mut vault = vault(&[
-        ("content/index.not", "= Home"),
+        ("content/index.md", "# Home"),
         ("sass/index.scss", "@import 'colors'; body { color: $ink; }"),
         ("sass/_colors.scss", "$ink: #123456;"),
     ]);
@@ -310,14 +310,14 @@ fn sass_uses_the_supplied_resources_including_partials() {
 #[test]
 fn rejects_all_output_collisions_and_overlapping_sources() {
     for files in [
-        vec![("content/a.not", "= A"), ("content/a.md", "# A")],
-        vec![("content/a.not", "= A"), ("static/a.html", "collision")],
+        vec![("content/a.markdown", "# A"), ("content/a.md", "# A")],
+        vec![("content/a.md", "# A"), ("static/a.html", "collision")],
         vec![
-            ("content/a.not", "= A"),
+            ("content/a.md", "# A"),
             ("static/a.html/image.png", "collision"),
         ],
         vec![
-            ("content/a.not", "= A"),
+            ("content/a.md", "# A"),
             ("content/_notist/data.txt", "reserved"),
         ],
     ] {
@@ -335,7 +335,7 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
     };
     assert!(
         Builder::default()
-            .build(&mut vault(&[("content/a.not", "= A")]), &config)
+            .build(&mut vault(&[("content/a.md", "# A")]), &config)
             .unwrap_err()
             .to_string()
             .contains("overlap")
@@ -346,7 +346,7 @@ fn rejects_all_output_collisions_and_overlapping_sources() {
 fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
     let site = Builder::default()
         .build(
-            &mut vault(&[("content/index.not", "= Home\n\n[Missing](missing.not)")]),
+            &mut vault(&[("content/index.md", "# Home\n\n[Missing](missing.md)")]),
             &SiteConfig::default(),
         )
         .unwrap();
@@ -354,7 +354,7 @@ fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
     assert!(
         Builder::default()
             .build(
-                &mut vault(&[("content/index.not", "= Home\n\n![Missing](missing.svg)")]),
+                &mut vault(&[("content/index.md", "# Home\n\n![Missing](missing.svg)")]),
                 &SiteConfig::default()
             )
             .is_err()
@@ -362,7 +362,7 @@ fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
     assert!(
         Builder::default()
             .build(
-                &mut vault(&[("content/index.not", "@!(template: \"missing\")\n= Home")]),
+                &mut vault(&[("content/index.md", "@!(template: \"missing\")\n# Home")]),
                 &SiteConfig::default()
             )
             .is_err()
@@ -371,8 +371,8 @@ fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
         Builder::default()
             .build(
                 &mut vault(&[(
-                    "content/index.not",
-                    "@(id: \"x\")\n= One\n\n@(id: \"x\")\n== Two"
+                    "content/index.md",
+                    "@(id: \"x\")\n# One\n\n@(id: \"x\")\n## Two"
                 )]),
                 &SiteConfig::default()
             )
@@ -384,11 +384,11 @@ fn broken_links_warn_but_missing_embeds_and_invalid_templates_fail() {
 fn native_components_publish_their_resources_and_registration_script() {
     let mut vault = vault(&[
         (
-            "content/index.not",
-            "#import \"../module/lib.notc\" as panel\n#panel.panel[\nContent\n]",
+            "content/index.md",
+            "#import \"../module/lib.not\" as panel\n#panel.panel[\nContent\n]",
         ),
         (
-            "module/lib.notc",
+            "module/lib.not",
             "fn panel(children: Block) -> Block;",
         ),
         (
@@ -415,8 +415,8 @@ fn native_components_publish_their_resources_and_registration_script() {
 fn evaluated_heading_ids_and_code_highlighting_are_rendered_from_content() {
     let mut vault = vault(&[
         (
-            "content/index.not",
-            "@(id: \"explicit\")\n= One\n\n== One\n\n== One\n\n```rust\nlet x = 1 < 2;\n```",
+            "content/index.md",
+            "@(id: \"explicit\")\n# One\n\n## One\n\n## One\n\n```rust\nlet x = 1 < 2;\n```",
         ),
         (
             "templates/page.tera",
@@ -459,7 +459,7 @@ fn no_theme_uses_the_minimal_page_template() {
     let parsed: SiteConfig = toml::from_str("").unwrap();
     assert_eq!(parsed.theme, SiteConfig::default().theme);
     let mut input = vault(&[
-        ("content/index.not", "= Home"),
+        ("content/index.md", "# Home"),
         ("content/guide/start.md", "# Start"),
     ]);
     let implicit = Builder::default()

@@ -20,8 +20,7 @@ pub const CSS: &str = include_str!("highlight.css");
 pub fn highlight_str(language: &str, text: &str) -> Option<String> {
     let language = crate::code_language(language)?.to_ascii_lowercase();
     match language.as_str() {
-        "not" | "notist" => return Some(native::render(text, false)),
-        "notc" => return Some(native::render(text, true)),
+        "not" | "notc" | "notist" => return Some(native::render(text, true)),
         "text" | "txt" | "plaintext" | "plain" | "none" | "nohighlight" => return None,
         _ => {}
     }

@@ -1,0 +1,8 @@
+// Multi-file example entry module.
+
+import "./math.not" as math;
+
+fn main() -> Int {
+    let base = 38;
+    math.inc.twice(base).add_to(2)
+}

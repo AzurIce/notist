@@ -4,24 +4,24 @@ use notc::{Type, TypeError, Value, check, check_project, parse};
 fn multi_file_example_runs_main() {
     let project = check_project(&[
         (
-            "main.notc",
-            include_str!("../examples/programs/multi/main.notc"),
+            "main.not",
+            include_str!("../examples/programs/multi/main.not"),
         ),
         (
-            "math.notc",
-            include_str!("../examples/programs/multi/math.notc"),
+            "math.not",
+            include_str!("../examples/programs/multi/math.not"),
         ),
     ])
     .expect("multi-file example should check");
-    assert!(matches!(project.run("main.notc", "main"), Ok(Value::Int(42))));
+    assert!(matches!(project.run("main.not", "main"), Ok(Value::Int(42))));
 }
 
 #[test]
 fn content_example_runs_all_entries() {
-    let source = include_str!("../examples/programs/content.notc");
+    let source = include_str!("../examples/programs/content.not");
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let program = check(&parsed.program).expect("content.notc should check");
+    let program = check(&parsed.program).expect("content.not should check");
     assert!(matches!(
         program.run("summary"),
         Ok(Value::String(ref s)) if s.as_ref() == "h1: Welcome to ⚡ Notist | h2: Architecture"
@@ -35,19 +35,19 @@ fn content_example_runs_all_entries() {
 
 #[test]
 fn generics_example_runs_main() {
-    let source = include_str!("../examples/programs/generics.notc");
+    let source = include_str!("../examples/programs/generics.not");
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let program = check(&parsed.program).expect("generics.notc should check");
+    let program = check(&parsed.program).expect("generics.not should check");
     assert!(matches!(program.run("main"), Ok(Value::Int(42))));
 }
 
 #[test]
 fn scalars_example_runs_all_entries() {
-    let source = include_str!("../examples/programs/scalars.notc");
+    let source = include_str!("../examples/programs/scalars.not");
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let program = check(&parsed.program).expect("scalars.notc should check");
+    let program = check(&parsed.program).expect("scalars.not should check");
     assert!(matches!(program.run("main"), Ok(Value::Int(42))));
     assert!(matches!(
         program.run("greeting"),
@@ -57,26 +57,26 @@ fn scalars_example_runs_all_entries() {
 
 #[test]
 fn higher_order_example_runs_all_entries() {
-    let source = include_str!("../examples/programs/higher_order.notc");
+    let source = include_str!("../examples/programs/higher_order.not");
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let program = check(&parsed.program).expect("higher_order.notc should check");
+    let program = check(&parsed.program).expect("higher_order.not should check");
     assert!(matches!(program.run("main"), Ok(Value::Int(42))));
     assert!(matches!(program.run("shadow_demo"), Ok(Value::Int(42))));
 }
 
 #[test]
 fn methods_example_runs_main() {
-    let source = include_str!("../examples/programs/methods.notc");
+    let source = include_str!("../examples/programs/methods.not");
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let program = check(&parsed.program).expect("methods.notc should check");
+    let program = check(&parsed.program).expect("methods.not should check");
     assert!(matches!(program.run("main"), Ok(Value::Int(42))));
 }
 
 #[test]
 fn diagnostics_example_recovers_and_reports_uncalled_type_errors() {
-    let source = include_str!("../examples/programs/diagnostics.notc");
+    let source = include_str!("../examples/programs/diagnostics.not");
     let parsed = parse(source);
     assert_eq!(parsed.diagnostics.len(), 1);
     // `healthy`, `unused_type_error`, `Int.add_one`, and `unused_method_error` all survived recovery.

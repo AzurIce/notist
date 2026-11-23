@@ -33,12 +33,12 @@ fn Block.banner(self) -> Block {
 "#;
     let index_doc = r#"
 @!(title: "Notist Home")
-#import "../lib/ui.notc" as ui
+#import "../lib/ui.not" as ui
 
 @(id: "welcome")
-= Welcome to #ui.decorate[Notist]
+# Welcome to #ui.decorate[Notist]
 
-Read [the architecture guide](./guide.not#arch) or view ![logo](./logo.svg).
+Read [the architecture guide](./guide.md#arch) or view ![logo](./logo.svg).
 
 #ui.decorate[
     Powered by the new statically typed `notc` engine.
@@ -49,12 +49,12 @@ fn id<T: Type>(x: T) -> T { x }
 ```
 "#;
     let guide_doc = r#"
-#import "../lib/ui.notc" as ui
+#import "../lib/ui.not" as ui
 
-= Guide
+# Guide
 
 @(id: "arch")
-== Architecture
+## Architecture
 
 - Single-node immutable content trees
 - Explicit `sectionize()` and bottom-up rewriting
@@ -64,14 +64,14 @@ fn id<T: Type>(x: T) -> T { x }
 ---
 
 #ui.decorate[
-    Back to [Home](./index.not#welcome).
+    Back to [Home](./index.md#welcome).
 ]
 "#;
 
     let mut v = vault(&[
-        ("lib/ui.notc", ui_module),
-        ("content/index.not", index_doc),
-        ("content/guide.not", guide_doc),
+        ("lib/ui.not", ui_module),
+        ("content/index.md", index_doc),
+        ("content/guide.md", guide_doc),
         ("content/logo.svg", "<svg/>"),
     ]);
 
@@ -109,17 +109,17 @@ fn id<T: Type>(x: T) -> T { x }
 fn rejects_static_type_error_in_notc_module_or_document_during_site_build() {
     let ui_module = "fn need_inline(x: Inline) -> Inline { strong(x) }";
     let bad_doc = r#"
-#import "../lib/ui.notc" as ui
+#import "../lib/ui.not" as ui
 
-= Broken Page
+# Broken Page
 
 #ui.need_inline[
     Passing a Block to an Inline parameter fails statically!
 ]
 "#;
     let mut v = vault(&[
-        ("lib/ui.notc", ui_module),
-        ("content/index.not", bad_doc),
+        ("lib/ui.not", ui_module),
+        ("content/index.md", bad_doc),
     ]);
     let err = Builder::default()
         .build(&mut v, &SiteConfig::default())
@@ -128,7 +128,7 @@ fn rejects_static_type_error_in_notc_module_or_document_during_site_build() {
         panic!("expected Diagnostics error, got {err:?}");
     };
     assert_eq!(diags.len(), 1);
-    assert!(diags[0].path.ends_with("content/index.not"));
+    assert!(diags[0].path.ends_with("content/index.md"));
     assert!(diags[0].diagnostic.message.contains("expected `Inline`, found `Block`"));
 }
 
@@ -140,9 +140,9 @@ fn panel(title: String, body: Block) -> Block;
 fn fallback_box(body: Block) -> Block;
 "#;
     let index_doc = r#"
-#import "../components/lib.notc" as ui
+#import "../components/lib.not" as ui
 
-= Demo #ui.badge("new", 3)
+# Demo #ui.badge("new", 3)
 
 #ui.panel("Details")[
     Inside a web component with $a^2 + b^2 = c^2$.
@@ -154,11 +154,11 @@ fn fallback_box(body: Block) -> Block;
 "#;
 
     let mut v = vault(&[
-        ("components/lib.notc", lib),
+        ("components/lib.not", lib),
         ("components/badge.js", "export default class Badge extends HTMLElement {}"),
         ("components/panel/index.js", "export default class Panel extends HTMLElement {}"),
         ("components/panel/style.js", "export const css = '';"),
-        ("content/index.not", index_doc),
+        ("content/index.md", index_doc),
     ]);
 
     let output = Builder::default()
@@ -194,8 +194,8 @@ fn ssg_routes_math_nodes_to_configured_math_component_and_supports_collapsed_pla
         ("math/index.js", "export default class MathEl extends HTMLElement {}"),
         ("math/helper.js", "export const ok = true;"),
         (
-            "content/SUMMARY.not",
-            "= Book\n\n- @(collapsed: true)Section Group\n  - [Intro](./intro.md)\n",
+            "content/SUMMARY.md",
+            "# Book\n\n- @(collapsed: true)Section Group\n  - [Intro](./intro.md)\n",
         ),
         (
             "content/intro.md",
@@ -264,12 +264,12 @@ fn catalog_page(source: String) -> Block {
 }
 "#;
     let mut v = vault(&[
-        ("modules/views.notc", views),
+        ("modules/views.not", views),
         ("content/.data/shard.json", r#"[["1","Gil"],["2","Fire Shard"]]"#),
         ("content/.data/catalog.json", r#"{"count":2,"items":[["1","Gil"],["2","Fire Shard"]]}"#),
-        ("content/items/index.not", "#import \"../../modules/views.notc\" as views;\n#views.catalog_page(\"../.data/catalog.json\")\n"),
-        ("content/items/1.not", "#import \"../../modules/views.notc\" as views;\n#views.item_page(\"../.data/shard.json\", 0)\n"),
-        ("content/items/2.not", "#import \"../../modules/views.notc\" as views;\n#views.item_page(\"../.data/shard.json\", 1)\n"),
+        ("content/items/index.md", "#import \"../../modules/views.not\" as views;\n#views.catalog_page(\"../.data/catalog.json\")\n"),
+        ("content/items/1.md", "#import \"../../modules/views.not\" as views;\n#views.item_page(\"../.data/shard.json\", 0)\n"),
+        ("content/items/2.md", "#import \"../../modules/views.not\" as views;\n#views.item_page(\"../.data/shard.json\", 1)\n"),
     ]);
 
     let output = Builder::default()
@@ -304,25 +304,25 @@ fn load(source: String) -> Block {
     // The static barrier between `site.analyze` and `site.evaluate` must report `b.not`'s
     // static type diagnostic and NEVER evaluate `a.not`.
     let mut v = vault(&[
-        ("modules/views.notc", views),
+        ("modules/views.not", views),
         (
-            "content/a.not",
-            "#import \"../modules/views.notc\" as views\n#views.load(\"./does-not-exist.json\")\n",
+            "content/a.md",
+            "#import \"../modules/views.not\" as views\n#views.load(\"./does-not-exist.json\")\n",
         ),
         (
-            "content/b.not",
-            "#import \"../modules/views.notc\" as views\n#views.load(123)\n",
+            "content/b.md",
+            "#import \"../modules/views.not\" as views\n#views.load(123)\n",
         ),
     ]);
 
     let err = Builder::default()
         .build(&mut v, &SiteConfig::default())
-        .expect_err("static type error in b.not must fail build before evaluating a.not");
+        .expect_err("static type error in b.md must fail build before evaluating a.md");
     let Error::Diagnostics(diags) = err else {
         panic!("expected static Error::Diagnostics (not runtime eval error), got {err:?}");
     };
     assert_eq!(diags.len(), 1);
-    assert!(diags[0].path.ends_with("content/b.not"));
+    assert!(diags[0].path.ends_with("content/b.md"));
     assert!(
         diags[0]
             .diagnostic
@@ -337,7 +337,7 @@ fn load(source: String) -> Block {
 fn ssg_renders_strike_underline_list_start_table_alignments_read_text_and_mid_doc_imports() {
     let mut v = vault(&[
         (
-            "modules/ui.notc",
+            "modules/ui.not",
             r#"
 fn note_from(path: String) -> Block {
     para(underline(text(read_text(path))))
@@ -358,7 +358,7 @@ Some ~~struck~~ text.
 | :--- | :---: | ---: |
 | a | b | c |
 
-#import "../modules/ui.notc" as ui
+#import "../modules/ui.not" as ui
 
 #ui.note_from("./.data/snippet.txt")
 "#,

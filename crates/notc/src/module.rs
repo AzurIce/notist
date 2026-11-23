@@ -163,7 +163,7 @@ impl CheckedProject {
     }
 
     /// Statically check and specialize a standalone `.not` or `.md` document
-    /// against this immutable pre-checked shared `.notc` project without
+    /// against this immutable pre-checked shared `.not` project without
     /// evaluating it or performing any `DataHost` IO.
     ///
     /// Safe to call concurrently from many threads. Pre-lowered shared functions
@@ -444,7 +444,7 @@ impl CheckedProject {
 }
 
 /// Parse and statically check an explicit in-memory set of `(path, source)`
-/// files (`.notc` modules and `.not` documents). Relative `import` paths are
+/// files (`.not` modules and Markdown documents). Relative `import` paths are
 /// resolved lexically against each file's normalized path.
 pub fn check_project(files: &[(&str, &str)]) -> Result<CheckedProject, Vec<ProjectDiagnostic>> {
     let mut parsed_modules = Vec::with_capacity(files.len());
@@ -925,7 +925,7 @@ pub fn resolve_import_path(from_module: &str, import_path: &str) -> Result<Strin
 pub(crate) fn default_import_alias(import_path: &str) -> Result<String, TypeError> {
     let filename = import_path.rsplit('/').next().unwrap_or(import_path);
     let stem = filename
-        .strip_suffix(".notc")
+        .strip_suffix(".not")
         .or_else(|| filename.rsplit_once('.').map(|(s, _)| s))
         .unwrap_or(filename);
     if is_valid_binding_ident(stem) {

@@ -21,7 +21,7 @@ pub use structure::NavigationKind;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BookConfig {
-    /// Relative to the site content root. None discovers SUMMARY.not or SUMMARY.md.
+    /// Relative to the site content root. None discovers SUMMARY.md.
     pub summary: Option<PathBuf>,
     /// Restrict publication to SUMMARY entries; otherwise it only controls navigation.
     pub select: bool,
@@ -68,13 +68,8 @@ impl SiteExtension for Book {
                 if input.documents.contains_key(&PathBuf::from(name))
                     || context.resources.kind(&path)? == Some(ResourceKind::File)
                 {
-                    if found.is_some() {
-                        return Err(Error::Message(
-                            "both SUMMARY.not and SUMMARY.md exist; keep one book structure file"
-                                .into(),
-                        ));
-                    }
                     found = Some(path);
+                    break;
                 }
             }
             found
@@ -90,12 +85,7 @@ impl SiteExtension for Book {
                 .map(Ok)
                 .unwrap_or_else(|| context.resources.source(&path))?;
             // SUMMARY is parsed declaratively via `notc`, never evaluated with side effects.
-            let is_md = path.extension().is_some_and(|e| e == "md");
-            let parsed = if is_md {
-                notist_markdown::parse_markdown_document(&source)
-            } else {
-                notc::parse_document(&source)
-            };
+            let parsed = notc::parse_markdown_document(&source);
             let mut errors: Vec<Diagnostic> = parsed
                 .diagnostics
                 .into_iter()
@@ -107,7 +97,7 @@ impl SiteExtension for Book {
                     )
                 })
                 .collect();
-            let virtual_name = if is_md { "SUMMARY.md" } else { "SUMMARY.not" };
+            let virtual_name = "SUMMARY.md";
             let block = match notc::check_parsed_modules(&[(virtual_name, &parsed.program.root)]) {
                 Ok(project) => match project.eval_document(virtual_name) {
                     Ok(block) => Some(block),

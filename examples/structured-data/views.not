@@ -1,0 +1,11 @@
+fn item(source: String, id: String) -> Block {
+    let items = read_json(source);
+    let row = items.get(id);
+    let name = row.get("name").as_string("");
+    let description = row.get("description").as_string("");
+    [
+        #heading(2, text(name))
+
+        #para(text(description))
+    ]
+}

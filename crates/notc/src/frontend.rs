@@ -1,19 +1,21 @@
 //! Pluggable document frontend boundary and fine-grained one-way embedded code API.
 //!
-//! `notc` itself implements only the core `.notc` language and Notist's native
-//! `.not` markup syntax (including `[...]` content literals inside `.notc`).
-//! Any other markup language (such as Markdown via `notist-markdown`) sits strictly
-//! *above* `notc` by implementing [`DocumentFrontend`] and lowering its AST into a
-//! standard [`Module`] exporting synthetic `fn __doc__() -> Block`.
+//! `notc`'s AST IR (`BlockPiece` / `InlinePiece` / `Module`) and content model
+//! (`Block` / `Inline`) are strictly frontend-agnostic. Markdown (`.md` / `.markdown`)
+//! is shipped as the built-in default [`DocumentFrontend`] ([`MarkdownFrontend`]),
+//! and any other markup language can plug in by implementing [`DocumentFrontend`]
+//! and lowering its AST into a standard [`Module`] exporting synthetic `fn __doc__() -> Block`.
 
 use crate::ast::{
     AttrEntry, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, Import, Module, Span, Type,
 };
-use crate::content_parser::{attach_block_attrs, parse_attr_list_at, parse_document_source};
+use crate::attrs::{attach_block_attrs, parse_attr_list_at};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::{
     ParseResult, parse_embedded_expr, parse_embedded_import, parse_embedded_postfix,
 };
+
+pub use crate::markdown::{MarkdownFrontend, parse_markdown_document};
 
 /// A pluggable document-level markup frontend that parses source text into a
 /// standard `notc::Module` AST (with any `Decl::Import`s plus `fn __doc__() -> Block`).
@@ -23,25 +25,6 @@ pub trait DocumentFrontend: Send + Sync {
 
     /// Parse a document into a `notc::Module` AST with exact source spans.
     fn parse_document(&self, source: &str) -> ParseResult;
-}
-
-/// Built-in frontend for native Notist `.not` documents.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NotistFrontend;
-
-impl DocumentFrontend for NotistFrontend {
-    fn extensions(&self) -> &[&str] {
-        &["not"]
-    }
-
-    fn parse_document(&self, source: &str) -> ParseResult {
-        let mut diagnostics = Vec::new();
-        let root = parse_document_source(source, &mut diagnostics);
-        ParseResult {
-            program: crate::ast::Program { root },
-            diagnostics,
-        }
-    }
 }
 
 /// Package a frontend's parsed imports, optional document-level attributes, and
@@ -78,9 +61,9 @@ pub fn build_document_module(
     Module { declarations }
 }
 
-/// Fine-grained one-way parsing hooks exposed to external [`DocumentFrontend`]
+/// Fine-grained one-way parsing hooks exposed to [`DocumentFrontend`]
 /// implementations so they can embed `#import`, `#call(...)`, `#(...)`, and
-/// `@(...)` / `@!(...)` annotations without any circular dependency or parser ping-pong.
+/// `@(...)` / `@!(...)` annotations without any circular dependency.
 pub mod embedded {
     use super::*;
 

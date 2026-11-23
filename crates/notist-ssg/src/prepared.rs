@@ -35,7 +35,7 @@ impl Reference {
 /// Render an evaluated `notc::Block` directly to standalone HTML without site routing.
 pub fn render_standalone_html(block: &Block) -> String {
     let sectioned = block.sectionize();
-    let route = Route::plan(PathBuf::from("./index.not"), std::path::Path::new("."), false)
+    let route = Route::plan(PathBuf::from("./index.md"), std::path::Path::new("."), false)
         .expect("valid route");
     match PreparedPage::new(route, Arc::from(""), sectioned, "Notist", None) {
         Ok(prepared) => prepared.render_html(&[], &BTreeMap::new(), None),

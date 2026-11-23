@@ -5,11 +5,9 @@ use crate::{
     templates,
 };
 use notc::{
-    CheckedDocument, DataHost, Decl, DocumentFrontend, JsonValue, Module, NotistFrontend,
-    ProjectDiagnosticKind, check_parsed_modules, format_type_error, parse,
-    parse_file_with_frontends,
+    CheckedDocument, DataHost, Decl, JsonValue, Module, ProjectDiagnosticKind,
+    check_parsed_modules, format_type_error, parse, parse_file,
 };
-use notist_markdown::MarkdownFrontend;
 use notist::{
     Diagnostic, DiagnosticCode, InputRead, Phase, Resources, SourceDiagnostic, TextRange, Vault,
     publication::{
@@ -240,7 +238,7 @@ fn discover<R: Resources>(
                     sources.push(entry)
                 }
             }
-            Some(ResourceKind::File) if !entry.extension().is_some_and(|s| s == "notc") => {
+            Some(ResourceKind::File) if !entry.extension().is_some_and(|s| s == "not") => {
                 assets.push(entry)
             }
             _ => {}
@@ -386,7 +384,10 @@ fn resolve_link(
                 warnings.push(node.issue(format!(
                     "missing local reference `{target}` (not published)"
                 )));
-                if source.extension().is_some_and(|s| s == "not" || s == "md") {
+                if source
+                    .extension()
+                    .is_some_and(|s| s == "md" || s == "markdown")
+                {
                     Cow::Owned(
                         crate::Route::plan(content.join(&published), content, directory_urls)
                             .map_err(|e| e.to_string())?
@@ -681,15 +682,12 @@ pub(crate) fn build<R: Resources + Send>(
                 &doc_inputs,
                 analyze_chunk_size,
                 |_, chunk| -> (Vec<AnalyzedPage>, Vec<SourceDiagnostic>) {
-                    let frontends: [&dyn DocumentFrontend; 2] =
-                        [&NotistFrontend, &MarkdownFrontend];
                     let mut chunk_checked = Vec::with_capacity(chunk.len());
                     let mut chunk_errors = Vec::new();
                     for (route, text) in chunk {
                         let virtual_path = to_virtual_path(&vroot, &route.source);
                         let source_arc: Arc<str> = Arc::from(text.as_str());
-                        let parsed =
-                            parse_file_with_frontends(&virtual_path, &source_arc, &frontends);
+                        let parsed = parse_file(&virtual_path, &source_arc);
                         if !parsed.diagnostics.is_empty() {
                             for d in parsed.diagnostics {
                                 let range = TextRange::new(d.span.start.into(), d.span.end.into());
@@ -922,7 +920,7 @@ pub(crate) fn build<R: Resources + Send>(
                         }
                         if !outputs.contains(&destination)
                             && !vault.supports(&source)
-                            && !source.extension().is_some_and(|s| s == "notc")
+                            && !source.extension().is_some_and(|s| s == "not")
                             && !destination
                                 .components()
                                 .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
@@ -1309,8 +1307,8 @@ impl DataHost for SsgDataHost {
     }
 }
 
-/// Fast lexical scan of `#import "..."` paths anywhere in a `.not`/`.md`
-/// document (skipping fenced code blocks) so shared `.notc` modules can be
+/// Fast lexical scan of `#import "..."` paths anywhere in a Markdown
+/// document (skipping fenced code blocks) so shared `.not` modules can be
 /// discovered and compiled ONCE before fanning out document parsing and
 /// evaluation across worker threads.
 fn scan_import_paths(source: &str) -> Vec<String> {
@@ -1367,8 +1365,8 @@ fn compile_shared_notc_modules<R: Resources>(
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
-    // Seed shared `.notc` module discovery on real normalized filesystem paths so
-    // parent-relative imports (e.g. `../modules/widgets/lib.notc`) resolve cleanly
+    // Seed shared `.not` module discovery on real normalized filesystem paths so
+    // parent-relative imports (e.g. `../modules/widgets/lib.not`) resolve cleanly
     // before computing the shared virtual root `vroot`.
     for (text, route) in documents.values().zip(routes.iter()) {
         let import_paths = scan_import_paths(text);
@@ -1384,7 +1382,7 @@ fn compile_shared_notc_modules<R: Resources>(
         }
     }
 
-    // Transitively load all shared `.notc` modules through `resources`.
+    // Transitively load all shared `.not` modules through `resources`.
     while let Some(target_fs) = queue.pop_front() {
         let Ok(bytes) = resources.read(&target_fs) else {
             // Missing modules will be reported with exact import spans during document check.
@@ -1507,9 +1505,9 @@ mod tests {
     fn destination_index_owns_only_metadata_and_preserves_alias_precedence() {
         let content = Path::new("/site/content");
         let mut documents: Vec<_> = [
-            ("a.not", "not"),
+            ("a.markdown", "markdown-long"),
             ("a.md", "markdown"),
-            ("nested/index.not", "index"),
+            ("nested/index.md", "index"),
         ]
         .into_iter()
         .map(|(source, id)| {
@@ -1529,10 +1527,10 @@ mod tests {
         drop(documents);
         for index in [index, reversed] {
             let alias = index.find(&content.join("a.html"), content).unwrap();
-            assert_eq!(alias.route.source, content.join("a.md"));
-            assert!(alias.ids.contains("markdown"));
-            let direct = index.find(&content.join("a.not"), content).unwrap();
-            assert!(direct.ids.contains("not"));
+            assert_eq!(alias.route.source, content.join("a.markdown"));
+            assert!(alias.ids.contains("markdown-long"));
+            let direct = index.find(&content.join("a.md"), content).unwrap();
+            assert!(direct.ids.contains("markdown"));
             let directory = index.find(&content.join("nested"), content).unwrap();
             assert_eq!(directory.route.output, Path::new("nested/index.html"));
             assert!(directory.ids.contains("index"));
@@ -1550,7 +1548,7 @@ mod tests {
     #[test]
     fn template_context_shares_page_and_directory_maps_without_losing_data() {
         let content = Path::new("/site/content");
-        let pages: Vec<_> = ["index.not", "a.not", "folder/index.not"]
+        let pages: Vec<_> = ["index.md", "a.md", "folder/index.md"]
             .into_iter()
             .map(|path| Page {
                 route: Route::new(content.join(path), content).unwrap(),
@@ -1639,7 +1637,7 @@ mod tests {
         let content = Path::new("/site/content");
         let pages: Vec<_> = (0..521)
             .map(|i| Page {
-                route: Route::new(content.join(format!("p{i}.not")), content).unwrap(),
+                route: Route::new(content.join(format!("p{i}.md")), content).unwrap(),
                 title: format!("page-{i}"),
                 attrs: BTreeMap::new(),
                 headings: vec![],
@@ -1729,6 +1727,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(serial, parallel);
-        assert!(serial.contains("p3.not"));
+        assert!(serial.contains("p3.md"));
     }
 }

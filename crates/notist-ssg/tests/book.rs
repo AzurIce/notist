@@ -24,12 +24,12 @@ fn html(output: &notist_ssg::BuildOutput, path: &str) -> String {
 #[test]
 fn summary_is_navigation_data_not_a_theme_or_a_publication_filter() {
     let mut vault = vault(&[
-        ("content/index.not", "= Home"),
+        ("content/index.md", "# Home"),
         ("content/a.md", "# Body title"),
-        ("content/unlisted.not", "= Still published"),
+        ("content/unlisted.md", "# Still published"),
         (
             "content/SUMMARY.md",
-            "# Summary\n\n- [Home](index.not)\n  - [](a.md)",
+            "# Summary\n\n- [Home](index.md)\n  - [](a.md)",
         ),
     ]);
     let output = Builder::default().build(&mut vault, &config()).unwrap();
@@ -41,11 +41,11 @@ fn summary_is_navigation_data_not_a_theme_or_a_publication_filter() {
         "Body title"
     );
     assert_eq!(
-        output.data["book"]["pages"]["index.not"]["next"]["url"],
+        output.data["book"]["pages"]["index.md"]["next"]["url"],
         "a.html"
     );
     assert!(html(&output, "a.html").contains("aria-current=\"page\""));
-    assert!(output.data["book"]["pages"]["unlisted.not"]["next"].is_null());
+    assert!(output.data["book"]["pages"]["unlisted.md"]["next"].is_null());
     // The shared tree is not duplicated into each page's metadata.
     assert!(
         output.data["book"]["pages"]["a.md"]
@@ -77,14 +77,14 @@ fn extension_and_theme_are_independent_and_templates_override_by_name() {
 #[test]
 fn custom_summary_and_static_overrides_use_the_site_pipeline() {
     let mut config = config();
-    config.extensions.builtins.book.as_mut().unwrap().summary = Some("outline.not".into());
+    config.extensions.builtins.book.as_mut().unwrap().summary = Some("outline.md".into());
     config.directory_urls = true;
     config.copy_content_assets = false;
     let output = Builder::default()
         .build(
             &mut vault(&[
-                ("content/README.not", "= Home\n\n![Image](image.svg)"),
-                ("content/outline.not", "- [Home](README.not)"),
+                ("content/README.md", "# Home\n\n![Image](image.svg)"),
+                ("content/outline.md", "- [Home](README.md)"),
                 ("content/image.svg", "image"),
                 ("content/private.json", "{}"),
                 ("static/book.css", "custom theme css"),
@@ -102,7 +102,7 @@ fn custom_summary_and_static_overrides_use_the_site_pipeline() {
 fn strict_named_configuration_and_complete_explicit_order() {
     for text in [
         "[extensions.builtins.typo]",
-        "[extensions.builtins.book]\nsummray='SUMMARY.not'",
+        "[extensions.builtins.book]\nsummray='SUMMARY.md'",
         "[extensions.generate]\ncommand=['sh']\nkind='command'",
         "[extensions.generate]\ncommand=[]",
         "extension_order=['builtins.book','builtins.book']\n[extensions.builtins.book]",
@@ -131,10 +131,10 @@ impl SiteExtension for Generate {
     fn before_compile(&mut self, _: &SiteContext<'_>, input: &mut CompileInput) -> Result<(), Error> {
         input
             .documents
-            .insert("SUMMARY.not".into(), "- [Generated](deep/page.not)".into());
+            .insert("SUMMARY.md".into(), "- [Generated](deep/page.md)".into());
         input
             .documents
-            .insert("deep/page.not".into(), "= Generated body".into());
+            .insert("deep/page.md".into(), "# Generated body".into());
         Ok(())
     }
 }
@@ -156,29 +156,29 @@ fn native_book_summary_state_does_not_leak_between_rebuilds() {
     config.extensions.builtins.book = None;
     let builder = Builder::default().with_extension(notist_ssg::builtins::book::Book::default());
     let first = builder.build(&mut vault(&[
-        ("content/index.not", "= First"),
-        ("content/SUMMARY.not", "- [Custom label](index.not)"),
+        ("content/index.md", "# First"),
+        ("content/SUMMARY.md", "- [Custom label](index.md)"),
     ]), &config).unwrap();
     assert_eq!(first.data["book"]["navigation"][0]["title"], "Custom label");
     assert!(builder.build(&mut vault(&[
-        ("content/index.not", "= Broken"),
-        ("content/SUMMARY.not", "- [Missing](missing.not)"),
+        ("content/index.md", "# Broken"),
+        ("content/SUMMARY.md", "- [Missing](missing.md)"),
     ]), &config).is_err());
-    let last = builder.serve(&mut vault(&[("content/index.not", "= Last")]), &config).unwrap();
+    let last = builder.serve(&mut vault(&[("content/index.md", "# Last")]), &config).unwrap();
     assert!(last.data["book"]["structure"].is_null());
     assert_eq!(last.data["book"]["navigation"][0]["title"], "Last");
 }
 
 #[test]
 fn preview_recovers_content_errors_but_not_summary_errors() {
-    let mut input = vault(&[("content/index.not", "= Home\n\n#missing()")]);
+    let mut input = vault(&[("content/index.md", "# Home\n\n#missing()")]);
     assert!(Builder::default().build(&mut input, &config()).is_err());
     let preview = Builder::default().serve(&mut input, &config()).unwrap();
     assert!(!preview.diagnostics.is_empty());
     let result = Builder::default().serve(
         &mut vault(&[
-            ("content/index.not", "= Home"),
-            ("content/SUMMARY.not", "- [Missing](missing.not)"),
+            ("content/index.md", "# Home"),
+            ("content/SUMMARY.md", "- [Missing](missing.md)"),
         ]),
         &config(),
     );
@@ -206,7 +206,7 @@ struct Remove;
 impl SiteExtension for Remove {
     fn name(&self) -> &str { "remove" }
     fn before_compile(&mut self, _: &SiteContext<'_>, input: &mut CompileInput) -> Result<(), Error> {
-        input.documents.remove(Path::new("a.not"));
+        input.documents.remove(Path::new("a.md"));
         Ok(())
     }
 }
@@ -219,13 +219,13 @@ fn later_extensions_cannot_leave_dangling_navigation_or_overwrite_reserved_data(
         .with_extension(notist_ssg::builtins::book::Book::default())
         .with_extension(Remove)
         .build(&mut vault(&[
-            ("content/index.not", "= Home"),
-            ("content/a.not", "= A"),
-            ("content/SUMMARY.not", "- [Home](index.not)\n- [A](a.not)"),
+            ("content/index.md", "# Home"),
+            ("content/a.md", "# A"),
+            ("content/SUMMARY.md", "- [Home](index.md)\n- [A](a.md)"),
         ]), &config).unwrap_err();
     assert!(error.to_string().contains("(before_template): book navigation references removed page"));
     let error = Builder::default().build(&mut vault(&[
-        ("content/index.not", "= Home"),
+        ("content/index.md", "# Home"),
         ("data/book.json", "{}"),
     ]), &self::config()).unwrap_err();
     assert!(error.to_string().contains("site.data.book is reserved"));
@@ -236,8 +236,8 @@ fn directory_urls_keep_source_directory_listings_and_root_relative_links() {
     let mut config = config();
     config.directory_urls = true;
     let output = Builder::default().build(&mut vault(&[
-        ("content/README.md", "# Home\n\n[Child](/guide/child.not)"),
-        ("content/guide/child.not", "= Child\n\n[Home](/README.md)"),
+        ("content/README.md", "# Home\n\n[Child](/guide/child.md)"),
+        ("content/guide/child.md", "# Child\n\n[Home](/README.md)"),
         ("templates/page.tera", "{{directory.path}}|{% if directory.index %}{{directory.index.title}}{% endif %}|{{page.html | safe}}"),
     ]), &config).unwrap();
     assert!(html(&output, "index.html").starts_with("|Home|"));

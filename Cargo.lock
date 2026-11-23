@@ -929,6 +929,9 @@ dependencies = [
 [[package]]
 name = "notc"
 version = "0.1.0"
+dependencies = [
+ "rushdown",
+]
 
 [[package]]
 name = "notify"
@@ -982,7 +985,6 @@ dependencies = [
  "notify",
  "notist",
  "notist-html",
- "notist-markdown",
  "notist-ssg",
  "percent-encoding",
  "serde",
@@ -1012,14 +1014,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notist-markdown"
-version = "0.1.0"
-dependencies = [
- "notc",
- "rushdown",
-]
-
-[[package]]
 name = "notist-observe"
 version = "0.1.0"
 dependencies = [
@@ -1038,7 +1032,6 @@ dependencies = [
  "notc",
  "notist",
  "notist-html",
- "notist-markdown",
  "percent-encoding",
  "relative-path",
  "serde",

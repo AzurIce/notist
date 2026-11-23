@@ -29,13 +29,13 @@ fn html(site: &BuildOutput, path: &str) -> String {
 #[test]
 fn publication_mounts_do_not_grant_text_reading_outside_project_root() {
     let files = resources(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         (
-            "../art/README.not",
-            "#import \"./view.notc\" as view\n\n= Art\n\n#view.show(\"./private.txt\")",
+            "../art/README.md",
+            "#import \"./view.not\" as view\n\n# Art\n\n#view.show(\"./private.txt\")",
         ),
         (
-            "../art/view.notc",
+            "../art/view.not",
             "fn show(source: String) -> Block { para(text(read_text(source))) }",
         ),
         ("../art/private.txt", "mounted private input"),
@@ -50,8 +50,8 @@ fn publication_mounts_do_not_grant_text_reading_outside_project_root() {
 fn mounted_image_links_require_mount_authorization() {
     let files = resources(&[
         (
-            "README.not",
-            "= Home\n\n![Legacy](../art/a%3Fb%23c%25.svg#legacy)",
+            "README.md",
+            "# Home\n\n![Legacy](../art/a%3Fb%23c%25.svg#legacy)",
         ),
         ("../art/a?b#c%.svg", "mounted image"),
     ]);
@@ -68,10 +68,10 @@ fn mounted_image_links_require_mount_authorization() {
 #[test]
 fn mounted_documents_resolve_relative_images_under_their_mount_path() {
     let mut vault = Vault::new(resources(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         (
-            "../art/models/README.not",
-            "= Model\n\n![One](./a%3Fb%23c%25.svg#one)",
+            "../art/models/README.md",
+            "# Model\n\n![One](./a%3Fb%23c%25.svg#one)",
         ),
         ("../art/models/a?b#c%.svg", "mounted image"),
     ]));
@@ -94,11 +94,11 @@ fn mounted_pages_resolve_real_and_mounted_links_and_copy_only_used_resources() {
             ),
             (
                 "../art/models/drill/README.md",
-                "# Drill\n\n## Details\n\n![Preview](renders/a%20b.svg?raw=1#image)\n\n[Model](model/drill.glb)\n\n[Home](../../../docs/README.md)\n\n[Next](../next.not#topic)",
+                "# Drill\n\n## Details\n\n![Preview](renders/a%20b.svg?raw=1#image)\n\n[Model](model/drill.glb)\n\n[Home](../../../docs/README.md)\n\n[Next](../next.md#topic)",
             ),
             (
-                "../art/models/next.not",
-                "= Next\n\n== Topic\n\n[Drill](drill/README.md#details)",
+                "../art/models/next.md",
+                "# Next\n\n## Topic\n\n[Drill](drill/README.md#details)",
             ),
             ("../art/models/drill/renders/a b.svg", "<svg/>"),
             ("../art/models/drill/model/drill.glb", "model bytes"),
@@ -200,7 +200,7 @@ fn summary_supports_virtual_parent_directories_and_specific_mount_claims() {
     let mut vault = Vault::new(resources(&[
         ("README.md", "# Home"),
         (
-            "SUMMARY.not",
+            "SUMMARY.md",
             "- [Home](README.md)\n- [Assets](assets/)\n- [Pinned](assets/art/models/)",
         ),
         ("../art/README.md", "# Art"),
@@ -339,11 +339,11 @@ fn mounts_parse_without_changing_include_semantics() {
 
 #[test]
 fn mounted_documents_keep_their_real_import_scope_and_component_assets() {
-    let source = "#import \"./lib.notc\" as widget\n\n= Art\n\n#widget.formula(\"x\")";
+    let source = "#import \"./lib.not\" as widget\n\n# Art\n\n#widget.formula(\"x\")";
     let mut vault = Vault::new(resources(&[
         ("README.md", "# Home"),
-        ("../art/README.not", source),
-        ("../art/lib.notc", "fn formula(expr: String) -> Inline;"),
+        ("../art/README.md", source),
+        ("../art/lib.not", "fn formula(expr: String) -> Inline;"),
         (
             "../art/formula/index.js",
             "export default class extends HTMLElement {}",

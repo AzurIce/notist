@@ -1,4 +1,4 @@
-//! Lossless lexical syntax highlighter for `.not` and `.notc` code snippets.
+//! Lossless lexical syntax highlighter for `.not` code snippets.
 //! Preserves every input byte (including incomplete or malformed snippets)
 //! without evaluation, imports, or external parser dependencies.
 use crate::escape_text;
@@ -352,13 +352,13 @@ fn highlight_markup(source: &str, html: &mut String) {
             emit(html, None, &line[body_end..]);
             continue;
         }
-        // Heading (= ...)
-        if trimmed_start.starts_with('=') {
-            let eqs = trimmed_start.bytes().take_while(|&b| b == b'=').count();
-            if eqs <= 6
+        // Heading (# ...)
+        if trimmed_start.starts_with('#') {
+            let hashes = trimmed_start.bytes().take_while(|&b| b == b'#').count();
+            if hashes <= 6
                 && trimmed_start
                     .as_bytes()
-                    .get(eqs)
+                    .get(hashes)
                     .is_some_and(|&b| b == b' ' || b == b'\t')
             {
                 let body_end = line.trim_end_matches(['\r', '\n']).len();

@@ -18,7 +18,7 @@ fn fixture(root: &Path) {
         "Notist.toml",
         "[package]\nname='timings'\n[site]\noutput='public'\n",
     );
-    write(root, "content/index.not", "= Timing test\n\nHello.");
+    write(root, "content/index.md", "# Timing test\n\nHello.");
 }
 
 fn command(root: &Path) -> Command {
@@ -120,8 +120,8 @@ fn jobs_and_timings_cover_every_page_with_valid_worker_parents() {
         for i in 0..257 {
             write(
                 root,
-                &format!("content/page-{i}.not"),
-                &format!("= Page {i}"),
+                &format!("content/page-{i}.md"),
+                &format!("# Page {i}"),
             );
         }
         let result = command(root)
@@ -228,7 +228,7 @@ fn serve_retains_success_and_failure_without_replacing_fixed_reports() {
     preview.wait("/_notist/timings/history.json", "[1]");
     let first = preview.wait("/_notist/timings/1.json", "initial build");
     preview.wait("/_notist/timings", "Following latest completed build");
-    write(root, "content/index.not", "= Updated");
+    write(root, "content/index.md", "# Updated");
     preview.wait("/", "Updated");
     preview.wait("/_notist/timings/history.json", "[1,2]");
     let second = preview.wait("/_notist/timings/2.json", "changed_files");

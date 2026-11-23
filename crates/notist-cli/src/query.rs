@@ -386,9 +386,9 @@ mod tests {
 
     #[test]
     fn query_selects_by_id_tag_ctor_and_level_on_notc_block() {
-        let source = "@(id: \"x\", tags: \"a, b\")_目标_\n\n*粗*\n";
-        let project = notc::check_project(&[("test.not", source)]).expect("checks");
-        let block = project.eval_document("test.not").expect("evaluates");
+        let source = "@(id: \"x\", tags: \"a, b\")_目标_\n\n**粗**\n";
+        let project = notc::check_project(&[("test.md", source)]).expect("checks");
+        let block = project.eval_document("test.md").expect("evaluates");
 
         let by_id: Value = serde_json::from_str(&select_json(&block, "id:x", source).unwrap()).unwrap();
         assert_eq!(by_id.as_array().unwrap().len(), 1);

@@ -3,12 +3,12 @@ use notist_grammar::{ExprKind, RenderOptions, Theme, parse, render_source};
 #[test]
 fn parses_and_draws_actual_documentation_productions() {
     let documents = [
-        ("notation", include_str!("../../../docs/notation.not")),
-        ("markup", include_str!("../../../docs/markup/syntax.not")),
-        ("code", include_str!("../../../docs/code/syntax.not")),
-        ("types", include_str!("../../../docs/code/types.not")),
-        ("builtin", include_str!("../../../docs/markup/builtin.not")),
-        ("package", include_str!("../README.not")),
+        ("notation", include_str!("../../../docs/notation.md")),
+        ("markup", include_str!("../../../docs/markup/syntax.md")),
+        ("code", include_str!("../../../docs/code/syntax.md")),
+        ("types", include_str!("../../../docs/code/types.md")),
+        ("builtin", include_str!("../../../docs/markup/builtin.md")),
+        ("package", include_str!("../README.md")),
     ];
     let mut count = 0;
     for (name, source) in documents {

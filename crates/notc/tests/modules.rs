@@ -6,7 +6,7 @@ use notc::{
 fn supports_all_import_forms_reexports_and_cross_module_methods() {
     let project = check_project(&[
         (
-            "lib/core.notc",
+            "lib/core.not",
             r#"
 fn base() -> Int { 35 }
 fn inc(x: Int) -> Int { x + 1 }
@@ -16,25 +16,25 @@ fn unused_dead_fn() -> Int { 999 }
 "#,
         ),
         (
-            "lib/reexport.notc",
+            "lib/reexport.not",
             r#"
-import "./core.notc" as core;
-import "./core.notc": inc as add_one;
+import "./core.not" as core;
+import "./core.not": inc as add_one;
 fn wrap(x: Int) -> Int { add_one(x) }
 "#,
         ),
         (
-            "lib/wild.notc",
+            "lib/wild.not",
             r#"
 fn bonus() -> Int { 2 }
 "#,
         ),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./lib/core.notc";
-import "./lib/reexport.notc" as re;
-import "./lib/wild.notc": *;
+import "./lib/core.not";
+import "./lib/reexport.not" as re;
+import "./lib/wild.not": *;
 
 fn main() -> Int {
     // Default alias `core`, nested re-exported namespace `re.core`,
@@ -50,11 +50,11 @@ fn main() -> Int {
     .expect("multi-module project should check");
 
     // 35 + 2 (twice inc) + 1 (re.wrap) + 2 (plus_two) + 2 (bonus) = 42.
-    assert!(matches!(project.run("main.notc", "main"), Ok(Value::Int(42))));
+    assert!(matches!(project.run("main.not", "main"), Ok(Value::Int(42))));
 
     // Verify reachability-driven lowering excludes `unused_dead_fn`.
     let lowered = project
-        .lower_entry("main.notc", "main")
+        .lower_entry("main.not", "main")
         .expect("main should lower");
     // Reachable: main, base, inc, twice, wrap, plus_two, bonus = 7 (not 8).
     assert_eq!(lowered.function_count(), 7);
@@ -64,16 +64,16 @@ fn main() -> Int {
 fn local_binding_shadows_imported_namespace_for_method_calls() {
     let project = check_project(&[
         (
-            "math.notc",
+            "math.not",
             r#"
 fn inc(x: Int) -> Int { x + 100 }
 fn Int.inc(self) -> Int { self + 1 }
 "#,
         ),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./math.notc";
+import "./math.not";
 
 fn main() -> Int {
     let math = 41;
@@ -84,23 +84,23 @@ fn main() -> Int {
     ])
     .expect("project should check");
 
-    assert!(matches!(project.run("main.notc", "main"), Ok(Value::Int(42))));
+    assert!(matches!(project.run("main.not", "main"), Ok(Value::Int(42))));
 }
 
 #[test]
 fn checks_unused_functions_across_all_modules_before_lowering() {
     let errors = check_project(&[
         (
-            "helper.notc",
+            "helper.not",
             r#"
 fn good() -> Int { 42 }
 fn broken_unused() -> Int { false }
 "#,
         ),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./helper.notc": good;
+import "./helper.not": good;
 fn main() -> Int { good() }
 "#,
         ),
@@ -108,7 +108,7 @@ fn main() -> Int { good() }
     .unwrap_err();
 
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].module, "helper.notc");
+    assert_eq!(errors[0].module, "helper.not");
     assert!(matches!(
         errors[0].kind,
         ProjectDiagnosticKind::Type {
@@ -125,28 +125,28 @@ fn main() -> Int { good() }
 #[test]
 fn detects_static_import_cycles() {
     let errors = check_project(&[
-        ("a.notc", r#"import "./b.notc"; fn a() -> Int { 1 }"#),
-        ("b.notc", r#"import "./c.notc"; fn b() -> Int { 2 }"#),
-        ("c.notc", r#"import "./a.notc"; fn c() -> Int { 3 }"#),
+        ("a.not", r#"import "./b.not"; fn a() -> Int { 1 }"#),
+        ("b.not", r#"import "./c.not"; fn b() -> Int { 2 }"#),
+        ("c.not", r#"import "./a.not"; fn c() -> Int { 3 }"#),
     ])
     .unwrap_err();
 
     assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].module, "c.notc");
+    assert_eq!(errors[0].module, "c.not");
     assert!(matches!(
         errors[0].kind,
         ProjectDiagnosticKind::Type {
             error: TypeError::ImportCycle(ref cycle),
             ..
-        } if cycle == &["a.notc", "b.notc", "c.notc", "a.notc"]
+        } if cycle == &["a.not", "b.not", "c.not", "a.not"]
     ));
 }
 
 #[test]
 fn rejects_missing_module_unknown_export_duplicate_binding_and_ambiguous_method() {
     let missing = check_project(&[(
-        "main.notc",
-        r#"import "./nope.notc"; fn main() -> Int { 0 }"#,
+        "main.not",
+        r#"import "./nope.not"; fn main() -> Int { 0 }"#,
     )])
     .unwrap_err();
     assert!(matches!(
@@ -154,14 +154,14 @@ fn rejects_missing_module_unknown_export_duplicate_binding_and_ambiguous_method(
         ProjectDiagnosticKind::Type {
             error: TypeError::MissingModule(ref p),
             ..
-        } if p == "nope.notc"
+        } if p == "nope.not"
     ));
 
     let unknown = check_project(&[
-        ("lib.notc", "fn a() -> Int { 1 }"),
+        ("lib.not", "fn a() -> Int { 1 }"),
         (
-            "main.notc",
-            r#"import "./lib.notc": nope; fn main() -> Int { 0 }"#,
+            "main.not",
+            r#"import "./lib.not": nope; fn main() -> Int { 0 }"#,
         ),
     ])
     .unwrap_err();
@@ -170,17 +170,17 @@ fn rejects_missing_module_unknown_export_duplicate_binding_and_ambiguous_method(
         ProjectDiagnosticKind::Type {
             error: TypeError::UnknownExport { ref module, ref name },
             ..
-        } if module == "lib.notc" && name == "nope"
+        } if module == "lib.not" && name == "nope"
     ));
 
     let dup = check_project(&[
-        ("a.notc", "fn f() -> Int { 1 }"),
-        ("b.notc", "fn f() -> Int { 2 }"),
+        ("a.not", "fn f() -> Int { 1 }"),
+        ("b.not", "fn f() -> Int { 2 }"),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./a.notc": f;
-import "./b.notc": *;
+import "./a.not": f;
+import "./b.not": *;
 fn main() -> Int { f() }
 "#,
         ),
@@ -195,13 +195,13 @@ fn main() -> Int { f() }
     ));
 
     let ambig = check_project(&[
-        ("a.notc", "fn Int.inc(self) -> Int { self + 1 }"),
-        ("b.notc", "fn Int.inc(self) -> Int { self + 2 }"),
+        ("a.not", "fn Int.inc(self) -> Int { self + 1 }"),
+        ("b.not", "fn Int.inc(self) -> Int { self + 2 }"),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./a.notc";
-import "./b.notc";
+import "./a.not";
+import "./b.not";
 fn main() -> Int { 1.inc() }
 "#,
         ),
@@ -222,11 +222,11 @@ fn main() -> Int { 1.inc() }
 #[test]
 fn rejects_namespace_used_as_value_and_member_access_on_non_namespace() {
     let errors = check_project(&[
-        ("math.notc", "fn inc(x: Int) -> Int { x + 1 }"),
+        ("math.not", "fn inc(x: Int) -> Int { x + 1 }"),
         (
-            "main.notc",
+            "main.not",
             r#"
-import "./math.notc";
+import "./math.not";
 fn ns_value() -> Int { let x = math; 0 }
 fn val_member() -> Int { 42.foo }
 "#,

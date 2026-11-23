@@ -3,9 +3,9 @@ use crate::ast::{
     Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
-use crate::content_parser::{parse_content_literal, parse_document_source};
-use crate::frontend::DocumentFrontend;
+use crate::frontend::{DocumentFrontend, MarkdownFrontend};
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
+use crate::markdown::parse_content_literal;
 
 const MAX_PARSE_DEPTH: usize = 128;
 
@@ -15,7 +15,7 @@ pub struct ParseResult {
     pub diagnostics: Vec<ParseDiagnostic>,
 }
 
-/// Parse a single-module `.notc` source string into an AST with source spans.
+/// Parse a single-module `.not` source string into an AST with source spans.
 /// Syntax errors recover at declaration boundaries so subsequent independent
 /// declarations are still parsed.
 pub fn parse(source: &str) -> ParseResult {
@@ -37,25 +37,19 @@ pub fn parse(source: &str) -> ParseResult {
     }
 }
 
-/// Parse a `.not` document file (top-level Markup + optional `@!(...)` document
-/// attributes + leading `#import ...` directives) into a `Program` whose root
-/// module exports synthetic `fn __doc__() -> Block`.
+/// Parse a document using the built-in Markdown frontend (`.md`) into a
+/// `Program` whose root module exports synthetic `fn __doc__() -> Block`.
 pub fn parse_document(source: &str) -> ParseResult {
-    let mut diagnostics = Vec::new();
-    let root = parse_document_source(source, &mut diagnostics);
-    ParseResult {
-        program: Program { root },
-        diagnostics,
-    }
+    MarkdownFrontend.parse_document(source)
 }
 
-/// Parse a `.not` or `.notc` file based on its file extension.
+/// Parse a `.not` code module or `.md` / `.markdown` document based on its file extension.
 pub fn parse_file(path: &str, source: &str) -> ParseResult {
     parse_file_with_frontends(path, source, &[])
 }
 
-/// Parse a `.notc` module, native `.not` document, or any document handled by a
-/// registered [`DocumentFrontend`] matching the file extension.
+/// Parse a `.not` code module, built-in `.md` / `.markdown` document, or any
+/// document handled by a registered [`DocumentFrontend`] matching the file extension.
 pub fn parse_file_with_frontends(
     path: &str,
     source: &str,
@@ -73,12 +67,15 @@ pub fn parse_file_with_frontends(
                 return frontend.parse_document(source);
             }
         }
+        if MarkdownFrontend
+            .extensions()
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(ext))
+        {
+            return MarkdownFrontend.parse_document(source);
+        }
     }
-    if path.ends_with(".not") {
-        parse_document(source)
-    } else {
-        parse(source)
-    }
+    parse(source)
 }
 
 /// Parse an embedded `import ...` line from a `.not` document (trailing `;` is optional).

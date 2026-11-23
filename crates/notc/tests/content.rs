@@ -357,19 +357,19 @@ fn sectionize_folds_flat_headings_into_nested_sections() {
                 Preamble.
 
                 @(id: "ch1")
-                = Chapter 1
+                # Chapter 1
 
                 Intro.
 
-                == Section 1.1
+                ## Section 1.1
 
                 Body 1.1.
 
-                == Section 1.2
+                ## Section 1.2
 
                 Body 1.2.
 
-                = Chapter 2
+                # Chapter 2
 
                 End.
             ]
@@ -427,7 +427,7 @@ fn sectionize_folds_flat_headings_into_nested_sections() {
 fn attributes_equality_escapes_and_first_class_builtins() {
     let source = r#"
         fn eq_check() -> Bool {
-            let a = [Hello *world*];
+            let a = [Hello **world**];
             let b = [Hello ] + strong[world];
             a == b
         }
@@ -435,7 +435,7 @@ fn attributes_equality_escapes_and_first_class_builtins() {
         fn attr_check() -> String {
             let p = [
                 @(id: "p1", draft: true)
-                Hello @(note: "a]b")*bold* and #(text("ok]here"))!
+                Hello @(note: "a]b")**bold** and #(text("ok]here"))!
             ];
             p.attr_or("id", "none") + ":" + p.attr_or("draft", "no") + ":" + p.attr_or("missing", "fb")
         }
@@ -469,14 +469,14 @@ fn attributes_equality_escapes_and_first_class_builtins() {
 fn plain_text_inline_attrs_and_single_line_block_attr_expr() {
     let doc_src = r#"
 - @(collapsed: true)待整理
-  - [Sub](./sub.not)
+  - [Sub](./sub.md)
 
 @(id: "box-1", aria-label: "Info")#callout("info")[
     Body text.
 ]
 "#;
-    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
-    let doc = project.eval_document("index.not").expect("evaluates");
+    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.md").expect("evaluates");
     let BlockKind::Fragment(children) = &doc.node().kind else {
         panic!("expected fragment");
     };
@@ -512,15 +512,15 @@ fn ast_level_attrs_support_multiline_list_items_soft_breaks_stacking_and_lists()
 
 - @(collapsed: true)
   Group
-  - [Child](./child.not)
+  - [Child](./child.md)
 
 @(a: 1)
 @(b: 2)
 @(k: "v")soft
 wrapped
 "#;
-    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
-    let doc = project.eval_document("index.not").expect("evaluates");
+    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.md").expect("evaluates");
     assert_eq!(
         doc.node().attrs.get("tags"),
         Some(&AttrValue::List(std::sync::Arc::from([
@@ -579,8 +579,8 @@ Text with ~~deleted~~ and #strike[also deleted] and #underline[underlined].
 | :--- | :---: | ---: | --- |
 | a | b | c | d |
 "#;
-    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
-    let doc = project.eval_document("index.not").expect("evaluates");
+    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.md").expect("evaluates");
     let BlockKind::Fragment(children) = &doc.node().kind else {
         panic!("expected fragment, got {doc}");
     };

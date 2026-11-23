@@ -100,7 +100,7 @@ impl Lsp {
             "params": {
                 "textDocument": {
                     "uri": uri,
-                    "languageId": if uri.ends_with(".notc") { "notc" } else { "notist" },
+                    "languageId": if uri.ends_with(".not") { "notc" } else { "notist" },
                     "version": version,
                     "text": text
                 }
@@ -153,10 +153,10 @@ fn read_message(reader: &mut impl BufRead) -> Option<Value> {
 #[test]
 fn completions_follow_imports_unsaved_overlays_and_utf16_edits() {
     let temp = tempfile::tempdir().unwrap();
-    let module = temp.path().join("lib.notc");
+    let module = temp.path().join("lib.not");
     std::fs::write(&module, "fn panel(title: Inline) -> Inline { strong(title) }").unwrap();
     let module_uri = url::Url::from_file_path(&module).unwrap().to_string();
-    let doc_uri = url::Url::from_file_path(temp.path().join("doc.not"))
+    let doc_uri = url::Url::from_file_path(temp.path().join("doc.md"))
         .unwrap()
         .to_string();
 
@@ -164,7 +164,7 @@ fn completions_follow_imports_unsaved_overlays_and_utf16_edits() {
     server.open(
         &doc_uri,
         1,
-        "#import \"./lib.notc\" as widgets\n😀 #widgets.panel[Title]",
+        "#import \"./lib.not\" as widgets\n😀 #widgets.panel[Title]",
     );
 
     // Emoji 😀 is 2 UTF-16 code units; `😀 #widgets.pa` -> character 14 is inside `panel`
@@ -190,7 +190,7 @@ fn completions_follow_imports_unsaved_overlays_and_utf16_edits() {
     );
 
     // Dot completion after `#widgets.`
-    server.change(&doc_uri, 2, "#import \"./lib.notc\" as widgets\n#widgets.");
+    server.change(&doc_uri, 2, "#import \"./lib.not\" as widgets\n#widgets.");
     let members = server.request(
         3,
         "textDocument/completion",
@@ -215,7 +215,7 @@ fn completions_follow_imports_unsaved_overlays_and_utf16_edits() {
 #[test]
 fn type_aware_method_completions_hover_and_goto_def_in_notc() {
     let temp = tempfile::tempdir().unwrap();
-    let ui_path = temp.path().join("ui.notc");
+    let ui_path = temp.path().join("ui.not");
     std::fs::write(
         &ui_path,
         r#"fn decorate<C: Type>(content: C) -> C
@@ -235,12 +235,12 @@ fn Block.banner(self) -> Block {
     )
     .unwrap();
     let ui_uri = url::Url::from_file_path(&ui_path).unwrap().to_string();
-    let main_uri = url::Url::from_file_path(temp.path().join("main.notc"))
+    let main_uri = url::Url::from_file_path(temp.path().join("main.not"))
         .unwrap()
         .to_string();
 
     let mut server = Lsp::initialized(temp.path());
-    let main_src = "import \"./ui.notc\";\nfn run(doc: Block) -> Block {\n    let d = ui.decorate(doc);\n    d.\n}\n";
+    let main_src = "import \"./ui.not\";\nfn run(doc: Block) -> Block {\n    let d = ui.decorate(doc);\n    d.\n}\n";
     server.open(&main_uri, 1, main_src);
 
     // 1. Hover on `ui.decorate` shows generic signature + where guard
@@ -277,7 +277,7 @@ fn Block.banner(self) -> Block {
 #[test]
 fn diagnostics_publish_clear_and_symbols_survive_broken_imports() {
     let temp = tempfile::tempdir().unwrap();
-    let uri = url::Url::from_file_path(temp.path().join("lib.notc"))
+    let uri = url::Url::from_file_path(temp.path().join("lib.not"))
         .unwrap()
         .to_string();
     let mut server = Lsp::initialized(temp.path());
@@ -286,11 +286,11 @@ fn diagnostics_publish_clear_and_symbols_survive_broken_imports() {
     let diags = server.open(
         &uri,
         1,
-        "import \"./missing.notc\";\nfn kept(x: Inline) -> Inline { strong(x) }\n",
+        "import \"./missing.not\";\nfn kept(x: Inline) -> Inline { strong(x) }\n",
     );
     let list = diags["params"]["diagnostics"].as_array().unwrap();
     assert_eq!(list.len(), 1);
-    assert!(list[0]["message"].as_str().unwrap().contains("missing.notc"));
+    assert!(list[0]["message"].as_str().unwrap().contains("missing.not"));
 
     let symbols = server.request(
         2,
@@ -319,19 +319,19 @@ fn diagnostics_publish_clear_and_symbols_survive_broken_imports() {
 #[test]
 fn document_outline_and_cross_document_anchor_definition() {
     let temp = tempfile::tempdir().unwrap();
-    let target_path = temp.path().join("target.not");
+    let target_path = temp.path().join("target.md");
     std::fs::write(
         &target_path,
-        "= Guide\n\n@(id: \"sec\")\n== Target Section\n\nDetails.\n",
+        "# Guide\n\n@(id: \"sec\")\n## Target Section\n\nDetails.\n",
     )
     .unwrap();
     let target_uri = url::Url::from_file_path(&target_path).unwrap().to_string();
-    let doc_uri = url::Url::from_file_path(temp.path().join("index.not"))
+    let doc_uri = url::Url::from_file_path(temp.path().join("index.md"))
         .unwrap()
         .to_string();
 
     let mut server = Lsp::initialized(temp.path());
-    server.open(&doc_uri, 1, "= Home\n\nRead [the section](./target.not#sec).\n");
+    server.open(&doc_uri, 1, "# Home\n\nRead [the section](./target.md#sec).\n");
 
     // Jump from link in `index.not` directly to `== Target Section` (line 3) in `target.not`
     let def = server.request(
@@ -346,7 +346,7 @@ fn document_outline_and_cross_document_anchor_definition() {
     server.open(
         &target_uri,
         1,
-        "= Guide\n\n@(id: \"sec\")\n== Target Section\n\nDetails.\n",
+        "# Guide\n\n@(id: \"sec\")\n## Target Section\n\nDetails.\n",
     );
     let outline = server.request(
         3,

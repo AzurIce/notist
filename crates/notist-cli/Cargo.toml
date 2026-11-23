@@ -13,7 +13,6 @@ lsp = ["dep:tower-lsp", "dep:tokio"]
 
 [dependencies]
 notc = { path = "../notc" }
-notist-markdown = { path = "../notist-markdown" }
 notist = { path = "../.." }
 notist-html = { path = "../notist-html", features = ["highlight"] }
 notist-ssg = { path = "../notist-ssg" }

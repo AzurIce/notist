@@ -61,9 +61,9 @@ fn markdown_summary_discovers_directories_and_supports_collapsed_branches() {
         let site = render(&[
             ("README.md", "# Home"),
             ("_logs/entry10.md", "# Ten"),
-            ("_logs/entry2.not", "= Two"),
+            ("_logs/entry2.md", "# Two"),
             ("_logs/entry3.md", "# Three"),
-            ("unlisted.not", "#missing[]"),
+            ("unlisted.md", "#missing[]"),
             ("SUMMARY.md", &summary),
         ]);
         assert_eq!(
@@ -97,7 +97,7 @@ fn markdown_summary_is_loaded_outside_page_filters_in_build_and_serve() {
         for recover in [false, true] {
             let mut vault = Vault::new(resources(&[
                 ("README.md", "# Body title"),
-                ("unlisted.not", "#missing[]"),
+                ("unlisted.md", "#missing[]"),
                 ("SUMMARY.md", "# Summary\n\n- [Declared title](README.md)"),
             ]));
             let site = if recover {
@@ -109,39 +109,6 @@ fn markdown_summary_is_loaded_outside_page_filters_in_build_and_serve() {
             assert_eq!(site.pages.len(), 1);
             assert!(html(&site, "index.html").contains(">Declared title</span>"));
             assert!(!site.files.contains_key(Path::new("SUMMARY/index.html")));
-        }
-    }
-}
-
-#[test]
-fn two_root_summary_files_are_ambiguous_even_when_excluded() {
-    for exclude in [
-        vec![],
-        vec!["SUMMARY.not".into()],
-        vec!["SUMMARY.md".into()],
-    ] {
-        for recover in [false, true] {
-            let mut vault = Vault::new(resources(&[
-                ("README.md", "# Home"),
-                ("SUMMARY.not", "- [Home](README.md)"),
-                ("SUMMARY.md", "- [Home](README.md)"),
-            ]));
-            let config = SiteConfig {
-                exclude: exclude.clone(),
-                ..book_config("public")
-            };
-            let error = if recover {
-                serve(&mut vault, &config)
-            } else {
-                build(&mut vault, &config)
-            }
-            .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("both SUMMARY.not and SUMMARY.md"),
-                "{error}"
-            );
         }
     }
 }
@@ -174,15 +141,15 @@ fn markdown_summary_reports_structural_errors_at_its_own_source() {
 #[test]
 fn collapsed_branches_open_only_for_current_descendants_and_other_branches_default_open() {
     let site = render(&[
-        ("README.not", "= Home"),
-        ("guide/README.not", "= Guide"),
-        ("guide/a.not", "= A"),
+        ("README.md", "# Home"),
+        ("guide/README.md", "# Guide"),
+        ("guide/a.md", "# A"),
         ("_logs/README.md", "# Logs"),
-        ("_logs/old.not", "= Old"),
-        ("_logs/2026/new.not", "= New"),
+        ("_logs/old.md", "# Old"),
+        ("_logs/2026/new.md", "# New"),
         (
-            "SUMMARY.not",
-            "- [Home](README.not)\n- [Guide](guide/)\n- @(collapsed: true)[History](_logs/)\n  - @(collapsed: true)[Year](_logs/2026/)",
+            "SUMMARY.md",
+            "- [Home](README.md)\n- [Guide](guide/)\n- @(collapsed: true)[History](_logs/)\n  - @(collapsed: true)[Year](_logs/2026/)",
         ),
     ]);
     let home = html(&site, "index.html");
@@ -204,15 +171,15 @@ fn collapsed_branches_open_only_for_current_descendants_and_other_branches_defau
 #[test]
 fn collapsing_applies_to_explicit_pages_unlinked_chapters_and_drafts_without_changing_page_order() {
     let files = [
-        ("README.not", "= Home"),
-        ("a.not", "= A"),
-        ("b.not", "= B"),
-        ("c.not", "= C"),
-        ("d.not", "= D"),
-        ("e.not", "= E"),
+        ("README.md", "# Home"),
+        ("a.md", "# A"),
+        ("b.md", "# B"),
+        ("c.md", "# C"),
+        ("d.md", "# D"),
+        ("e.md", "# E"),
         (
-            "SUMMARY.not",
-            "- [Home](README.not)\n- @(collapsed: true)[A](a.not)\n  - [B](b.not)\n- @(collapsed: true)\n  Group\n  - [C](c.not)\n- @(collapsed: true)[Draft]()\n  - [D](d.not)\n- @(collapsed: false)[Open group]()\n  - [E](e.not)",
+            "SUMMARY.md",
+            "- [Home](README.md)\n- @(collapsed: true)[A](a.md)\n  - [B](b.md)\n- @(collapsed: true)\n  Group\n  - [C](c.md)\n- @(collapsed: true)[Draft]()\n  - [D](d.md)\n- @(collapsed: false)[Open group]()\n  - [E](e.md)",
         ),
     ];
     let site = render(&files);
@@ -244,11 +211,11 @@ fn collapsed_annotations_require_booleans() {
         "@(collapsed: \"true\")[History](_logs/)",
         "@(collapsed: 1)\n  Group",
     ] {
-        let source = format!("- [Home](README.not)\n- {label}\n  - [A](_logs/a.not)");
+        let source = format!("- [Home](README.md)\n- {label}\n  - [A](_logs/a.md)");
         let error = fail(&[
-            ("README.not", "= Home"),
-            ("_logs/a.not", "= A"),
-            ("SUMMARY.not", &source),
+            ("README.md", "# Home"),
+            ("_logs/a.md", "# A"),
+            ("SUMMARY.md", &source),
         ]);
         let Error::Diagnostics(errors) = error else {
             panic!("expected source diagnostics: {error}")
@@ -256,7 +223,7 @@ fn collapsed_annotations_require_booleans() {
         assert!(
             errors
                 .iter()
-                .any(|error| error.path == Path::new("/vault/SUMMARY.not")
+                .any(|error| error.path == Path::new("/vault/SUMMARY.md")
                     && error
                         .diagnostic
                         .message
@@ -269,13 +236,13 @@ fn collapsed_annotations_require_booleans() {
 #[test]
 fn declared_structure_orders_pages_and_chapters_without_pages() {
     let site = render(&[
-        ("README.not", "= Home"),
-        ("b.not", "= B"),
-        ("c/d.not", "= D"),
+        ("README.md", "# Home"),
+        ("b.md", "# B"),
+        ("c/d.md", "# D"),
         ("a.md", "# A"),
         (
-            "SUMMARY.not",
-            "= 站点结构\n\n- [Home](README.not)\n- [Bee](b.not)\n- Group\n  - [D](c/d.not)\n  - [A](a.md)\n- [Draft]()",
+            "SUMMARY.md",
+            "# 站点结构\n\n- [Home](README.md)\n- [Bee](b.md)\n- Group\n  - [D](c/d.md)\n  - [A](a.md)\n- [Draft]()",
         ),
     ]);
     assert_eq!(
@@ -307,20 +274,20 @@ fn declared_structure_orders_pages_and_chapters_without_pages() {
 
 #[test]
 fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
-    let native = "= 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.not)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n= 附录\n\n- @(collapsed: true)Notist 组件\n  - [组件](components/widget.not)\n- 空章节\n- [草稿]()";
+    let native = "# 目录\n\n- [架构](architecture.md)\n- 玩法设计\n  - [Demo 策划案](gameplay/demo.md)\n  - [多层地形与物流规则](gameplay/rules.md)\n- 资产与表现\n  - 模型\n    - [建筑模型管线](assets/models.md)\n- 测试与发布\n  - [综合工厂验收](testing/check.md)\n\n---\n\n# 附录\n\n- @(collapsed: true)Notist 组件\n  - [组件](components/widget.md)\n- 空章节\n- [草稿]()";
     let markdown = native
-        .replace("= 目录", "# 目录")
-        .replace("= 附录", "# 附录");
-    for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
+        .replace("# 目录", "# 目录")
+        .replace("# 附录", "# 附录");
+    for (name, summary) in [("SUMMARY.md", native), ("SUMMARY.md", markdown.as_str())] {
         let mut config = book_config("public");
         overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
             ("architecture.md", "# Architecture"),
             ("gameplay/demo.md", "# Demo"),
-            ("gameplay/rules.not", "= Rules"),
+            ("gameplay/rules.md", "# Rules"),
             ("assets/models.md", "# Models"),
             ("testing/check.md", "# Check"),
-            ("components/widget.not", "= Widget"),
+            ("components/widget.md", "# Widget"),
             (name, summary),
             ("theme/templates/page.tera", "{% for node in navigation %}{{<tree node={node} ancestors={book.ancestors}/>}}{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
             ("theme/templates/tree.tera", "{% component tree(node, ancestors) %}[{{node.kind}}:{{node.title}}:{{node.expanded or node.id in ancestors}}{% for child in node.children %}{{<tree node={child} ancestors={ancestors}/>}}{% endfor %}]{% endcomponent tree %}"),
@@ -352,12 +319,12 @@ fn plain_list_entries_keep_labels_and_hierarchy_in_both_summary_formats() {
 fn root_page_keeps_its_declared_peers_children_and_position() {
     for (summary, navigation, titles) in [
         (
-            "- @(collapsed: true)[Home](README.not)\n  - [Intro](intro.not)\n- Guide\n  - [Start](guide/start.not)\n- [Last](last.not)",
+            "- @(collapsed: true)[Home](README.md)\n  - [Intro](intro.md)\n- Guide\n  - [Start](guide/start.md)\n- [Last](last.md)",
             "[Home:(Intro)][Guide:(Start)][Last:]",
             vec!["Home body", "Intro body", "Start body", "Last body"],
         ),
         (
-            "- Guide\n  - [Start](guide/start.not)\n- @(collapsed: true)[Home](README.not)\n  - [Intro](intro.not)\n- [Last](last.not)",
+            "- Guide\n  - [Start](guide/start.md)\n- @(collapsed: true)[Home](README.md)\n  - [Intro](intro.md)\n- [Last](last.md)",
             "[Guide:(Start)][Home:(Intro)][Last:]",
             vec!["Start body", "Home body", "Intro body", "Last body"],
         ),
@@ -366,11 +333,11 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
         config.title = "Book title".into();
         overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
-            ("README.not", "= Home body"),
-            ("intro.not", "= Intro body"),
-            ("guide/start.not", "= Start body"),
-            ("last.not", "= Last body"),
-            ("SUMMARY.not", summary),
+            ("README.md", "# Home body"),
+            ("intro.md", "# Intro body"),
+            ("guide/start.md", "# Start body"),
+            ("last.md", "# Last body"),
+            ("SUMMARY.md", summary),
             ("theme/templates/page.tera", "{% for node in navigation %}[{{node.title}}:{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% for node in navigation %}{% if node.url %}{{node.title}}={{node.expanded or node.id in book.ancestors}};{% endif %}{% endfor %}"),
         ])), &config).unwrap();
         assert_eq!(
@@ -399,20 +366,20 @@ fn root_page_keeps_its_declared_peers_children_and_position() {
 
 #[test]
 fn mdbook_summary_supports_parts_prefix_suffix_drafts_and_separators() {
-    let native = "= Summary\n\n[Introduction](README.not)\n[Preface](preface.not)\n\n---\n\n= User guide\n\n- [Installation](install.not)\n- [Guide](guide.not)\n  - [Advanced](advanced.not)\n  - [Draft]()\n\n== Ignored heading\n\n---\n\n= Reference guide\n\n- [Reference](reference.not)\n\n---\n\n[Contributors](thanks.not)\n\n[License](license.not)\n\n---";
-    let markdown = native.replace("== ", "## ").replace("= ", "# ");
-    for (name, summary) in [("SUMMARY.not", native), ("SUMMARY.md", markdown.as_str())] {
+    let native = "# Summary\n\n[Introduction](README.md)\n[Preface](preface.md)\n\n---\n\n# User guide\n\n- [Installation](install.md)\n- [Guide](guide.md)\n  - [Advanced](advanced.md)\n  - [Draft]()\n\n## Ignored heading\n\n---\n\n# Reference guide\n\n- [Reference](reference.md)\n\n---\n\n[Contributors](thanks.md)\n\n[License](license.md)\n\n---";
+    let markdown = native.replace("## ", "## ").replace("# ", "# ");
+    for (name, summary) in [("SUMMARY.md", native), ("SUMMARY.md", markdown.as_str())] {
         let mut config = book_config("public");
         overlay(&mut config, "theme");
         let site = build(&mut Vault::new(resources(&[
-        ("README.not", "= Introduction body"),
-        ("preface.not", "= Preface body"),
-        ("install.not", "= Installation body"),
-        ("guide.not", "= Guide body"),
-        ("advanced.not", "= Advanced body"),
-        ("reference.not", "= Reference body"),
-        ("thanks.not", "= Contributors body"),
-        ("license.not", "= License body"),
+        ("README.md", "# Introduction body"),
+        ("preface.md", "# Preface body"),
+        ("install.md", "# Installation body"),
+        ("guide.md", "# Guide body"),
+        ("advanced.md", "# Advanced body"),
+        ("reference.md", "# Reference body"),
+        ("thanks.md", "# Contributors body"),
+        ("license.md", "# License body"),
         (name, summary),
         ("theme/templates/page.tera", "{% for node in navigation %}[{{node.kind}}:{{node.title}}{% for child in node.children %}({{child.kind}}:{{child.title}}){% endfor %}]{% endfor %}|{% for crumb in breadcrumbs %}[{{crumb.title}}]{% endfor %}|{% if previous %}{{previous.title}}{% endif %}>{% if next %}{{next.title}}{% endif %}"),
     ])), &config).unwrap();
@@ -451,12 +418,12 @@ fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
     let mut config = book_config("public");
     overlay(&mut config, "theme");
     let site = build(&mut Vault::new(resources(&[
-        ("README.not", "= Introduction"),
-        ("guide/README.not", "= Guide"),
-        ("guide/a.not", "= A"),
-        ("guide/b.not", "= B"),
-        ("end.not", "= End"),
-        ("SUMMARY.not", "= Summary\n\n[Introduction](README.not)\n\n= Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n= Reference\n\n- [End](end.not)"),
+        ("README.md", "# Introduction"),
+        ("guide/README.md", "# Guide"),
+        ("guide/a.md", "# A"),
+        ("guide/b.md", "# B"),
+        ("end.md", "# End"),
+        ("SUMMARY.md", "# Summary\n\n[Introduction](README.md)\n\n# Guide\n\n- [Guide](guide/)\n\n---\n\n- [Draft]()\n\n# Reference\n\n- [End](end.md)"),
         ("theme/templates/page.tera", "{% for node in navigation %}[{{node.title}}{% for child in node.children %}({{child.title}}){% endfor %}]{% endfor %}"),
     ])), &config).unwrap();
     assert_eq!(
@@ -469,14 +436,14 @@ fn chapter_labels_and_order_follow_lists_parts_and_directory_discovery() {
 fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
     for has_home in [false, true] {
         let mut files = vec![
-            ("README.not", "= Home"),
-            ("_logs/old.not", "= Old"),
-            ("_logs/2026/new.not", "= New"),
+            ("README.md", "# Home"),
+            ("_logs/old.md", "# Old"),
+            ("_logs/2026/new.md", "# New"),
             ("empty/placeholder.txt", "Not a chapter"),
-            ("after.not", "= After"),
+            ("after.md", "# After"),
             (
-                "SUMMARY.not",
-                "= Summary\n\n[Home](README.not)\n\n- [History](_logs/)\n- [Empty](empty/)\n- [After](after.not)",
+                "SUMMARY.md",
+                "# Summary\n\n[Home](README.md)\n\n- [History](_logs/)\n- [Empty](empty/)\n- [After](after.md)",
             ),
             (
                 "theme/templates/page.tera",
@@ -489,8 +456,8 @@ fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
         ];
         if has_home {
             files.extend([
-                ("_logs/README.not", "= Logs home"),
-                ("_logs/2026/README.not", "= 2026"),
+                ("_logs/README.md", "# Logs home"),
+                ("_logs/2026/README.md", "# 2026"),
             ]);
         }
         let mut config = book_config("public");
@@ -519,30 +486,30 @@ fn directory_chapters_keep_their_hierarchy_with_or_without_home_pages() {
 fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
     for (summary, message) in [
         (
-            "- [Home](README.not)\n\n[After](after.not)\n\n- [Again](again.not)",
+            "- [Home](README.md)\n\n[After](after.md)\n\n- [Again](again.md)",
             "chapter lists cannot follow suffix chapters",
         ),
         (
-            "- [Home](README.not)\n\n[After](after.not)\n\n= Too late",
+            "- [Home](README.md)\n\n[After](after.md)\n\n# Too late",
             "part titles cannot follow suffix chapters",
         ),
         (
-            "[Directory](guide/)\n\n- [Home](README.not)",
+            "[Directory](guide/)\n\n- [Home](README.md)",
             "must reference a single document",
         ),
-        ("1. [Home](README.not)", "use unordered markers"),
+        ("1. [Home](README.md)", "use unordered markers"),
         (
-            "= Summary\n\n```text\nUnexpected\n```\n\n- [Home](README.not)",
+            "# Summary\n\n```text\nUnexpected\n```\n\n- [Home](README.md)",
             "structure allows only",
         ),
-        ("= Summary\n\n= Only a part\n\n---", "declares no entries"),
+        ("# Summary\n\n# Only a part\n\n---", "declares no entries"),
     ] {
         let error = fail(&[
-            ("README.not", "= Home"),
-            ("after.not", "= After"),
-            ("again.not", "= Again"),
-            ("guide/README.not", "= Guide"),
-            ("SUMMARY.not", summary),
+            ("README.md", "# Home"),
+            ("after.md", "# After"),
+            ("again.md", "# Again"),
+            ("guide/README.md", "# Guide"),
+            ("SUMMARY.md", summary),
         ]);
         let Error::Diagnostics(errors) = error else {
             panic!("expected diagnostics: {error}")
@@ -550,7 +517,7 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
         assert!(
             errors
                 .iter()
-                .any(|error| error.path == Path::new("/vault/SUMMARY.not")
+                .any(|error| error.path == Path::new("/vault/SUMMARY.md")
                     && error.diagnostic.message.contains(message)),
             "{summary}: {errors:?}"
         );
@@ -560,19 +527,19 @@ fn invalid_summary_phase_transitions_and_blocks_report_source_diagnostics() {
 #[test]
 fn summary_selects_pages_before_analysis_and_route_validation() {
     let files = [
-        ("README.not", "= Home"),
-        ("a.not", "= A"),
-        ("README.md", "# Unlisted root route collision"),
+        ("README.md", "# Home"),
+        ("a.md", "# A"),
+        ("README.markdown", "# Unlisted root route collision"),
         ("a/README.md", "# Unlisted chapter route collision"),
         (
-            "ai/broken.not",
-            "#import \"missing.notc\" as missing;\n#missing[]",
+            "ai/broken.md",
+            "#import \"missing.not\" as missing;\n#missing[]",
         ),
         ("_notist/private.md", "# Unlisted reserved route"),
-        ("future.not", "#missing[]"),
+        ("future.md", "#missing[]"),
         (
-            "SUMMARY.not",
-            "- [Home](README.not)\n- [A](a.not)\n- [Future]()",
+            "SUMMARY.md",
+            "- [Home](README.md)\n- [A](a.md)\n- [Future]()",
         ),
     ];
     for recover in [false, true] {
@@ -605,14 +572,14 @@ fn summary_selects_pages_before_analysis_and_route_validation() {
 #[test]
 fn selected_routes_still_reject_collisions() {
     for summary in [
-        "- [Home](README.not)\n- [A](a.not)\n- [Directory home](a/README.md)",
+        "- [Home](README.md)\n- [A](a.md)\n- [Directory home](a/README.md)",
         "- [All](./)",
     ] {
         let error = fail(&[
-            ("README.not", "= Home"),
-            ("a.not", "= A"),
+            ("README.md", "# Home"),
+            ("a.md", "# A"),
             ("a/README.md", "# Directory home"),
-            ("SUMMARY.not", summary),
+            ("SUMMARY.md", summary),
         ]);
         assert!(error.to_string().contains("route collision"), "{error}");
     }
@@ -621,13 +588,13 @@ fn selected_routes_still_reject_collisions() {
 #[test]
 fn content_links_do_not_publish_unlisted_documents() {
     let site = render(&[
-        ("README.not", "= Home\n\n[Private](ai/private.md)"),
+        ("README.md", "# Home\n\n[Private](ai/private.md)"),
         ("ai/private.md", "# Private"),
-        ("SUMMARY.not", "- [Home](README.not)"),
+        ("SUMMARY.md", "- [Home](README.md)"),
     ]);
     assert!(
         site.warnings.iter().any(|error| {
-            error.path == Path::new("/vault/README.not")
+            error.path == Path::new("/vault/README.md")
                 && error.diagnostic.message.contains("not published")
         }),
         "{:?}",
@@ -642,7 +609,7 @@ fn content_links_do_not_publish_unlisted_documents() {
 fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
     for config in [
         SiteConfig {
-            include: vec!["README.not".into()],
+            include: vec!["README.md".into()],
             ..book_config("public")
         },
         SiteConfig {
@@ -651,11 +618,11 @@ fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
         },
     ] {
         let mut vault = Vault::new(resources(&[
-            ("README.not", "= Home"),
+            ("README.md", "# Home"),
             ("ai/private.md", "# Private"),
             (
-                "SUMMARY.not",
-                "- [Home](README.not)\n- [Private](ai/private.md)",
+                "SUMMARY.md",
+                "- [Home](README.md)\n- [Private](ai/private.md)",
             ),
         ]));
         let error = build(&mut vault, &config).unwrap_err();
@@ -669,23 +636,23 @@ fn explicit_summary_pages_must_pass_include_and_exclude_filters() {
 #[test]
 fn structure_entries_validate_targets() {
     for (entry, message) in [
-        ("- [Missing](none.not)", "not a published page"),
-        ("- [Outside](../outside.not)", "outside Vault"),
+        ("- [Missing](none.md)", "not a published page"),
+        ("- [Outside](../outside.md)", "outside Vault"),
         (
             "- [External](https://example.com)",
             "must reference a local document",
         ),
         (
-            "- [Anchor](README.not#top)",
+            "- [Anchor](README.md#top)",
             "must not carry a query or fragment",
         ),
         (
-            "- [Home](README.not)\n- [Again](README.not)",
+            "- [Home](README.md)\n- [Again](README.md)",
             "duplicate structure entry",
         ),
     ] {
-        let source = format!("= S\n\n{entry}");
-        let error = fail(&[("README.not", "= Home"), ("SUMMARY.not", &source)]);
+        let source = format!("# S\n\n{entry}");
+        let error = fail(&[("README.md", "# Home"), ("SUMMARY.md", &source)]);
         let Error::Diagnostics(errors) = error else {
             panic!("expected source diagnostics: {error}")
         };
@@ -698,7 +665,7 @@ fn structure_entries_validate_targets() {
         assert!(
             errors
                 .iter()
-                .all(|error| error.path == Path::new("/vault/SUMMARY.not")
+                .all(|error| error.path == Path::new("/vault/SUMMARY.md")
                     && usize::from(error.diagnostic.span.end()) <= source.len())
         );
     }
@@ -708,27 +675,27 @@ fn structure_entries_validate_targets() {
 fn structure_is_data_not_code() {
     for (source, message) in [
         (
-            "= S\n\nSome text\n\n- [Home](README.not)",
+            "# S\n\nSome text\n\n- [Home](README.md)",
             "standalone links",
         ),
         (
-            "- [A](a.not) extra\n\n- [Home](README.not)",
+            "- [A](a.md) extra\n\n- [Home](README.md)",
             "must be the whole label",
         ),
         (
-            "- [A](a.not) [B](b.not)\n\n- [Home](README.not)",
+            "- [A](a.md) [B](b.md)\n\n- [Home](README.md)",
             "at most one link",
         ),
         (
-            "- one\n\n  two\n\n- [Home](README.not)",
+            "- one\n\n  two\n\n- [Home](README.md)",
             "at most one nested list",
         ),
     ] {
         let error = fail(&[
-            ("README.not", "= Home"),
-            ("a.not", "= A"),
-            ("b.not", "= B"),
-            ("SUMMARY.not", source),
+            ("README.md", "# Home"),
+            ("a.md", "# A"),
+            ("b.md", "# B"),
+            ("SUMMARY.md", source),
         ]);
         let Error::Diagnostics(errors) = error else {
             panic!("expected source diagnostics: {error}")
@@ -745,9 +712,9 @@ fn structure_is_data_not_code() {
 #[test]
 fn the_structure_file_is_not_a_page() {
     let site = render(&[
-        ("README.md", "# Home\n\n[S](SUMMARY.not)"),
+        ("README.md", "# Home\n\n[S](SUMMARY.md)"),
         ("a.md", "# A"),
-        ("SUMMARY.not", "- [Home](README.md)\n- [A](a.md)"),
+        ("SUMMARY.md", "- [Home](README.md)\n- [A](a.md)"),
     ]);
     assert!(
         site.warnings
@@ -760,14 +727,14 @@ fn the_structure_file_is_not_a_page() {
 #[test]
 fn directories_discover_recursive_natural_order_and_directory_home_pages() {
     let site = render(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         ("_logs/README.md", "# Log home"),
         ("_logs/entry10.md", "# Ten"),
-        ("_logs/entry2.not", "= Two"),
-        ("_logs/no-home/one.not", "= Archived"),
-        ("_logs/part/README.not", "= Nested"),
-        ("_logs/part/child.not", "= Child"),
-        ("SUMMARY.not", "- [Home](README.not)\n- [History](_logs/)"),
+        ("_logs/entry2.md", "# Two"),
+        ("_logs/no-home/one.md", "# Archived"),
+        ("_logs/part/README.md", "# Nested"),
+        ("_logs/part/child.md", "# Child"),
+        ("SUMMARY.md", "- [Home](README.md)\n- [History](_logs/)"),
     ]);
     let titles: Vec<_> = site.pages.iter().map(|page| page.title.as_str()).collect();
     assert_eq!(
@@ -795,13 +762,13 @@ fn directories_discover_recursive_natural_order_and_directory_home_pages() {
 fn root_directory_discovery_without_a_label_matches_default_navigation() {
     let mut files = vec![
         ("README.md", "# Home"),
-        ("guide/README.not", "= Guide"),
-        ("guide/ch10.not", "= Ten"),
-        ("guide/ch2.not", "= Two"),
-        ("_logs/one.not", "= Log"),
+        ("guide/README.md", "# Guide"),
+        ("guide/ch10.md", "# Ten"),
+        ("guide/ch2.md", "# Two"),
+        ("_logs/one.md", "# Log"),
     ];
     let default = render(&files);
-    files.push(("SUMMARY.not", "- [](./)"));
+    files.push(("SUMMARY.md", "- [](./)"));
     let declared = render(&files);
     assert_eq!(declared.files, default.files);
 }
@@ -810,24 +777,24 @@ fn root_directory_discovery_without_a_label_matches_default_navigation() {
 fn explicit_pages_win_before_after_and_inside_directory_entries() {
     for (summary, expected) in [
         (
-            "- [Home](README.not)\n- [History](_logs/)\n- Pinned\n  - [Featured](_logs/entry2.not)",
+            "- [Home](README.md)\n- [History](_logs/)\n- Pinned\n  - [Featured](_logs/entry2.md)",
             vec!["Home", "Log home", "Ten", "Two"],
         ),
         (
-            "- [Home](README.not)\n- Pinned\n  - [Featured](_logs/entry2.not)\n- [History](_logs/)",
+            "- [Home](README.md)\n- Pinned\n  - [Featured](_logs/entry2.md)\n- [History](_logs/)",
             vec!["Home", "Two", "Log home", "Ten"],
         ),
         (
-            "- [Home](README.not)\n- [History](_logs/)\n  - [Featured](_logs/entry10.not)",
+            "- [Home](README.md)\n- [History](_logs/)\n  - [Featured](_logs/entry10.md)",
             vec!["Home", "Log home", "Ten", "Two"],
         ),
     ] {
         let site = render(&[
-            ("README.not", "= Home"),
-            ("_logs/README.not", "= Log home"),
-            ("_logs/entry2.not", "= Two"),
-            ("_logs/entry10.not", "= Ten"),
-            ("SUMMARY.not", summary),
+            ("README.md", "# Home"),
+            ("_logs/README.md", "# Log home"),
+            ("_logs/entry2.md", "# Two"),
+            ("_logs/entry10.md", "# Ten"),
+            ("SUMMARY.md", summary),
         ]);
         assert_eq!(
             site.pages
@@ -849,12 +816,12 @@ fn explicit_pages_win_before_after_and_inside_directory_entries() {
 #[test]
 fn an_explicit_directory_home_elsewhere_keeps_an_unlinked_chapter() {
     let site = render(&[
-        ("README.not", "= Home"),
-        ("_logs/README.not", "= Log home"),
-        ("_logs/a.not", "= A"),
+        ("README.md", "# Home"),
+        ("_logs/README.md", "# Log home"),
+        ("_logs/a.md", "# A"),
         (
-            "SUMMARY.not",
-            "- [Home](README.not)\n- [History](_logs/)\n- [Overview](_logs/README.not)",
+            "SUMMARY.md",
+            "- [Home](README.md)\n- [History](_logs/)\n- [Overview](_logs/README.md)",
         ),
     ]);
     assert_eq!(
@@ -880,20 +847,20 @@ fn an_explicit_directory_home_elsewhere_keeps_an_unlinked_chapter() {
 fn nested_directory_claims_win_regardless_of_declaration_order() {
     for (summary, expected) in [
         (
-            "- [Home](README.not)\n- [Rest](./)\n- [History](_logs/)\n- [Year](_logs/2026/)",
+            "- [Home](README.md)\n- [Rest](./)\n- [History](_logs/)\n- [Year](_logs/2026/)",
             vec!["Home", "Guide", "Old", "New"],
         ),
         (
-            "- [Home](README.not)\n- [Year](_logs/2026/)\n- [History](_logs/)\n- [Rest](./)",
+            "- [Home](README.md)\n- [Year](_logs/2026/)\n- [History](_logs/)\n- [Rest](./)",
             vec!["Home", "New", "Old", "Guide"],
         ),
     ] {
         let site = render(&[
-            ("README.not", "= Home"),
-            ("guide.not", "= Guide"),
-            ("_logs/old.not", "= Old"),
-            ("_logs/2026/new.not", "= New"),
-            ("SUMMARY.not", summary),
+            ("README.md", "# Home"),
+            ("guide.md", "# Guide"),
+            ("_logs/old.md", "# Old"),
+            ("_logs/2026/new.md", "# New"),
+            ("SUMMARY.md", summary),
         ]);
         assert_eq!(
             site.pages
@@ -909,21 +876,21 @@ fn nested_directory_claims_win_regardless_of_declaration_order() {
 #[test]
 fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
     let files = [
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         ("_logs/a.md", "# A"),
-        ("_logs/excluded/README.not", "#missing[]"),
-        ("_logs/skip.not", "#missing[]"),
-        ("_logs/.hidden.not", "#missing[]"),
-        ("_logs/target/build.not", "#missing[]"),
-        ("unselected.not", "#missing[]"),
+        ("_logs/excluded/README.md", "#missing[]"),
+        ("_logs/skip.md", "#missing[]"),
+        ("_logs/.hidden.md", "#missing[]"),
+        ("_logs/target/build.md", "#missing[]"),
+        ("unselected.md", "#missing[]"),
         (
-            "SUMMARY.not",
-            "- [Home](README.not)\n- [History](_logs/)\n- [Empty](_logs/excluded/)",
+            "SUMMARY.md",
+            "- [Home](README.md)\n- [History](_logs/)\n- [Empty](_logs/excluded/)",
         ),
     ];
     let config = SiteConfig {
-        include: vec!["README.not".into(), "_logs/**".into()],
-        exclude: vec!["_logs/excluded/**".into(), "_logs/skip.not".into()],
+        include: vec!["README.md".into(), "_logs/**".into()],
+        exclude: vec!["_logs/excluded/**".into(), "_logs/skip.md".into()],
         ..book_config("target/book")
     };
     for recover in [false, true] {
@@ -954,11 +921,11 @@ fn directory_discovery_uses_selected_pages_and_allows_empty_chapters() {
 #[test]
 fn directory_entries_select_their_subtree_in_build_and_serve() {
     let files = [
-        ("README.not", "= Home"),
-        ("_logs/a.not", "= A"),
-        ("_logs-other/b.not", "#missing[]"),
+        ("README.md", "# Home"),
+        ("_logs/a.md", "# A"),
+        ("_logs-other/b.md", "#missing[]"),
         ("_logs-other/b.md", "# Unlisted route collision"),
-        ("SUMMARY.not", "- [Home](README.not)\n- [History](_logs/)"),
+        ("SUMMARY.md", "- [Home](README.md)\n- [History](_logs/)"),
     ];
     for recover in [false, true] {
         let mut vault = Vault::new(resources(&files));
@@ -987,7 +954,7 @@ fn directory_entries_select_their_subtree_in_build_and_serve() {
 fn directory_targets_report_source_diagnostics() {
     for (entry, message) in [
         ("- [Missing](missing/)", "is not a directory"),
-        ("- [File](README.not/)", "is not a directory"),
+        ("- [File](README.md/)", "is not a directory"),
         (
             "- [Query](_logs/?sort=new)",
             "must not carry a query or fragment",
@@ -1006,11 +973,11 @@ fn directory_targets_report_source_diagnostics() {
             "duplicate structure directory",
         ),
     ] {
-        let source = format!("- [Home](README.not)\n{entry}");
+        let source = format!("- [Home](README.md)\n{entry}");
         let error = fail(&[
-            ("README.not", "= Home"),
-            ("_logs/a.not", "= A"),
-            ("SUMMARY.not", &source),
+            ("README.md", "# Home"),
+            ("_logs/a.md", "# A"),
+            ("SUMMARY.md", &source),
         ]);
         let Error::Diagnostics(errors) = error else {
             panic!("expected source diagnostics: {error}")
@@ -1024,7 +991,7 @@ fn directory_targets_report_source_diagnostics() {
         assert!(
             errors
                 .iter()
-                .all(|error| error.path == Path::new("/vault/SUMMARY.not")
+                .all(|error| error.path == Path::new("/vault/SUMMARY.md")
                     && usize::from(error.diagnostic.span.end()) <= source.len()),
             "{errors:?}"
         );
@@ -1033,16 +1000,16 @@ fn directory_targets_report_source_diagnostics() {
 
 #[test]
 fn handwritten_numbers_are_preserved_in_navigation_and_breadcrumbs() {
-    for name in ["SUMMARY.not", "SUMMARY.md"] {
+    for name in ["SUMMARY.md", "SUMMARY.md"] {
         let title = if name.ends_with(".md") { "#" } else { "=" };
         let summary = format!(
-            "{title} Summary\n\n[首页](README.not)\n\n- [2. 指南](guide.not)\n  - [2.7. 深入](deep.not)\n- [附录 B]()\n- [](archive/)"
+            "{title} Summary\n\n[首页](README.md)\n\n- [2. 指南](guide.md)\n  - [2.7. 深入](deep.md)\n- [附录 B]()\n- [](archive/)"
         );
         let site = render(&[
-            ("README.not", "= Home"),
-            ("guide.not", "= Guide body"),
-            ("deep.not", "= Deep body"),
-            ("archive/README.not", "= 9. Archive"),
+            ("README.md", "# Home"),
+            ("guide.md", "# Guide body"),
+            ("deep.md", "# Deep body"),
+            ("archive/README.md", "# 9. Archive"),
             (name, &summary),
         ]);
         let deep = html(&site, "deep/index.html");

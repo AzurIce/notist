@@ -1,0 +1,8 @@
+@!(title: "实用配方")
+
+# 实用配方
+
+这里汇总常见实践：
+
+- [编写 SSG 扩展](ssg-extensions.md)：使用 `before_compile` 与 `before_template` 自动生成示例索引页与站点数据。
+- [Web Components 约定](../components/README.md)：在 `.not` 中声明纯类型组件并由 SSG 按目录加载浏览器端 JS。

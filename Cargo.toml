@@ -9,7 +9,6 @@ crate-type = ["rlib"]
 [workspace]
 members = [
     "crates/notc",
-    "crates/notist-markdown",
     "crates/notist-observe",
     "crates/notist-html",
     "crates/notist-ssg",

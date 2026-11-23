@@ -7,10 +7,8 @@ use notc::ide::{
     WorkspaceAnalysis,
 };
 use notc::{
-    BlockPiece, Decl, DocumentFrontend, Expr, ExprKind, InlinePiece, NotistFrontend, Span,
-    parse_file_with_frontends, resolve_import_path,
+    BlockPiece, Decl, Expr, ExprKind, InlinePiece, Span, parse_file, resolve_import_path,
 };
-use notist_markdown::MarkdownFrontend;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
@@ -224,7 +222,7 @@ impl LanguageServer for Backend {
         let position = params.text_document_position;
         let uri = &position.text_document.uri;
         let path = uri.path();
-        if !path.ends_with(".not") && !path.ends_with(".notc") {
+        if !path.ends_with(".not") && !path.ends_with(".md") && !path.ends_with(".markdown") {
             return Ok(None);
         }
         let snap = self.current_snapshot().await;
@@ -374,18 +372,17 @@ fn build_snapshot(
         );
     }
 
-    // 2. Transitively discover imported `.notc` modules and linked `.not` documents from disk.
+    // 2. Transitively discover imported `.not` modules and linked Markdown documents from disk.
     while let Some(rel) = queue.pop_front() {
         let Some(source) = files.get(&rel).map(|f| f.source.clone()) else {
             continue;
         };
-        let frontends: [&dyn DocumentFrontend; 2] = [&NotistFrontend, &MarkdownFrontend];
-        let parsed = parse_file_with_frontends(&rel, &source, &frontends);
+        let parsed = parse_file(&rel, &source);
         let mut refs: Vec<String> = Vec::new();
         for decl in &parsed.program.root.declarations {
             match decl {
                 Decl::Import(import) => refs.push(import.path.clone()),
-                Decl::Function(func) if rel.ends_with(".not") => {
+                Decl::Function(func) if !rel.ends_with(".not") => {
                     if let Some(body) = &func.body {
                         collect_link_paths(body, &mut refs);
                     }
@@ -426,8 +423,7 @@ fn build_snapshot(
         .map(|(rel, file)| (rel.as_str(), file.source.as_str()))
         .collect();
     pairs.sort_by_key(|(rel, _)| *rel);
-    let frontends: [&dyn DocumentFrontend; 2] = [&NotistFrontend, &MarkdownFrontend];
-    let analysis = WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let analysis = WorkspaceAnalysis::analyze(&pairs);
 
     WorkspaceSnapshot {
         analysis,
@@ -501,7 +497,9 @@ fn collect_inline_link_paths(inline: &InlinePiece, out: &mut Vec<String>) {
         InlinePiece::Link { target, label, .. } => {
             if !target.starts_with("http://") && !target.starts_with("https://") {
                 let path_part = target.split_once('#').map_or(target.as_str(), |(p, _)| p);
-                if !path_part.is_empty() && path_part.ends_with(".not") {
+                if !path_part.is_empty()
+                    && (path_part.ends_with(".md") || path_part.ends_with(".markdown"))
+                {
                     out.push(path_part.to_owned());
                 }
             }

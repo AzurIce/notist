@@ -40,11 +40,13 @@ impl<R: Resources> Vault<R> {
         &self.resources
     }
 
-    /// Whether `path` has a supported document extension (`.not` or `.md`).
+    /// Whether `path` has a supported document extension (`.md` or `.markdown`).
     pub fn supports(&self, path: &Path) -> bool {
         path.extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("not") || ext.eq_ignore_ascii_case("md"))
+            .is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
+            })
     }
 
     /// Read a UTF-8 source document through the underlying resource backend.

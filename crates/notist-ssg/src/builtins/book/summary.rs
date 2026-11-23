@@ -1,4 +1,4 @@
-//! SUMMARY.not or SUMMARY.md: an optional declarative book structure at the Vault root.
+//! SUMMARY.md: an optional declarative book structure at the Vault root.
 //!
 //! The file is interpreted as data, never evaluated or rendered: an optional
 //! document title, prefix/suffix links, part headings, chapter lists
@@ -17,7 +17,7 @@ use super::{
 };
 use crate::mounts::Mounts;
 
-pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
+pub(crate) const FILE_NAMES: [&str; 1] = ["SUMMARY.md"];
 
 /// A declared entry before target resolution. A `None` target is an unlinked
 /// chapter; an empty target is a draft entry.

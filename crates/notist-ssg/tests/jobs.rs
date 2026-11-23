@@ -6,10 +6,10 @@ use std::{num::NonZeroUsize, sync::Arc};
 fn forward_anchors_work_across_parallel_preparation_windows() {
     let mut resources = files();
     resources.insert(
-        "content/page-0.not",
-        "= Start\n\n[Later](z.not#later) [Also](z.not#later)",
+        "content/page-0.md",
+        "# Start\n\n[Later](z.md#later) [Also](z.md#later)",
     );
-    resources.insert("content/z.not", "= Later\n\n[Start](page-0.not#start)");
+    resources.insert("content/z.md", "# Later\n\n[Start](page-0.md#start)");
     let config = SiteConfig::default();
     let mut expected = None;
     for workers in [1, 2, 4] {
@@ -23,7 +23,7 @@ fn forward_anchors_work_across_parallel_preparation_windows() {
         assert!(
             site.pages
                 .iter()
-                .find(|p| p.route.path == std::path::Path::new("page-0.not"))
+                .find(|p| p.route.path == std::path::Path::new("page-0.md"))
                 .unwrap()
                 .html
                 .contains("href=\"z.html#later\"")
@@ -40,8 +40,8 @@ fn files() -> MemoryResources {
     let mut files = MemoryResources::new("/site");
     for i in 0..521 {
         files.insert(
-            format!("content/page-{i}.not"),
-            format!("= Page {i}\n\nBody *{i}*."),
+            format!("content/page-{i}.md"),
+            format!("# Page {i}\n\nBody *{i}*."),
         );
     }
     files.insert(

@@ -1,0 +1,55 @@
+// Inline / Block content types, flank-based `[...]` literals, trailing `[...]`
+// call sugar, generic `<C: Type>` polymorphism with `where` + `match C`,
+// `@(...)` attributes, `sectionize()`, and bottom-up immutable tree rewriting.
+
+fn decorate<C: Type>(content: C) -> C
+where C == Inline || C == Block
+{
+    match C {
+        Inline => strong[⚡ #content],
+        Block  => callout("highlight")[
+            #content
+        ],
+        _ => compile_error("unreachable: guarded by where"),
+    }
+}
+
+fn tag_important(node: Inline) -> Inline {
+    if node.has_attr("tag") {
+        strong(node.with_attr("seen", "yes"))
+    } else {
+        node
+    }
+}
+
+fn build_doc() -> Block {
+    let badge = decorate[Notist];
+    let note = decorate[
+        Remember to run `sectionize()` explicitly.
+    ];
+
+    [
+        @(id: "intro")
+        # Welcome to #badge
+
+        Write prose with **bold**, *italic*, and @(tag: "key")[docs](https://notist.dev).
+
+        #note
+
+        ## Architecture
+
+        ```not
+        fn id<T: Type>(x: T) -> T { x }
+        ```
+    ]
+}
+
+fn main() -> Block {
+    build_doc()
+        .rewrite_inlines(tag_important)
+        .sectionize()
+}
+
+fn summary() -> String {
+    build_doc().headings_summary()
+}

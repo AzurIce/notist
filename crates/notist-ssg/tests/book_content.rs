@@ -36,15 +36,15 @@ fn html(site: &BuildOutput, path: &str) -> String {
 fn text_inputs_become_body_content_without_becoming_published_assets_or_components() {
     let mut vault = Vault::new(resources(&[
         (
-            "README.not",
-            "#import \"./views/lib.notc\" as view\n\n= Home\n\n#view.show(\"./private/input.txt\")",
+            "README.md",
+            "#import \"./views/lib.not\" as view\n\n# Home\n\n#view.show(\"./private/input.txt\")",
         ),
         (
             "two.md",
-            "#import \"./views/lib.notc\" as view\n\n# Two\n\n#view.show(\"./private/input.txt\")",
+            "#import \"./views/lib.not\" as view\n\n# Two\n\n#view.show(\"./private/input.txt\")",
         ),
         (
-            "views/lib.notc",
+            "views/lib.not",
             "fn show(source: String) -> Block { para(text(read_text(source))) }",
         ),
         ("private/input.txt", "正文 <script> & private"),
@@ -63,12 +63,12 @@ fn text_inputs_become_body_content_without_becoming_published_assets_or_componen
 
 #[test]
 fn structured_inputs_are_shared_static_and_never_published() {
-    let page = "#import \"./views/lib.notc\" as view\n#view.show(\"./private/items.json\")";
+    let page = "#import \"./views/lib.not\" as view\n#view.show(\"./private/items.json\")";
     let module = "fn show(source: String) -> Block { let root = read_json(source); para(text(root.get(\"name\").as_string(\"\"))) }";
     let mut vault = Vault::new(resources(&[
-        ("README.not", page),
-        ("two.not", page),
-        ("views/lib.notc", module),
+        ("README.md", page),
+        ("two.md", page),
+        ("views/lib.not", module),
         (
             "private/items.json",
             r#"{"name":"静态正文 <&>","private":"SECRET"}"#,
@@ -95,8 +95,8 @@ fn tag_with<'a>(output: &'a str, name: &str, attribute: &str) -> Option<&'a str>
 fn default_theme_renders_semantic_shell_for_both_frontends() {
     for (source, content) in [
         (
-            "README.not",
-            "= Native title\n\n== Topic\n\nNative body\n\n```rust\nlet value = 1;\n```",
+            "README.md",
+            "# Native title\n\n## Topic\n\nNative body\n\n```rust\nlet value = 1;\n```",
         ),
         (
             "README.md",
@@ -172,11 +172,11 @@ fn default_theme_escapes_titles_and_encodes_explicit_outline_ids() {
     let site = render(&[
         (
             "README.md",
-            "# \\<Home\\> & title\n\n[Native](%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3.not)",
+            "# \\<Home\\> & title\n\n[Native](%E4%B8%AD%E6%96%87%20%E6%96%87%E6%A1%A3.md)",
         ),
         (
-            "中文 文档.not",
-            "@(id: \"中文 &?#/\")\n= Native & title\n\nNative body",
+            "中文 文档.md",
+            "@(id: \"中文 &?#/\")\n# Native & title\n\nNative body",
         ),
     ]);
     let home = html(&site, "index.html");
@@ -216,7 +216,7 @@ fn default_theme_escapes_titles_and_encodes_explicit_outline_ids() {
 
 #[test]
 fn rust_fence_attributes_do_not_disable_highlighting_in_either_frontend() {
-    for source in ["README.not", "README.md"] {
+    for source in ["README.md", "README.md"] {
         for info in [
             "rust,ignore",
             "rust,no_run",
@@ -240,7 +240,7 @@ fn rust_fence_attributes_do_not_disable_highlighting_in_either_frontend() {
 
 #[test]
 fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
-    for source in ["README.not", "README.md"] {
+    for source in ["README.md", "README.md"] {
         let site = render(&[
             (
                 source,
@@ -274,7 +274,7 @@ fn code_highlighting_is_static_shared_by_frontends_and_theme_overridable() {
 
 #[test]
 fn default_theme_omits_outline_and_adjacency_for_headingless_single_pages() {
-    for source in ["README.not", "README.md"] {
+    for source in ["README.md", "README.md"] {
         let site = render(&[(source, "Only body text.")]);
         assert!(site.pages[0].headings.is_empty());
         let output = html(&site, "index.html");
@@ -296,12 +296,12 @@ fn default_theme_omits_outline_and_adjacency_for_headingless_single_pages() {
 fn mixed_frontends_share_directory_routes_anchors_and_assets() {
     let site = render(&[
         (
-            "README.not",
-            "= Home\n\n[Guide](guide/README.md?mode=1#topic)",
+            "README.md",
+            "# Home\n\n[Guide](guide/README.md?mode=1#topic)",
         ),
         (
             "guide/README.md",
-            "# Guide\n\n## Topic\n\n[Home](../README.not) ![Picture](../media/a%20b.svg)",
+            "# Guide\n\n## Topic\n\n[Home](../README.md) ![Picture](../media/a%20b.svg)",
         ),
         ("media/a b.svg", "<svg/>"),
     ]);
@@ -319,22 +319,22 @@ fn mixed_frontends_share_directory_routes_anchors_and_assets() {
 fn docs_vault_excludes_repository_content_but_loads_external_modules() {
     let mut files = MemoryResources::new("/repo/docs");
     for (path, source) in [
-        ("/repo/README.not", "= Repository"),
+        ("/repo/README.md", "# Repository"),
         (
-            "README.not",
-            "#import \"../modules/widgets/lib.notc\" as widgets\n= Documentation\n\n#widgets.badge(\"Ready\")",
+            "README.md",
+            "#import \"../modules/widgets/lib.not\" as widgets\n# Documentation\n\n#widgets.badge(\"Ready\")",
         ),
         ("guide.md", "# Guide"),
         ("/repo/modules/widgets/Notist.toml", ""),
         (
-            "/repo/modules/widgets/lib.notc",
+            "/repo/modules/widgets/lib.not",
             "fn badge(label: String) -> Inline;",
         ),
         (
             "/repo/modules/widgets/badge.js",
             "export default class extends HTMLElement {}",
         ),
-        ("/repo/modules/widgets/README.not", "= Widgets"),
+        ("/repo/modules/widgets/README.md", "# Widgets"),
     ] {
         files.insert(path, source.as_bytes().to_vec());
     }
@@ -347,8 +347,8 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
     assert!(site.files.keys().any(|p| p.ends_with("badge.js")));
 
     files.insert(
-        "README.not",
-        b"= Documentation\n\n[Widgets](../modules/widgets/README.not)".to_vec(),
+        "README.md",
+        b"# Documentation\n\n[Widgets](../modules/widgets/README.md)".to_vec(),
     );
     let site = build(&mut Vault::new(files), &book_config("target/book")).unwrap();
     assert_eq!(site.warnings.len(), 1);
@@ -364,7 +364,7 @@ fn docs_vault_excludes_repository_content_but_loads_external_modules() {
 fn titles_do_not_change_routes_and_unlinked_directory_chapters_do_not_create_pages() {
     let site = render(&[
         ("notes/10.md", "# Ten"),
-        ("notes/2.not", "= Two"),
+        ("notes/2.md", "# Two"),
         ("中文 文档.md", "# Title"),
     ]);
     assert!(!site.files.contains_key(Path::new("notes/index.html")));
@@ -413,7 +413,7 @@ fn a_default_book_without_a_home_page_uses_the_book_title_for_its_container() {
 
 #[test]
 fn colliding_readmes_and_file_directory_routes_fail() {
-    for sources in [["README.not", "README.md"], ["foo.not", "foo/README.md"]] {
+    for sources in [["README.md", "README.markdown"], ["foo.md", "foo/README.md"]] {
         let files: Vec<_> = sources.iter().map(|path| (*path, "# Page")).collect();
         let error = build(&mut Vault::new(resources(&files)), &book_config("public")).unwrap_err();
         assert!(error.to_string().contains("route collision"));
@@ -423,8 +423,8 @@ fn colliding_readmes_and_file_directory_routes_fail() {
 #[test]
 fn explicit_section_ids_and_duplicate_slugs_use_one_outline() {
     let site = render(&[(
-        "README.not",
-        "@(id: \"hello\")\n= Custom\n\n== Hello\n\n== Hello\n\n[Link](#hello-3)",
+        "README.md",
+        "@(id: \"hello\")\n# Custom\n\n## Hello\n\n## Hello\n\n[Link](#hello-3)",
     )]);
     let page = &site.pages[0];
     assert_eq!(
@@ -503,7 +503,7 @@ fn outside_hyperlinks_warn_once_and_keep_urls_without_accessing_the_target() {
         "%2e%2e/%2e%2e/outside/secret.svg",
         "../../vault-other/secret.md",
     ] {
-        for extension in ["not", "md"] {
+        for extension in ["md", "markdown"] {
             for recover in [false, true] {
                 let source = format!("[Outside]({target})");
                 let path = format!("guide/start.{extension}");
@@ -550,8 +550,8 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
             "../../missing/?mode=full#section",
             "not published",
         ),
-        ("../missing/README.not", "../../missing/", "not published"),
-        ("missing%20page.not", "../missing%20page/", "not published"),
+        ("../missing/README.md", "../../missing/", "not published"),
+        ("missing%20page.md", "../missing%20page/", "not published"),
         ("missing.png", "../missing.png", "missing local reference"),
         ("other.md#absent", "../other/#absent", "missing anchor"),
         ("#absent", "#absent", "missing anchor"),
@@ -591,7 +591,7 @@ fn broken_hyperlinks_warn_and_preserve_normalized_urls_in_build_and_serve() {
 
 #[test]
 fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
-    for extension in ["md", "not"] {
+    for extension in ["md", "markdown"] {
         for recover in [false, true] {
             let root = format!("README.{extension}");
             let nested = format!("guide/start.{extension}");
@@ -644,7 +644,7 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
 
 #[test]
 fn image_embeds_filter_unsafe_javascript_urls() {
-    for extension in ["md", "not"] {
+    for extension in ["md", "markdown"] {
         for recover in [false, true] {
             let path = format!("README.{extension}");
             let mut vault = Vault::new(resources(&[(&path, "![Picture](javascript:bad.png)")]));
@@ -805,13 +805,13 @@ fn theme_overrides_use_tera_includes_and_escape_metadata() {
 fn document_annotations_reach_page_navigation_and_breadcrumb_templates() {
     let mut vault = Vault::new(resources(&[
         (
-            "README.not",
-            "@!(model_id: \"<home> & root\")\n@!(enabled: false)\n@!(rank: 7)\n@!(tags: (\"one\", \"two\"))\n= Home\n\n@(heading_only: \"private\")\n== Topic",
+            "README.md",
+            "@!(model_id: \"<home> & root\")\n@!(enabled: false)\n@!(rank: 7)\n@!(tags: (\"one\", \"two\"))\n# Home\n\n@(heading_only: \"private\")\n## Topic",
         ),
         ("child.md", "@!(model_id: \"child\")\n# Child"),
         (
-            "SUMMARY.not",
-            "- [Named home](README.not)\n  - [Child](child.md)\n- Future\n",
+            "SUMMARY.md",
+            "- [Named home](README.md)\n  - [Child](child.md)\n- Future\n",
         ),
         (
             "theme/templates/page.tera",
@@ -855,7 +855,7 @@ fn template_errors_fail_build_instead_of_publishing_empty_values() {
 #[test]
 fn additional_styles_and_scripts_preserve_declared_order_and_nested_urls() {
     let files = resources(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         ("guide/start.md", "# Start"),
         ("theme/static/extra.css", ":root { --accent: red; }"),
         ("styles/first.css", ":root { --accent: purple; }"),
@@ -917,7 +917,7 @@ fn additional_theme_assets_require_local_files_and_cannot_overlap_output() {
         "_notist/extra.css",
     ] {
         let files = resources(&[
-            ("README.not", "= Home"),
+            ("README.md", "# Home"),
             ("styles/extra.css", "body {}"),
             ("/outside.css", "body {}"),
             ("target/book/extra.css", "body {}"),
@@ -948,9 +948,9 @@ fn math_component_publishes_shared_resources_per_used_page() {
             "export default class extends HTMLElement {}",
         ),
         ("/math/formula/helper.js", "export const value=1;"),
-        ("README.not", "= Home\n\n$x$"),
+        ("README.md", "# Home\n\n$x$"),
         ("other.md", "# Other\n\n$y$"),
-        ("guide/deep/README.not", "= Nested\n\n$z$"),
+        ("guide/deep/README.md", "# Nested\n\n$z$"),
         ("plain.md", "# Plain"),
     ]));
     let site = build(&mut vault, &config).unwrap();
@@ -1005,7 +1005,7 @@ fn site_options_default_output_and_reject_invalid_explicit_values() {
 fn component_sources_cannot_contain_site_output() {
     let mut vault = Vault::new(resources(&[
         (
-            "/widgets/lib.notc",
+            "/widgets/lib.not",
             "fn panel(children: Block) -> Block;",
         ),
         (
@@ -1013,8 +1013,8 @@ fn component_sources_cannot_contain_site_output() {
             "export default class extends HTMLElement {}",
         ),
         (
-            "README.not",
-            "#import \"../widgets/lib.notc\" as widgets\n#widgets.panel[\nHello\n]",
+            "README.md",
+            "#import \"../widgets/lib.not\" as widgets\n#widgets.panel[\nHello\n]",
         ),
     ]));
     let config = SiteConfig {
@@ -1048,15 +1048,15 @@ fn page_routes_cannot_use_a_published_asset_as_a_directory() {
 fn same_named_modules_in_different_page_contexts_publish_distinct_resources() {
     let mut vault = Vault::new(resources(&[
         (
-            "one/README.not",
-            "#import \"../../first/lib.notc\" as widgets\n#widgets.badge(\"One\")",
+            "one/README.md",
+            "#import \"../../first/lib.not\" as widgets\n#widgets.badge(\"One\")",
         ),
         (
-            "two/README.not",
-            "#import \"../../second/lib.notc\" as widgets\n#widgets.badge(\"Two\")",
+            "two/README.md",
+            "#import \"../../second/lib.not\" as widgets\n#widgets.badge(\"Two\")",
         ),
-        ("/first/lib.notc", "fn badge(label: String) -> Inline;"),
-        ("/second/lib.notc", "fn badge(label: String) -> Inline;"),
+        ("/first/lib.not", "fn badge(label: String) -> Inline;"),
+        ("/second/lib.not", "fn badge(label: String) -> Inline;"),
         (
             "/first/badge.js",
             "export default class extends HTMLElement {}",

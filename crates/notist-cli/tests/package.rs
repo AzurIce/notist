@@ -66,8 +66,8 @@ fn global_jobs_controls_builds_without_the_obsolete_evaluation_environment() {
     for i in 0..521 {
         write(
             root,
-            &format!("content/page-{i}.not"),
-            &format!("= Page {i}\n\n*Body* {i}"),
+            &format!("content/page-{i}.md"),
+            &format!("# Page {i}\n\n*Body* {i}"),
         );
     }
     let output = root.join("notist-output/manual");
@@ -103,8 +103,8 @@ fn workspace_build_accepts_the_same_global_jobs_option() {
         );
         write(
             root,
-            &format!("{name}/content/index.not"),
-            &format!("= {name}"),
+            &format!("{name}/content/index.md"),
+            &format!("# {name}"),
         );
     }
     success(run(root, &["-j2", "build", "--workspace"]));
@@ -137,7 +137,7 @@ fn explicit_config_roots_all_paths_at_the_manifest_not_the_callers_directory() {
         "docs/Notist.toml",
         &format!("{SITE}\noutput='../published'"),
     );
-    write(root, "docs/content/index.not", "= Docs");
+    write(root, "docs/content/index.md", "# Docs");
     success(run(root, &["build", "--config", "docs/Notist.toml"]));
     assert!(root.join("published/index.html").is_file());
     success(run(
@@ -184,12 +184,12 @@ fn document_extensions_belong_to_the_nearest_package_only() {
     write(
         root,
         "Notist.toml",
-        "[package]\nname='parent'\n[[extensions]]\nkind='replace'\nimports={bad='missing.notc'}\nfrom='notist.math'\nto='bad.math'",
+        "[package]\nname='parent'\n[[extensions]]\nkind='replace'\nimports={bad='missing.not'}\nfrom='notist.math'\nto='bad.math'",
     );
     write(root, "child/Notist.toml", BOOK);
-    write(root, "child/README.not", "= Child\n\n$x$");
+    write(root, "child/README.md", "# Child\n\n$x$");
     success(run(&root.join("child"), &["build"]));
-    success(run(&root.join("child"), &["check", "README.not"]));
+    success(run(&root.join("child"), &["check", "README.md"]));
 }
 
 #[test]
@@ -199,18 +199,18 @@ fn site_and_single_file_commands_use_the_same_module_imports() {
     write(root, "docs/Notist.toml", BOOK);
     write(
         root,
-        "docs/custom.notc",
+        "docs/custom.not",
         "fn formula(expr: String) -> Inline { [replaced] }",
     );
     write(
         root,
-        "docs/README.not",
-        "#import \"./custom.notc\" as custom\n\n= Math\n\n#custom.formula(\"x\")",
+        "docs/README.md",
+        "#import \"./custom.not\" as custom\n\n# Math\n\n#custom.formula(\"x\")",
     );
     success(run(root, &["build", "--config", "docs/Notist.toml"]));
     success(run(
         root,
-        &["html", "docs/README.not", "--out-dir", "single"],
+        &["html", "docs/README.md", "--out-dir", "single"],
     ));
     for path in ["docs/notist-output/manual/index.html", "single/index.html"] {
         assert!(
@@ -235,8 +235,8 @@ fn module_only_packages_support_single_files_but_have_no_site_to_build_or_serve(
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "Notist.toml", "[package]\nname='content-library'");
-    write(root, "README.not", "= Library");
-    success(run(root, &["check", "README.not"]));
+    write(root, "README.md", "# Library");
+    success(run(root, &["check", "README.md"]));
     failure(run(root, &["build"]), "has no [site]");
     failure(run(root, &["serve"]), "has no [site]");
 }
@@ -269,7 +269,7 @@ fn site_requires_package_identity_but_does_not_accept_target_or_document_layers(
 fn obsolete_manifest_shapes_are_rejected_by_build() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "README.not", "= Home");
+    write(root, "README.md", "# Home");
     for manifest in [
         "[project]\nname='p'\n[[site]]",
         "[package]\nname='p'\n[[site]]",
@@ -297,7 +297,7 @@ fn output_cannot_replace_package_inputs_and_publication_still_requires_ownership
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "Notist.toml", SITE);
-    write(root, "content/index.not", "= Home");
+    write(root, "content/index.md", "# Home");
     write(root, "unowned/keep.txt", "Keep");
     failure(
         run(root, &["build", "--out-dir", "."]),
@@ -433,7 +433,7 @@ fn workspace_root_package_is_automatic_but_default_build_only_selects_it() {
         "Notist.toml",
         "[workspace]\nmembers=['a','b','library']\n[package]\nname='root'\n[site]",
     );
-    write(root, "content/index.not", "= Root");
+    write(root, "content/index.md", "# Root");
     success(run(root, &["build"]));
     assert!(root.join("notist-output/root/index.html").is_file());
     assert!(!root.join("notist-output/a").exists());
@@ -543,8 +543,8 @@ fn aggregate_outputs_are_never_discovered_as_source_content() {
         "Notist.toml",
         "[package]\nname='manual'\n[site]\ncontent='.'",
     );
-    write(root, "index.not", "= Home");
-    write(root, "notist-output/other/stale.not", "#missing()");
+    write(root, "index.md", "# Home");
+    write(root, "notist-output/other/stale.md", "#missing()");
     success(run(root, &["build"]));
     assert!(root.join("notist-output/manual/index.html").is_file());
     assert!(!root.join("notist-output/manual/notist-output").exists());
@@ -559,8 +559,8 @@ fn custom_workspace_collections_are_excluded_and_cannot_contain_package_inputs()
         "Notist.toml",
         "[workspace]\nmembers=[]\noutput='artifacts'\n[package]\nname='manual'\n[site]\ncontent='.'",
     );
-    write(root, "index.not", "= Home");
-    write(root, "artifacts/other/stale.not", "#missing()");
+    write(root, "index.md", "# Home");
+    write(root, "artifacts/other/stale.md", "#missing()");
     success(run(root, &["build"]));
     assert!(root.join("artifacts/manual/index.html").is_file());
     write(

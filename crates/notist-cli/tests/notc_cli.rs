@@ -21,7 +21,7 @@ fn cli_check_cst_core_json_query_and_html_run_end_to_end_on_notc() {
 
     write(
         root,
-        "lib/ui.notc",
+        "lib/ui.not",
         r#"
 fn badge(label: String) -> Inline {
     strong(text(label))
@@ -42,9 +42,9 @@ fn main() -> Int {
     write(root, "docs/pic.svg", "<svg/>");
     write(
         root,
-        "docs/page.not",
+        "docs/page.md",
         r#"@!(title: "CLI Demo")
-#import "../lib/ui.notc" as ui
+#import "../lib/ui.not" as ui
 
 #ui.item_title("../data/item.json")
 
@@ -59,7 +59,7 @@ fn main() {}
     write(
         root,
         "docs/readme.md",
-        r#"#import "../lib/ui.notc" as ui
+        r#"#import "../lib/ui.not" as ui
 
 # Markdown #ui.badge("OK")
 
@@ -70,7 +70,7 @@ let x = 1;
     );
 
     // 1. `notist check` on .not, .md, and .notc
-    for rel in ["docs/page.not", "docs/readme.md", "lib/ui.notc"] {
+    for rel in ["docs/page.md", "docs/readme.md", "lib/ui.not"] {
         let out = Command::new(notist_bin())
             .args(["check", root.join(rel).to_str().unwrap()])
             .output()
@@ -84,7 +84,7 @@ let x = 1;
 
     // 2. `notist cst` prints parsed notc Module AST
     let cst = Command::new(notist_bin())
-        .args(["cst", root.join("docs/page.not").to_str().unwrap()])
+        .args(["cst", root.join("docs/page.md").to_str().unwrap()])
         .output()
         .unwrap();
     assert!(cst.status.success());
@@ -93,7 +93,7 @@ let x = 1;
 
     // 3. `notist core --eval` evaluates document (with read_json) and .notc `main`
     let core_doc = Command::new(notist_bin())
-        .args(["--eval", "core", root.join("docs/page.not").to_str().unwrap()])
+        .args(["--eval", "core", root.join("docs/page.md").to_str().unwrap()])
         .output()
         .unwrap();
     assert!(core_doc.status.success());
@@ -101,7 +101,7 @@ let x = 1;
     assert!(core_doc_out.contains("Potion"), "core doc: {core_doc_out}");
 
     let core_mod = Command::new(notist_bin())
-        .args(["--eval", "core", root.join("lib/ui.notc").to_str().unwrap()])
+        .args(["--eval", "core", root.join("lib/ui.not").to_str().unwrap()])
         .output()
         .unwrap();
     assert!(core_mod.status.success());
@@ -110,7 +110,7 @@ let x = 1;
 
     // 4. `notist json` outputs valid JSON with diagnostics, symbols, and evaluated core tree
     let json_cmd = Command::new(notist_bin())
-        .args(["json", root.join("docs/page.not").to_str().unwrap()])
+        .args(["json", root.join("docs/page.md").to_str().unwrap()])
         .output()
         .unwrap();
     assert!(json_cmd.status.success());
@@ -120,7 +120,7 @@ let x = 1;
 
     // 5. `notist query` selects nodes by id, tag, and ctor
     let query_id = Command::new(notist_bin())
-        .args(["query", root.join("docs/page.not").to_str().unwrap(), "id:intro"])
+        .args(["query", root.join("docs/page.md").to_str().unwrap(), "id:intro"])
         .output()
         .unwrap();
     assert!(query_id.status.success());
@@ -141,7 +141,7 @@ let x = 1;
     let html_cmd = Command::new(notist_bin())
         .args([
             "html",
-            root.join("docs/page.not").to_str().unwrap(),
+            root.join("docs/page.md").to_str().unwrap(),
             "--out-dir",
             html_out_dir.to_str().unwrap(),
         ])
@@ -211,7 +211,7 @@ fn serve_rebuilds_live_on_external_notc_and_hidden_data_file_changes() {
     write(root, "Notist.toml", "[package]\nname = \"live-demo\"\n[site]\n");
     write(
         root,
-        "modules/ui.notc",
+        "modules/ui.not",
         r#"
 fn banner(txt_path: String, json_path: String) -> Block {
     let raw = read_text(txt_path);
@@ -230,7 +230,7 @@ fn banner(txt_path: String, json_path: String) -> Block {
 
 Intro text.
 
-#import "../modules/ui.notc" as ui
+#import "../modules/ui.not" as ui
 
 #ui.banner("./.data/value.txt", "./.data/value.json")
 "#,
@@ -257,7 +257,7 @@ Intro text.
     // 2. Editing external `.notc` module triggers hot rebuild.
     write(
         root,
-        "modules/ui.notc",
+        "modules/ui.not",
         r#"
 fn banner(txt_path: String, json_path: String) -> Block {
     let raw = read_text(txt_path);

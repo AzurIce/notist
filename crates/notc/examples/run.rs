@@ -1,8 +1,8 @@
-//! Run a `.notc` file (single-file or multi-file via relative `import`) and
+//! Run a `.not` file (single-file or multi-file via relative `import`) and
 //! print diagnostics with line/column spans.
 //!
 //! Usage:
-//!   cargo run -p notc --example run -- <path.notc> [entry]
+//!   cargo run -p notc --example run -- <path.not> [entry]
 
 use notc::{
     Decl, ProjectDiagnosticKind, Span, TypeError, Value, check_project, parse,
@@ -14,7 +14,7 @@ use std::{env, fs, path::Path, process::ExitCode};
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(entry_arg) = args.next() else {
-        eprintln!("usage: run <file.notc> [entry]");
+        eprintln!("usage: run <file.not> [entry]");
         return ExitCode::from(2);
     };
     let entry_fn = args.next().unwrap_or_else(|| "main".into());
@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    // Host responsibility: discover and read transitively imported `.notc` files.
+    // Host responsibility: discover and read transitively imported `.not` files.
     // The `notc` library itself performs zero filesystem IO.
     let mut loaded: Vec<(String, String)> = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();

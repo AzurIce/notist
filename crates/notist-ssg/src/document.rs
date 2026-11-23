@@ -262,15 +262,16 @@ mod tests {
 @!(title: "Doc Title")
 
 @(id: "custom")
-= Same title
+# Same title
 
-== Same title
+## Same title
 
-== Same title
+## Same title
 "#;
-        let project = check_project(&[("index.not", doc)]).unwrap();
-        let block = project.eval_document("index.not").unwrap();
-        let route = Route::plan(PathBuf::from("content/index.not"), Path::new("content"), true).unwrap();
+        let project = check_project(&[("index.md", doc)]).unwrap();
+        let block = project.eval_document("index.md").unwrap();
+        let route =
+            Route::plan(PathBuf::from("content/index.md"), Path::new("content"), true).unwrap();
         let document = Document::from_block(route, block, "Site").unwrap();
         assert_eq!(document.page.title, "Doc Title");
         assert_eq!(

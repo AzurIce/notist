@@ -27,7 +27,7 @@ impl SiteExtension for Files {
 
 fn vault() -> Vault<MemoryResources> {
     let mut resources = MemoryResources::new("/site");
-    resources.insert("content/index.not", "= Home");
+    resources.insert("content/index.md", "# Home");
     resources.insert("static/existing.txt", "physical");
     resources.insert("sass/main.scss", "body { color: red; }");
     resources.insert(

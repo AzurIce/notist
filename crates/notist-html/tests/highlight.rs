@@ -94,22 +94,16 @@ fn native_snippets_preserve_exact_bytes_and_highlight_scopes() {
     for (language, source, scopes) in [
         (
             "not",
-            "= 标题\r\n\r\n*粗体* #missing(label: \"<script>\", n: 2)\r\n// 注释\r\n",
-            &["z-heading", "z-bold", "z-string", "z-numeric", "z-comment"][..],
+            "import \"missing.not\" as demo;\nfn badge(label: String) -> Inline { [你好 #demo.f(label)] }\n",
+            &["z-keyword", "z-type", "z-function"][..],
         ),
         (
-            "notc",
-            "import \"missing.notc\" as demo;\nfn badge(label: String) -> Inline { [你好 #demo.f(label)] }\n",
-            &["z-keyword", "z-type", "z-function"],
-        ),
-        (
-            "notc",
+            "not",
             "fn unfinished(label: String = r#\"<script>&\"#",
             &["z-keyword", "z-string"],
         ),
-        ("not", "#call(\"未完成\"\n", &["z-string"]),
         (
-            "notc",
+            "not",
             "fn source(p: String) -> String { read_text(\"./missing.json\") }",
             &["z-type", "z-string"],
         ),
@@ -124,19 +118,9 @@ fn native_snippets_preserve_exact_bytes_and_highlight_scopes() {
 }
 
 #[test]
-fn native_raw_payloads_do_not_become_calls_or_comments() {
-    let source = "```text\n#not_a_call(1) // not a comment\n```\n";
-    let html = highlight::highlight_str("not", source).unwrap();
-    assert_eq!(text(&html), source);
-    assert!(html.contains("z-raw"));
-    assert!(!html.contains("z-function"));
-    assert!(!html.contains("z-comment"));
-}
-
-#[test]
 fn code_content_literals_keep_native_markup_highlighting() {
-    let source = "fn content() -> Inline { [*你好* #missing(\"world\")] }\n";
-    let html = highlight::highlight_str("notc", source).unwrap();
+    let source = "fn content() -> Inline { [**你好** #missing(\"world\")] }\n";
+    let html = highlight::highlight_str("not", source).unwrap();
     assert_eq!(text(&html), source);
     assert!(html.contains("z-markup z-bold"), "{html}");
     assert!(html.contains("class=\"z-string\">\"world\""), "{html}");

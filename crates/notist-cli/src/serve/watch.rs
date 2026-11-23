@@ -311,16 +311,16 @@ mod tests {
         let root = temp.path();
         let target = package(root, "exclude=['excluded/**', 'private', '**/cache/**']");
         for path in [
-            "content/visible/nested/page.not",
-            "content/excluded/deep/a.not",
-            "content/private/deep/a.not",
-            "content/visible/cache/deep/a.not",
-            "content/.hidden/deep/a.not",
-            "content/node_modules/deep/a.not",
-            "content/target/deep/a.not",
+            "content/visible/nested/page.md",
+            "content/excluded/deep/a.md",
+            "content/private/deep/a.md",
+            "content/visible/cache/deep/a.md",
+            "content/.hidden/deep/a.md",
+            "content/node_modules/deep/a.md",
+            "content/target/deep/a.md",
             "public/deep/index.html",
         ] {
-            write(root, path, "= Page");
+            write(root, path, "# Page");
         }
         // An observed root listing must not make its excluded descendants live.
         let observed = BTreeSet::from([root.join("content"), root.join("content/excluded")]);
@@ -346,9 +346,9 @@ mod tests {
                 "{path}: {:?}",
                 plan.directories
             );
-            assert!(!plan.relevant(&root.join(path).join("new.not")), "{path}");
+            assert!(!plan.relevant(&root.join(path).join("new.md")), "{path}");
         }
-        assert!(plan.relevant(&root.join("content/visible/new.not")));
+        assert!(plan.relevant(&root.join("content/visible/new.md")));
         assert!(plan.relevant(&root.join("Notist.toml")));
     }
 
@@ -356,9 +356,9 @@ mod tests {
     fn mapped_mount_exclusions_use_content_namespace_and_configuration_can_change() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("site");
-        write(&root, "content/index.not", "= Page");
-        write(temp.path(), "models/private/deep/page.not", "= Private");
-        write(temp.path(), "models/public/page.not", "= Public");
+        write(&root, "content/index.md", "# Page");
+        write(temp.path(), "models/private/deep/page.md", "# Private");
+        write(temp.path(), "models/public/page.md", "# Public");
         let settings =
             "exclude=['art/private/**']\n[[site.mounts]]\nsource='../models'\npath='art'";
         let target = package(&root, settings);
@@ -372,8 +372,8 @@ mod tests {
                 .directories
                 .contains(&temp.path().join("models/private"))
         );
-        assert!(!plan.relevant(&temp.path().join("models/private/deep/page.not")));
-        assert!(plan.relevant(&temp.path().join("models/public/page.not")));
+        assert!(!plan.relevant(&temp.path().join("models/private/deep/page.md")));
+        assert!(plan.relevant(&temp.path().join("models/public/page.md")));
         write(
             &root,
             "Notist.toml",
@@ -381,7 +381,7 @@ mod tests {
         );
         let plan = Plan::new(&target, &BTreeSet::new(), None);
         assert!(!plan.directories.contains(&temp.path().join("models")));
-        assert!(!plan.relevant(&temp.path().join("models/public/page.not")));
+        assert!(!plan.relevant(&temp.path().join("models/public/page.md")));
     }
 
     #[test]
@@ -395,11 +395,11 @@ mod tests {
         write(root, "templates/nested/page.tera", "template");
         write(root, ".secret/value.txt", "data");
         write(root, ".secret/noise/deep/unused.txt", "noise");
-        write(root, "excluded/lib.notc", "fn f() -> Int { 1 }");
+        write(root, "excluded/lib.not", "fn f() -> Int { 1 }");
         write(root, "excluded/noise/deep/unused.txt", "noise");
         let observed = BTreeSet::from([
             root.join(".secret/value.txt"),
-            root.join("excluded/lib.notc"),
+            root.join("excluded/lib.not"),
         ]);
         let plan = Plan::new(&target, &observed, None);
         for path in ["templates/nested", ".secret", "excluded"] {
@@ -409,7 +409,7 @@ mod tests {
             assert!(!plan.directories.contains(&root.join(path)), "{path}");
         }
         assert!(plan.relevant(&root.join(".secret/value.txt")));
-        assert!(plan.relevant(&root.join("excluded/lib.notc")));
+        assert!(plan.relevant(&root.join("excluded/lib.not")));
         assert!(!plan.relevant(&root.join(".secret/unused.txt")));
         assert!(!plan.relevant(&root.join("excluded/unused.txt")));
         assert!(plan.relevant(&root.join("templates/nested/page.tera")));
@@ -424,7 +424,7 @@ mod tests {
         assert!(plan.directories.contains(&root));
         assert!(plan.relevant(&root.join("missing")));
         assert!(!plan.directories.contains(temp.path()));
-        write(&root, "missing/deep/new/page.not", "= Ready");
+        write(&root, "missing/deep/new/page.md", "# Ready");
         let plan = Plan::new(&target, &BTreeSet::new(), None);
         assert!(plan.directories.contains(&root.join("missing/deep/new")));
     }
@@ -436,7 +436,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("site");
         let target = package(&root, "content='.'");
-        write(&root, "index.not", "= Ready");
+        write(&root, "index.md", "# Ready");
         write(temp.path(), "outside/many/deep/value.txt", "outside");
         std::fs::create_dir_all(root.join(".ci/pfx/dosdevices")).unwrap();
         symlink("/", root.join(".ci/pfx/dosdevices/z:")).unwrap();

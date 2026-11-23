@@ -4,12 +4,12 @@ use notist_ssg::{Builder, SiteConfig};
 #[test]
 fn repeated_links_report_only_missing_anchors() {
     for references in [
-        "[ok](./target.not#present) [bad](./target.not#absent)",
-        "[bad](./target.not#absent) [ok](./target.not#present)",
+        "[ok](./target.md#present) [bad](./target.md#absent)",
+        "[bad](./target.md#absent) [ok](./target.md#present)",
     ] {
         let mut files = MemoryResources::new("/site");
-        files.insert("content/index.not", references);
-        files.insert("content/target.not", "@(id: \"present\")\n= Target");
+        files.insert("content/index.md", references);
+        files.insert("content/target.md", "@(id: \"present\")\n# Target");
         let site = Builder::default()
             .build(&mut Vault::new(files), &SiteConfig::default())
             .unwrap();

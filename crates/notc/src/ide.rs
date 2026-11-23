@@ -1,4 +1,4 @@
-//! Pure in-memory IDE / LSP semantic analysis layer for `.notc` modules and
+//! Pure in-memory IDE / LSP semantic analysis layer for `.not` modules and
 //! `.not` documents.
 //!
 //! Designed to be error-tolerant: even when files contain syntax errors,
@@ -128,7 +128,7 @@ pub struct WorkspaceAnalysis {
 }
 
 impl WorkspaceAnalysis {
-    /// Analyze an explicit in-memory set of `(path, source)` files (`.notc` and `.not`).
+    /// Analyze an explicit in-memory set of `(path, source)` files (`.not` and `.md`/`.markdown`).
     pub fn analyze(files: &[(&str, &str)]) -> Self {
         Self::analyze_with_frontends(files, &[])
     }
@@ -187,7 +187,7 @@ impl WorkspaceAnalysis {
             let module_id = ModuleId(idx);
             let module = &parsed_modules[idx];
             let path = &module_paths[idx];
-            let is_doc = !path.ends_with(".notc");
+            let is_doc = !path.ends_with(".not");
 
             let interface = collect_module_interface(module_id, module, true);
             for diag in interface.diagnostics {
@@ -484,7 +484,7 @@ impl WorkspaceAnalysis {
 
             modules.push(ModuleIndex {
                 source: sources[idx].clone(),
-                is_document: module_paths[idx].ends_with(".not"),
+                is_document: !module_paths[idx].ends_with(".not"),
                 symbols: std::mem::take(&mut module_symbols[idx]),
                 hovers,
                 definitions,
@@ -751,7 +751,7 @@ impl WorkspaceAnalysis {
             });
         }
 
-        // 4. Built-in types & keywords in `.notc` code mode
+        // 4. Built-in types & keywords in `.not` code mode
         if !module.is_document && !ctx.after_hash {
             for ty_name in ["Unit", "Bool", "Int", "Float", "String", "Inline", "Block"] {
                 if ty_name.starts_with(&ctx.partial) && seen.insert(ty_name.to_owned()) {
@@ -851,7 +851,7 @@ fn completion_context(source: &str, offset: usize, is_document: bool) -> Option<
     let bytes = source.as_bytes();
     let offset = offset.min(bytes.len());
 
-    // Don't complete inside single-line comments in `.notc` files.
+    // Don't complete inside single-line comments in `.not` files.
     if !is_document {
         let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
         if source[line_start..offset].contains("//") {

@@ -28,11 +28,11 @@ fn read_text_and_read_json_keep_check_static_and_never_publish_private_inputs() 
     let root = tempfile::tempdir().unwrap();
     for (path, source) in [
         (
-            "doc.not",
-            "#import \"./view.notc\" as view\n#view.show(\"./private.txt\", \"./private.json\")",
+            "doc.md",
+            "#import \"./view.not\" as view\n#view.show(\"./private.txt\", \"./private.json\")",
         ),
         (
-            "view.notc",
+            "view.not",
             r#"fn show(txt: String, js: String) -> Block {
                 let raw = read_text(txt);
                 let name = read_json(js).get("name").as_string("");
@@ -50,7 +50,7 @@ fn read_text_and_read_json_keep_check_static_and_never_publish_private_inputs() 
     let output = tempfile::tempdir().unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(root.path())
-        .args(["html", "doc.not", "--out-dir"])
+        .args(["html", "doc.md", "--out-dir"])
         .arg(output.path())
         .output()
         .unwrap();
@@ -69,7 +69,7 @@ fn read_text_and_read_json_keep_check_static_and_never_publish_private_inputs() 
     std::fs::remove_file(root.path().join("private.txt")).unwrap();
     let checked = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(root.path())
-        .args(["check", "doc.not"])
+        .args(["check", "doc.md"])
         .output()
         .unwrap();
     assert!(
@@ -79,7 +79,7 @@ fn read_text_and_read_json_keep_check_static_and_never_publish_private_inputs() 
     );
     let failed = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(root.path())
-        .args(["html", "doc.not", "--out-dir"])
+        .args(["html", "doc.md", "--out-dir"])
         .arg(output.path())
         .output()
         .unwrap();
@@ -102,14 +102,14 @@ fn html_export_does_not_copy_symlink_or_directory_images() {
     )
     .unwrap();
     std::fs::write(
-        root.path().join("doc.not"),
+        root.path().join("doc.md"),
         "![Link](./link.svg) ![Dir](./dir.svg)",
     )
     .unwrap();
     let out = tempfile::tempdir().unwrap();
     let res = Command::new(env!("CARGO_BIN_EXE_notist"))
         .current_dir(root.path())
-        .args(["html", "doc.not", "--out-dir"])
+        .args(["html", "doc.md", "--out-dir"])
         .arg(out.path())
         .output()
         .unwrap();

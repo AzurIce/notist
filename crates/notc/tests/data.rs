@@ -109,7 +109,7 @@ fn catalog(source: String) -> Block {
     };
     let count_text = count.to_string() + " items · " + version + " · ok=" + true.to_string();
     [
-        = Catalog
+        # Catalog
 
         #para(text(count_text))
 
@@ -120,7 +120,7 @@ fn catalog(source: String) -> Block {
         ]
 
         @(id: "notes")#section[
-            == Notes
+            ## Notes
 
             #blocks(for r in records { para(text(r.at(1).as_string(""))) })
         ]
@@ -128,7 +128,7 @@ fn catalog(source: String) -> Block {
 }
 "#;
     let doc = r#"
-#import "../modules/views.notc" as views
+#import "../modules/views.not" as views
 #views.catalog("./data/page-1.json")
 "#;
 
@@ -137,10 +137,10 @@ fn catalog(source: String) -> Block {
         r#"{"count": 2, "version": "7.1", "items": [["1", "Gil", "63"], ["2", "Fire Shard", "59"]]}"#,
     )]);
 
-    let project = check_project(&[("modules/views.notc", views), ("content/index.not", doc)])
+    let project = check_project(&[("modules/views.not", views), ("content/index.md", doc)])
         .expect("data-driven project checks cleanly");
     let block = project
-        .eval_document_with_host("content/index.not", &host)
+        .eval_document_with_host("content/index.md", &host)
         .expect("evaluates with host");
 
     let plain = block.plain_text();
@@ -183,9 +183,9 @@ fn check_lists() -> Bool {
     ok_len && ok_eq && ok_table
 }
 "#;
-    let project = check_project(&[("main.notc", src)]).expect("checks");
+    let project = check_project(&[("main.not", src)]).expect("checks");
     assert!(matches!(
-        project.run("main.notc", "check_lists").expect("runs"),
+        project.run("main.not", "check_lists").expect("runs"),
         Value::Bool(true)
     ));
 }
@@ -193,7 +193,7 @@ fn check_lists() -> Bool {
 #[test]
 fn statically_rejects_bad_list_and_for_types() {
     let bad_empty_iter = "fn f() -> List<Int> { for x in () { 1 } }";
-    let errs = check_project(&[("a.notc", bad_empty_iter)]).expect_err("unit () is not iterable");
+    let errs = check_project(&[("a.not", bad_empty_iter)]).expect_err("unit () is not iterable");
     assert!(matches!(
         &errs[0].kind,
         ProjectDiagnosticKind::Type {
@@ -203,7 +203,7 @@ fn statically_rejects_bad_list_and_for_types() {
     ));
 
     let bad_iter = "fn f() -> List<Int> { for x in 42 { x } }";
-    let errs = check_project(&[("a.notc", bad_iter)]).expect_err("int is not iterable");
+    let errs = check_project(&[("a.not", bad_iter)]).expect_err("int is not iterable");
     assert!(matches!(
         &errs[0].kind,
         ProjectDiagnosticKind::Type {
@@ -213,7 +213,7 @@ fn statically_rejects_bad_list_and_for_types() {
     ));
 
     let bad_mixed = "fn f() -> List<Int> { (1, \"two\") }";
-    let errs = check_project(&[("a.notc", bad_mixed)]).expect_err("mixed list elements fail");
+    let errs = check_project(&[("a.not", bad_mixed)]).expect_err("mixed list elements fail");
     assert!(matches!(
         &errs[0].kind,
         ProjectDiagnosticKind::Type {
@@ -241,17 +241,17 @@ where C == Inline || C == Block
     }
 }
 "#;
-    let project = check_project(&[("lib/shared.notc", shared_src)]).expect("shared project checks");
+    let project = check_project(&[("lib/shared.not", shared_src)]).expect("shared project checks");
 
     let doc1 = notc::parse_document(
-        "#import \"../lib/shared.notc\" as shared\n#shared.load_item(\"./item.json\")\n",
+        "#import \"../lib/shared.not\" as shared\n#shared.load_item(\"./item.json\")\n",
     );
     assert!(doc1.diagnostics.is_empty());
     // Pure static check: no DataHost needed, and zero extra functions duplicated!
     let checked1 = project
-        .check_standalone_document("content/a.not", &doc1.program.root)
+        .check_standalone_document("content/a.md", &doc1.program.root)
         .expect("static check succeeds without DataHost");
-    assert_eq!(checked1.path(), "content/a.not");
+    assert_eq!(checked1.path(), "content/a.md");
     assert_eq!(checked1.extra_function_count(), 0);
 
     // Evaluation happens separately and hits DataHost only now.
@@ -268,11 +268,11 @@ where C == Inline || C == Block
 
     // Document calling a shared generic function lowers only that new specialization.
     let doc2 = notc::parse_document(
-        "#import \"../lib/shared.notc\" as shared\n#shared.wrap[\nHello\n]\n",
+        "#import \"../lib/shared.not\" as shared\n#shared.wrap[\nHello\n]\n",
     );
     assert!(doc2.diagnostics.is_empty());
     let checked2 = project
-        .check_standalone_document("content/b.not", &doc2.program.root)
+        .check_standalone_document("content/b.md", &doc2.program.root)
         .expect("generic document checks");
     assert_eq!(checked2.extra_function_count(), 1);
     let block2 = project
@@ -294,28 +294,28 @@ fn checked_text(path: String, must_exist: Bool) -> Block {
 }
 "#;
     let doc_ok = r#"
-#import "./lib.notc" as lib
+#import "./lib.not" as lib
 #lib.checked_text("./.data/greeting.txt", true)
 "#;
     let doc_panic = r#"
-#import "./lib.notc" as lib
+#import "./lib.not" as lib
 #lib.checked_text("./.data/greeting.txt", false)
 "#;
     let project = check_project(&[
-        ("lib.notc", lib),
-        ("ok.not", doc_ok),
-        ("fail.not", doc_panic),
+        ("lib.not", lib),
+        ("ok.md", doc_ok),
+        ("fail.md", doc_panic),
     ])
     .expect("checks with Never coercion");
     let host = MemoryDataHost::new(&[]).with_texts(&[(".data/greeting.txt", "Hello from text!")]);
 
     let ok = project
-        .eval_document_with_host("ok.not", &host)
+        .eval_document_with_host("ok.md", &host)
         .expect("read_text evaluates");
     assert_eq!(ok.plain_text(), "Hello from text!");
 
     let err = project
-        .eval_document_with_host("fail.not", &host)
+        .eval_document_with_host("fail.md", &host)
         .expect_err("panic aborts evaluation");
     assert_eq!(
         err,

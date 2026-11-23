@@ -1,6 +1,3 @@
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-mod html;
 #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
 mod lsp;
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,141 +191,10 @@ fn run(cli: Cli) -> ExitCode {
             }
         },
         Command::Check { file } => check(&file, config),
-        Command::Cst { file } => print_with(&file, |src| {
-            format!(
-                "{:#?}",
-                if is_module(&file) {
-                    notist::syntax::code::parse_module(
-                        src,
-                        &notist::syntax::markup::MarkupContentParser,
-                    )
-                } else {
-                    notist::syntax::markup::parse_document(src)
-                }
-                .syntax()
-            )
-        }),
-        Command::Core { file } if is_module(&file) => {
-            let vault = load_vault(config);
-            print_with(&file, |src| {
-                format!("{:#?}\n", vault.analyze_code(&file, src))
-            })
-        }
-        Command::Core { file } => {
-            let mut vault = load_vault(config);
-            print_result(&file, |src| {
-                let document = vault.analyze(&file, src).map_err(emit_vault_error)?;
-                let mut out = String::new();
-                for d in document.diagnostics() {
-                    out.push_str(&format!(
-                        "error[{}] @{}..{}: {}\n",
-                        d.phase,
-                        u32::from(d.span.start()),
-                        u32::from(d.span.end()),
-                        d.message
-                    ));
-                }
-                if evaluate {
-                    match vault.evaluate(&file, &document) {
-                        Ok(e) => {
-                            for d in e.diagnostics {
-                                out.push_str(&format!("error[{}]: {}\n", d.phase, d.message));
-                            }
-                            out.push_str(
-                                &notist::dump::dump(&e.root, &e.sources)
-                                    .unwrap_or_else(|error| error.to_string()),
-                            );
-                        }
-                        Err(e) => out.push_str(&e.to_string()),
-                    }
-                } else {
-                    out.push_str(
-                        &notist::dump::dump(document.root(), document.sources())
-                            .unwrap_or_else(|error| error.to_string()),
-                    );
-                }
-                Ok(out)
-            })
-        }
-        Command::Json { file } if is_module(&file) => {
-            let vault = load_vault(config);
-            print_with(&file, |src| match vault.analyze_code(&file, src) {
-                Ok(analysis) => notist::cst_json::module_json(src, &analysis),
-                Err(error) => serde_json::json!({"error":error.to_string()}).to_string(),
-            })
-        }
-        Command::Json { file } => {
-            let mut vault = load_vault(config);
-            print_result(&file, |src| match vault.inspect(&file, src) {
-                Ok((analysis, inspection)) => {
-                    let text = notist::cst_json::inspection_json(&analysis, Some(&inspection))
-                        .map_err(|error| {
-                            eprintln!("{error}");
-                            ExitCode::FAILURE
-                        })?;
-                    if evaluate {
-                        let mut data: serde_json::Value = serde_json::from_str(&text).unwrap();
-                        match vault.evaluate(&file, &analysis) {
-                            Ok(e) => {
-                                data["core"] =
-                                    notist::json::item(&e.root, &e.sources).map_err(|error| {
-                                        eprintln!("{error}");
-                                        ExitCode::FAILURE
-                                    })?;
-                                data["evaluation_diagnostics"] = serde_json::json!(
-                                    e.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-                                );
-                            }
-                            Err(e) => data["error"] = e.to_string().into(),
-                        };
-                        Ok(data.to_string())
-                    } else {
-                        Ok(text)
-                    }
-                }
-                Err(error) => Err(emit_vault_error(error)),
-            })
-        }
-        Command::Query { file, selector } => match read(&file) {
-            Ok(src) => {
-                let mut vault = load_vault(config);
-                let document = match vault.analyze(&file, &src) {
-                    Ok(document) => document,
-                    Err(error) => return emit_vault_error(error),
-                };
-                let evaluation = if evaluate {
-                    match vault.evaluate(&file, &document) {
-                        Ok(e) => Some(e),
-                        Err(e) => {
-                            eprintln!("{e}");
-                            return ExitCode::FAILURE;
-                        }
-                    }
-                } else {
-                    None
-                };
-                let root = evaluation.as_ref().map_or(document.root(), |e| &e.root);
-                let sources = evaluation
-                    .as_ref()
-                    .map_or(document.sources(), |e| &e.sources);
-                let matches = match notist::query::select(root, &selector, sources) {
-                    Ok(matches) => matches,
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::FAILURE;
-                    }
-                };
-                match query::render_json(sources, &matches) {
-                    Ok(output) => println!("{output}"),
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::FAILURE;
-                    }
-                }
-                ExitCode::SUCCESS
-            }
-            Err(code) => code,
-        },
+        Command::Cst { file } => cmd_cst(&file),
+        Command::Core { file } => cmd_core(&file, evaluate),
+        Command::Json { file } => cmd_json(&file, evaluate),
+        Command::Query { file, selector } => cmd_query(&file, &selector),
         Command::Html { file, out_dir } => render_html_notc(&file, &out_dir),
         #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
         Command::Lsp => {
@@ -351,45 +217,82 @@ fn read(file: &Path) -> Result<String, ExitCode> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn print_with(file: &Path, mut f: impl FnMut(&str) -> String) -> ExitCode {
-    match read(file) {
-        Ok(src) => {
-            print!("{}", f(&src));
-            ExitCode::SUCCESS
-        }
-        Err(code) => code,
-    }
+fn notc_frontends() -> [&'static dyn notc::DocumentFrontend; 2] {
+    [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend]
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn print_result(file: &Path, mut f: impl FnMut(&str) -> Result<String, ExitCode>) -> ExitCode {
-    match read(file).and_then(|src| f(&src)) {
-        Ok(output) => {
-            print!("{output}");
-            ExitCode::SUCCESS
-        }
-        Err(code) => code,
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn load_notc_graph(
-    entry: &Path,
-) -> Result<(PathBuf, String, Vec<(String, PathBuf, String)>), ExitCode> {
-    use std::collections::{HashSet, VecDeque};
-    let abs = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
-    let root = if abs.is_dir() {
-        abs.clone()
-    } else {
-        abs.parent().unwrap_or(Path::new(".")).to_path_buf()
+fn common_root_dir(paths: &[PathBuf]) -> PathBuf {
+    use std::path::Component;
+    let dirs: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| {
+            if p.is_dir() {
+                p.clone()
+            } else {
+                p.parent().unwrap_or(p).to_path_buf()
+            }
+        })
+        .collect();
+    let Some(first) = dirs.first() else {
+        return PathBuf::from(".");
     };
+    let mut prefix: Vec<Component<'_>> = first.components().collect();
+    for dir in &dirs[1..] {
+        let comps: Vec<Component<'_>> = dir.components().collect();
+        let common = prefix
+            .iter()
+            .zip(&comps)
+            .take_while(|(a, b)| a == b)
+            .count();
+        prefix.truncate(common);
+    }
+    if prefix.is_empty() {
+        PathBuf::from(".")
+    } else {
+        prefix.into_iter().collect()
+    }
+}
 
-    let mut files: Vec<(String, PathBuf, String)> = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
+#[cfg(not(target_arch = "wasm32"))]
+fn to_virtual_path(root: &Path, path: &Path) -> String {
+    use std::path::Component;
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let mut parts = Vec::new();
+    for comp in rel.components() {
+        if let Component::Normal(seg) = comp {
+            parts.push(seg.to_string_lossy().into_owned());
+        }
+    }
+    parts.join("/")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct LoadedGraph {
+    vroot: PathBuf,
+    entry_rel: String,
+    files: Vec<(String, PathBuf, String)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
+    use std::collections::{HashSet, VecDeque};
+    let abs = std::fs::canonicalize(entry).unwrap_or_else(|_| {
+        if entry.is_absolute() {
+            entry.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| notist::resources::normalize(&cwd.join(entry)))
+                .unwrap_or_else(|_| entry.to_path_buf())
+        }
+    });
+
+    let mut raw_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
     if abs.is_dir() {
-        fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+        fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 return;
             };
@@ -402,7 +305,7 @@ fn load_notc_graph(
                     continue;
                 }
                 if p.is_dir() {
-                    walk_dir(root, &p, out);
+                    walk_dir(&p, out);
                 } else if p
                     .extension()
                     .is_some_and(|e| e == "not" || e == "notc" || e == "md")
@@ -412,58 +315,358 @@ fn load_notc_graph(
             }
         }
         let mut discovered = Vec::new();
-        walk_dir(&root, &abs, &mut discovered);
+        walk_dir(&abs, &mut discovered);
         for fs_path in discovered {
-            let rel = fs_path
-                .strip_prefix(&root)
-                .unwrap_or(&fs_path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if let Ok(src) = std::fs::read_to_string(&fs_path)
-                && visited.insert(rel.clone())
+            let norm = notist::resources::normalize(&fs_path);
+            if let Ok(src) = std::fs::read_to_string(&norm)
+                && visited.insert(norm.clone())
             {
-                queue.push_back(rel.clone());
-                files.push((rel, fs_path, src));
+                queue.push_back(norm.clone());
+                raw_files.push((norm, src));
             }
         }
     } else {
-        let src = read(&abs)?;
-        let rel = abs
+        let norm = notist::resources::normalize(&abs);
+        let src = read(&norm)?;
+        visited.insert(norm.clone());
+        queue.push_back(norm.clone());
+        raw_files.push((norm, src));
+    }
+
+    let frontends = notc_frontends();
+
+    // Transitively load imported `.notc` modules using real normalized filesystem paths
+    // so parent-relative imports like `../lib/ui.notc` resolve cleanly.
+    while let Some(fs_path) = queue.pop_front() {
+        let Some(src) = raw_files
+            .iter()
+            .find(|(p, _)| p == &fs_path)
+            .map(|(_, s)| s.clone())
+        else {
+            continue;
+        };
+        let hint = fs_path
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        visited.insert(rel.clone());
-        queue.push_back(rel.clone());
-        files.push((rel, abs.clone(), src));
-    }
-
-    let entry_rel = files.first().map(|(r, _, _)| r.clone()).unwrap_or_default();
-
-    let frontends: [&dyn notc::DocumentFrontend; 2] =
-        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
-
-    // Transitively load imported `.notc` modules.
-    while let Some(rel) = queue.pop_front() {
-        let Some(src) = files.iter().find(|(r, _, _)| r == &rel).map(|(_, _, s)| s.clone()) else {
-            continue;
-        };
-        let parsed = notc::parse_file_with_frontends(&rel, &src, &frontends);
+        let parsed = notc::parse_file_with_frontends(&hint, &src, &frontends);
+        let parent = fs_path.parent().unwrap_or(Path::new("."));
         for decl in &parsed.program.root.declarations {
-            if let notc::Decl::Import(import) = decl
-                && let Ok(target_rel) = notc::resolve_import_path(&rel, &import.path)
-                && visited.insert(target_rel.clone())
-            {
-                let target_fs = root.join(&target_rel);
-                if let Ok(target_src) = std::fs::read_to_string(&target_fs) {
-                    queue.push_back(target_rel.clone());
-                    files.push((target_rel, target_fs, target_src));
+            if let notc::Decl::Import(import) = decl {
+                let target_fs = notist::resources::normalize(&parent.join(&import.path));
+                if visited.insert(target_fs.clone())
+                    && let Ok(target_src) = std::fs::read_to_string(&target_fs)
+                {
+                    queue.push_back(target_fs.clone());
+                    raw_files.push((target_fs, target_src));
                 }
             }
         }
     }
 
-    Ok((root, entry_rel, files))
+    let all_paths: Vec<PathBuf> = raw_files.iter().map(|(p, _)| p.clone()).collect();
+    let vroot = common_root_dir(&all_paths);
+    let files: Vec<(String, PathBuf, String)> = raw_files
+        .into_iter()
+        .map(|(fs_path, src)| {
+            let rel = to_virtual_path(&vroot, &fs_path);
+            (rel, fs_path, src)
+        })
+        .collect();
+    let entry_rel = files.first().map(|(r, _, _)| r.clone()).unwrap_or_default();
+
+    Ok(LoadedGraph {
+        vroot,
+        entry_rel,
+        files,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct FsDataHost {
+    vroot: PathBuf,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FsDataHost {
+    fn new(vroot: PathBuf) -> Self {
+        Self { vroot }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl notc::DataHost for FsDataHost {
+    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<notc::JsonValue, String> {
+        let target_fs = if rel_path.starts_with('/') {
+            notist::resources::normalize(&self.vroot.join(rel_path.trim_start_matches('/')))
+        } else {
+            let doc_fs = self.vroot.join(from_doc);
+            let parent = doc_fs.parent().unwrap_or(&self.vroot);
+            notist::resources::normalize(&parent.join(rel_path))
+        };
+        let meta = std::fs::symlink_metadata(&target_fs)
+            .map_err(|err| format!("failed to read JSON `{rel_path}`: {err}"))?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(format!(
+                "JSON `{rel_path}` must be a regular file (symlinks and directories are not allowed)"
+            ));
+        }
+        let text = std::fs::read_to_string(&target_fs)
+            .map_err(|err| format!("failed to read JSON `{rel_path}`: {err}"))?;
+        notc::JsonValue::parse(&text)
+            .map_err(|err| format!("invalid JSON in `{rel_path}`: {err}"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_notc_project(
+    files: &[(String, PathBuf, String)],
+) -> Result<notc::CheckedProject, Vec<notc::ide::IdeDiagnostic>> {
+    let frontends = notc_frontends();
+    let parsed_files: Vec<(String, notc::ParseResult)> = files
+        .iter()
+        .map(|(rel, _, src)| {
+            (
+                rel.clone(),
+                notc::parse_file_with_frontends(rel, src, &frontends),
+            )
+        })
+        .collect();
+    let has_parse_errors = parsed_files.iter().any(|(_, p)| !p.diagnostics.is_empty());
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
+        .collect();
+    if has_parse_errors {
+        let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+        return Err(analysis.diagnostics().to_vec());
+    }
+    let module_refs: Vec<(&str, &notc::Module)> = parsed_files
+        .iter()
+        .map(|(rel, p)| (rel.as_str(), &p.program.root))
+        .collect();
+    match notc::check_parsed_modules(&module_refs) {
+        Ok(project) => Ok(project),
+        Err(_) => {
+            let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+            Err(analysis.diagnostics().to_vec())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cmd_cst(file: &Path) -> ExitCode {
+    let Ok(src) = read(file) else {
+        return ExitCode::FAILURE;
+    };
+    let name = file
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let frontends = notc_frontends();
+    let parsed = notc::parse_file_with_frontends(&name, &src, &frontends);
+    println!("{:#?}", parsed.program.root);
+    if !parsed.diagnostics.is_empty() {
+        for d in &parsed.diagnostics {
+            eprintln!("error[syntax] @{}..{}: {}", d.span.start, d.span.end, d.message);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
+    let Ok(LoadedGraph {
+        vroot,
+        entry_rel,
+        files,
+    }) = load_notc_graph(file)
+    else {
+        return ExitCode::FAILURE;
+    };
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
+        .collect();
+    let frontends = notc_frontends();
+    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let mut out = String::new();
+    for d in analysis.diagnostics() {
+        let phase = match d.phase {
+            notc::ide::DiagnosticPhase::Parse => "syntax",
+            notc::ide::DiagnosticPhase::Type => "type",
+        };
+        out.push_str(&format!(
+            "error[{phase}] {}@{}..{}: {}\n",
+            d.module, d.span.start, d.span.end, d.message
+        ));
+    }
+
+    if is_module(file) {
+        for sym in analysis.document_symbols(&entry_rel) {
+            out.push_str(&format!(
+                "{:?} {} : {} ({}..{})\n",
+                sym.kind,
+                sym.name,
+                sym.detail.as_deref().unwrap_or(""),
+                sym.span.start,
+                sym.span.end
+            ));
+        }
+        if evaluate
+            && analysis.diagnostics().is_empty()
+            && let Ok(project) = check_notc_project(&files)
+        {
+            let host = FsDataHost::new(vroot);
+            match project.run_with_host(&entry_rel, "main", &host) {
+                Ok(value) => out.push_str(&format!("main => {value:#?}\n")),
+                Err(notc::ExecutionError::UnknownEntry(_)) => {}
+                Err(err) => out.push_str(&format!("error[eval]: {err:?}\n")),
+            }
+        }
+        print!("{out}");
+        return ExitCode::SUCCESS;
+    }
+
+    if evaluate {
+        match check_notc_project(&files) {
+            Ok(project) => {
+                let host = FsDataHost::new(vroot);
+                match project.eval_document_with_host(&entry_rel, &host) {
+                    Ok(block) => out.push_str(&format!("{block}\n")),
+                    Err(err) => out.push_str(&format!("error[eval]: {err:?}\n")),
+                }
+            }
+            Err(_) => {
+                // Static diagnostics were already printed above.
+            }
+        }
+    } else if let Some((_, _, src)) = files.first() {
+        let parsed = notc::parse_file_with_frontends(&entry_rel, src, &frontends);
+        out.push_str(&format!("{:#?}\n", parsed.program.root));
+    }
+    print!("{out}");
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
+    let Ok(LoadedGraph {
+        vroot,
+        entry_rel,
+        files,
+    }) = load_notc_graph(file)
+    else {
+        return ExitCode::FAILURE;
+    };
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
+        .collect();
+    let frontends = notc_frontends();
+    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+    let diagnostics: Vec<serde_json::Value> = analysis
+        .diagnostics()
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "module": d.module,
+                "phase": match d.phase {
+                    notc::ide::DiagnosticPhase::Parse => "syntax",
+                    notc::ide::DiagnosticPhase::Type => "type",
+                },
+                "start": d.span.start,
+                "end": d.span.end,
+                "message": d.message,
+            })
+        })
+        .collect();
+    let symbols: Vec<serde_json::Value> = analysis
+        .document_symbols(&entry_rel)
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "kind": format!("{:?}", s.kind).to_lowercase(),
+                "detail": s.detail,
+                "start": s.span.start,
+                "end": s.span.end,
+            })
+        })
+        .collect();
+
+    let mut data = serde_json::json!({
+        "module": entry_rel,
+        "diagnostics": diagnostics,
+        "symbols": symbols,
+    });
+
+    let entry_src = files.first().map(|(_, _, s)| s.as_str()).unwrap_or("");
+    if !is_module(file) && analysis.diagnostics().is_empty() {
+        if let Ok(project) = check_notc_project(&files) {
+            let host = FsDataHost::new(vroot);
+            match project.eval_document_with_host(&entry_rel, &host) {
+                Ok(block) => {
+                    data["core"] = query::serialize_block(&block, entry_src);
+                }
+                Err(err) => {
+                    data["evaluation_error"] = serde_json::json!(format!("{err:?}"));
+                }
+            }
+        }
+    } else if is_module(file)
+        && evaluate
+        && analysis.diagnostics().is_empty()
+        && let Ok(project) = check_notc_project(&files)
+    {
+        let host = FsDataHost::new(vroot);
+        if let Ok(val) = project.run_with_host(&entry_rel, "main", &host) {
+            data["main"] = serde_json::json!(format!("{val:?}"));
+        }
+    }
+
+    println!("{data}");
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cmd_query(file: &Path, selector: &str) -> ExitCode {
+    let Ok(LoadedGraph {
+        vroot,
+        entry_rel,
+        files,
+    }) = load_notc_graph(file)
+    else {
+        return ExitCode::FAILURE;
+    };
+    let project = match check_notc_project(&files) {
+        Ok(project) => project,
+        Err(diags) => {
+            emit_notc_diagnostics(&files, &diags);
+            return ExitCode::FAILURE;
+        }
+    };
+    let host = FsDataHost::new(vroot);
+    let block = match project.eval_document_with_host(&entry_rel, &host) {
+        Ok(block) => block,
+        Err(err) => {
+            eprintln!("error evaluating `{}`: {err:?}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let entry_src = files.first().map(|(_, _, s)| s.as_str()).unwrap_or("");
+    match query::select_json(&block, selector, entry_src) {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -497,15 +700,14 @@ fn emit_notc_diagnostics(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
-    let Ok((_, _, files)) = load_notc_graph(file) else {
+    let Ok(LoadedGraph { files, .. }) = load_notc_graph(file) else {
         return ExitCode::FAILURE;
     };
     let pairs: Vec<(&str, &str)> = files
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let frontends: [&dyn notc::DocumentFrontend; 2] =
-        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
+    let frontends = notc_frontends();
     let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
     let diags = analysis.diagnostics();
     if diags.is_empty() {
@@ -523,52 +725,133 @@ fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
-    let Ok((_, entry_rel, files)) = load_notc_graph(file) else {
-        return ExitCode::FAILURE;
-    };
-    let pairs: Vec<(&str, &str)> = files
-        .iter()
-        .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
-        .collect();
-    let frontends: [&dyn notc::DocumentFrontend; 2] =
-        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
-    let parsed_files: Vec<(String, notc::ParseResult)> = files
-        .iter()
-        .map(|(rel, _, src)| {
-            (
-                rel.clone(),
-                notc::parse_file_with_frontends(rel, src, &frontends),
-            )
-        })
-        .collect();
-    let has_parse_errors = parsed_files.iter().any(|(_, p)| !p.diagnostics.is_empty());
-    let module_refs: Vec<(&str, &notc::Module)> = parsed_files
-        .iter()
-        .map(|(rel, p)| (rel.as_str(), &p.program.root))
-        .collect();
-    let project = if has_parse_errors {
-        let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
-        emit_notc_diagnostics(&files, analysis.diagnostics());
-        return ExitCode::FAILURE;
-    } else {
-        match notc::check_parsed_modules(&module_refs) {
-            Ok(project) => project,
-            Err(_) => {
-                let analysis =
-                    notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
-                emit_notc_diagnostics(&files, analysis.diagnostics());
-                return ExitCode::FAILURE;
+fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSet<String>) {
+    fn walk_inline(inline: &notc::Inline, out: &mut std::collections::BTreeSet<String>) {
+        match &inline.node().kind {
+            notc::InlineKind::Image { target, .. } => {
+                out.insert(target.to_string());
+            }
+            notc::InlineKind::Fragment(items) => {
+                for item in items.iter() {
+                    walk_inline(item, out);
+                }
+            }
+            notc::InlineKind::Strong(inner)
+            | notc::InlineKind::Emph(inner)
+            | notc::InlineKind::Link { label: inner, .. } => walk_inline(inner, out),
+            notc::InlineKind::Custom(custom) => {
+                for (_, v) in custom.props.iter() {
+                    match v {
+                        notc::CustomValue::Inline(inl) => walk_inline(inl, out),
+                        notc::CustomValue::Block(blk) => collect_local_images(blk, out),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    match &block.node().kind {
+        notc::BlockKind::Fragment(items) | notc::BlockKind::List { items, .. } => {
+            for item in items.iter() {
+                collect_local_images(item, out);
             }
         }
+        notc::BlockKind::Paragraph(inl) | notc::BlockKind::Heading { title: inl, .. } => {
+            walk_inline(inl, out);
+        }
+        notc::BlockKind::Callout { body, .. }
+        | notc::BlockKind::Quote(body)
+        | notc::BlockKind::Div(body)
+        | notc::BlockKind::SectionBox(body) => collect_local_images(body, out),
+        notc::BlockKind::Section { heading, body } => {
+            collect_local_images(heading, out);
+            collect_local_images(body, out);
+        }
+        notc::BlockKind::Table { headers, rows } => {
+            for cell in headers.iter() {
+                walk_inline(cell, out);
+            }
+            for row in rows.iter() {
+                for cell in row.iter() {
+                    walk_inline(cell, out);
+                }
+            }
+        }
+        notc::BlockKind::Custom(custom) => {
+            for (_, v) in custom.props.iter() {
+                match v {
+                    notc::CustomValue::Inline(inl) => walk_inline(inl, out),
+                    notc::CustomValue::Block(blk) => collect_local_images(blk, out),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
+    let Ok(LoadedGraph {
+        vroot,
+        entry_rel,
+        files,
+    }) = load_notc_graph(file)
+    else {
+        return ExitCode::FAILURE;
     };
-    let block = match project.eval_document(&entry_rel) {
+    let project = match check_notc_project(&files) {
+        Ok(project) => project,
+        Err(diags) => {
+            emit_notc_diagnostics(&files, &diags);
+            return ExitCode::FAILURE;
+        }
+    };
+    let host = FsDataHost::new(vroot.clone());
+    let block = match project.eval_document_with_host(&entry_rel, &host) {
         Ok(block) => block,
         Err(err) => {
             eprintln!("error evaluating `{}`: {err:?}", file.display());
             return ExitCode::FAILURE;
         }
     };
+
+    let doc_dir = files
+        .first()
+        .and_then(|(_, fs_path, _)| fs_path.parent())
+        .unwrap_or(Path::new("."));
+    let mut images = std::collections::BTreeSet::new();
+    collect_local_images(&block, &mut images);
+
+    let mut assets_to_copy: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for target in images {
+        let bare = target.split(['?', '#']).next().unwrap_or(&target);
+        if bare.is_empty()
+            || bare.starts_with('/')
+            || bare.contains("://")
+            || bare.starts_with("data:")
+            || bare.starts_with("mailto:")
+        {
+            continue;
+        }
+        let rel = notist::resources::normalize(Path::new(bare));
+        if rel
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::RootDir))
+        {
+            continue;
+        }
+        let src = doc_dir.join(&rel);
+        let Ok(meta) = std::fs::symlink_metadata(&src) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        assets_to_copy.push((src, rel));
+    }
+
     let body = notist_ssg::render_standalone_html(&block);
     let html_doc = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<style>{}</style>\n</head>\n<body>\n<main>{body}</main>\n</body>\n</html>\n",
@@ -577,6 +860,19 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
     if let Err(err) = std::fs::create_dir_all(out_dir) {
         eprintln!("{err}");
         return ExitCode::FAILURE;
+    }
+    for (src, rel) in assets_to_copy {
+        let dest = out_dir.join(&rel);
+        if let Some(parent) = dest.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(err) = std::fs::copy(&src, &dest) {
+            eprintln!("{}: {err}", src.display());
+            return ExitCode::FAILURE;
+        }
     }
     let out_file = out_dir.join("index.html");
     if let Err(err) = std::fs::write(&out_file, html_doc) {
@@ -591,31 +887,7 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
 fn is_module(file: &Path) -> bool {
     file.extension().is_some_and(|ext| ext == "notc")
 }
-#[cfg(not(target_arch = "wasm32"))]
-fn load_vault(config: Option<&Path>) -> notist::Vault {
-    let mut vault = notist::Vault::open(".");
-    if let Some(config) = config {
-        vault = vault.with_config(config);
-    }
-    vault
-}
-#[cfg(not(target_arch = "wasm32"))]
-fn emit_vault_error(error: notist::VaultError) -> ExitCode {
-    match error {
-        notist::VaultError::Environment(errors) => {
-            for error in errors {
-                emit_source(
-                    &error.path,
-                    &error.source,
-                    &[error.diagnostic],
-                    Severity::Error,
-                );
-            }
-        }
-        error => eprintln!("{error}"),
-    }
-    ExitCode::FAILURE
-}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_source_diagnostics(diagnostics: &[notist::SourceDiagnostic], severity: Severity) {
     for diagnostic in diagnostics {
@@ -662,19 +934,5 @@ fn write_source(
                 usize::from(error.span.start())..usize::from(error.span.end()),
             )]);
         let _ = term::emit(writer, &Config::default(), &files, &diagnostic);
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn emit_diagnostics(path: &Path, source: &str, diagnostics: &[notist::Diagnostic]) {
-    for diagnostic in diagnostics {
-        let located = notist::SourceDiagnostic::locate(path, source, diagnostic.clone());
-        emit_source(
-            &located.path,
-            &located.source,
-            std::slice::from_ref(&located.diagnostic),
-            Severity::Error,
-        );
     }
 }

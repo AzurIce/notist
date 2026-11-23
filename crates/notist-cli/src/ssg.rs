@@ -24,7 +24,6 @@ pub(crate) fn assemble(
     preview: bool,
     executor: &Arc<notist::Executor>,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    notist::evict_caches(10);
     let prepared = notist::progress::run_stage(
         "host.configuration",
         || "Load configuration".into(),

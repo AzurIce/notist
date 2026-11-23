@@ -301,12 +301,11 @@ impl<'a> Lowerer<'a> {
                         .info()
                         .map(|info| info.str(self.src).trim().to_owned())
                         .unwrap_or_default();
-                    let raw = cb.value().iter(self.src).collect::<String>();
-                    let text = raw
-                        .strip_suffix("\r\n")
-                        .or_else(|| raw.strip_suffix('\n'))
-                        .unwrap_or(&raw)
-                        .to_owned();
+                    let text = cb
+                        .value()
+                        .iter(self.src)
+                        .collect::<String>()
+                        .replace("\r\n", "\n");
                     blocks.push(BlockPiece::CodeBlock {
                         lang,
                         text,

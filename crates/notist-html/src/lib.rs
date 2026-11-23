@@ -78,9 +78,10 @@ pub fn render(item: &Item) -> String {
     Renderer::default().render(item)
 }
 
-// Fence info strings can carry comma- or whitespace-separated attributes such
-// as `rust,ignore,no_run`. Only the leading language controls presentation.
-fn code_language(info: &str) -> Option<&str> {
+/// Extract the leading language token from a fenced code block info string.
+/// Fence info strings can carry comma- or whitespace-separated attributes such
+/// as `rust,ignore,no_run`. Only the leading language controls presentation.
+pub fn code_language(info: &str) -> Option<&str> {
     info.trim_start()
         .split(|ch: char| ch == ',' || ch.is_whitespace())
         .next()

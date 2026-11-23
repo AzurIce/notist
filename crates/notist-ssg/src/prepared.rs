@@ -613,11 +613,7 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
             out.push_str("</aside>");
         }
         BlockKind::CodeBlock { lang, text } => {
-            let language = if lang.is_empty() {
-                None
-            } else {
-                Some(lang.as_ref())
-            };
+            let language = notist_html::code_language(lang);
             out.push_str("<pre><code");
             if let Some(l) = language {
                 let _ = write!(

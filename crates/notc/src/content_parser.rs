@@ -232,18 +232,23 @@ fn parse_blocks(
                 }
                 cursor = next_line(bytes, l_end);
             }
-            let raw_code = text[body_start..body_end]
-                .strip_suffix("\r\n")
-                .or_else(|| text[body_start..body_end].strip_suffix('\n'))
-                .unwrap_or(&text[body_start..body_end]);
+            let raw_code = &text[body_start..body_end];
             let code = if fence_indent.is_empty() {
-                raw_code.to_owned()
+                raw_code.replace("\r\n", "\n")
             } else {
-                raw_code
-                    .split('\n')
-                    .map(|line| line.strip_prefix(fence_indent).unwrap_or(line))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                let mut out = String::with_capacity(raw_code.len());
+                for segment in raw_code.split_inclusive('\n') {
+                    let (body_part, nl) = if let Some(s) = segment.strip_suffix("\r\n") {
+                        (s, "\n")
+                    } else if let Some(s) = segment.strip_suffix('\n') {
+                        (s, "\n")
+                    } else {
+                        (segment, "")
+                    };
+                    out.push_str(body_part.strip_prefix(fence_indent).unwrap_or(body_part));
+                    out.push_str(nl);
+                }
+                out
             };
             let attrs = std::mem::take(&mut pending_attrs);
             blocks.push(BlockPiece::CodeBlock {

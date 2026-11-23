@@ -2,7 +2,6 @@ use notc::{
     AttrValue, BlockKind, InlineKind, MarkdownFrontend, TableAlign, parse_file_with_frontends,
     parse_markdown_document,
 };
-use std::process::Command;
 
 #[test]
 fn rushdown_markdown_supports_commonmark_gfm_preamble_imports_and_safe_hash_calls() {
@@ -182,55 +181,4 @@ Some ~~removed~~ text.
             TableAlign::None,
         ]
     );
-}
-
-#[test]
-fn standalone_notc_binary_checks_evaluates_and_prints_ast() {
-    let bin = env!("CARGO_BIN_EXE_notc");
-    let unique = format!(
-        "notc-cli-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let dir = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mod_path = dir.join("math.not");
-    let doc_path = dir.join("page.md");
-    std::fs::write(
-        &mod_path,
-        "fn answer() -> Int { 42 }\nfn badge(s: String) -> Inline { strong(text(s)) }\nfn main() -> Int { answer() }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &doc_path,
-        "#import \"./math.not\" as m\n\n# Hello #m.badge(\"Notist\")\n",
-    )
-    .unwrap();
-
-    let check = Command::new(bin).args(["check"]).arg(&dir).output().unwrap();
-    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
-
-    let eval_mod = Command::new(bin)
-        .args(["eval"])
-        .arg(&mod_path)
-        .output()
-        .unwrap();
-    assert!(eval_mod.status.success());
-    assert!(String::from_utf8_lossy(&eval_mod.stdout).contains("42"));
-
-    let eval_doc = Command::new(bin)
-        .args(["eval"])
-        .arg(&doc_path)
-        .output()
-        .unwrap();
-    assert!(eval_doc.status.success());
-    assert!(String::from_utf8_lossy(&eval_doc.stdout).contains("Notist"));
-
-    let ast = Command::new(bin).args(["ast"]).arg(&doc_path).output().unwrap();
-    assert!(ast.status.success());
-    assert!(String::from_utf8_lossy(&ast.stdout).contains("Module"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

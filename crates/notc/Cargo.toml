@@ -2,12 +2,8 @@
 name = "notc"
 version = "0.1.0"
 edition = "2024"
-description = "Notist's standalone .not compiler, frontend-agnostic content IR, and built-in Markdown document frontend"
+description = "Notist's pure-library .not language core, frontend-agnostic content IR, and built-in Markdown document frontend"
 publish = false
-
-[[bin]]
-name = "notc"
-path = "src/main.rs"
 
 [dependencies]
 rushdown = "0.18"

@@ -2,17 +2,7 @@
 
 # CLI 与 LSP
 
-Notist 提供两个互补的命令行工具：轻量独立编译器 **`notc`**（类似 `rustc`）与完整文档工具链 **`notist`**（类似 `cargo`）。
-
-## 独立编译器 `notc`
-
-| 命令 | 说明 |
-| --- | --- |
-| `notc check <file\|dir>...` | 静态解析并类型检查 `.md` 文档与 `.not` 模块（自动追踪相对 `import`） |
-| `notc eval <file> [--entry <fn>]` | 求值 `.md` 文档（输出内容树）或 `.not` 模块的入口函数（默认 `main`） |
-| `notc ast <file>` | 打印前端无关的 `notc::Module` IR |
-
-## 工具链 `notist`
+`notist` 是 Notist 的统一命令行入口，覆盖构建、本地热重载预览、静态检查、单页 HTML 导出和 LSP 语言服务：
 
 | 命令 | 说明 |
 | --- | --- |

@@ -58,6 +58,28 @@ impl Attrs {
     }
 }
 
+/// Renderer-agnostic value stored in an external/custom content node property.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CustomValue {
+    Unit,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    String(Arc<str>),
+    Inline(Inline),
+    Block(Block),
+}
+
+/// Pure data payload produced by bodyless external content declarations
+/// (`fn name(params...) -> Inline | Block;`). Completely decoupled from any
+/// output renderer (HTML, Web Components, PDF, etc.).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomNode {
+    pub module: Arc<str>,
+    pub name: Arc<str>,
+    pub props: Arc<[(Arc<str>, CustomValue)]>,
+}
+
 /// Shared immutable inline content node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inline(Arc<InlineNode>);
@@ -82,7 +104,10 @@ pub enum InlineKind {
     Strong(Inline),
     Emph(Inline),
     Raw(Arc<str>),
+    Math(Arc<str>),
     Link { target: Arc<str>, label: Inline },
+    Image { target: Arc<str>, alt: Arc<str> },
+    Custom(CustomNode),
 }
 
 impl Inline {
@@ -165,9 +190,100 @@ impl Inline {
                     child.push_plain_text(out);
                 }
             }
-            InlineKind::Text(s) | InlineKind::Raw(s) => out.push_str(s),
+            InlineKind::Text(s) | InlineKind::Raw(s) | InlineKind::Math(s) => out.push_str(s),
             InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.push_plain_text(out),
             InlineKind::Link { label, .. } => label.push_plain_text(out),
+            InlineKind::Image { alt, .. } => out.push_str(alt),
+            InlineKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.push_plain_text(out),
+                        CustomValue::Block(b) => out.push_str(&b.plain_text()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn collect_links(&self, out: &mut Vec<(Arc<str>, Span)>) {
+        match &self.0.kind {
+            InlineKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_links(out);
+                }
+            }
+            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_links(out),
+            InlineKind::Link { target, label } => {
+                out.push((Arc::clone(target), self.0.span));
+                label.collect_links(out);
+            }
+            InlineKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_links(out),
+                        CustomValue::Block(b) => b.collect_links(out),
+                        _ => {}
+                    }
+                }
+            }
+            InlineKind::Text(_)
+            | InlineKind::Raw(_)
+            | InlineKind::Math(_)
+            | InlineKind::Image { .. } => {}
+        }
+    }
+
+    pub(crate) fn collect_images(&self, out: &mut Vec<(Arc<str>, Arc<str>, Span)>) {
+        match &self.0.kind {
+            InlineKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_images(out);
+                }
+            }
+            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_images(out),
+            InlineKind::Link { label, .. } => label.collect_images(out),
+            InlineKind::Image { target, alt } => {
+                out.push((Arc::clone(target), Arc::clone(alt), self.0.span));
+            }
+            InlineKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_images(out),
+                        CustomValue::Block(b) => b.collect_images(out),
+                        _ => {}
+                    }
+                }
+            }
+            InlineKind::Text(_) | InlineKind::Raw(_) | InlineKind::Math(_) => {}
+        }
+    }
+
+    pub(crate) fn collect_ids(&self, out: &mut Vec<(Arc<str>, Span)>) {
+        if let Some(AttrValue::String(id)) = self.0.attrs.get("id") {
+            out.push((Arc::clone(id), self.0.span));
+        }
+        match &self.0.kind {
+            InlineKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_ids(out);
+                }
+            }
+            InlineKind::Strong(inner) | InlineKind::Emph(inner) => inner.collect_ids(out),
+            InlineKind::Link { label, .. } => label.collect_ids(out),
+            InlineKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_ids(out),
+                        CustomValue::Block(b) => b.collect_ids(out),
+                        _ => {}
+                    }
+                }
+            }
+            InlineKind::Text(_)
+            | InlineKind::Raw(_)
+            | InlineKind::Math(_)
+            | InlineKind::Image { .. } => {}
         }
     }
 
@@ -233,7 +349,47 @@ impl Inline {
                     )
                 }
             }
-            InlineKind::Text(_) | InlineKind::Raw(_) => self.clone(),
+            InlineKind::Custom(custom) => {
+                let mut changed = false;
+                let mut next_props = Vec::with_capacity(custom.props.len());
+                for (k, v) in custom.props.iter() {
+                    let nv = match v {
+                        CustomValue::Inline(i) => {
+                            let r = i.rewrite_bottom_up(f)?;
+                            if !r.ptr_eq(i) {
+                                changed = true;
+                            }
+                            CustomValue::Inline(r)
+                        }
+                        CustomValue::Block(b) => {
+                            let r = b.rewrite_inlines(f)?;
+                            if !r.ptr_eq(b) {
+                                changed = true;
+                            }
+                            CustomValue::Block(r)
+                        }
+                        other => other.clone(),
+                    };
+                    next_props.push((Arc::clone(k), nv));
+                }
+                if changed {
+                    Inline::new(
+                        InlineKind::Custom(CustomNode {
+                            module: Arc::clone(&custom.module),
+                            name: Arc::clone(&custom.name),
+                            props: Arc::from(next_props),
+                        }),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
+            InlineKind::Text(_)
+            | InlineKind::Raw(_)
+            | InlineKind::Math(_)
+            | InlineKind::Image { .. } => self.clone(),
         };
         f(rebuilt)
     }
@@ -263,6 +419,15 @@ pub enum BlockKind {
     Heading { level: u8, title: Inline },
     Callout { kind: Arc<str>, body: Block },
     CodeBlock { lang: Arc<str>, text: Arc<str> },
+    List { ordered: bool, items: Arc<[Block]> },
+    Quote(Block),
+    Divider,
+    Table {
+        headers: Arc<[Inline]>,
+        rows: Arc<[Arc<[Inline]>]>,
+    },
+    Math(Arc<str>),
+    Custom(CustomNode),
     Section { heading: Block, body: Block },
 }
 
@@ -345,8 +510,37 @@ impl Block {
             BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
                 out.push(inline.plain_text());
             }
-            BlockKind::Callout { body, .. } => body.collect_plain_text(out),
-            BlockKind::CodeBlock { text, .. } => out.push(text.to_string()),
+            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => {
+                body.collect_plain_text(out);
+            }
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    item.collect_plain_text(out);
+                }
+            }
+            BlockKind::CodeBlock { text, .. } | BlockKind::Math(text) => {
+                out.push(text.to_string())
+            }
+            BlockKind::Table { headers, rows } => {
+                for cell in headers.iter() {
+                    out.push(cell.plain_text());
+                }
+                for row in rows.iter() {
+                    for cell in row.iter() {
+                        out.push(cell.plain_text());
+                    }
+                }
+            }
+            BlockKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => out.push(i.plain_text()),
+                        CustomValue::Block(b) => b.collect_plain_text(out),
+                        _ => {}
+                    }
+                }
+            }
+            BlockKind::Divider => {}
             BlockKind::Section { heading, body } => {
                 heading.collect_plain_text(out);
                 body.collect_plain_text(out);
@@ -368,12 +562,178 @@ impl Block {
                 }
             }
             BlockKind::Heading { level, title } => out.push((*level, title.plain_text())),
-            BlockKind::Callout { body, .. } => body.collect_headings(out),
+            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_headings(out),
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    item.collect_headings(out);
+                }
+            }
+            BlockKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    if let CustomValue::Block(b) = val {
+                        b.collect_headings(out);
+                    }
+                }
+            }
             BlockKind::Section { heading, body } => {
                 heading.collect_headings(out);
                 body.collect_headings(out);
             }
-            BlockKind::Paragraph(_) | BlockKind::CodeBlock { .. } => {}
+            BlockKind::Paragraph(_)
+            | BlockKind::CodeBlock { .. }
+            | BlockKind::Table { .. }
+            | BlockKind::Math(_)
+            | BlockKind::Divider => {}
+        }
+    }
+
+    pub fn links(&self) -> Vec<(Arc<str>, Span)> {
+        let mut out = Vec::new();
+        self.collect_links(&mut out);
+        out
+    }
+
+    fn collect_links(&self, out: &mut Vec<(Arc<str>, Span)>) {
+        match &self.0.kind {
+            BlockKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_links(out);
+                }
+            }
+            BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
+                inline.collect_links(out);
+            }
+            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_links(out),
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    item.collect_links(out);
+                }
+            }
+            BlockKind::Table { headers, rows } => {
+                for cell in headers.iter() {
+                    cell.collect_links(out);
+                }
+                for row in rows.iter() {
+                    for cell in row.iter() {
+                        cell.collect_links(out);
+                    }
+                }
+            }
+            BlockKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_links(out),
+                        CustomValue::Block(b) => b.collect_links(out),
+                        _ => {}
+                    }
+                }
+            }
+            BlockKind::Section { heading, body } => {
+                heading.collect_links(out);
+                body.collect_links(out);
+            }
+            BlockKind::CodeBlock { .. } | BlockKind::Math(_) | BlockKind::Divider => {}
+        }
+    }
+
+    pub fn images(&self) -> Vec<(Arc<str>, Arc<str>, Span)> {
+        let mut out = Vec::new();
+        self.collect_images(&mut out);
+        out
+    }
+
+    fn collect_images(&self, out: &mut Vec<(Arc<str>, Arc<str>, Span)>) {
+        match &self.0.kind {
+            BlockKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_images(out);
+                }
+            }
+            BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
+                inline.collect_images(out);
+            }
+            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_images(out),
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    item.collect_images(out);
+                }
+            }
+            BlockKind::Table { headers, rows } => {
+                for cell in headers.iter() {
+                    cell.collect_images(out);
+                }
+                for row in rows.iter() {
+                    for cell in row.iter() {
+                        cell.collect_images(out);
+                    }
+                }
+            }
+            BlockKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_images(out),
+                        CustomValue::Block(b) => b.collect_images(out),
+                        _ => {}
+                    }
+                }
+            }
+            BlockKind::Section { heading, body } => {
+                heading.collect_images(out);
+                body.collect_images(out);
+            }
+            BlockKind::CodeBlock { .. } | BlockKind::Math(_) | BlockKind::Divider => {}
+        }
+    }
+
+    pub fn ids(&self) -> Vec<(Arc<str>, Span)> {
+        let mut out = Vec::new();
+        self.collect_ids(&mut out);
+        out
+    }
+
+    fn collect_ids(&self, out: &mut Vec<(Arc<str>, Span)>) {
+        if let Some(AttrValue::String(id)) = self.0.attrs.get("id") {
+            out.push((Arc::clone(id), self.0.span));
+        }
+        match &self.0.kind {
+            BlockKind::Fragment(children) => {
+                for child in children.iter() {
+                    child.collect_ids(out);
+                }
+            }
+            BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
+                inline.collect_ids(out);
+            }
+            BlockKind::Callout { body, .. } | BlockKind::Quote(body) => body.collect_ids(out),
+            BlockKind::List { items, .. } => {
+                for item in items.iter() {
+                    item.collect_ids(out);
+                }
+            }
+            BlockKind::Table { headers, rows } => {
+                for cell in headers.iter() {
+                    cell.collect_ids(out);
+                }
+                for row in rows.iter() {
+                    for cell in row.iter() {
+                        cell.collect_ids(out);
+                    }
+                }
+            }
+            BlockKind::Custom(custom) => {
+                for (_, val) in custom.props.iter() {
+                    match val {
+                        CustomValue::Inline(i) => i.collect_ids(out),
+                        CustomValue::Block(b) => b.collect_ids(out),
+                        _ => {}
+                    }
+                }
+            }
+            BlockKind::Section { heading, body } => {
+                heading.collect_ids(out);
+                body.collect_ids(out);
+            }
+            BlockKind::CodeBlock { .. } | BlockKind::Math(_) | BlockKind::Divider => {}
         }
     }
 
@@ -499,6 +859,41 @@ impl Block {
                     )
                 }
             }
+            BlockKind::List { ordered, items } => {
+                let mut changed = false;
+                let mut next = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    let rewritten = item.rewrite_inlines(f)?;
+                    if !rewritten.ptr_eq(item) {
+                        changed = true;
+                    }
+                    next.push(rewritten);
+                }
+                if changed {
+                    Block::new(
+                        BlockKind::List {
+                            ordered: *ordered,
+                            items: Arc::from(next),
+                        },
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
+            BlockKind::Quote(body) => {
+                let rewritten = body.rewrite_inlines(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::Quote(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
             BlockKind::Section { heading, body } => {
                 let h = heading.rewrite_inlines(f)?;
                 let b = body.rewrite_inlines(f)?;
@@ -512,7 +907,79 @@ impl Block {
                     )
                 }
             }
-            BlockKind::CodeBlock { .. } => self.clone(),
+            BlockKind::Table { headers, rows } => {
+                let mut changed = false;
+                let mut next_headers = Vec::with_capacity(headers.len());
+                for cell in headers.iter() {
+                    let r = cell.rewrite_bottom_up(f)?;
+                    if !r.ptr_eq(cell) {
+                        changed = true;
+                    }
+                    next_headers.push(r);
+                }
+                let mut next_rows = Vec::with_capacity(rows.len());
+                for row in rows.iter() {
+                    let mut next_row = Vec::with_capacity(row.len());
+                    for cell in row.iter() {
+                        let r = cell.rewrite_bottom_up(f)?;
+                        if !r.ptr_eq(cell) {
+                            changed = true;
+                        }
+                        next_row.push(r);
+                    }
+                    next_rows.push(Arc::from(next_row));
+                }
+                if changed {
+                    Block::new(
+                        BlockKind::Table {
+                            headers: Arc::from(next_headers),
+                            rows: Arc::from(next_rows),
+                        },
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
+            BlockKind::Custom(custom) => {
+                let mut changed = false;
+                let mut next_props = Vec::with_capacity(custom.props.len());
+                for (k, v) in custom.props.iter() {
+                    let nv = match v {
+                        CustomValue::Inline(i) => {
+                            let r = i.rewrite_bottom_up(f)?;
+                            if !r.ptr_eq(i) {
+                                changed = true;
+                            }
+                            CustomValue::Inline(r)
+                        }
+                        CustomValue::Block(b) => {
+                            let r = b.rewrite_inlines(f)?;
+                            if !r.ptr_eq(b) {
+                                changed = true;
+                            }
+                            CustomValue::Block(r)
+                        }
+                        other => other.clone(),
+                    };
+                    next_props.push((Arc::clone(k), nv));
+                }
+                if changed {
+                    Block::new(
+                        BlockKind::Custom(CustomNode {
+                            module: Arc::clone(&custom.module),
+                            name: Arc::clone(&custom.name),
+                            props: Arc::from(next_props),
+                        }),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
+            BlockKind::CodeBlock { .. } | BlockKind::Math(_) | BlockKind::Divider => self.clone(),
         })
     }
 
@@ -552,6 +1019,71 @@ impl Block {
                     )
                 }
             }
+            BlockKind::List { ordered, items } => {
+                let mut changed = false;
+                let mut next = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    let rewritten = item.rewrite_blocks(f)?;
+                    if !rewritten.ptr_eq(item) {
+                        changed = true;
+                    }
+                    next.push(rewritten);
+                }
+                if changed {
+                    Block::new(
+                        BlockKind::List {
+                            ordered: *ordered,
+                            items: Arc::from(next),
+                        },
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
+            BlockKind::Quote(body) => {
+                let rewritten = body.rewrite_blocks(f)?;
+                if rewritten.ptr_eq(body) {
+                    self.clone()
+                } else {
+                    Block::new(
+                        BlockKind::Quote(rewritten),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                }
+            }
+            BlockKind::Custom(custom) => {
+                let mut changed = false;
+                let mut next_props = Vec::with_capacity(custom.props.len());
+                for (k, v) in custom.props.iter() {
+                    let nv = match v {
+                        CustomValue::Block(b) => {
+                            let r = b.rewrite_blocks(f)?;
+                            if !r.ptr_eq(b) {
+                                changed = true;
+                            }
+                            CustomValue::Block(r)
+                        }
+                        other => other.clone(),
+                    };
+                    next_props.push((Arc::clone(k), nv));
+                }
+                if changed {
+                    Block::new(
+                        BlockKind::Custom(CustomNode {
+                            module: Arc::clone(&custom.module),
+                            name: Arc::clone(&custom.name),
+                            props: Arc::from(next_props),
+                        }),
+                        self.0.attrs.clone(),
+                        self.0.span,
+                    )
+                } else {
+                    self.clone()
+                }
+            }
             BlockKind::Section { heading, body } => {
                 let h = heading.rewrite_blocks(f)?;
                 let b = body.rewrite_blocks(f)?;
@@ -565,9 +1097,12 @@ impl Block {
                     )
                 }
             }
-            BlockKind::Paragraph(_) | BlockKind::Heading { .. } | BlockKind::CodeBlock { .. } => {
-                self.clone()
-            }
+            BlockKind::Paragraph(_)
+            | BlockKind::Heading { .. }
+            | BlockKind::CodeBlock { .. }
+            | BlockKind::Table { .. }
+            | BlockKind::Math(_)
+            | BlockKind::Divider => self.clone(),
         };
         f(rebuilt)
     }
@@ -600,7 +1135,10 @@ impl fmt::Display for Inline {
             InlineKind::Strong(inner) => write!(f, "Strong({inner})"),
             InlineKind::Emph(inner) => write!(f, "Emph({inner})"),
             InlineKind::Raw(s) => write!(f, "Raw({s:?})"),
+            InlineKind::Math(s) => write!(f, "Math({s:?})"),
             InlineKind::Link { target, label } => write!(f, "Link({target:?}, {label})"),
+            InlineKind::Image { target, alt } => write!(f, "Image({target:?}, {alt:?})"),
+            InlineKind::Custom(c) => write!(f, "Custom({}::{})", c.module, c.name),
         }
     }
 }
@@ -632,6 +1170,23 @@ impl fmt::Display for Block {
             BlockKind::Heading { level, title } => write!(f, "Heading(h{level}, {title})"),
             BlockKind::Callout { kind, body } => write!(f, "Callout({kind:?}, {body})"),
             BlockKind::CodeBlock { lang, text } => write!(f, "CodeBlock({lang:?}, {text:?})"),
+            BlockKind::List { ordered, items } => {
+                write!(f, "{}[", if *ordered { "OrderedList" } else { "List" })?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                write!(f, "]")
+            }
+            BlockKind::Quote(body) => write!(f, "Quote({body})"),
+            BlockKind::Divider => write!(f, "Divider"),
+            BlockKind::Table { headers, rows } => {
+                write!(f, "Table({} cols, {} rows)", headers.len(), rows.len())
+            }
+            BlockKind::Math(s) => write!(f, "BlockMath({s:?})"),
+            BlockKind::Custom(c) => write!(f, "CustomBlock({}::{})", c.module, c.name),
             BlockKind::Section { heading, body } => write!(f, "Section({heading}, {body})"),
         }
     }

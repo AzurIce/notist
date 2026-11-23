@@ -1,5 +1,8 @@
 //! Source-level declarations and expressions, before name or type resolution.
 
+/// Synthetic entry function name generated for `.not` document files.
+pub const DOC_ENTRY: &str = "__doc__";
+
 /// Byte range `[start, end)` within a single source string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
@@ -12,6 +15,22 @@ impl Span {
 
     pub const fn new(start: u32, end: u32) -> Self {
         Self { start, end }
+    }
+
+    pub const fn len(self) -> u32 {
+        self.end.saturating_sub(self.start)
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.start >= self.end
+    }
+
+    pub const fn contains(self, offset: u32) -> bool {
+        self.start <= offset && offset < self.end
+    }
+
+    pub const fn contains_inclusive(self, offset: u32) -> bool {
+        self.start <= offset && offset <= self.end
     }
 
     pub fn merge(self, other: Self) -> Self {
@@ -125,7 +144,8 @@ pub struct Function {
     pub parameters: Vec<Param>,
     pub returns: Type,
     pub where_clause: Option<WhereExpr>,
-    pub body: Expr,
+    /// `None` for bodyless external content declarations (`fn badge(s: String) -> Inline;`).
+    pub body: Option<Expr>,
     pub span: Span,
 }
 
@@ -216,6 +236,12 @@ pub enum InlinePiece {
         label: Vec<InlinePiece>,
         span: Span,
     },
+    Image {
+        target: String,
+        alt: String,
+        span: Span,
+    },
+    Math(String, Span),
     Expr(Box<Expr>, Span),
     Attributed {
         attrs: Vec<AttrEntry>,
@@ -243,6 +269,32 @@ pub enum BlockPiece {
         attrs: Vec<AttrEntry>,
         span: Span,
     },
+    List {
+        ordered: bool,
+        items: Vec<Vec<BlockPiece>>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Quote {
+        body: Vec<BlockPiece>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Divider {
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Table {
+        headers: Vec<Vec<InlinePiece>>,
+        rows: Vec<Vec<Vec<InlinePiece>>>,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
+    Math {
+        text: String,
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
     Expr {
         expr: Box<Expr>,
         attrs: Vec<AttrEntry>,
@@ -259,6 +311,7 @@ pub enum ExprKind {
     String(String),
     InlineLiteral(Vec<InlinePiece>),
     BlockLiteral(Vec<BlockPiece>),
+    AttachAttrs(Vec<AttrEntry>, Box<Expr>),
     Name(String),
     Member(Box<Expr>, String),
     Instantiate(Box<Expr>, Vec<Type>),

@@ -1,7 +1,7 @@
 use crate::ast::{BinaryOp, Span, UnaryOp};
 use crate::builtin::BuiltinFn;
 use crate::check::{CheckedExpr, CheckedProgram, FunctionId};
-use crate::content::{AttrValue, Attrs, Block, BlockKind, Inline, InlineKind};
+use crate::content::{AttrValue, Attrs, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -85,6 +85,98 @@ fn evaluate(
                 blocks.push(block);
             }
             Ok(Value::Block(Block::fragment(blocks, attrs.clone(), *span)))
+        }
+        C::BlockList(ordered, items, attrs, span) => {
+            let mut blocks = Vec::with_capacity(items.len());
+            for item in items {
+                let Value::Block(block) = evaluate(program, item, stack, base, depth)? else {
+                    unreachable!("checked block list item")
+                };
+                blocks.push(block);
+            }
+            Ok(Value::Block(Block::new(
+                BlockKind::List {
+                    ordered: *ordered,
+                    items: Arc::from(blocks),
+                },
+                attrs.clone(),
+                *span,
+            )))
+        }
+        C::BlockTable {
+            headers,
+            rows,
+            attrs,
+            span,
+        } => {
+            let mut eval_headers = Vec::with_capacity(headers.len());
+            for cell in headers {
+                let Value::Inline(inl) = evaluate(program, cell, stack, base, depth)? else {
+                    unreachable!("checked table header cell")
+                };
+                eval_headers.push(inl);
+            }
+            let mut eval_rows = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut eval_row = Vec::with_capacity(row.len());
+                for cell in row {
+                    let Value::Inline(inl) = evaluate(program, cell, stack, base, depth)? else {
+                        unreachable!("checked table cell")
+                    };
+                    eval_row.push(inl);
+                }
+                eval_rows.push(Arc::from(eval_row));
+            }
+            Ok(Value::Block(Block::new(
+                BlockKind::Table {
+                    headers: Arc::from(eval_headers),
+                    rows: Arc::from(eval_rows),
+                },
+                attrs.clone(),
+                *span,
+            )))
+        }
+        C::CustomNode {
+            is_block,
+            module,
+            name,
+            props,
+            span,
+        } => {
+            let mut eval_props = Vec::with_capacity(props.len());
+            for (k, expr) in props {
+                let val = match evaluate(program, expr, stack, base, depth)? {
+                    Value::Unit => CustomValue::Unit,
+                    Value::Bool(b) => CustomValue::Bool(b),
+                    Value::Int(n) => CustomValue::Int(n),
+                    Value::Float(f) => CustomValue::Float(f),
+                    Value::String(s) => CustomValue::String(s),
+                    Value::Inline(i) => CustomValue::Inline(i),
+                    Value::Block(b) => CustomValue::Block(b),
+                    Value::Function(_) | Value::Builtin(_, _) => {
+                        unreachable!("checked non-function extern prop")
+                    }
+                };
+                eval_props.push((Arc::clone(k), val));
+            }
+            let custom = CustomNode {
+                module: Arc::clone(module),
+                name: Arc::clone(name),
+                props: Arc::from(eval_props),
+            };
+            if *is_block {
+                Ok(Value::Block(Block::new(
+                    BlockKind::Custom(custom),
+                    Attrs::empty(),
+                    *span,
+                )))
+            } else {
+                Ok(Value::Inline(Inline::new(
+                    InlineKind::Custom(custom),
+                    Attrs::empty(),
+                    *span,
+                )))
+            }
         }
         C::AttachAttrs(inner, attrs) => match evaluate(program, inner, stack, base, depth)? {
             Value::Inline(inline) => Ok(Value::Inline(inline.with_attrs(attrs.clone()))),
@@ -254,11 +346,24 @@ fn eval_builtin(
             let code = take_string(&mut args);
             Value::Inline(Inline::new(InlineKind::Raw(code), Attrs::empty(), span))
         }
+        BuiltinFn::Math => {
+            let expr = take_string(&mut args);
+            Value::Inline(Inline::new(InlineKind::Math(expr), Attrs::empty(), span))
+        }
         BuiltinFn::Link => {
             let target = take_string(&mut args);
             let label = take_inline(&mut args);
             Value::Inline(Inline::new(
                 InlineKind::Link { target, label },
+                Attrs::empty(),
+                span,
+            ))
+        }
+        BuiltinFn::Image => {
+            let target = take_string(&mut args);
+            let alt = take_string(&mut args);
+            Value::Inline(Inline::new(
+                InlineKind::Image { target, alt },
                 Attrs::empty(),
                 span,
             ))
@@ -294,6 +399,15 @@ fn eval_builtin(
                 span,
             ))
         }
+        BuiltinFn::DisplayMath => {
+            let expr = take_string(&mut args);
+            Value::Block(Block::new(BlockKind::Math(expr), Attrs::empty(), span))
+        }
+        BuiltinFn::Quote => {
+            let body = take_block(&mut args);
+            Value::Block(Block::new(BlockKind::Quote(body), Attrs::empty(), span))
+        }
+        BuiltinFn::Divider => Value::Block(Block::new(BlockKind::Divider, Attrs::empty(), span)),
         BuiltinFn::InlinePlainText => {
             let inline = take_inline(&mut args);
             Value::String(Arc::from(inline.plain_text()))

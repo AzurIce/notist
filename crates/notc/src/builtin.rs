@@ -9,12 +9,17 @@ pub enum BuiltinFn {
     Strong,
     Emph,
     Raw,
+    Math,
     Link,
+    Image,
     // Block constructors
     Para,
     Heading,
     Callout,
     CodeBlock,
+    DisplayMath,
+    Quote,
+    Divider,
     // Inline methods
     InlinePlainText,
     InlineWithAttr,
@@ -40,13 +45,44 @@ pub(crate) fn lookup_prelude_function(name: &str) -> Option<(BuiltinFn, Vec<Type
         "strong" => (BuiltinFn::Strong, vec![Inline], Inline),
         "emph" => (BuiltinFn::Emph, vec![Inline], Inline),
         "raw" => (BuiltinFn::Raw, vec![String], Inline),
+        "math" => (BuiltinFn::Math, vec![String], Inline),
         "link" => (BuiltinFn::Link, vec![String, Inline], Inline),
+        "image" => (BuiltinFn::Image, vec![String, String], Inline),
         "para" => (BuiltinFn::Para, vec![Inline], Block),
         "heading" => (BuiltinFn::Heading, vec![Int, Inline], Block),
         "callout" => (BuiltinFn::Callout, vec![String, Block], Block),
         "code_block" => (BuiltinFn::CodeBlock, vec![String, String], Block),
+        "display_math" => (BuiltinFn::DisplayMath, vec![String], Block),
+        "quote" => (BuiltinFn::Quote, vec![Block], Block),
+        "divider" => (BuiltinFn::Divider, vec![], Block),
         _ => return None,
     })
+}
+
+pub(crate) fn all_prelude_functions() -> Vec<(&'static str, BuiltinFn, Vec<Type>, Type)> {
+    const NAMES: &[&str] = &[
+        "text",
+        "strong",
+        "emph",
+        "raw",
+        "math",
+        "link",
+        "image",
+        "para",
+        "heading",
+        "callout",
+        "code_block",
+        "display_math",
+        "quote",
+        "divider",
+    ];
+    NAMES
+        .iter()
+        .filter_map(|&name| {
+            let (b, params, ret) = lookup_prelude_function(name)?;
+            Some((name, b, params, ret))
+        })
+        .collect()
 }
 
 pub(crate) fn lookup_builtin_method(
@@ -83,4 +119,31 @@ pub(crate) fn lookup_builtin_method(
         )),
         _ => None,
     }
+}
+
+pub(crate) fn builtin_methods_for_type(
+    receiver: &Type,
+) -> Vec<(&'static str, BuiltinFn, Vec<Type>, Type)> {
+    let names: &[&str] = match receiver {
+        Type::Inline => &["plain_text", "with_attr", "attr_or", "has_attr", "rewrite"],
+        Type::Block => &[
+            "plain_text",
+            "sectionize",
+            "heading_count",
+            "headings_summary",
+            "with_attr",
+            "attr_or",
+            "has_attr",
+            "rewrite_inlines",
+            "rewrite_blocks",
+        ],
+        _ => &[],
+    };
+    names
+        .iter()
+        .filter_map(|&name| {
+            let (b, params, ret) = lookup_builtin_method(receiver, name)?;
+            Some((name, b, params, ret))
+        })
+        .collect()
 }

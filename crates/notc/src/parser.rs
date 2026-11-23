@@ -3,7 +3,9 @@ use crate::ast::{
     Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
-use crate::content_parser::parse_content_literal;
+use crate::content_parser::{
+    parse_content_literal, parse_document_source, parse_markdown_document_source,
+};
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
 const MAX_PARSE_DEPTH: usize = 128;
@@ -34,6 +36,62 @@ pub fn parse(source: &str) -> ParseResult {
         },
         diagnostics: parser.diagnostics,
     }
+}
+
+/// Parse a `.not` document file (top-level Markup + optional `@!(...)` document
+/// attributes + leading `#import ...` directives) into a `Program` whose root
+/// module exports synthetic `fn __doc__() -> Block`.
+pub fn parse_document(source: &str) -> ParseResult {
+    let mut diagnostics = Vec::new();
+    let root = parse_document_source(source, &mut diagnostics);
+    ParseResult {
+        program: Program { root },
+        diagnostics,
+    }
+}
+
+/// Parse a `.md` Markdown document file into a `Program` whose root module
+/// exports synthetic `fn __doc__() -> Block`.
+pub fn parse_markdown_document(source: &str) -> ParseResult {
+    let mut diagnostics = Vec::new();
+    let root = parse_markdown_document_source(source, &mut diagnostics);
+    ParseResult {
+        program: Program { root },
+        diagnostics,
+    }
+}
+
+/// Parse a `.not`, `.md`, or `.notc` file based on its file extension.
+pub fn parse_file(path: &str, source: &str) -> ParseResult {
+    if path.ends_with(".not") {
+        parse_document(source)
+    } else if path.ends_with(".md") {
+        parse_markdown_document(source)
+    } else {
+        parse(source)
+    }
+}
+
+/// Parse an embedded `import ...` line from a `.not` document (trailing `;` is optional).
+pub(crate) fn parse_embedded_import(
+    slice: &str,
+    base_offset: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<Import> {
+    let (mut tokens, mut lex_diags) = lex(slice);
+    offset_tokens(&mut tokens, base_offset as u32);
+    offset_diagnostics(&mut lex_diags, base_offset as u32);
+    let mut parser = Parser {
+        source: slice,
+        base_offset,
+        tokens,
+        pos: 0,
+        depth: 0,
+        diagnostics: lex_diags,
+    };
+    let import = parser.import_decl_inner(false).ok();
+    diagnostics.extend(parser.diagnostics);
+    import
 }
 
 /// Parse `#(expr)` embedded inside a `[...]` content literal, returning `(expr, bytes_consumed)`.
@@ -359,6 +417,10 @@ impl<'a> Parser<'a> {
     }
 
     fn import_decl(&mut self) -> Result<Import, ()> {
+        self.import_decl_inner(true)
+    }
+
+    fn import_decl_inner(&mut self, require_semi: bool) -> Result<Import, ()> {
         let import_tok = self.expect(TokenKind::Import)?;
         let path_tok = self.expect(TokenKind::String)?;
         let path = decode_string(self.text(path_tok.span)).map_err(|msg| {
@@ -410,12 +472,18 @@ impl<'a> Parser<'a> {
         } else {
             ImportKind::Default
         };
-        let semi_tok = self.expect(TokenKind::Semi)?;
+        let end_span = if require_semi {
+            self.expect(TokenKind::Semi)?.span
+        } else if self.at(TokenKind::Semi) {
+            self.advance().span
+        } else {
+            self.tokens[self.pos.saturating_sub(1)].span
+        };
         Ok(Import {
             path,
             path_span: path_tok.span,
             kind,
-            span: import_tok.span.merge(semi_tok.span),
+            span: import_tok.span.merge(end_span),
         })
     }
 
@@ -438,8 +506,14 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let (body, body_span) = self.block()?;
-        let span = start.merge(body_span);
+        let (body, end_span) = if self.at(TokenKind::Semi) {
+            let semi = self.advance();
+            (None, semi.span)
+        } else {
+            let (body, body_span) = self.block()?;
+            (Some(body), body_span)
+        };
+        let span = start.merge(end_span);
         Ok(Function {
             name,
             name_span: name_tok.span,
@@ -1010,7 +1084,9 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Dot => {
                     self.advance();
-                    let name_tok = self.expect(TokenKind::Ident)?;
+                    let Ok(name_tok) = self.expect(TokenKind::Ident) else {
+                        break;
+                    };
                     let member = self.text(name_tok.span).to_owned();
                     if self.at(TokenKind::LParen) {
                         self.advance();

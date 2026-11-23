@@ -5,7 +5,7 @@
 //!   cargo run -p notc --example run -- <path.notc> [entry]
 
 use notc::{
-    Decl, ProjectDiagnosticKind, Span, Type, TypeError, Value, check_project, parse,
+    Decl, ProjectDiagnosticKind, Span, TypeError, Value, check_project, parse,
     resolve_import_path,
 };
 use std::collections::{HashMap, VecDeque};
@@ -139,97 +139,8 @@ fn print_diagnostic(path: &str, source: &str, span: Span, kind: &str, message: &
     eprintln!("   | {pad}{carets}");
 }
 
-fn format_type(ty: &Type) -> String {
-    match ty {
-        Type::Unit => "Unit".into(),
-        Type::Bool => "Bool".into(),
-        Type::Int => "Int".into(),
-        Type::Float => "Float".into(),
-        Type::String => "String".into(),
-        Type::Inline => "Inline".into(),
-        Type::Block => "Block".into(),
-        Type::Never => "Never".into(),
-        Type::Param(name) => name.clone(),
-        Type::Function(params, ret) => {
-            let params = params
-                .iter()
-                .map(format_type)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("fn({params}) -> {}", format_type(ret))
-        }
-    }
-}
-
 fn format_type_error(error: &TypeError) -> String {
-    match error {
-        TypeError::DuplicateFunction => "duplicate function declaration".into(),
-        TypeError::DuplicateMethod => "duplicate method declaration for receiver type".into(),
-        TypeError::DuplicateBinding(name) => format!("duplicate binding `{name}`"),
-        TypeError::DuplicateParameter(name) => format!("duplicate parameter `{name}`"),
-        TypeError::DuplicateTypeParam(name) => format!("duplicate type parameter `{name}`"),
-        TypeError::UnknownType(name) => format!("unknown type `{name}`"),
-        TypeError::UnknownTypeParam(name) => format!("unknown type parameter `{name}`"),
-        TypeError::TypeArity { expected, actual } => {
-            format!("expected {expected} type argument(s), found {actual}")
-        }
-        TypeError::TypeArgsRequired { function, expected } => format!(
-            "generic function `{function}` requires {expected} type argument(s) when used as a value"
-        ),
-        TypeError::CannotInferTypeParam { function, param } => {
-            format!("cannot infer type parameter `{param}` for `{function}`")
-        }
-        TypeError::WhereUnsatisfied { function } => {
-            format!("`where` constraint on `{function}` is not satisfied")
-        }
-        TypeError::DuplicateMatchPattern(ty) => {
-            format!("duplicate `match` arm for type `{}`", format_type(ty))
-        }
-        TypeError::DuplicateWildcardArm => "duplicate wildcard `_` arm in `match`".into(),
-        TypeError::MissingWildcardArm => "`match` on type parameter requires a `_` fallback arm".into(),
-        TypeError::CompileError(msg) => format!("compile_error: {msg}"),
-        TypeError::InvalidImportPath(path) => format!("invalid relative import path `{path}`"),
-        TypeError::InvalidImportAlias(alias) => {
-            format!("cannot derive valid module alias from `{alias}`")
-        }
-        TypeError::MissingModule(path) => format!("missing imported module `{path}`"),
-        TypeError::ImportCycle(cycle) => format!("import cycle: {}", cycle.join(" -> ")),
-        TypeError::UnknownExport { module, name } => {
-            format!("module `{module}` does not export `{name}`")
-        }
-        TypeError::AmbiguousMethod { receiver, method } => format!(
-            "ambiguous imported method `{method}` on type `{}`",
-            format_type(receiver)
-        ),
-        TypeError::NamespaceAsValue(name) => {
-            format!("module namespace `{name}` cannot be used as a value")
-        }
-        TypeError::NotNamespace(ty) => format!(
-            "cannot access member on non-namespace value of type `{}`",
-            format_type(ty)
-        ),
-        TypeError::UnknownName(name) => format!("unknown name `{name}`"),
-        TypeError::UnknownMethod { receiver, method } => {
-            format!("no method `{method}` on type `{}`", format_type(receiver))
-        }
-        TypeError::UnsupportedUnaryOp { op, operand } => {
-            format!("operator `{op:?}` cannot be applied to `{}`", format_type(operand))
-        }
-        TypeError::UnsupportedBinaryOp { op, left, right } => format!(
-            "operator `{op:?}` cannot be applied to `{}` and `{}`",
-            format_type(left),
-            format_type(right)
-        ),
-        TypeError::NotCallable(ty) => format!("type `{}` is not callable", format_type(ty)),
-        TypeError::Arity { expected, actual } => {
-            format!("expected {expected} argument(s), found {actual}")
-        }
-        TypeError::Mismatch { expected, actual } => format!(
-            "type mismatch: expected `{}`, found `{}`",
-            format_type(expected),
-            format_type(actual)
-        ),
-    }
+    notc::format_type_error(error)
 }
 
 fn format_value(value: Value) -> String {

@@ -24,7 +24,7 @@ fn def<const N: usize>(
             .collect(),
         returns,
         where_clause: None,
-        body,
+        body: Some(body),
         span: Span::DUMMY,
     })
 }

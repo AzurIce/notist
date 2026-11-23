@@ -4,9 +4,128 @@
 //! - `[hello]` -> `InlineLiteral`
 //! - `[ hello ]` or multi-line `[\n...\n]` -> `BlockLiteral`
 
-use crate::ast::{AttrEntry, AttrLiteral, BlockPiece, Expr, ExprKind, InlinePiece, Span};
+use crate::ast::{
+    AttrEntry, AttrLiteral, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, InlinePiece,
+    Module, Span, Type,
+};
 use crate::lexer::ParseDiagnostic;
-use crate::parser::{parse_embedded_expr, parse_embedded_postfix};
+use crate::parser::{parse_embedded_expr, parse_embedded_import, parse_embedded_postfix};
+
+/// Parse a Markdown `.md` document file into a `notc::Module` exporting synthetic
+/// `fn __doc__() -> Block` (supporting ATX `#`..`######` headings, fenced code
+/// blocks, lists, quotes, dividers, links, images, and basic emphasis).
+pub(crate) fn parse_markdown_document_source(
+    source: &str,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Module {
+    let blocks = parse_blocks_with_mode(source, 0, 0, true, diagnostics);
+    let len = source.len() as u32;
+    let body_expr = Expr::new(ExprKind::BlockLiteral(blocks), Span::new(0, len));
+    Module {
+        declarations: vec![Decl::Function(Function {
+            name: DOC_ENTRY.to_owned(),
+            name_span: Span::new(0, 0),
+            type_params: Vec::new(),
+            parameters: Vec::new(),
+            returns: Type::Block,
+            where_clause: None,
+            body: Some(body_expr),
+            span: Span::new(0, len),
+        })],
+    }
+}
+
+/// Parse a standalone `.not` document file into a `notc::Module`:
+/// - Leading `@!(key: value, ...)` document-level attributes attach to the root `Block`.
+/// - Leading `#import ...` lines become `Decl::Import(...)` (with optional trailing `;`).
+/// - Remaining top-level Markup becomes synthetic `fn __doc__() -> Block`.
+pub(crate) fn parse_document_source(
+    source: &str,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Module {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0usize;
+    let mut declarations: Vec<Decl> = Vec::new();
+    let mut doc_attrs: Vec<AttrEntry> = Vec::new();
+
+    // Parse leading preamble: blank lines, `@!(...)` document attributes, and `#import ...`.
+    while i < len {
+        let line_start = i;
+        while i < len && matches!(bytes[i], b' ' | b'\t' | b'\r') {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+        if bytes[i] == b'\n' {
+            i += 1;
+            continue;
+        }
+
+        // Document attribute block: `@!(key: value, ...)`
+        if bytes[i] == b'@'
+            && i + 2 < len
+            && bytes[i + 1] == b'!'
+            && bytes[i + 2] == b'('
+            && let Some((attrs, next_i)) = parse_attr_list_at(source, i, i + 2, 0, diagnostics)
+        {
+            let mut rest = next_i;
+            while rest < len && matches!(bytes[rest], b' ' | b'\t' | b'\r') {
+                rest += 1;
+            }
+            if rest >= len || bytes[rest] == b'\n' {
+                doc_attrs.extend(attrs);
+                i = if rest < len { rest + 1 } else { rest };
+                continue;
+            }
+        }
+
+        // Top-level `#import ...` directive
+        if bytes[i] == b'#' && source[i + 1..].starts_with("import") {
+            let after_kw = i + 7;
+            if after_kw >= len
+                || matches!(bytes[after_kw], b' ' | b'\t' | b'"' | b'\r' | b'\n')
+            {
+                let line_end = find_line_end(bytes, i);
+                let stmt_slice = &source[i + 1..line_end];
+                if let Some(import) = parse_embedded_import(stmt_slice, i + 1, diagnostics) {
+                    declarations.push(Decl::Import(import));
+                }
+                i = next_line(bytes, line_end);
+                continue;
+            }
+        }
+
+        // First non-preamble line starts the document body.
+        i = line_start;
+        break;
+    }
+
+    let body_start = i;
+    let blocks = parse_blocks(&source[body_start..], body_start, 0, diagnostics);
+    let body_span = Span::new(body_start as u32, len as u32);
+    let mut body_expr = Expr::new(ExprKind::BlockLiteral(blocks), body_span);
+    if !doc_attrs.is_empty() {
+        body_expr = Expr::new(
+            ExprKind::AttachAttrs(doc_attrs, Box::new(body_expr)),
+            Span::new(0, len as u32),
+        );
+    }
+
+    declarations.push(Decl::Function(Function {
+        name: DOC_ENTRY.to_owned(),
+        name_span: Span::new(0, 0),
+        type_params: Vec::new(),
+        parameters: Vec::new(),
+        returns: Type::Block,
+        where_clause: None,
+        body: Some(body_expr),
+        span: Span::new(0, len as u32),
+    }));
+
+    Module { declarations }
+}
 
 pub(crate) fn parse_content_literal(
     raw: &str,
@@ -41,6 +160,16 @@ fn parse_blocks(
     text: &str,
     base: usize,
     depth: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Vec<BlockPiece> {
+    parse_blocks_with_mode(text, base, depth, false, diagnostics)
+}
+
+fn parse_blocks_with_mode(
+    text: &str,
+    base: usize,
+    depth: usize,
+    markdown: bool,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Vec<BlockPiece> {
     let bytes = text.as_bytes();
@@ -80,10 +209,11 @@ fn parse_blocks(
             }
         }
 
-        // 2. Heading line: `=`..`======` followed by space or tab
-        if bytes[i] == b'=' {
+        // 2. Heading line: `=`..`======` in Notist (or `#`..`######` in Markdown) followed by space or tab
+        let heading_sigil = if markdown { b'#' } else { b'=' };
+        if bytes[i] == heading_sigil {
             let mut eqs = 0usize;
-            while i + eqs < len && bytes[i + eqs] == b'=' {
+            while i + eqs < len && bytes[i + eqs] == heading_sigil {
                 eqs += 1;
             }
             if (1..=6).contains(&eqs)
@@ -97,7 +227,13 @@ fn parse_blocks(
                 }
                 let line_end = find_line_end(bytes, title_start);
                 let title_raw = text[title_start..line_end].trim_end();
-                let title = parse_inlines(title_raw, base + title_start, depth, diagnostics);
+                let title = parse_inlines_with_mode(
+                    title_raw,
+                    base + title_start,
+                    depth,
+                    markdown,
+                    diagnostics,
+                );
                 let attrs = std::mem::take(&mut pending_attrs);
                 blocks.push(BlockPiece::Heading {
                     level: eqs as u8,
@@ -160,8 +296,109 @@ fn parse_blocks(
             continue;
         }
 
-        // 4. Standalone `#expr` block item (may span multiple lines when calling `[ ... ]`).
-        if bytes[i] == b'#'
+        // 4. Horizontal divider: `---` (3+ hyphens on its own line)
+        if is_divider_line(text, bytes, i) {
+            let l_end = find_line_end(bytes, i);
+            let attrs = std::mem::take(&mut pending_attrs);
+            blocks.push(BlockPiece::Divider {
+                attrs,
+                span: mk_span(base, i, l_end),
+            });
+            i = next_line(bytes, l_end);
+            continue;
+        }
+
+        // 5. Blockquote: consecutive lines starting with `>`
+        if bytes[i] == b'>' && (i + 1 >= len || matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n'))
+        {
+            let q_start = i;
+            let mut cursor = line_start;
+            let mut quote_end = i;
+            let mut inner_lines: Vec<&str> = Vec::new();
+            while cursor < len {
+                let mut trimmed = cursor;
+                while trimmed < len && matches!(bytes[trimmed], b' ' | b'\t' | b'\r') {
+                    trimmed += 1;
+                }
+                if trimmed >= len
+                    || bytes[trimmed] != b'>'
+                    || (trimmed + 1 < len
+                        && !matches!(bytes[trimmed + 1], b' ' | b'\t' | b'\r' | b'\n'))
+                {
+                    break;
+                }
+                let l_end = find_line_end(bytes, trimmed);
+                let after_gt = if trimmed + 1 < l_end && matches!(bytes[trimmed + 1], b' ' | b'\t') {
+                    trimmed + 2
+                } else {
+                    trimmed + 1
+                };
+                inner_lines.push(&text[after_gt..l_end]);
+                quote_end = l_end;
+                cursor = next_line(bytes, l_end);
+            }
+            let joined = inner_lines.join("\n");
+            let body = parse_blocks(&joined, base + q_start, depth + 1, diagnostics);
+            let attrs = std::mem::take(&mut pending_attrs);
+            blocks.push(BlockPiece::Quote {
+                body,
+                attrs,
+                span: mk_span(base, q_start, quote_end),
+            });
+            i = cursor;
+            continue;
+        }
+
+        // 6. Unordered (`- ` / `* ` / `+ `) or ordered (`1. ` / `1) `) list (with indentation nesting)
+        if list_marker_at(bytes, i).is_some() {
+            let base_indent = indent_width(&text[line_start..i]);
+            let (list_block, next_cursor) = parse_list_at(
+                text,
+                bytes,
+                line_start,
+                base_indent,
+                base,
+                depth,
+                markdown,
+                std::mem::take(&mut pending_attrs),
+                diagnostics,
+            );
+            blocks.push(list_block);
+            i = next_cursor;
+            continue;
+        }
+
+        // 7. Pipe table (`| a | b |\n| --- | --- |\n| 1 | 2 |`)
+        if bytes[i] == b'|'
+            && let Some((table_block, next_cursor)) = try_parse_table_at(
+                text,
+                bytes,
+                line_start,
+                base,
+                depth,
+                markdown,
+                &mut pending_attrs,
+                diagnostics,
+            )
+        {
+            blocks.push(table_block);
+            i = next_cursor;
+            continue;
+        }
+
+        // 8. Block math (`$$` fenced or `$ ... $` flanked / multi-line `$`)
+        if bytes[i] == b'$'
+            && let Some((math_block, next_cursor)) =
+                try_parse_block_math_at(text, bytes, i, base, &mut pending_attrs)
+        {
+            blocks.push(math_block);
+            i = next_cursor;
+            continue;
+        }
+
+        // 9. Standalone `#expr` block item (Notist mode only; in Markdown `#` is heading/text).
+        if !markdown
+            && bytes[i] == b'#'
             && let Some((expr, after_expr)) =
                 try_parse_hash_expr(text, i, base, depth, diagnostics)
         {
@@ -181,7 +418,7 @@ fn parse_blocks(
             }
         }
 
-        // 5. Paragraph: accumulate consecutive non-blank inline lines.
+        // 8. Paragraph: accumulate consecutive non-blank inline lines.
         let para_start = i;
         let mut lines: Vec<(usize, usize)> = Vec::new();
         let mut cursor = line_start;
@@ -194,7 +431,7 @@ fn parse_blocks(
                 break;
             }
             // Stop paragraph before a new block starter (after at least 1 line).
-            if !lines.is_empty() && is_block_starter(text, bytes, trimmed) {
+            if !lines.is_empty() && is_block_starter(text, bytes, trimmed, markdown) {
                 break;
             }
             let l_end = find_line_end(bytes, trimmed);
@@ -214,7 +451,13 @@ fn parse_blocks(
             if idx > 0 {
                 inlines.push(InlinePiece::Text(" ".into(), mk_span(base, ls, ls)));
             }
-            inlines.extend(parse_inlines(&text[ls..le], base + ls, depth, diagnostics));
+            inlines.extend(parse_inlines_with_mode(
+                &text[ls..le],
+                base + ls,
+                depth,
+                markdown,
+                diagnostics,
+            ));
         }
         let attrs = std::mem::take(&mut pending_attrs);
         blocks.push(BlockPiece::Paragraph {
@@ -228,11 +471,12 @@ fn parse_blocks(
     blocks
 }
 
-fn is_block_starter(text: &str, bytes: &[u8], i: usize) -> bool {
+fn is_block_starter(text: &str, bytes: &[u8], i: usize, markdown: bool) -> bool {
     let len = bytes.len();
-    if bytes[i] == b'=' {
+    let heading_sigil = if markdown { b'#' } else { b'=' };
+    if bytes[i] == heading_sigil {
         let mut eqs = 0;
-        while i + eqs < len && bytes[i + eqs] == b'=' {
+        while i + eqs < len && bytes[i + eqs] == heading_sigil {
             eqs += 1;
         }
         if (1..=6).contains(&eqs) && i + eqs < len && matches!(bytes[i + eqs], b' ' | b'\t') {
@@ -248,7 +492,397 @@ fn is_block_starter(text: &str, bytes: &[u8], i: usize) -> bool {
             return true;
         }
     }
+    if is_divider_line(text, bytes, i) {
+        return true;
+    }
+    if bytes[i] == b'>' && (i + 1 >= len || matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n')) {
+        return true;
+    }
+    if list_marker_at(bytes, i).is_some() {
+        return true;
+    }
+    if bytes[i] == b'|' && is_table_header_at(text, bytes, i) {
+        return true;
+    }
+    if bytes[i] == b'$' && is_block_math_starter(text, bytes, i) {
+        return true;
+    }
     false
+}
+
+fn indent_width(ws: &str) -> usize {
+    ws.bytes()
+        .map(|b| if b == b'\t' { 4 } else { 1 })
+        .sum()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_list_at(
+    text: &str,
+    bytes: &[u8],
+    start_line: usize,
+    base_indent: usize,
+    base: usize,
+    depth: usize,
+    markdown: bool,
+    attrs: Vec<AttrEntry>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> (BlockPiece, usize) {
+    let len = bytes.len();
+    let mut cursor = start_line;
+    let mut first_trimmed = start_line;
+    while first_trimmed < len && matches!(bytes[first_trimmed], b' ' | b'\t' | b'\r') {
+        first_trimmed += 1;
+    }
+    let (ordered, _) = list_marker_at(bytes, first_trimmed).expect("checked list marker");
+    let list_start = first_trimmed;
+    let mut list_end = first_trimmed;
+    let mut items: Vec<Vec<BlockPiece>> = Vec::new();
+
+    while cursor < len {
+        // Peek ahead past any single blank line only if followed by another list item at >= base_indent.
+        let mut scan = cursor;
+        while scan < len && matches!(bytes[scan], b' ' | b'\t' | b'\r') {
+            scan += 1;
+        }
+        if scan >= len || bytes[scan] == b'\n' {
+            break;
+        }
+        let line_indent = indent_width(&text[cursor..scan]);
+        let Some((item_ordered, content_start)) = list_marker_at(bytes, scan) else {
+            break;
+        };
+
+        if line_indent < base_indent {
+            break;
+        }
+        if line_indent > base_indent {
+            // Nested list under the preceding list item.
+            if let Some(last_item) = items.last_mut() {
+                let (nested, next_cursor) = parse_list_at(
+                    text,
+                    bytes,
+                    cursor,
+                    line_indent,
+                    base,
+                    depth + 1,
+                    markdown,
+                    Vec::new(),
+                    diagnostics,
+                );
+                if let BlockPiece::List { span, .. } = &nested {
+                    list_end = (span.end as usize).saturating_sub(base).max(list_end);
+                }
+                last_item.push(nested);
+                cursor = next_cursor;
+                continue;
+            }
+            break;
+        }
+        if item_ordered != ordered {
+            break;
+        }
+
+        let l_end = find_line_end(bytes, content_start);
+        let item_raw = text[content_start..l_end].trim_end();
+        let item_inlines =
+            parse_inlines_with_mode(item_raw, base + content_start, depth, markdown, diagnostics);
+        let item_block = BlockPiece::Paragraph {
+            inlines: item_inlines,
+            attrs: Vec::new(),
+            span: mk_span(base, content_start, l_end),
+        };
+        items.push(vec![item_block]);
+        list_end = l_end;
+        cursor = next_line(bytes, l_end);
+    }
+
+    (
+        BlockPiece::List {
+            ordered,
+            items,
+            attrs,
+            span: mk_span(base, list_start, list_end),
+        },
+        cursor,
+    )
+}
+
+fn is_table_header_at(text: &str, bytes: &[u8], i: usize) -> bool {
+    let l1_end = find_line_end(bytes, i);
+    if !text[i..l1_end].contains('|') {
+        return false;
+    }
+    let l2_start = next_line(bytes, l1_end);
+    if l2_start >= bytes.len() {
+        return false;
+    }
+    let l2_end = find_line_end(bytes, l2_start);
+    is_table_separator_line(text[l2_start..l2_end].trim())
+}
+
+fn is_table_separator_line(line: &str) -> bool {
+    if !line.contains('-') || !line.contains('|') {
+        return false;
+    }
+    let trimmed = line.trim_matches('|');
+    let cells: Vec<&str> = trimmed.split('|').collect();
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let c = cell.trim();
+            let c = c.strip_prefix(':').unwrap_or(c);
+            let c = c.strip_suffix(':').unwrap_or(c);
+            c.len() >= 2 && c.bytes().all(|b| b == b'-')
+        })
+}
+
+fn split_table_cells(line: &str) -> Vec<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    while start < end && matches!(bytes[start], b' ' | b'\t') {
+        start += 1;
+    }
+    while end > start && matches!(bytes[end - 1], b' ' | b'\t' | b'\r') {
+        end -= 1;
+    }
+    if start < end && bytes[start] == b'|' {
+        start += 1;
+    }
+    if end > start && bytes[end - 1] == b'|' {
+        end -= 1;
+    }
+    let mut out = Vec::new();
+    let mut cell_start = start;
+    let mut i = start;
+    let mut in_code = false;
+    while i < end {
+        match bytes[i] {
+            b'\\' if i + 1 < end => i += 2,
+            b'`' => {
+                in_code = !in_code;
+                i += 1;
+            }
+            b'|' if !in_code => {
+                out.push(trim_span(bytes, cell_start, i));
+                cell_start = i + 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push(trim_span(bytes, cell_start, end));
+    out
+}
+
+fn trim_span(bytes: &[u8], mut s: usize, mut e: usize) -> (usize, usize) {
+    while s < e && matches!(bytes[s], b' ' | b'\t') {
+        s += 1;
+    }
+    while e > s && matches!(bytes[e - 1], b' ' | b'\t') {
+        e -= 1;
+    }
+    (s, e)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_parse_table_at(
+    text: &str,
+    bytes: &[u8],
+    line_start: usize,
+    base: usize,
+    depth: usize,
+    markdown: bool,
+    pending_attrs: &mut Vec<AttrEntry>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<(BlockPiece, usize)> {
+    let mut first = line_start;
+    while first < bytes.len() && matches!(bytes[first], b' ' | b'\t' | b'\r') {
+        first += 1;
+    }
+    if !is_table_header_at(text, bytes, first) {
+        return None;
+    }
+    let h_end = find_line_end(bytes, line_start);
+    let header_line = &text[line_start..h_end];
+    let headers: Vec<Vec<InlinePiece>> = split_table_cells(header_line)
+        .into_iter()
+        .map(|(cs, ce)| {
+            parse_inlines_with_mode(
+                &header_line[cs..ce],
+                base + line_start + cs,
+                depth,
+                markdown,
+                diagnostics,
+            )
+        })
+        .collect();
+
+    let sep_start = next_line(bytes, h_end);
+    let sep_end = find_line_end(bytes, sep_start);
+    let mut cursor = next_line(bytes, sep_end);
+    let mut table_end = sep_end;
+    let mut rows: Vec<Vec<Vec<InlinePiece>>> = Vec::new();
+
+    while cursor < bytes.len() {
+        let mut trimmed = cursor;
+        while trimmed < bytes.len() && matches!(bytes[trimmed], b' ' | b'\t' | b'\r') {
+            trimmed += 1;
+        }
+        if trimmed >= bytes.len() || bytes[trimmed] == b'\n' || bytes[trimmed] != b'|' {
+            break;
+        }
+        let r_end = find_line_end(bytes, cursor);
+        let row_line = &text[cursor..r_end];
+        let row_cells: Vec<Vec<InlinePiece>> = split_table_cells(row_line)
+            .into_iter()
+            .map(|(cs, ce)| {
+                parse_inlines_with_mode(
+                    &row_line[cs..ce],
+                    base + cursor + cs,
+                    depth,
+                    markdown,
+                    diagnostics,
+                )
+            })
+            .collect();
+        rows.push(row_cells);
+        table_end = r_end;
+        cursor = next_line(bytes, r_end);
+    }
+
+    let attrs = std::mem::take(pending_attrs);
+    Some((
+        BlockPiece::Table {
+            headers,
+            rows,
+            attrs,
+            span: mk_span(base, first, table_end),
+        },
+        cursor,
+    ))
+}
+
+fn is_block_math_starter(text: &str, bytes: &[u8], i: usize) -> bool {
+    let l_end = find_line_end(bytes, i);
+    let line = text[i..l_end].trim_end();
+    line == "$$"
+        || line == "$"
+        || (line.starts_with("$ ") && line.ends_with(" $") && line.len() >= 4)
+        || (line.starts_with("$$") && line.ends_with("$$") && line.len() >= 4)
+}
+
+fn try_parse_block_math_at(
+    text: &str,
+    bytes: &[u8],
+    i: usize,
+    base: usize,
+    pending_attrs: &mut Vec<AttrEntry>,
+) -> Option<(BlockPiece, usize)> {
+    let len = bytes.len();
+    let l_end = find_line_end(bytes, i);
+    let line = text[i..l_end].trim_end();
+
+    // Single-line `$ expr $` or `$$expr$$`
+    if line.starts_with("$$") && line.ends_with("$$") && line.len() >= 4 {
+        let content = line[2..line.len() - 2].trim().to_owned();
+        let attrs = std::mem::take(pending_attrs);
+        return Some((
+            BlockPiece::Math {
+                text: content,
+                attrs,
+                span: mk_span(base, i, l_end),
+            },
+            next_line(bytes, l_end),
+        ));
+    }
+    if line.starts_with("$ ") && line.ends_with(" $") && line.len() >= 4 {
+        let content = line[2..line.len() - 2].trim().to_owned();
+        let attrs = std::mem::take(pending_attrs);
+        return Some((
+            BlockPiece::Math {
+                text: content,
+                attrs,
+                span: mk_span(base, i, l_end),
+            },
+            next_line(bytes, l_end),
+        ));
+    }
+
+    // Multi-line `$$` ... `$$` or `$` ... `$`
+    if line == "$$" || line == "$" {
+        let fence = line;
+        let mut cursor = next_line(bytes, l_end);
+        let body_start = cursor;
+        let mut body_end = len;
+        let mut closed_end = len;
+        while cursor < len {
+            let c_end = find_line_end(bytes, cursor);
+            if text[cursor..c_end].trim() == fence {
+                body_end = cursor;
+                closed_end = c_end;
+                cursor = next_line(bytes, c_end);
+                break;
+            }
+            cursor = next_line(bytes, c_end);
+        }
+        let math_text = text[body_start..body_end].trim().to_owned();
+        let attrs = std::mem::take(pending_attrs);
+        return Some((
+            BlockPiece::Math {
+                text: math_text,
+                attrs,
+                span: mk_span(base, i, closed_end),
+            },
+            cursor,
+        ));
+    }
+
+    None
+}
+
+fn is_divider_line(text: &str, bytes: &[u8], i: usize) -> bool {
+    if i >= bytes.len() || bytes[i] != b'-' {
+        return false;
+    }
+    let l_end = find_line_end(bytes, i);
+    let trimmed = text[i..l_end].trim_end();
+    trimmed.len() >= 3 && trimmed.bytes().all(|b| b == b'-')
+}
+
+/// If `bytes[i..]` starts with an unordered (`- `, `* `) or ordered (`1. `, `1) `)
+/// list marker, returns `(ordered, content_start)`.
+fn list_marker_at(bytes: &[u8], i: usize) -> Option<(bool, usize)> {
+    let len = bytes.len();
+    if i >= len {
+        return None;
+    }
+    if matches!(bytes[i], b'-' | b'*' | b'+') && i + 1 < len && matches!(bytes[i + 1], b' ' | b'\t')
+    {
+        let mut s = i + 1;
+        while s < len && matches!(bytes[s], b' ' | b'\t') {
+            s += 1;
+        }
+        return Some((false, s));
+    }
+    if bytes[i].is_ascii_digit() {
+        let mut j = i;
+        while j < len && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j < len
+            && matches!(bytes[j], b'.' | b')')
+            && j + 1 < len
+            && matches!(bytes[j + 1], b' ' | b'\t')
+        {
+            let mut s = j + 1;
+            while s < len && matches!(bytes[s], b' ' | b'\t') {
+                s += 1;
+            }
+            return Some((true, s));
+        }
+    }
+    None
 }
 
 fn find_line_end(bytes: &[u8], start: usize) -> usize {
@@ -278,6 +912,16 @@ fn parse_inlines(
     text: &str,
     base: usize,
     depth: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Vec<InlinePiece> {
+    parse_inlines_with_mode(text, base, depth, false, diagnostics)
+}
+
+fn parse_inlines_with_mode(
+    text: &str,
+    base: usize,
+    depth: usize,
+    markdown: bool,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Vec<InlinePiece> {
     let bytes = text.as_bytes();
@@ -340,7 +984,7 @@ fn parse_inlines(
                 text_buf.push('@');
                 i += 1;
             }
-            b'#' => {
+            b'#' if !markdown => {
                 if let Some((expr, next_i)) =
                     try_parse_hash_expr(text, i, base, depth, diagnostics)
                 {
@@ -355,11 +999,43 @@ fn parse_inlines(
                 text_buf.push('#');
                 i += 1;
             }
+            b'*' if markdown && i + 1 < len && bytes[i + 1] == b'*' => {
+                if let Some(rel) = text[i + 2..].find("**") {
+                    let close = i + 2 + rel;
+                    flush_text(&mut pieces, &mut text_buf, text_start, i);
+                    let inner = parse_inlines_with_mode(
+                        &text[i + 2..close],
+                        base + i + 2,
+                        depth,
+                        markdown,
+                        diagnostics,
+                    );
+                    pieces.push(InlinePiece::Strong(inner, mk_span(base, i, close + 2)));
+                    i = close + 2;
+                    continue;
+                }
+                if text_buf.is_empty() {
+                    text_start = i;
+                }
+                text_buf.push('*');
+                i += 1;
+            }
             b'*' => {
                 if let Some(close) = find_closing_delim(bytes, i + 1, b'*') {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let inner = parse_inlines(&text[i + 1..close], base + i + 1, depth, diagnostics);
-                    pieces.push(InlinePiece::Strong(inner, mk_span(base, i, close + 1)));
+                    let inner = parse_inlines_with_mode(
+                        &text[i + 1..close],
+                        base + i + 1,
+                        depth,
+                        markdown,
+                        diagnostics,
+                    );
+                    let piece = if markdown {
+                        InlinePiece::Emph(inner, mk_span(base, i, close + 1))
+                    } else {
+                        InlinePiece::Strong(inner, mk_span(base, i, close + 1))
+                    };
+                    pieces.push(piece);
                     i = close + 1;
                     continue;
                 }
@@ -383,6 +1059,26 @@ fn parse_inlines(
                 text_buf.push('_');
                 i += 1;
             }
+            b'$' => {
+                if i + 1 < len
+                    && !matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n' | b'$')
+                    && let Some(close) = find_closing_delim(bytes, i + 1, b'$')
+                    && !matches!(bytes[close - 1], b' ' | b'\t')
+                {
+                    flush_text(&mut pieces, &mut text_buf, text_start, i);
+                    pieces.push(InlinePiece::Math(
+                        text[i + 1..close].to_owned(),
+                        mk_span(base, i, close + 1),
+                    ));
+                    i = close + 1;
+                    continue;
+                }
+                if text_buf.is_empty() {
+                    text_start = i;
+                }
+                text_buf.push('$');
+                i += 1;
+            }
             b'`' => {
                 if let Some(close) = find_closing_backtick(bytes, i + 1) {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
@@ -397,6 +1093,25 @@ fn parse_inlines(
                     text_start = i;
                 }
                 text_buf.push('`');
+                i += 1;
+            }
+            b'!' if i + 1 < len && bytes[i + 1] == b'[' => {
+                if let Some((alt_end, target_start, target_end)) = parse_link_bounds(bytes, i + 1) {
+                    flush_text(&mut pieces, &mut text_buf, text_start, i);
+                    let alt = text[i + 2..alt_end].to_owned();
+                    let target = text[target_start..target_end].to_owned();
+                    pieces.push(InlinePiece::Image {
+                        target,
+                        alt,
+                        span: mk_span(base, i, target_end + 1),
+                    });
+                    i = target_end + 1;
+                    continue;
+                }
+                if text_buf.is_empty() {
+                    text_start = i;
+                }
+                text_buf.push('!');
                 i += 1;
             }
             b'[' => {
@@ -479,6 +1194,17 @@ fn parse_single_inline_target(
                     mk_span(base, start, close + 1),
                 ),
                 close + 1,
+            ))
+        }
+        b'!' if start + 1 < bytes.len() && bytes[start + 1] == b'[' => {
+            let (alt_end, target_start, target_end) = parse_link_bounds(bytes, start + 1)?;
+            Some((
+                InlinePiece::Image {
+                    target: text[target_start..target_end].to_owned(),
+                    alt: text[start + 2..alt_end].to_owned(),
+                    span: mk_span(base, start, target_end + 1),
+                },
+                target_end + 1,
             ))
         }
         b'[' => {
@@ -596,11 +1322,25 @@ fn parse_attr_list(
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Option<(Vec<AttrEntry>, usize)> {
     let bytes = text.as_bytes();
-    let len = bytes.len();
-    if at_pos + 1 >= len || bytes[at_pos] != b'@' || bytes[at_pos + 1] != b'(' {
+    if at_pos + 1 >= bytes.len() || bytes[at_pos] != b'@' || bytes[at_pos + 1] != b'(' {
         return None;
     }
-    let mut i = at_pos + 2;
+    parse_attr_list_at(text, at_pos, at_pos + 1, base, diagnostics)
+}
+
+fn parse_attr_list_at(
+    text: &str,
+    at_pos: usize,
+    open_paren_pos: usize,
+    base: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<(Vec<AttrEntry>, usize)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if open_paren_pos >= len || bytes[open_paren_pos] != b'(' {
+        return None;
+    }
+    let mut i = open_paren_pos + 1;
     let mut entries = Vec::new();
 
     loop {

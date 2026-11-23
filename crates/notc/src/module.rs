@@ -7,15 +7,16 @@
 //! 2. Topological import resolution and per-module body checking (`check_module_bodies`);
 //! 3. Reachability-driven specialization & lowering to a dense executable `CheckedProgram`.
 
-use crate::ast::{Decl, Import, ImportKind, Module, Span, Type};
+use crate::ast::{DOC_ENTRY, Decl, Import, ImportKind, Module, Span, Type};
 use crate::check::{
     Binding, CheckedDecl, CheckedProgram, FunctionSig, InstanceKey, InterfaceView, MethodSig,
     ModuleId, ModuleScope, TypeError, check_module_bodies, collect_module_interface,
     specialize_roots,
 };
+use crate::content::Block;
 use crate::eval::{ExecutionError, Value};
 use crate::lexer::ParseDiagnostic;
-use crate::parser::parse;
+use crate::parser::parse_file;
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -84,18 +85,28 @@ impl CheckedProject {
     pub fn run(&self, module_path: &str, entry: &str) -> Result<Value, ExecutionError> {
         self.lower_entry(module_path, entry)?.run(entry)
     }
+
+    /// Evaluate a `.not` document entry in this checked project and return its root `Block`.
+    pub fn eval_document(&self, document_path: &str) -> Result<Block, ExecutionError> {
+        match self.run(document_path, DOC_ENTRY)? {
+            Value::Block(block) => Ok(block),
+            _ => Err(ExecutionError::UnknownEntry(format!(
+                "{document_path}::{DOC_ENTRY}"
+            ))),
+        }
+    }
 }
 
 /// Parse and statically check an explicit in-memory set of `(path, source)`
-/// modules. Relative `import` paths are resolved lexically against each
-/// module's normalized path.
+/// files (`.notc` modules and `.not` documents). Relative `import` paths are
+/// resolved lexically against each file's normalized path.
 pub fn check_project(files: &[(&str, &str)]) -> Result<CheckedProject, Vec<ProjectDiagnostic>> {
     let mut parsed_modules = Vec::with_capacity(files.len());
     let mut diagnostics = Vec::new();
 
     for &(raw_path, source) in files {
         let path = normalize_path(raw_path).unwrap_or_else(|| raw_path.to_owned());
-        let parsed = parse(source);
+        let parsed = parse_file(raw_path, source);
         for diag in parsed.diagnostics {
             diagnostics.push(ProjectDiagnostic {
                 module: path.clone(),
@@ -279,7 +290,10 @@ pub fn check_parsed_modules(
                     }
                 }
                 ImportKind::Wildcard { span } => {
-                    let mut entries: Vec<(&String, &Binding)> = target_exports.iter().collect();
+                    let mut entries: Vec<(&String, &Binding)> = target_exports
+                        .iter()
+                        .filter(|(name, _)| name.as_str() != DOC_ENTRY)
+                        .collect();
                     entries.sort_by_key(|(a, _)| *a);
                     for (name, &binding) in entries {
                         insert_binding(
@@ -342,7 +356,8 @@ pub fn check_parsed_modules(
         let scope = scopes[index]
             .as_ref()
             .expect("topological pass initialized every module scope");
-        let (checked_decls, body_diags) = check_module_bodies(module, scope, &view);
+        let (checked_decls, body_diags) =
+            check_module_bodies(&module_paths[index], module, scope, &view);
         for diag in body_diags {
             diagnostics.push(ProjectDiagnostic {
                 module: module_paths[index].clone(),
@@ -555,7 +570,7 @@ pub fn resolve_import_path(from_module: &str, import_path: &str) -> Result<Strin
     normalize_path(&joined).ok_or_else(|| TypeError::InvalidImportPath(import_path.to_owned()))
 }
 
-fn default_import_alias(import_path: &str) -> Result<String, TypeError> {
+pub(crate) fn default_import_alias(import_path: &str) -> Result<String, TypeError> {
     let filename = import_path.rsplit('/').next().unwrap_or(import_path);
     let stem = filename
         .strip_suffix(".notc")

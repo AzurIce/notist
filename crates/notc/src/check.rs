@@ -57,6 +57,20 @@ pub(crate) enum CheckedExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
+    BlockList(bool, Vec<Self>, Attrs, Span),
+    BlockTable {
+        headers: Vec<Self>,
+        rows: Vec<Vec<Self>>,
+        attrs: Attrs,
+        span: Span,
+    },
+    CustomNode {
+        is_block: bool,
+        module: Arc<str>,
+        name: Arc<str>,
+        props: Vec<(Arc<str>, Self)>,
+        span: Span,
+    },
     AttachAttrs(Box<Self>, Attrs),
     Let(Box<Self>, Box<Self>),
     Seq(Box<Self>, Box<Self>),
@@ -81,6 +95,20 @@ pub(crate) enum ModuleExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
+    BlockList(bool, Vec<Self>, Attrs, Span),
+    BlockTable {
+        headers: Vec<Self>,
+        rows: Vec<Vec<Self>>,
+        attrs: Attrs,
+        span: Span,
+    },
+    CustomNode {
+        return_ty: Type,
+        module: Arc<str>,
+        name: Arc<str>,
+        props: Vec<(Arc<str>, Self)>,
+        span: Span,
+    },
     AttachAttrs(Box<Self>, Attrs),
     Let(Box<Self>, Box<Self>),
     Seq(Box<Self>, Box<Self>),
@@ -131,6 +159,7 @@ pub(crate) struct MethodSig {
 }
 
 /// Body-independent lexical scope for checking a single module.
+#[derive(Debug, Clone)]
 pub(crate) struct ModuleScope {
     pub(crate) bindings: HashMap<String, Binding>,
     pub(crate) methods: HashMap<(Type, String), MethodSig>,
@@ -174,6 +203,8 @@ pub enum TypeError {
     DuplicateWildcardArm,
     MissingWildcardArm,
     CompileError(String),
+    InvalidExternReturn(Type),
+    InvalidExternParam(Type),
     InvalidImportPath(String),
     InvalidImportAlias(String),
     MissingModule(String),
@@ -227,7 +258,7 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
         signatures: &signatures,
     };
 
-    let (checked_decls, body_diags) = check_module_bodies(&program.root, &scope, &view);
+    let (checked_decls, body_diags) = check_module_bodies("<root>", &program.root, &scope, &view);
     diagnostics.extend(body_diags);
     if !diagnostics.is_empty() {
         return Err(diagnostics);
@@ -417,6 +448,96 @@ fn lower_specialized_expr(
                 )?);
             }
             C::BlockFragment(lowered, attrs.clone(), *span)
+        }
+        M::BlockList(ordered, items, attrs, span) => {
+            let mut lowered = Vec::with_capacity(items.len());
+            for item in items {
+                lowered.push(lower_specialized_expr(
+                    decls,
+                    item,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?);
+            }
+            C::BlockList(*ordered, lowered, attrs.clone(), *span)
+        }
+        M::BlockTable {
+            headers,
+            rows,
+            attrs,
+            span,
+        } => {
+            let mut lowered_headers = Vec::with_capacity(headers.len());
+            for cell in headers {
+                lowered_headers.push(lower_specialized_expr(
+                    decls,
+                    cell,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?);
+            }
+            let mut lowered_rows = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut lowered_row = Vec::with_capacity(row.len());
+                for cell in row {
+                    lowered_row.push(lower_specialized_expr(
+                        decls,
+                        cell,
+                        type_params,
+                        type_args,
+                        mapping,
+                        order,
+                        queue,
+                    )?);
+                }
+                lowered_rows.push(lowered_row);
+            }
+            C::BlockTable {
+                headers: lowered_headers,
+                rows: lowered_rows,
+                attrs: attrs.clone(),
+                span: *span,
+            }
+        }
+        M::CustomNode {
+            return_ty,
+            module,
+            name,
+            props,
+            span,
+        } => {
+            let concrete_ret = substitute_type(return_ty, type_params, type_args);
+            let is_block = match concrete_ret {
+                Type::Inline => false,
+                Type::Block => true,
+                other => return Err((*span, TypeError::InvalidExternReturn(other))),
+            };
+            let mut lowered_props = Vec::with_capacity(props.len());
+            for (k, v) in props {
+                let lv = lower_specialized_expr(
+                    decls,
+                    v,
+                    type_params,
+                    type_args,
+                    mapping,
+                    order,
+                    queue,
+                )?;
+                lowered_props.push((Arc::clone(k), lv));
+            }
+            C::CustomNode {
+                is_block,
+                module: Arc::clone(module),
+                name: Arc::clone(name),
+                props: lowered_props,
+                span: *span,
+            }
         }
         M::AttachAttrs(target, attrs) => C::AttachAttrs(
             Box::new(lower_specialized_expr(
@@ -911,6 +1032,7 @@ fn unify_type(
 /// its resolved `ModuleScope` and project `InterfaceView` (never reading other
 /// modules' bodies).
 pub(crate) fn check_module_bodies(
+    module_path: &str,
     module: &Module,
     scope: &ModuleScope,
     view: &InterfaceView<'_>,
@@ -928,6 +1050,7 @@ pub(crate) fn check_module_bodies(
                     .map(|tp| tp.name.clone())
                     .collect();
                 let mut checker = Checker {
+                    module_path,
                     scope,
                     view,
                     type_params: &tparams,
@@ -939,6 +1062,7 @@ pub(crate) fn check_module_bodies(
             }
             Decl::Method(method) => {
                 let mut checker = Checker {
+                    module_path,
                     scope,
                     view,
                     type_params: &[],
@@ -966,7 +1090,7 @@ pub(crate) fn method_declaration_name(method: &Method) -> String {
     format!("{}.{}", format_type(&method.receiver_type), method.name)
 }
 
-pub(crate) fn format_type(ty: &Type) -> String {
+pub fn format_type(ty: &Type) -> String {
     match ty {
         Type::Unit => "Unit".into(),
         Type::Bool => "Bool".into(),
@@ -988,7 +1112,92 @@ pub(crate) fn format_type(ty: &Type) -> String {
     }
 }
 
+pub fn format_type_error(error: &TypeError) -> String {
+    match error {
+        TypeError::DuplicateFunction => "duplicate function declaration".into(),
+        TypeError::DuplicateMethod => "duplicate method declaration for receiver type".into(),
+        TypeError::DuplicateBinding(name) => format!("duplicate binding `{name}`"),
+        TypeError::DuplicateParameter(name) => format!("duplicate parameter `{name}`"),
+        TypeError::DuplicateTypeParam(name) => format!("duplicate type parameter `{name}`"),
+        TypeError::UnknownType(name) => format!("unknown type `{name}`"),
+        TypeError::UnknownTypeParam(name) => format!("unknown type parameter `{name}`"),
+        TypeError::TypeArity { expected, actual } => {
+            format!("expected {expected} type argument(s), found {actual}")
+        }
+        TypeError::TypeArgsRequired { function, expected } => format!(
+            "generic function `{function}` requires {expected} type argument(s) when used as a value"
+        ),
+        TypeError::CannotInferTypeParam { function, param } => {
+            format!("cannot infer type parameter `{param}` for `{function}`")
+        }
+        TypeError::WhereUnsatisfied { function } => {
+            format!("`where` constraint on `{function}` is not satisfied")
+        }
+        TypeError::DuplicateMatchPattern(ty) => {
+            format!("duplicate `match` arm for type `{}`", format_type(ty))
+        }
+        TypeError::DuplicateWildcardArm => "duplicate wildcard `_` arm in `match`".into(),
+        TypeError::MissingWildcardArm => {
+            "`match` on type parameter requires a `_` fallback arm".into()
+        }
+        TypeError::CompileError(msg) => format!("compile_error: {msg}"),
+        TypeError::InvalidExternReturn(ty) => format!(
+            "bodyless external content declaration must return `Inline` or `Block`, found `{}`",
+            format_type(ty)
+        ),
+        TypeError::InvalidExternParam(ty) => format!(
+            "external content declaration parameter cannot have function type `{}`",
+            format_type(ty)
+        ),
+        TypeError::InvalidImportPath(path) => format!("invalid relative import path `{path}`"),
+        TypeError::InvalidImportAlias(alias) => {
+            format!("cannot derive valid module alias from `{alias}`")
+        }
+        TypeError::MissingModule(path) => format!("missing imported module `{path}`"),
+        TypeError::ImportCycle(cycle) => format!("import cycle: {}", cycle.join(" -> ")),
+        TypeError::UnknownExport { module, name } => {
+            format!("module `{module}` does not export `{name}`")
+        }
+        TypeError::AmbiguousMethod { receiver, method } => format!(
+            "ambiguous imported method `{method}` on type `{}`",
+            format_type(receiver)
+        ),
+        TypeError::NamespaceAsValue(name) => {
+            format!("module namespace `{name}` cannot be used as a value")
+        }
+        TypeError::NotNamespace(ty) => format!(
+            "cannot access member on non-namespace value of type `{}`",
+            format_type(ty)
+        ),
+        TypeError::UnknownName(name) => format!("unknown name `{name}`"),
+        TypeError::UnknownMethod { receiver, method } => {
+            format!("no method `{method}` on type `{}`", format_type(receiver))
+        }
+        TypeError::UnsupportedUnaryOp { op, operand } => {
+            format!(
+                "operator `{op:?}` cannot be applied to `{}`",
+                format_type(operand)
+            )
+        }
+        TypeError::UnsupportedBinaryOp { op, left, right } => format!(
+            "operator `{op:?}` cannot be applied to `{}` and `{}`",
+            format_type(left),
+            format_type(right)
+        ),
+        TypeError::NotCallable(ty) => format!("type `{}` is not callable", format_type(ty)),
+        TypeError::Arity { expected, actual } => {
+            format!("expected {expected} argument(s), found {actual}")
+        }
+        TypeError::Mismatch { expected, actual } => format!(
+            "type mismatch: expected `{}`, found `{}`",
+            format_type(expected),
+            format_type(actual)
+        ),
+    }
+}
+
 struct Checker<'a> {
+    module_path: &'a str,
     scope: &'a ModuleScope,
     view: &'a InterfaceView<'a>,
     type_params: &'a [String],
@@ -1013,7 +1222,34 @@ impl<'a> Checker<'a> {
             }
             self.depth += 1;
         }
-        let body = self.expect_expr(&function.body, &function.returns)?;
+        let body = match &function.body {
+            Some(expr) => self.expect_expr(expr, &function.returns)?,
+            None => {
+                if !matches!(function.returns, Type::Inline | Type::Block | Type::Param(_)) {
+                    return Err((
+                        function.name_span,
+                        TypeError::InvalidExternReturn(function.returns.clone()),
+                    ));
+                }
+                let mut props = Vec::with_capacity(function.parameters.len());
+                for (slot, param) in function.parameters.iter().enumerate() {
+                    if matches!(param.ty, Type::Function(_, _)) {
+                        return Err((
+                            param.span,
+                            TypeError::InvalidExternParam(param.ty.clone()),
+                        ));
+                    }
+                    props.push((Arc::from(param.name.as_str()), ModuleExpr::Local(slot)));
+                }
+                ModuleExpr::CustomNode {
+                    return_ty: function.returns.clone(),
+                    module: Arc::from(self.module_path),
+                    name: Arc::from(function.name.as_str()),
+                    props,
+                    span: function.name_span,
+                }
+            }
+        };
         Ok(CheckedDecl {
             name: function.name.clone(),
             type_params: self.type_params.to_vec(),
@@ -1271,6 +1507,15 @@ impl<'a> Checker<'a> {
             }
             ExprKind::BlockLiteral(pieces) => {
                 (self.check_block_pieces(pieces, expr.span)?, Type::Block)
+            }
+            ExprKind::AttachAttrs(attrs, target) => {
+                let (checked, ty) = self.expression(target, expected)?;
+                let lowered = lower_attrs(attrs);
+                if lowered.is_empty() {
+                    (checked, ty)
+                } else {
+                    (M::AttachAttrs(Box::new(checked), lowered), ty)
+                }
             }
             ExprKind::CompileError(message) => (
                 M::CompileError {
@@ -1728,6 +1973,17 @@ impl<'a> Checker<'a> {
                     vec![M::String(Arc::from(target.as_str())), checked_label],
                 ))
             }
+            InlinePiece::Image { target, alt, span } => Ok(M::Call(
+                Box::new(M::Builtin(BuiltinFn::Image, *span)),
+                vec![
+                    M::String(Arc::from(target.as_str())),
+                    M::String(Arc::from(alt.as_str())),
+                ],
+            )),
+            InlinePiece::Math(text, span) => Ok(M::Call(
+                Box::new(M::Builtin(BuiltinFn::Math, *span)),
+                vec![M::String(Arc::from(text.as_str()))],
+            )),
             InlinePiece::Expr(expr, _) => self.expect_expr(expr, &Type::Inline),
             InlinePiece::Attributed { attrs, target, .. } => {
                 let inner = self.check_inline_piece(target)?;
@@ -1795,6 +2051,60 @@ impl<'a> Checker<'a> {
                     ],
                 );
                 (code, attrs)
+            }
+            BlockPiece::List {
+                ordered,
+                items,
+                attrs,
+                span,
+            } => {
+                let mut checked_items = Vec::with_capacity(items.len());
+                for item in items {
+                    checked_items.push(self.check_block_pieces(item, *span)?);
+                }
+                let lowered = lower_attrs(attrs);
+                return Ok(M::BlockList(*ordered, checked_items, lowered, *span));
+            }
+            BlockPiece::Quote { body, attrs, span } => {
+                let inner = self.check_block_pieces(body, *span)?;
+                let quote = M::Call(Box::new(M::Builtin(BuiltinFn::Quote, *span)), vec![inner]);
+                (quote, attrs)
+            }
+            BlockPiece::Divider { attrs, span } => {
+                let div = M::Call(Box::new(M::Builtin(BuiltinFn::Divider, *span)), vec![]);
+                (div, attrs)
+            }
+            BlockPiece::Table {
+                headers,
+                rows,
+                attrs,
+                span,
+            } => {
+                let mut checked_headers = Vec::with_capacity(headers.len());
+                for cell in headers {
+                    checked_headers.push(self.check_inline_pieces(cell, *span)?);
+                }
+                let mut checked_rows = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let mut checked_row = Vec::with_capacity(row.len());
+                    for cell in row {
+                        checked_row.push(self.check_inline_pieces(cell, *span)?);
+                    }
+                    checked_rows.push(checked_row);
+                }
+                return Ok(M::BlockTable {
+                    headers: checked_headers,
+                    rows: checked_rows,
+                    attrs: lower_attrs(attrs),
+                    span: *span,
+                });
+            }
+            BlockPiece::Math { text, attrs, span } => {
+                let math = M::Call(
+                    Box::new(M::Builtin(BuiltinFn::DisplayMath, *span)),
+                    vec![M::String(Arc::from(text.as_str()))],
+                );
+                (math, attrs)
             }
             BlockPiece::Expr { expr, attrs, span } => {
                 let (checked, ty) = self.expression(expr, None)?;

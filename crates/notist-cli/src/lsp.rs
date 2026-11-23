@@ -6,7 +6,11 @@ use notc::ide::{
     CompletionKind, DiagnosticPhase, DocumentSymbol as NotcSymbol, SymbolKind as NotcSymbolKind,
     WorkspaceAnalysis,
 };
-use notc::{BlockPiece, Decl, Expr, ExprKind, InlinePiece, Span, parse_file, resolve_import_path};
+use notc::{
+    BlockPiece, Decl, DocumentFrontend, Expr, ExprKind, InlinePiece, NotistFrontend, Span,
+    parse_file_with_frontends, resolve_import_path,
+};
+use notist_markdown::MarkdownFrontend;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
@@ -375,7 +379,8 @@ fn build_snapshot(
         let Some(source) = files.get(&rel).map(|f| f.source.clone()) else {
             continue;
         };
-        let parsed = parse_file(&rel, &source);
+        let frontends: [&dyn DocumentFrontend; 2] = [&NotistFrontend, &MarkdownFrontend];
+        let parsed = parse_file_with_frontends(&rel, &source, &frontends);
         let mut refs: Vec<String> = Vec::new();
         for decl in &parsed.program.root.declarations {
             match decl {
@@ -421,7 +426,8 @@ fn build_snapshot(
         .map(|(rel, file)| (rel.as_str(), file.source.as_str()))
         .collect();
     pairs.sort_by_key(|(rel, _)| *rel);
-    let analysis = WorkspaceAnalysis::analyze(&pairs);
+    let frontends: [&dyn DocumentFrontend; 2] = [&NotistFrontend, &MarkdownFrontend];
+    let analysis = WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
 
     WorkspaceSnapshot {
         analysis,

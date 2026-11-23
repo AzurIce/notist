@@ -5,22 +5,11 @@
 //! - `[ hello ]` or multi-line `[\n...\n]` -> `BlockLiteral`
 
 use crate::ast::{
-    AttrEntry, AttrLiteral, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, InlinePiece,
-    Module, Span, Type,
+    AttrEntry, AttrLiteral, BlockPiece, Decl, Expr, ExprKind, InlinePiece, Module, Span,
 };
+use crate::frontend::build_document_module;
 use crate::lexer::ParseDiagnostic;
 use crate::parser::{parse_embedded_expr, parse_embedded_import, parse_embedded_postfix};
-
-/// Parse a Markdown `.md` document file into a `notc::Module` exporting synthetic
-/// `fn __doc__() -> Block` (supporting leading `@!(...)` attrs & `#import`, ATX `#`..`######`
-/// headings, fenced code blocks, lists, quotes, dividers, links, images, emphasis, and safe
-/// explicit `#call(...)` / `#call[...]` invocations).
-pub(crate) fn parse_markdown_document_source(
-    source: &str,
-    diagnostics: &mut Vec<ParseDiagnostic>,
-) -> Module {
-    parse_document_with_mode(source, true, diagnostics)
-}
 
 /// Parse a standalone `.not` document file into a `notc::Module`:
 /// - Leading `@!(key: value, ...)` document-level attributes attach to the root `Block`.
@@ -28,14 +17,6 @@ pub(crate) fn parse_markdown_document_source(
 /// - Remaining top-level Markup becomes synthetic `fn __doc__() -> Block`.
 pub(crate) fn parse_document_source(
     source: &str,
-    diagnostics: &mut Vec<ParseDiagnostic>,
-) -> Module {
-    parse_document_with_mode(source, false, diagnostics)
-}
-
-fn parse_document_with_mode(
-    source: &str,
-    markdown: bool,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Module {
     let bytes = source.as_bytes();
@@ -98,28 +79,9 @@ fn parse_document_with_mode(
     }
 
     let body_start = i;
-    let blocks = parse_blocks_with_mode(&source[body_start..], body_start, 0, markdown, diagnostics);
+    let blocks = parse_blocks(&source[body_start..], body_start, 0, diagnostics);
     let body_span = Span::new(body_start as u32, len as u32);
-    let mut body_expr = Expr::new(ExprKind::BlockLiteral(blocks), body_span);
-    if !doc_attrs.is_empty() {
-        body_expr = Expr::new(
-            ExprKind::AttachAttrs(doc_attrs, Box::new(body_expr)),
-            Span::new(0, len as u32),
-        );
-    }
-
-    declarations.push(Decl::Function(Function {
-        name: DOC_ENTRY.to_owned(),
-        name_span: Span::new(0, 0),
-        type_params: Vec::new(),
-        parameters: Vec::new(),
-        returns: Type::Block,
-        where_clause: None,
-        body: Some(body_expr),
-        span: Span::new(0, len as u32),
-    }));
-
-    Module { declarations }
+    build_document_module(declarations, doc_attrs, blocks, body_span, len as u32)
 }
 
 pub(crate) fn parse_content_literal(
@@ -155,16 +117,6 @@ fn parse_blocks(
     text: &str,
     base: usize,
     depth: usize,
-    diagnostics: &mut Vec<ParseDiagnostic>,
-) -> Vec<BlockPiece> {
-    parse_blocks_with_mode(text, base, depth, false, diagnostics)
-}
-
-fn parse_blocks_with_mode(
-    text: &str,
-    base: usize,
-    depth: usize,
-    markdown: bool,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Vec<BlockPiece> {
     let bytes = text.as_bytes();
@@ -203,7 +155,6 @@ fn parse_blocks_with_mode(
                 continue;
             }
             if bytes[rest] == b'#'
-                && (!markdown || is_markdown_hash_call(bytes, rest))
                 && let Some((expr, after_expr)) =
                     try_parse_hash_expr(text, rest, base, depth, diagnostics)
             {
@@ -225,11 +176,10 @@ fn parse_blocks_with_mode(
             }
         }
 
-        // 2. Heading line: `=`..`======` in Notist (or `#`..`######` in Markdown) followed by space or tab
-        let heading_sigil = if markdown { b'#' } else { b'=' };
-        if bytes[i] == heading_sigil {
+        // 2. Heading line: `=`..`======` followed by space or tab
+        if bytes[i] == b'=' {
             let mut eqs = 0usize;
-            while i + eqs < len && bytes[i + eqs] == heading_sigil {
+            while i + eqs < len && bytes[i + eqs] == b'=' {
                 eqs += 1;
             }
             if (1..=6).contains(&eqs)
@@ -243,13 +193,7 @@ fn parse_blocks_with_mode(
                 }
                 let line_end = find_line_end(bytes, title_start);
                 let title_raw = text[title_start..line_end].trim_end();
-                let title = parse_inlines_with_mode(
-                    title_raw,
-                    base + title_start,
-                    depth,
-                    markdown,
-                    diagnostics,
-                );
+                let title = parse_inlines(title_raw, base + title_start, depth, diagnostics);
                 let attrs = std::mem::take(&mut pending_attrs);
                 blocks.push(BlockPiece::Heading {
                     level: eqs as u8,
@@ -354,8 +298,7 @@ fn parse_blocks_with_mode(
                 cursor = next_line(bytes, l_end);
             }
             let joined = inner_lines.join("\n");
-            let body =
-                parse_blocks_with_mode(&joined, base + q_start, depth + 1, markdown, diagnostics);
+            let body = parse_blocks(&joined, base + q_start, depth + 1, diagnostics);
             let attrs = std::mem::take(&mut pending_attrs);
             blocks.push(BlockPiece::Quote {
                 body,
@@ -376,7 +319,6 @@ fn parse_blocks_with_mode(
                 base_indent,
                 base,
                 depth,
-                markdown,
                 std::mem::take(&mut pending_attrs),
                 diagnostics,
             );
@@ -393,7 +335,6 @@ fn parse_blocks_with_mode(
                 line_start,
                 base,
                 depth,
-                markdown,
                 &mut pending_attrs,
                 diagnostics,
             )
@@ -413,9 +354,8 @@ fn parse_blocks_with_mode(
             continue;
         }
 
-        // 9. Standalone `#expr` block item (in Markdown only explicit `#call(...)` / `#call[...]`).
+        // 9. Standalone `#expr` block item.
         if bytes[i] == b'#'
-            && (!markdown || is_markdown_hash_call(bytes, i))
             && let Some((expr, after_expr)) =
                 try_parse_hash_expr(text, i, base, depth, diagnostics)
         {
@@ -435,7 +375,7 @@ fn parse_blocks_with_mode(
             }
         }
 
-        // 8. Paragraph: accumulate consecutive non-blank inline lines.
+        // 10. Paragraph: accumulate consecutive non-blank inline lines.
         let para_start = i;
         let mut lines: Vec<(usize, usize)> = Vec::new();
         let mut cursor = line_start;
@@ -448,7 +388,7 @@ fn parse_blocks_with_mode(
                 break;
             }
             // Stop paragraph before a new block starter (after at least 1 line).
-            if !lines.is_empty() && is_block_starter(text, bytes, trimmed, markdown) {
+            if !lines.is_empty() && is_block_starter(text, bytes, trimmed) {
                 break;
             }
             let l_end = find_line_end(bytes, trimmed);
@@ -468,13 +408,7 @@ fn parse_blocks_with_mode(
             if idx > 0 {
                 inlines.push(InlinePiece::Text(" ".into(), mk_span(base, ls, ls)));
             }
-            inlines.extend(parse_inlines_with_mode(
-                &text[ls..le],
-                base + ls,
-                depth,
-                markdown,
-                diagnostics,
-            ));
+            inlines.extend(parse_inlines(&text[ls..le], base + ls, depth, diagnostics));
         }
         let attrs = std::mem::take(&mut pending_attrs);
         blocks.push(BlockPiece::Paragraph {
@@ -488,12 +422,11 @@ fn parse_blocks_with_mode(
     blocks
 }
 
-fn is_block_starter(text: &str, bytes: &[u8], i: usize, markdown: bool) -> bool {
+fn is_block_starter(text: &str, bytes: &[u8], i: usize) -> bool {
     let len = bytes.len();
-    let heading_sigil = if markdown { b'#' } else { b'=' };
-    if bytes[i] == heading_sigil {
+    if bytes[i] == b'=' {
         let mut eqs = 0;
-        while i + eqs < len && bytes[i + eqs] == heading_sigil {
+        while i + eqs < len && bytes[i + eqs] == b'=' {
             eqs += 1;
         }
         if (1..=6).contains(&eqs) && i + eqs < len && matches!(bytes[i + eqs], b' ' | b'\t') {
@@ -541,7 +474,6 @@ fn parse_list_at(
     base_indent: usize,
     base: usize,
     depth: usize,
-    markdown: bool,
     attrs: Vec<AttrEntry>,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> (BlockPiece, usize) {
@@ -583,7 +515,6 @@ fn parse_list_at(
                     line_indent,
                     base,
                     depth + 1,
-                    markdown,
                     Vec::new(),
                     diagnostics,
                 );
@@ -602,8 +533,7 @@ fn parse_list_at(
 
         let l_end = find_line_end(bytes, content_start);
         let item_raw = text[content_start..l_end].trim_end();
-        let item_inlines =
-            parse_inlines_with_mode(item_raw, base + content_start, depth, markdown, diagnostics);
+        let item_inlines = parse_inlines(item_raw, base + content_start, depth, diagnostics);
         let item_block = BlockPiece::Paragraph {
             inlines: item_inlines,
             attrs: Vec::new(),
@@ -709,7 +639,6 @@ fn try_parse_table_at(
     line_start: usize,
     base: usize,
     depth: usize,
-    markdown: bool,
     pending_attrs: &mut Vec<AttrEntry>,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Option<(BlockPiece, usize)> {
@@ -724,15 +653,7 @@ fn try_parse_table_at(
     let header_line = &text[line_start..h_end];
     let headers: Vec<Vec<InlinePiece>> = split_table_cells(header_line)
         .into_iter()
-        .map(|(cs, ce)| {
-            parse_inlines_with_mode(
-                &header_line[cs..ce],
-                base + line_start + cs,
-                depth,
-                markdown,
-                diagnostics,
-            )
-        })
+        .map(|(cs, ce)| parse_inlines(&header_line[cs..ce], base + line_start + cs, depth, diagnostics))
         .collect();
 
     let sep_start = next_line(bytes, h_end);
@@ -753,15 +674,7 @@ fn try_parse_table_at(
         let row_line = &text[cursor..r_end];
         let row_cells: Vec<Vec<InlinePiece>> = split_table_cells(row_line)
             .into_iter()
-            .map(|(cs, ce)| {
-                parse_inlines_with_mode(
-                    &row_line[cs..ce],
-                    base + cursor + cs,
-                    depth,
-                    markdown,
-                    diagnostics,
-                )
-            })
+            .map(|(cs, ce)| parse_inlines(&row_line[cs..ce], base + cursor + cs, depth, diagnostics))
             .collect();
         rows.push(row_cells);
         table_end = r_end;
@@ -931,16 +844,6 @@ fn parse_inlines(
     depth: usize,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Vec<InlinePiece> {
-    parse_inlines_with_mode(text, base, depth, false, diagnostics)
-}
-
-fn parse_inlines_with_mode(
-    text: &str,
-    base: usize,
-    depth: usize,
-    markdown: bool,
-    diagnostics: &mut Vec<ParseDiagnostic>,
-) -> Vec<InlinePiece> {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let mut i = 0usize;
@@ -971,14 +874,8 @@ fn parse_inlines_with_mode(
             b'@' if i + 1 < len && bytes[i + 1] == b'(' => {
                 if let Some((attrs, next_i)) = parse_attr_list(text, i, base, diagnostics) {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let rest_pieces = parse_single_inline_target(
-                        text,
-                        next_i,
-                        base,
-                        depth,
-                        markdown,
-                        diagnostics,
-                    );
+                    let rest_pieces =
+                        parse_single_inline_target(text, next_i, base, depth, diagnostics);
                     if let Some((target, after_target)) = rest_pieces {
                         pieces.push(InlinePiece::Attributed {
                             attrs,
@@ -1002,10 +899,7 @@ fn parse_inlines_with_mode(
                 text_buf.push('@');
                 i += 1;
             }
-            b'#' if !markdown
-                || ((i == 0 || !is_url_or_ident_byte(bytes[i - 1]))
-                    && is_markdown_hash_call(bytes, i)) =>
-            {
+            b'#' => {
                 if let Some((expr, next_i)) =
                     try_parse_hash_expr(text, i, base, depth, diagnostics)
                 {
@@ -1020,43 +914,11 @@ fn parse_inlines_with_mode(
                 text_buf.push('#');
                 i += 1;
             }
-            b'*' if markdown && i + 1 < len && bytes[i + 1] == b'*' => {
-                if let Some(rel) = text[i + 2..].find("**") {
-                    let close = i + 2 + rel;
-                    flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let inner = parse_inlines_with_mode(
-                        &text[i + 2..close],
-                        base + i + 2,
-                        depth,
-                        markdown,
-                        diagnostics,
-                    );
-                    pieces.push(InlinePiece::Strong(inner, mk_span(base, i, close + 2)));
-                    i = close + 2;
-                    continue;
-                }
-                if text_buf.is_empty() {
-                    text_start = i;
-                }
-                text_buf.push('*');
-                i += 1;
-            }
             b'*' => {
                 if let Some(close) = find_closing_delim(bytes, i + 1, b'*') {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let inner = parse_inlines_with_mode(
-                        &text[i + 1..close],
-                        base + i + 1,
-                        depth,
-                        markdown,
-                        diagnostics,
-                    );
-                    let piece = if markdown {
-                        InlinePiece::Emph(inner, mk_span(base, i, close + 1))
-                    } else {
-                        InlinePiece::Strong(inner, mk_span(base, i, close + 1))
-                    };
-                    pieces.push(piece);
+                    let inner = parse_inlines(&text[i + 1..close], base + i + 1, depth, diagnostics);
+                    pieces.push(InlinePiece::Strong(inner, mk_span(base, i, close + 1)));
                     i = close + 1;
                     continue;
                 }
@@ -1069,13 +931,7 @@ fn parse_inlines_with_mode(
             b'_' if i == 0 || !bytes[i - 1].is_ascii_alphanumeric() => {
                 if let Some(close) = find_closing_underscore(bytes, i + 1) {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let inner = parse_inlines_with_mode(
-                        &text[i + 1..close],
-                        base + i + 1,
-                        depth,
-                        markdown,
-                        diagnostics,
-                    );
+                    let inner = parse_inlines(&text[i + 1..close], base + i + 1, depth, diagnostics);
                     pieces.push(InlinePiece::Emph(inner, mk_span(base, i, close + 1)));
                     i = close + 1;
                     continue;
@@ -1144,13 +1000,8 @@ fn parse_inlines_with_mode(
             b'[' => {
                 if let Some((label_end, target_start, target_end)) = parse_link_bounds(bytes, i) {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let label = parse_inlines_with_mode(
-                        &text[i + 1..label_end],
-                        base + i + 1,
-                        depth,
-                        markdown,
-                        diagnostics,
-                    );
+                    let label =
+                        parse_inlines(&text[i + 1..label_end], base + i + 1, depth, diagnostics);
                     let target = text[target_start..target_end].to_owned();
                     pieces.push(InlinePiece::Link {
                         target,
@@ -1186,7 +1037,6 @@ fn parse_single_inline_target(
     start: usize,
     base: usize,
     depth: usize,
-    markdown: bool,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Option<(InlinePiece, usize)> {
     let bytes = text.as_bytes();
@@ -1194,53 +1044,26 @@ fn parse_single_inline_target(
         return None;
     }
     match bytes[start] {
-        b'#' if !markdown || is_markdown_hash_call(bytes, start) => {
+        b'#' => {
             let (expr, next) = try_parse_hash_expr(text, start, base, depth, diagnostics)?;
             Some((
                 InlinePiece::Expr(Box::new(expr), mk_span(base, start, next)),
                 next,
             ))
         }
-        b'*' if markdown && start + 1 < bytes.len() && bytes[start + 1] == b'*' => {
-            let rel = text[start + 2..].find("**")?;
-            let close = start + 2 + rel;
-            let inner = parse_inlines_with_mode(
-                &text[start + 2..close],
-                base + start + 2,
-                depth,
-                markdown,
-                diagnostics,
-            );
-            Some((
-                InlinePiece::Strong(inner, mk_span(base, start, close + 2)),
-                close + 2,
-            ))
-        }
         b'*' => {
             let close = find_closing_delim(bytes, start + 1, b'*')?;
-            let inner = parse_inlines_with_mode(
-                &text[start + 1..close],
-                base + start + 1,
-                depth,
-                markdown,
-                diagnostics,
-            );
-            let piece = if markdown {
-                InlinePiece::Emph(inner, mk_span(base, start, close + 1))
-            } else {
-                InlinePiece::Strong(inner, mk_span(base, start, close + 1))
-            };
-            Some((piece, close + 1))
+            let inner =
+                parse_inlines(&text[start + 1..close], base + start + 1, depth, diagnostics);
+            Some((
+                InlinePiece::Strong(inner, mk_span(base, start, close + 1)),
+                close + 1,
+            ))
         }
         b'_' => {
-            let close = find_closing_delim(bytes, start + 1, b'_')?;
-            let inner = parse_inlines_with_mode(
-                &text[start + 1..close],
-                base + start + 1,
-                depth,
-                markdown,
-                diagnostics,
-            );
+            let close = find_closing_underscore(bytes, start + 1)?;
+            let inner =
+                parse_inlines(&text[start + 1..close], base + start + 1, depth, diagnostics);
             Some((
                 InlinePiece::Emph(inner, mk_span(base, start, close + 1)),
                 close + 1,
@@ -1269,11 +1092,10 @@ fn parse_single_inline_target(
         }
         b'[' => {
             let (label_end, target_start, target_end) = parse_link_bounds(bytes, start)?;
-            let label = parse_inlines_with_mode(
+            let label = parse_inlines(
                 &text[start + 1..label_end],
                 base + start + 1,
                 depth,
-                markdown,
                 diagnostics,
             );
             Some((
@@ -1308,34 +1130,6 @@ fn parse_single_inline_target(
             }
         }
     }
-}
-
-fn is_url_or_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'-' | b'.' | b':' | b'?' | b'&' | b'=')
-}
-
-/// In Markdown mode, only treat `#...` as a Notist invocation when it is an explicit
-/// `#ident(...)` / `#ident[...]` / `#ns.ident(...)` / `#ns.ident[...]` call, never a
-/// heading (`# Title`), hashtag (`#tag`), or URL anchor (`#L1-L27`).
-fn is_markdown_hash_call(bytes: &[u8], hash_pos: usize) -> bool {
-    let len = bytes.len();
-    let mut j = hash_pos + 1;
-    if j >= len || !(bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
-        return false;
-    }
-    while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-        j += 1;
-    }
-    while j < len && bytes[j] == b'.' {
-        j += 1;
-        if j >= len || !(bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
-            return false;
-        }
-        while j < len && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-            j += 1;
-        }
-    }
-    j < len && matches!(bytes[j], b'(' | b'[')
 }
 
 fn find_closing_delim(bytes: &[u8], start: usize, delim: u8) -> Option<usize> {
@@ -1456,7 +1250,7 @@ fn parse_attr_list(
     parse_attr_list_at(text, at_pos, at_pos + 1, base, diagnostics)
 }
 
-fn parse_attr_list_at(
+pub(crate) fn parse_attr_list_at(
     text: &str,
     at_pos: usize,
     open_paren_pos: usize,

@@ -19,7 +19,7 @@ use crate::check::{
     specialize_roots, substitute_type,
 };
 use crate::module::{default_import_alias, normalize_path, resolve_import_path};
-use crate::parser::parse_file;
+use crate::parser::parse_file_with_frontends;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +130,15 @@ pub struct WorkspaceAnalysis {
 impl WorkspaceAnalysis {
     /// Analyze an explicit in-memory set of `(path, source)` files (`.notc` and `.not`).
     pub fn analyze(files: &[(&str, &str)]) -> Self {
+        Self::analyze_with_frontends(files, &[])
+    }
+
+    /// Analyze an explicit in-memory set of `(path, source)` files with pluggable
+    /// [`DocumentFrontend`](crate::DocumentFrontend)s (e.g. Markdown).
+    pub fn analyze_with_frontends(
+        files: &[(&str, &str)],
+        frontends: &[&dyn crate::frontend::DocumentFrontend],
+    ) -> Self {
         let mut diagnostics: Vec<IdeDiagnostic> = Vec::new();
         let mut module_paths: Vec<String> = Vec::with_capacity(files.len());
         let mut sources: Vec<String> = Vec::with_capacity(files.len());
@@ -149,7 +158,7 @@ impl WorkspaceAnalysis {
             }
             let idx = module_paths.len();
             module_indices.insert(path.clone(), idx);
-            let parsed = parse_file(&path, source);
+            let parsed = parse_file_with_frontends(&path, source, frontends);
             for diag in parsed.diagnostics {
                 diagnostics.push(IdeDiagnostic {
                     module: path.clone(),
@@ -178,7 +187,7 @@ impl WorkspaceAnalysis {
             let module_id = ModuleId(idx);
             let module = &parsed_modules[idx];
             let path = &module_paths[idx];
-            let is_doc = path.ends_with(".not");
+            let is_doc = !path.ends_with(".notc");
 
             let interface = collect_module_interface(module_id, module, true);
             for diag in interface.diagnostics {

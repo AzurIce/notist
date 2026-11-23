@@ -440,12 +440,15 @@ fn load_notc_graph(
 
     let entry_rel = files.first().map(|(r, _, _)| r.clone()).unwrap_or_default();
 
+    let frontends: [&dyn notc::DocumentFrontend; 2] =
+        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
+
     // Transitively load imported `.notc` modules.
     while let Some(rel) = queue.pop_front() {
         let Some(src) = files.iter().find(|(r, _, _)| r == &rel).map(|(_, _, s)| s.clone()) else {
             continue;
         };
-        let parsed = notc::parse_file(&rel, &src);
+        let parsed = notc::parse_file_with_frontends(&rel, &src, &frontends);
         for decl in &parsed.program.root.declarations {
             if let notc::Decl::Import(import) = decl
                 && let Ok(target_rel) = notc::resolve_import_path(&rel, &import.path)
@@ -501,7 +504,9 @@ fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+    let frontends: [&dyn notc::DocumentFrontend; 2] =
+        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
+    let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
     let diags = analysis.diagnostics();
     if diags.is_empty() {
         ExitCode::SUCCESS
@@ -526,12 +531,35 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let project = match notc::check_project(&pairs) {
-        Ok(project) => project,
-        Err(_) => {
-            let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
-            emit_notc_diagnostics(&files, analysis.diagnostics());
-            return ExitCode::FAILURE;
+    let frontends: [&dyn notc::DocumentFrontend; 2] =
+        [&notc::NotistFrontend, &notist_markdown::MarkdownFrontend];
+    let parsed_files: Vec<(String, notc::ParseResult)> = files
+        .iter()
+        .map(|(rel, _, src)| {
+            (
+                rel.clone(),
+                notc::parse_file_with_frontends(rel, src, &frontends),
+            )
+        })
+        .collect();
+    let has_parse_errors = parsed_files.iter().any(|(_, p)| !p.diagnostics.is_empty());
+    let module_refs: Vec<(&str, &notc::Module)> = parsed_files
+        .iter()
+        .map(|(rel, p)| (rel.as_str(), &p.program.root))
+        .collect();
+    let project = if has_parse_errors {
+        let analysis = notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+        emit_notc_diagnostics(&files, analysis.diagnostics());
+        return ExitCode::FAILURE;
+    } else {
+        match notc::check_parsed_modules(&module_refs) {
+            Ok(project) => project,
+            Err(_) => {
+                let analysis =
+                    notc::ide::WorkspaceAnalysis::analyze_with_frontends(&pairs, &frontends);
+                emit_notc_diagnostics(&files, analysis.diagnostics());
+                return ExitCode::FAILURE;
+            }
         }
     };
     let block = match project.eval_document(&entry_rel) {

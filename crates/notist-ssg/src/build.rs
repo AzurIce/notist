@@ -5,9 +5,11 @@ use crate::{
     templates,
 };
 use notc::{
-    DataHost, Decl, DocumentError, JsonValue, Module, ProjectDiagnosticKind, check_parsed_modules,
-    format_type_error, parse, parse_document, parse_markdown_document, resolve_import_path,
+    DataHost, Decl, DocumentError, DocumentFrontend, JsonValue, Module, NotistFrontend,
+    ProjectDiagnosticKind, check_parsed_modules, format_type_error, parse,
+    parse_file_with_frontends, resolve_import_path,
 };
+use notist_markdown::MarkdownFrontend;
 use notist::{
     Diagnostic, DiagnosticCode, InputRead, Phase, Resources, SourceDiagnostic, TextRange, Vault,
     publication::{
@@ -686,11 +688,13 @@ pub(crate) fn build<R: Resources + Send>(
                     for (route, text) in chunk {
                         let virtual_path = to_virtual_path(&vroot, &route.source);
                         let source_arc: Arc<str> = Arc::from(text.as_str());
-                        let parsed = if route.source.extension().is_some_and(|e| e == "md") {
-                            parse_markdown_document(&source_arc)
-                        } else {
-                            parse_document(&source_arc)
-                        };
+                        let frontends: [&dyn DocumentFrontend; 2] =
+                            [&NotistFrontend, &MarkdownFrontend];
+                        let parsed = parse_file_with_frontends(
+                            &virtual_path,
+                            &source_arc,
+                            &frontends,
+                        );
                         if !parsed.diagnostics.is_empty() {
                             for d in parsed.diagnostics {
                                 let range = TextRange::new(d.span.start.into(), d.span.end.into());

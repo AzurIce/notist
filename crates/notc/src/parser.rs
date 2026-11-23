@@ -3,9 +3,8 @@ use crate::ast::{
     Param, Program, Span, Type, TypeMatchArm, TypeParam, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
-use crate::content_parser::{
-    parse_content_literal, parse_document_source, parse_markdown_document_source,
-};
+use crate::content_parser::{parse_content_literal, parse_document_source};
+use crate::frontend::DocumentFrontend;
 use crate::lexer::{ParseDiagnostic, Token, TokenKind, lex};
 
 const MAX_PARSE_DEPTH: usize = 128;
@@ -50,23 +49,33 @@ pub fn parse_document(source: &str) -> ParseResult {
     }
 }
 
-/// Parse a `.md` Markdown document file into a `Program` whose root module
-/// exports synthetic `fn __doc__() -> Block`.
-pub fn parse_markdown_document(source: &str) -> ParseResult {
-    let mut diagnostics = Vec::new();
-    let root = parse_markdown_document_source(source, &mut diagnostics);
-    ParseResult {
-        program: Program { root },
-        diagnostics,
-    }
+/// Parse a `.not` or `.notc` file based on its file extension.
+pub fn parse_file(path: &str, source: &str) -> ParseResult {
+    parse_file_with_frontends(path, source, &[])
 }
 
-/// Parse a `.not`, `.md`, or `.notc` file based on its file extension.
-pub fn parse_file(path: &str, source: &str) -> ParseResult {
+/// Parse a `.notc` module, native `.not` document, or any document handled by a
+/// registered [`DocumentFrontend`] matching the file extension.
+pub fn parse_file_with_frontends(
+    path: &str,
+    source: &str,
+    frontends: &[&dyn DocumentFrontend],
+) -> ParseResult {
+    if let Some(ext) = path.rsplit('.').next()
+        && path.contains('.')
+    {
+        for frontend in frontends {
+            if frontend
+                .extensions()
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(ext))
+            {
+                return frontend.parse_document(source);
+            }
+        }
+    }
     if path.ends_with(".not") {
         parse_document(source)
-    } else if path.ends_with(".md") {
-        parse_markdown_document(source)
     } else {
         parse(source)
     }

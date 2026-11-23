@@ -92,7 +92,7 @@ impl SiteExtension for Book {
             // SUMMARY is parsed declaratively via `notc`, never evaluated with side effects.
             let is_md = path.extension().is_some_and(|e| e == "md");
             let parsed = if is_md {
-                notc::parse_markdown_document(&source)
+                notist_markdown::parse_markdown_document(&source)
             } else {
                 notc::parse_document(&source)
             };

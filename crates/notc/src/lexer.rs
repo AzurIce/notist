@@ -25,8 +25,6 @@ pub(crate) enum TokenKind {
     Float,
     String,
     Content,
-    HashLBracket,
-    RBracket,
     LParen,
     RParen,
     LBrace,
@@ -75,8 +73,6 @@ impl TokenKind {
             Self::Float => "float literal",
             Self::String => "string literal",
             Self::Content => "content literal",
-            Self::HashLBracket => "`#[`",
-            Self::RBracket => "`]`",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
             Self::LBrace => "`{`",
@@ -157,10 +153,6 @@ pub(crate) fn lex(source: &str) -> (Vec<Token>, Vec<ParseDiagnostic>) {
             b'"' => {
                 i = scan_escaped_string(bytes, i, &mut tokens, &mut diagnostics);
             }
-            b'#' if i + 1 < len && bytes[i + 1] == b'[' => {
-                push_double(&mut tokens, TokenKind::HashLBracket, &mut i);
-            }
-            b']' => push_single(&mut tokens, TokenKind::RBracket, &mut i),
             b'[' => {
                 i = scan_content_literal(bytes, i, &mut tokens, &mut diagnostics);
             }

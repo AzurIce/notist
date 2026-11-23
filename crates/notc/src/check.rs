@@ -1208,7 +1208,7 @@ pub fn format_type_error(error: &TypeError) -> String {
             format_type(ty)
         ),
         TypeError::CannotInferEmptyList => {
-            "cannot infer element type of empty list literal `#[ ]`".into()
+            "cannot infer element type of empty list literal `()`".into()
         }
         TypeError::Arity { expected, actual } => {
             format!("expected {expected} argument(s), found {actual}")
@@ -1523,6 +1523,15 @@ impl<'a> Checker<'a> {
         use ModuleExpr as M;
         Ok(match &expr.kind {
             ExprKind::Unit => (M::Unit, Type::Unit),
+            ExprKind::EmptyParen => {
+                if let Some(ty) = expected
+                    && let Type::List(elem) = self.resolve_ty(ty)
+                {
+                    (M::List(Vec::new()), Type::List(elem))
+                } else {
+                    (M::Unit, Type::Unit)
+                }
+            }
             ExprKind::Bool(b) => (M::Bool(*b), Type::Bool),
             ExprKind::Int(n) => (M::Int(*n), Type::Int),
             ExprKind::Float(f) => (M::Float(*f), Type::Float),
@@ -2018,6 +2027,7 @@ impl<'a> Checker<'a> {
     ) -> Result<ModuleExpr, (Span, TypeError)> {
         use ModuleExpr as M;
         match piece {
+            InlinePiece::Attr { span, .. } => Ok(M::InlineFragment(Vec::new(), Attrs::empty(), *span)),
             InlinePiece::Text(text, span) => Ok(M::Call(
                 Box::new(M::Builtin(BuiltinFn::Text, *span)),
                 vec![M::String(Arc::from(text.as_str()))],
@@ -2093,6 +2103,9 @@ impl<'a> Checker<'a> {
     ) -> Result<ModuleExpr, (Span, TypeError)> {
         use ModuleExpr as M;
         let (base, attrs) = match piece {
+            BlockPiece::Attr { span, .. } => {
+                return Ok(M::BlockFragment(Vec::new(), Attrs::empty(), *span));
+            }
             BlockPiece::Paragraph {
                 inlines,
                 attrs,
@@ -2316,21 +2329,26 @@ impl<'a> Checker<'a> {
     }
 }
 
+fn lower_attr_literal(literal: &AttrLiteral) -> AttrValue {
+    match literal {
+        AttrLiteral::Bool(b) => AttrValue::Bool(*b),
+        AttrLiteral::Int(n) => AttrValue::Int(*n),
+        AttrLiteral::Float(f) => AttrValue::Float(*f),
+        AttrLiteral::String(s) => AttrValue::String(Arc::from(s.as_str())),
+        AttrLiteral::List(items) => {
+            let lowered: Vec<AttrValue> = items.iter().map(lower_attr_literal).collect();
+            AttrValue::List(Arc::from(lowered))
+        }
+    }
+}
+
 fn lower_attrs(entries: &[AttrEntry]) -> Attrs {
     if entries.is_empty() {
         return Attrs::empty();
     }
     let pairs = entries
         .iter()
-        .map(|entry| {
-            let value = match &entry.value {
-                AttrLiteral::Bool(b) => AttrValue::Bool(*b),
-                AttrLiteral::Int(n) => AttrValue::Int(*n),
-                AttrLiteral::Float(f) => AttrValue::Float(*f),
-                AttrLiteral::String(s) => AttrValue::String(Arc::from(s.as_str())),
-            };
-            (Arc::from(entry.key.as_str()), value)
-        })
+        .map(|entry| (Arc::from(entry.key.as_str()), lower_attr_literal(&entry.value)))
         .collect();
     Attrs::from_entries(pairs)
 }

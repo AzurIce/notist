@@ -9,7 +9,7 @@
 use crate::ast::{
     AttrEntry, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, Import, Module, Span, Type,
 };
-use crate::content_parser::{parse_attr_list_at, parse_document_source};
+use crate::content_parser::{attach_block_attrs, parse_attr_list_at, parse_document_source};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::{
     ParseResult, parse_embedded_expr, parse_embedded_import, parse_embedded_postfix,
@@ -46,13 +46,18 @@ impl DocumentFrontend for NotistFrontend {
 
 /// Package a frontend's parsed imports, optional document-level attributes, and
 /// top-level block pieces into a standard `notc::Module` exporting `fn __doc__() -> Block`.
+///
+/// Runs the unified AST-level attribute attachment pass so `@(...)` annotations
+/// attach identically across all [`DocumentFrontend`] implementations.
 pub fn build_document_module(
     mut declarations: Vec<Decl>,
     doc_attrs: Vec<AttrEntry>,
     blocks: Vec<BlockPiece>,
     body_span: Span,
     full_len: u32,
+    diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Module {
+    let blocks = attach_block_attrs(blocks, diagnostics);
     let mut body_expr = Expr::new(ExprKind::BlockLiteral(blocks), body_span);
     if !doc_attrs.is_empty() {
         body_expr = Expr::new(

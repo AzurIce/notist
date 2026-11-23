@@ -155,7 +155,11 @@ fn format_value(value: Value) -> String {
         Value::Json(json) => json.to_string(),
         Value::List(items) => {
             let rendered: Vec<String> = items.iter().cloned().map(format_value).collect();
-            format!("#[{}]", rendered.join(", "))
+            if rendered.len() == 1 {
+                format!("({},)", rendered[0])
+            } else {
+                format!("({})", rendered.join(", "))
+            }
         }
         Value::Function(_) => "<function>".into(),
         Value::Builtin(b, _) => format!("<builtin:{b:?}>"),

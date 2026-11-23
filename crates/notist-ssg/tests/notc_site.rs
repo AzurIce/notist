@@ -91,14 +91,14 @@ fn id<T: Type>(x: T) -> T { x }
 
     let index_html = html(&output, "index.html");
     assert!(index_html.contains("<title>Notist Home · Notist Docs</title>"));
-    assert!(index_html.contains(r#"<h1 id="welcome">Welcome to <strong>⚡ Notist</strong></h1>"#));
+    assert!(index_html.contains(r#"<section id="welcome"><h1>Welcome to <strong>⚡ Notist</strong></h1>"#));
     assert!(index_html.contains(r#"href="guide/#arch""#));
     assert!(index_html.contains(r#"<img src="logo.svg" alt="logo">"#));
     assert!(index_html.contains(r#"<aside class="callout callout-tip"><p>Powered by the new statically typed <code>notc</code> engine.</p></aside>"#));
     assert!(index_html.contains(r#"class="language-notc""#));
 
     let guide_html = html(&output, "guide/index.html");
-    assert!(guide_html.contains(r#"<h2 id="arch">Architecture</h2>"#));
+    assert!(guide_html.contains(r#"<section id="arch"><h2>Architecture</h2>"#));
     assert!(guide_html.contains(r#"<ul><li>Single-node immutable content trees</li><li>Explicit <code>sectionize()</code> and bottom-up rewriting</li></ul>"#));
     assert!(guide_html.contains(r#"<blockquote><p>Zero runtime surprises.</p></blockquote>"#));
     assert!(guide_html.contains("<hr>"));
@@ -244,10 +244,10 @@ fn catalog_page(source: String) -> Block {
     let rows = for rec in page.get("items").as_list() {
         let id = rec.at(0).as_string("");
         let name = rec.at(1).as_string("");
-        #[
+        (
             text(id).with_attr("class", "numeric"),
             link("/items/" + id + ".html", text(name)),
-        ]
+        )
     };
     [
         = Items
@@ -255,7 +255,7 @@ fn catalog_page(source: String) -> Block {
         #para(text(count.to_string() + " total"))
 
         @(class: "table-scroll")#div[
-            #table(#[text("ID"), text("Name")], rows)
+            #table((text("ID"), text("Name")), rows)
         ]
 
         @(class: "pagination", aria-label: "Catalog Pages")
@@ -286,7 +286,7 @@ fn catalog_page(source: String) -> Block {
 
     let item2 = html(&output, "items/2.html");
     assert!(item2.contains(r#"<section id="item-detail">"#));
-    assert!(item2.contains(r#"<h1 id="fire-shard">Fire Shard</h1>"#));
+    assert!(item2.contains(r#"<section id="fire-shard"><h1>Fire Shard</h1>"#));
     assert!(item2.contains(r#"<div id="meta" class="item-meta"><p><strong>ID</strong> 2</p></div>"#));
 }
 

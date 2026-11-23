@@ -45,6 +45,9 @@ fn attr_to_json(value: &AttrValue) -> serde_json::Value {
         AttrValue::Float(f) => serde_json::Number::from_f64(*f)
             .map_or(serde_json::Value::Null, serde_json::Value::Number),
         AttrValue::String(s) => serde_json::Value::String(s.to_string()),
+        AttrValue::List(items) => {
+            serde_json::Value::Array(items.iter().map(attr_to_json).collect())
+        }
     }
 }
 
@@ -103,7 +106,38 @@ fn collect_headings(
             });
         }
         BlockKind::Section { heading, body } => {
-            collect_headings(heading, ids, heading_ids, out);
+            if let BlockKind::Heading { level, title } = &heading.node().kind {
+                let title_text = title.plain_text();
+                let explicit = match block
+                    .node()
+                    .attrs
+                    .get("id")
+                    .or_else(|| heading.node().attrs.get("id"))
+                {
+                    Some(AttrValue::String(id)) => Some(id.to_string()),
+                    _ => None,
+                };
+                let id = explicit.unwrap_or_else(|| {
+                    let base = slug(&title_text);
+                    let mut candidate = base.clone();
+                    let mut n = 2;
+                    while !ids.insert(candidate.clone()) {
+                        candidate = format!("{base}-{n}");
+                        n += 1;
+                    }
+                    candidate
+                });
+                ids.insert(id.clone());
+                heading_ids.push(id.clone());
+                out.push(Heading {
+                    title: title_text,
+                    anchor: notist::publication::url::fragment(&id),
+                    id,
+                    level: i64::from(*level),
+                });
+            } else {
+                collect_headings(heading, ids, heading_ids, out);
+            }
             collect_headings(body, ids, heading_ids, out);
         }
         BlockKind::Callout { body, .. }

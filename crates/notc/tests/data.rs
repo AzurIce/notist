@@ -81,11 +81,11 @@ fn catalog(source: String) -> Block {
         let name = record.at(1).as_string("");
         let cat = record.at(2).as_string("");
         let target = "/items/" + id + ".html";
-        #[
+        (
             text(id).with_attr("class", "numeric"),
             link(target, text(name)),
             text(cat).with_attr("class", "numeric"),
-        ]
+        )
     };
     let count_text = count.to_string() + " items · " + version + " · ok=" + true.to_string();
     [
@@ -95,7 +95,7 @@ fn catalog(source: String) -> Block {
 
         @(id: "catalog")#div[
             @(class: "table-scroll")#div[
-                #table(#[text("ID"), text("Name"), text("Category")], rows)
+                #table((text("ID"), text("Name"), text("Category")), rows)
             ]
         ]
 
@@ -152,13 +152,13 @@ fn catalog(source: String) -> Block {
 fn list_concat_equality_len_and_contextual_empty_list() {
     let src = r#"
 fn check_lists() -> Bool {
-    let a = #[1, 2];
-    let b = #[3];
+    let a = (1, 2);
+    let b = (3,);
     let c = a + b;
     let doubled = for x in c { x * 2 };
-    let empty_table = table(#[], #[]);
+    let empty_table = table((), ());
     let ok_len = doubled.len() == 3;
-    let ok_eq = doubled == #[2, 4, 6];
+    let ok_eq = doubled == (2, 4, 6);
     let ok_table = empty_table.plain_text() == "";
     ok_len && ok_eq && ok_table
 }
@@ -172,12 +172,12 @@ fn check_lists() -> Bool {
 
 #[test]
 fn statically_rejects_bad_list_and_for_types() {
-    let bad_empty = "fn f() -> Int { let xs = #[]; 0 }";
-    let errs = check_project(&[("a.notc", bad_empty)]).expect_err("empty list needs context");
+    let bad_empty_iter = "fn f() -> List<Int> { for x in () { 1 } }";
+    let errs = check_project(&[("a.notc", bad_empty_iter)]).expect_err("unit () is not iterable");
     assert!(matches!(
         &errs[0].kind,
         ProjectDiagnosticKind::Type {
-            error: TypeError::CannotInferEmptyList,
+            error: TypeError::NotIterable(_),
             ..
         }
     ));
@@ -192,7 +192,7 @@ fn statically_rejects_bad_list_and_for_types() {
         }
     ));
 
-    let bad_mixed = "fn f() -> List<Int> { #[1, \"two\"] }";
+    let bad_mixed = "fn f() -> List<Int> { (1, \"two\") }";
     let errs = check_project(&[("a.notc", bad_mixed)]).expect_err("mixed list elements fail");
     assert!(matches!(
         &errs[0].kind,

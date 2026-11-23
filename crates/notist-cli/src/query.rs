@@ -3,16 +3,20 @@
 use notc::{AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span};
 use serde_json::{Map, Value, json};
 
+fn attr_value_json(v: &AttrValue) -> Value {
+    match v {
+        AttrValue::Bool(b) => Value::Bool(*b),
+        AttrValue::Int(n) => json!(n),
+        AttrValue::Float(f) => json!(f),
+        AttrValue::String(s) => Value::String(s.to_string()),
+        AttrValue::List(items) => Value::Array(items.iter().map(attr_value_json).collect()),
+    }
+}
+
 fn attrs_json(attrs: &notc::Attrs) -> Value {
     let mut map = Map::new();
     for (k, v) in attrs.entries() {
-        let jv = match v {
-            AttrValue::Bool(b) => Value::Bool(*b),
-            AttrValue::Int(n) => json!(n),
-            AttrValue::Float(f) => json!(f),
-            AttrValue::String(s) => Value::String(s.to_string()),
-        };
-        map.insert(k.to_string(), jv);
+        map.insert(k.to_string(), attr_value_json(v));
     }
     Value::Object(map)
 }
@@ -203,6 +207,9 @@ fn matches_attr_id(attrs: &notc::Attrs, needle: &str) -> bool {
 fn matches_attr_tag(attrs: &notc::Attrs, needle: &str) -> bool {
     match attrs.get("tags").or_else(|| attrs.get("tag")) {
         Some(AttrValue::String(s)) => s.split(',').map(str::trim).any(|t| t == needle),
+        Some(AttrValue::List(items)) => items
+            .iter()
+            .any(|v| matches!(v, AttrValue::String(s) if s.as_ref() == needle)),
         _ => false,
     }
 }

@@ -153,7 +153,7 @@ let x = 1;
         String::from_utf8_lossy(&html_cmd.stderr)
     );
     let html_text = fs::read_to_string(html_out_dir.join("index.html")).unwrap();
-    assert!(html_text.contains("<h1 id=\"potion\">Potion</h1>"), "html: {html_text}");
+    assert!(html_text.contains("<section id=\"potion\"><h1>Potion</h1>"), "html: {html_text}");
     assert!(html_text.contains("<strong>Notist</strong>"), "html: {html_text}");
     assert!(
         html_text.contains("<code class=\"language-rust\"><span class=\"z-source z-rust\">"),

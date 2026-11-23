@@ -12,6 +12,7 @@ pub enum AttrValue {
     Int(i64),
     Float(f64),
     String(Arc<str>),
+    List(Arc<[AttrValue]>),
 }
 
 /// Immutable ordered key-value attributes attached to a content node.
@@ -774,13 +775,19 @@ impl Block {
         let close_top = |stack: &mut Vec<OpenSection>, root: &mut Vec<Block>| {
             let section = stack.pop().expect("non-empty section stack");
             let span = section.heading.0.span;
+            let section_attrs = section.heading.0.attrs.clone();
+            let clean_heading = if section_attrs.is_empty() {
+                section.heading
+            } else {
+                Block::new(section.heading.0.kind.clone(), Attrs::empty(), span)
+            };
             let body = Block::fragment(section.body, Attrs::empty(), span);
             let node = Block::new(
                 BlockKind::Section {
-                    heading: section.heading,
+                    heading: clean_heading,
                     body,
                 },
-                Attrs::empty(),
+                section_attrs,
                 span,
             );
             if let Some(parent) = stack.last_mut() {
@@ -1285,6 +1292,19 @@ impl fmt::Display for AttrValue {
             Self::Int(n) => write!(f, "{n}"),
             Self::Float(v) => write!(f, "{v}"),
             Self::String(s) => write!(f, "{s:?}"),
+            Self::List(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                if items.len() == 1 {
+                    write!(f, ",")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

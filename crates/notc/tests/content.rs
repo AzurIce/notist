@@ -407,9 +407,10 @@ fn sectionize_folds_flat_headings_into_nested_sections() {
         panic!("expected Section for Chapter 1, got {}", top[1]);
     };
     assert_eq!(
-        heading.node().attrs.get("id"),
+        top[1].node().attrs.get("id"),
         Some(&AttrValue::String("ch1".into()))
     );
+    assert!(heading.node().attrs.is_empty());
     let BlockKind::Fragment(ch1_children) = &body.node().kind else {
         panic!("expected Chapter 1 body fragment, got {body}");
     };
@@ -502,4 +503,66 @@ fn plain_text_inline_attrs_and_single_line_block_attr_expr() {
         children[1].node().attrs.get("aria-label"),
         Some(&AttrValue::String("Info".into()))
     );
+}
+
+#[test]
+fn ast_level_attrs_support_multiline_list_items_soft_breaks_stacking_and_lists() {
+    let doc_src = r#"
+@!(tags: ("one", "two"), single: ("only",), empty: ())
+
+- @(collapsed: true)
+  Group
+  - [Child](./child.not)
+
+@(a: 1)
+@(b: 2)
+@(k: "v")soft
+wrapped
+"#;
+    let project = notc::check_project(&[("index.not", doc_src)]).expect("checks");
+    let doc = project.eval_document("index.not").expect("evaluates");
+    assert_eq!(
+        doc.node().attrs.get("tags"),
+        Some(&AttrValue::List(std::sync::Arc::from([
+            AttrValue::String("one".into()),
+            AttrValue::String("two".into()),
+        ])))
+    );
+    assert_eq!(
+        doc.node().attrs.get("single"),
+        Some(&AttrValue::List(std::sync::Arc::from([
+            AttrValue::String("only".into()),
+        ])))
+    );
+    assert_eq!(
+        doc.node().attrs.get("empty"),
+        Some(&AttrValue::List(std::sync::Arc::from([])))
+    );
+
+    let BlockKind::Fragment(children) = &doc.node().kind else {
+        panic!("expected fragment");
+    };
+    let BlockKind::List { items, .. } = &children[0].node().kind else {
+        panic!("expected list");
+    };
+    let BlockKind::Fragment(item_blocks) = &items[0].node().kind else {
+        panic!("expected item fragment");
+    };
+    assert_eq!(
+        item_blocks[0].node().attrs.get("collapsed"),
+        Some(&AttrValue::Bool(true))
+    );
+    assert_eq!(item_blocks[0].plain_text(), "Group");
+
+    // Stacked block attrs + soft-wrapped inline text attr
+    assert_eq!(children[1].node().attrs.get("a"), Some(&AttrValue::Int(1)));
+    assert_eq!(children[1].node().attrs.get("b"), Some(&AttrValue::Int(2)));
+    let BlockKind::Paragraph(inl) = &children[1].node().kind else {
+        panic!("expected paragraph");
+    };
+    assert_eq!(
+        inl.node().attrs.get("k"),
+        Some(&AttrValue::String("v".into()))
+    );
+    assert_eq!(inl.plain_text(), "soft wrapped");
 }

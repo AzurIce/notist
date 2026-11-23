@@ -1192,23 +1192,6 @@ impl<'a> Parser<'a> {
                 Ok(Expr::new(ExprKind::String(value), tok.span))
             }
             TokenKind::Content => self.parse_content_token(),
-            TokenKind::HashLBracket => {
-                self.advance();
-                let mut items = Vec::new();
-                while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
-                    items.push(self.expression()?);
-                    if self.at(TokenKind::Comma) {
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                let close = self.expect(TokenKind::RBracket)?;
-                Ok(Expr::new(
-                    ExprKind::ListLiteral(items),
-                    tok.span.merge(close.span),
-                ))
-            }
             TokenKind::True => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Bool(true), tok.span))
@@ -1239,12 +1222,17 @@ impl<'a> Parser<'a> {
                 self.advance();
                 if self.at(TokenKind::RParen) {
                     let close = self.advance();
-                    return Ok(Expr::new(ExprKind::Unit, tok.span.merge(close.span)));
+                    return Ok(Expr::new(ExprKind::EmptyParen, tok.span.merge(close.span)));
                 }
-                let mut inner = self.expression()?;
-                let close = self.expect(TokenKind::RParen)?;
-                inner.span = tok.span.merge(close.span);
-                Ok(inner)
+                let first = self.expression()?;
+                if self.at(TokenKind::Comma) {
+                    self.parse_list_tail(first, tok.span)
+                } else {
+                    let mut inner = first;
+                    let close = self.expect(TokenKind::RParen)?;
+                    inner.span = tok.span.merge(close.span);
+                    Ok(inner)
+                }
             }
             _ => {
                 self.error(
@@ -1254,6 +1242,25 @@ impl<'a> Parser<'a> {
                 Err(())
             }
         }
+    }
+
+    #[inline(never)]
+    fn parse_list_tail(&mut self, first: Expr, open_span: Span) -> Result<Expr, ()> {
+        self.advance(); // consume ','
+        let mut items = vec![first];
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            items.push(self.expression()?);
+            if self.at(TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        let close = self.expect(TokenKind::RParen)?;
+        Ok(Expr::new(
+            ExprKind::ListLiteral(items),
+            open_span.merge(close.span),
+        ))
     }
 
     fn parse_content_token(&mut self) -> Result<Expr, ()> {

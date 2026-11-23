@@ -218,6 +218,7 @@ pub enum AttrLiteral {
     Int(i64),
     Float(f64),
     String(String),
+    List(Vec<AttrLiteral>),
 }
 
 #[derive(Debug)]
@@ -229,6 +230,12 @@ pub struct AttrEntry {
 
 #[derive(Debug)]
 pub enum InlinePiece {
+    /// Unattached inline attribute annotation `@(...)` waiting for the unified
+    /// AST-level attribute attachment pass.
+    Attr {
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
     Text(String, Span),
     Strong(Vec<InlinePiece>, Span),
     Emph(Vec<InlinePiece>, Span),
@@ -254,6 +261,12 @@ pub enum InlinePiece {
 
 #[derive(Debug)]
 pub enum BlockPiece {
+    /// Unattached block-level attribute annotation `@(...)` waiting for the
+    /// unified AST-level attribute attachment pass.
+    Attr {
+        attrs: Vec<AttrEntry>,
+        span: Span,
+    },
     Paragraph {
         inlines: Vec<InlinePiece>,
         attrs: Vec<AttrEntry>,
@@ -307,6 +320,8 @@ pub enum BlockPiece {
 #[derive(Debug)]
 pub enum ExprKind {
     Unit,
+    /// Typst-style `()`: empty `List<T>` when `List<T>` is expected, or `Unit` otherwise.
+    EmptyParen,
     Bool(bool),
     Int(i64),
     Float(f64),

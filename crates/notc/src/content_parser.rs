@@ -81,7 +81,14 @@ pub(crate) fn parse_document_source(
     let body_start = i;
     let blocks = parse_blocks(&source[body_start..], body_start, 0, diagnostics);
     let body_span = Span::new(body_start as u32, len as u32);
-    build_document_module(declarations, doc_attrs, blocks, body_span, len as u32)
+    build_document_module(
+        declarations,
+        doc_attrs,
+        blocks,
+        body_span,
+        len as u32,
+        diagnostics,
+    )
 }
 
 pub(crate) fn parse_content_literal(
@@ -97,11 +104,265 @@ pub(crate) fn parse_content_literal(
         && inner.bytes().last().is_some_and(is_ws);
 
     if is_block {
-        let blocks = parse_blocks(inner, base, depth, diagnostics);
+        let blocks = attach_block_attrs(parse_blocks(inner, base, depth, diagnostics), diagnostics);
         Expr::new(ExprKind::BlockLiteral(blocks), literal_span)
     } else {
-        let inlines = parse_inlines(inner, base, depth, diagnostics);
+        let inlines =
+            attach_inline_attrs(parse_inlines(inner, base, depth, diagnostics), diagnostics);
         Expr::new(ExprKind::InlineLiteral(inlines), literal_span)
+    }
+}
+
+/// Frontend-agnostic AST pass that attaches `BlockPiece::Attr` and `InlinePiece::Attr`
+/// placeholder nodes to the immediately following AST node in the same sequence.
+pub(crate) fn attach_block_attrs(
+    blocks: Vec<BlockPiece>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Vec<BlockPiece> {
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut pending_attrs: Vec<AttrEntry> = Vec::new();
+    let mut pending_span: Option<Span> = None;
+
+    for block in blocks {
+        match block {
+            BlockPiece::Attr { attrs, span } => {
+                pending_attrs.extend(attrs);
+                pending_span = Some(match pending_span {
+                    Some(prev) => prev.merge(span),
+                    None => span,
+                });
+            }
+            mut piece => {
+                // First recursively resolve nested sequences inside this block.
+                piece = match piece {
+                    BlockPiece::Paragraph {
+                        inlines,
+                        attrs,
+                        span,
+                    } => BlockPiece::Paragraph {
+                        inlines: attach_inline_attrs(inlines, diagnostics),
+                        attrs,
+                        span,
+                    },
+                    BlockPiece::Heading {
+                        level,
+                        title,
+                        attrs,
+                        span,
+                    } => BlockPiece::Heading {
+                        level,
+                        title: attach_inline_attrs(title, diagnostics),
+                        attrs,
+                        span,
+                    },
+                    BlockPiece::List {
+                        ordered,
+                        items,
+                        attrs,
+                        span,
+                    } => BlockPiece::List {
+                        ordered,
+                        items: items
+                            .into_iter()
+                            .map(|item| attach_block_attrs(item, diagnostics))
+                            .collect(),
+                        attrs,
+                        span,
+                    },
+                    BlockPiece::Quote { body, attrs, span } => BlockPiece::Quote {
+                        body: attach_block_attrs(body, diagnostics),
+                        attrs,
+                        span,
+                    },
+                    BlockPiece::Table {
+                        headers,
+                        rows,
+                        attrs,
+                        span,
+                    } => BlockPiece::Table {
+                        headers: headers
+                            .into_iter()
+                            .map(|cell| attach_inline_attrs(cell, diagnostics))
+                            .collect(),
+                        rows: rows
+                            .into_iter()
+                            .map(|row| {
+                                row.into_iter()
+                                    .map(|cell| attach_inline_attrs(cell, diagnostics))
+                                    .collect()
+                            })
+                            .collect(),
+                        attrs,
+                        span,
+                    },
+                    other => other,
+                };
+
+                if !pending_attrs.is_empty() {
+                    let mut combined = std::mem::take(&mut pending_attrs);
+                    pending_span = None;
+                    match &mut piece {
+                        BlockPiece::Paragraph { attrs, .. }
+                        | BlockPiece::Heading { attrs, .. }
+                        | BlockPiece::CodeBlock { attrs, .. }
+                        | BlockPiece::List { attrs, .. }
+                        | BlockPiece::Quote { attrs, .. }
+                        | BlockPiece::Divider { attrs, .. }
+                        | BlockPiece::Table { attrs, .. }
+                        | BlockPiece::Math { attrs, .. }
+                        | BlockPiece::Expr { attrs, .. } => {
+                            combined.append(attrs);
+                            *attrs = combined;
+                        }
+                        BlockPiece::Attr { .. } => unreachable!(),
+                    }
+                }
+                out.push(piece);
+            }
+        }
+    }
+
+    if let Some(span) = pending_span {
+        diagnostics.push(ParseDiagnostic {
+            span,
+            message: "attribute annotation has no following content element".into(),
+        });
+    }
+
+    out
+}
+
+pub(crate) fn attach_inline_attrs(
+    inlines: Vec<InlinePiece>,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Vec<InlinePiece> {
+    // Coalesce adjacent plain `Text` nodes (e.g. across soft line breaks) before
+    // attaching inline `@(...)` annotations so `@(k: v)foo\nbar` attaches cleanly
+    // to the whole continuous text node.
+    let mut merged: Vec<InlinePiece> = Vec::with_capacity(inlines.len());
+    for piece in inlines {
+        if let InlinePiece::Text(ref next_text, next_span) = piece
+            && let Some(InlinePiece::Text(prev_text, prev_span)) = merged.last_mut()
+        {
+            prev_text.push_str(next_text);
+            *prev_span = prev_span.merge(next_span);
+            continue;
+        }
+        merged.push(piece);
+    }
+
+    let mut out = Vec::with_capacity(merged.len());
+    let mut pending_attrs: Vec<AttrEntry> = Vec::new();
+    let mut pending_span: Option<Span> = None;
+
+    let mut iter = merged.into_iter().peekable();
+    while let Some(piece) = iter.next() {
+        match piece {
+            InlinePiece::Attr { attrs, span } => {
+                pending_attrs.extend(attrs);
+                pending_span = Some(match pending_span {
+                    Some(prev) => prev.merge(span),
+                    None => span,
+                });
+            }
+            mut node => {
+                // Skip pure-whitespace text separator between `@(...)` and a following element
+                // (e.g. `@(collapsed: true) [A](a.not)`), keeping the space in output.
+                if !pending_attrs.is_empty()
+                    && let InlinePiece::Text(ref s, _) = node
+                    && s.chars().all(char::is_whitespace)
+                    && iter.peek().is_some()
+                {
+                    out.push(node);
+                    continue;
+                }
+
+                // Recursively resolve nested inline sequences.
+                node = match node {
+                    InlinePiece::Strong(inner, span) => {
+                        InlinePiece::Strong(attach_inline_attrs(inner, diagnostics), span)
+                    }
+                    InlinePiece::Emph(inner, span) => {
+                        InlinePiece::Emph(attach_inline_attrs(inner, diagnostics), span)
+                    }
+                    InlinePiece::Link {
+                        target,
+                        label,
+                        span,
+                    } => InlinePiece::Link {
+                        target,
+                        label: attach_inline_attrs(label, diagnostics),
+                        span,
+                    },
+                    InlinePiece::Attributed {
+                        attrs,
+                        target,
+                        span,
+                    } => {
+                        let resolved = attach_inline_attrs(vec![*target], diagnostics);
+                        let target = resolved.into_iter().next().unwrap_or_else(|| {
+                            InlinePiece::Text(String::new(), span)
+                        });
+                        InlinePiece::Attributed {
+                            attrs,
+                            target: Box::new(target),
+                            span,
+                        }
+                    }
+                    other => other,
+                };
+
+                if !pending_attrs.is_empty() {
+                    let attr_span = pending_span.take().unwrap_or(Span::DUMMY);
+                    let mut combined = std::mem::take(&mut pending_attrs);
+                    let node_span = inline_piece_span(&node);
+                    node = match node {
+                        InlinePiece::Attributed {
+                            mut attrs,
+                            target,
+                            span,
+                        } => {
+                            combined.append(&mut attrs);
+                            InlinePiece::Attributed {
+                                attrs: combined,
+                                target,
+                                span: attr_span.merge(span),
+                            }
+                        }
+                        other => InlinePiece::Attributed {
+                            attrs: combined,
+                            target: Box::new(other),
+                            span: attr_span.merge(node_span),
+                        },
+                    };
+                }
+                out.push(node);
+            }
+        }
+    }
+
+    if let Some(span) = pending_span {
+        diagnostics.push(ParseDiagnostic {
+            span,
+            message: "attribute annotation has no following content element".into(),
+        });
+    }
+
+    out
+}
+
+fn inline_piece_span(piece: &InlinePiece) -> Span {
+    match piece {
+        InlinePiece::Attr { span, .. }
+        | InlinePiece::Text(_, span)
+        | InlinePiece::Strong(_, span)
+        | InlinePiece::Emph(_, span)
+        | InlinePiece::Raw(_, span)
+        | InlinePiece::Link { span, .. }
+        | InlinePiece::Image { span, .. }
+        | InlinePiece::Math(_, span)
+        | InlinePiece::Expr(_, span)
+        | InlinePiece::Attributed { span, .. } => *span,
     }
 }
 
@@ -123,7 +384,6 @@ fn parse_blocks(
     let len = bytes.len();
     let mut i = 0usize;
     let mut blocks = Vec::new();
-    let mut pending_attrs: Vec<AttrEntry> = Vec::new();
 
     while i < len {
         // Skip blank lines and leading whitespace before next block.
@@ -150,7 +410,10 @@ fn parse_blocks(
                 rest += 1;
             }
             if rest >= len || bytes[rest] == b'\n' {
-                pending_attrs.extend(attrs);
+                blocks.push(BlockPiece::Attr {
+                    attrs,
+                    span: mk_span(base, i, next_i),
+                });
                 i = if rest < len { rest + 1 } else { rest };
                 continue;
             }
@@ -163,12 +426,14 @@ fn parse_blocks(
                     after += 1;
                 }
                 if after >= len || bytes[after] == b'\n' {
-                    let mut combined = std::mem::take(&mut pending_attrs);
-                    combined.extend(attrs);
+                    blocks.push(BlockPiece::Attr {
+                        attrs,
+                        span: mk_span(base, i, next_i),
+                    });
                     blocks.push(BlockPiece::Expr {
-                        span: mk_span(base, i, after_expr),
+                        span: mk_span(base, rest, after_expr),
                         expr: Box::new(expr),
-                        attrs: combined,
+                        attrs: Vec::new(),
                     });
                     i = if after < len { after + 1 } else { after };
                     continue;
@@ -194,11 +459,10 @@ fn parse_blocks(
                 let line_end = find_line_end(bytes, title_start);
                 let title_raw = text[title_start..line_end].trim_end();
                 let title = parse_inlines(title_raw, base + title_start, depth, diagnostics);
-                let attrs = std::mem::take(&mut pending_attrs);
                 blocks.push(BlockPiece::Heading {
                     level: eqs as u8,
                     title,
-                    attrs,
+                    attrs: Vec::new(),
                     span: mk_span(base, h_start, line_end),
                 });
                 i = next_line(bytes, line_end);
@@ -250,11 +514,10 @@ fn parse_blocks(
                 }
                 out
             };
-            let attrs = std::mem::take(&mut pending_attrs);
             blocks.push(BlockPiece::CodeBlock {
                 lang,
                 text: code,
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, cb_start, closed_end),
             });
             i = cursor;
@@ -264,9 +527,8 @@ fn parse_blocks(
         // 4. Horizontal divider: `---` (3+ hyphens on its own line)
         if is_divider_line(text, bytes, i) {
             let l_end = find_line_end(bytes, i);
-            let attrs = std::mem::take(&mut pending_attrs);
             blocks.push(BlockPiece::Divider {
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, i, l_end),
             });
             i = next_line(bytes, l_end);
@@ -304,10 +566,9 @@ fn parse_blocks(
             }
             let joined = inner_lines.join("\n");
             let body = parse_blocks(&joined, base + q_start, depth + 1, diagnostics);
-            let attrs = std::mem::take(&mut pending_attrs);
             blocks.push(BlockPiece::Quote {
                 body,
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, q_start, quote_end),
             });
             i = cursor;
@@ -317,16 +578,8 @@ fn parse_blocks(
         // 6. Unordered (`- ` / `* ` / `+ `) or ordered (`1. ` / `1) `) list (with indentation nesting)
         if list_marker_at(bytes, i).is_some() {
             let base_indent = indent_width(&text[line_start..i]);
-            let (list_block, next_cursor) = parse_list_at(
-                text,
-                bytes,
-                line_start,
-                base_indent,
-                base,
-                depth,
-                std::mem::take(&mut pending_attrs),
-                diagnostics,
-            );
+            let (list_block, next_cursor) =
+                parse_list_at(text, bytes, line_start, base_indent, base, depth, diagnostics);
             blocks.push(list_block);
             i = next_cursor;
             continue;
@@ -334,15 +587,8 @@ fn parse_blocks(
 
         // 7. Pipe table (`| a | b |\n| --- | --- |\n| 1 | 2 |`)
         if bytes[i] == b'|'
-            && let Some((table_block, next_cursor)) = try_parse_table_at(
-                text,
-                bytes,
-                line_start,
-                base,
-                depth,
-                &mut pending_attrs,
-                diagnostics,
-            )
+            && let Some((table_block, next_cursor)) =
+                try_parse_table_at(text, bytes, line_start, base, depth, diagnostics)
         {
             blocks.push(table_block);
             i = next_cursor;
@@ -351,8 +597,7 @@ fn parse_blocks(
 
         // 8. Block math (`$$` fenced or `$ ... $` flanked / multi-line `$`)
         if bytes[i] == b'$'
-            && let Some((math_block, next_cursor)) =
-                try_parse_block_math_at(text, bytes, i, base, &mut pending_attrs)
+            && let Some((math_block, next_cursor)) = try_parse_block_math_at(text, bytes, i, base)
         {
             blocks.push(math_block);
             i = next_cursor;
@@ -369,11 +614,10 @@ fn parse_blocks(
                 rest += 1;
             }
             if rest >= len || bytes[rest] == b'\n' {
-                let attrs = std::mem::take(&mut pending_attrs);
                 blocks.push(BlockPiece::Expr {
                     span: mk_span(base, i, after_expr),
                     expr: Box::new(expr),
-                    attrs,
+                    attrs: Vec::new(),
                 });
                 i = if rest < len { rest + 1 } else { rest };
                 continue;
@@ -415,10 +659,9 @@ fn parse_blocks(
             }
             inlines.extend(parse_inlines(&text[ls..le], base + ls, depth, diagnostics));
         }
-        let attrs = std::mem::take(&mut pending_attrs);
         blocks.push(BlockPiece::Paragraph {
             inlines,
-            attrs,
+            attrs: Vec::new(),
             span: mk_span(base, para_start, para_end),
         });
         i = cursor;
@@ -472,6 +715,28 @@ fn indent_width(ws: &str) -> usize {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn strip_indent(line: &str, max_cols: usize) -> &str {
+    let mut cols = 0usize;
+    let mut byte_idx = 0usize;
+    for (i, ch) in line.char_indices() {
+        if cols >= max_cols {
+            break;
+        }
+        match ch {
+            ' ' => {
+                cols += 1;
+                byte_idx = i + 1;
+            }
+            '\t' => {
+                cols += 4;
+                byte_idx = i + 1;
+            }
+            _ => break,
+        }
+    }
+    &line[byte_idx..]
+}
+
 fn parse_list_at(
     text: &str,
     bytes: &[u8],
@@ -479,7 +744,6 @@ fn parse_list_at(
     base_indent: usize,
     base: usize,
     depth: usize,
-    attrs: Vec<AttrEntry>,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> (BlockPiece, usize) {
     let len = bytes.len();
@@ -494,7 +758,6 @@ fn parse_list_at(
     let mut items: Vec<Vec<BlockPiece>> = Vec::new();
 
     while cursor < len {
-        // Peek ahead past any single blank line only if followed by another list item at >= base_indent.
         let mut scan = cursor;
         while scan < len && matches!(bytes[scan], b' ' | b'\t' | b'\r') {
             scan += 1;
@@ -503,57 +766,86 @@ fn parse_list_at(
             break;
         }
         let line_indent = indent_width(&text[cursor..scan]);
+        if line_indent != base_indent {
+            break;
+        }
         let Some((item_ordered, content_start)) = list_marker_at(bytes, scan) else {
             break;
         };
-
-        if line_indent < base_indent {
-            break;
-        }
-        if line_indent > base_indent {
-            // Nested list under the preceding list item.
-            if let Some(last_item) = items.last_mut() {
-                let (nested, next_cursor) = parse_list_at(
-                    text,
-                    bytes,
-                    cursor,
-                    line_indent,
-                    base,
-                    depth + 1,
-                    Vec::new(),
-                    diagnostics,
-                );
-                if let BlockPiece::List { span, .. } = &nested {
-                    list_end = (span.end as usize).saturating_sub(base).max(list_end);
-                }
-                last_item.push(nested);
-                cursor = next_cursor;
-                continue;
-            }
-            break;
-        }
         if item_ordered != ordered {
             break;
         }
 
-        let l_end = find_line_end(bytes, content_start);
-        let item_raw = text[content_start..l_end].trim_end();
-        let item_inlines = parse_inlines(item_raw, base + content_start, depth, diagnostics);
-        let item_block = BlockPiece::Paragraph {
-            inlines: item_inlines,
-            attrs: Vec::new(),
-            span: mk_span(base, content_start, l_end),
+        let content_indent = indent_width(&text[cursor..content_start]);
+        let first_end = find_line_end(bytes, content_start);
+        let first_line = &text[content_start..first_end];
+        let mut item_end = first_end;
+        let mut next = next_line(bytes, first_end);
+
+        // Collect indented continuation lines (nested blocks, multi-line annotations, nested lists).
+        let mut cont_lines: Vec<&str> = Vec::new();
+        while next < len {
+            let mut look = next;
+            while look < len && matches!(bytes[look], b' ' | b'\t' | b'\r') {
+                look += 1;
+            }
+            if look >= len {
+                break;
+            }
+            if bytes[look] == b'\n' {
+                // Keep blank line only if a more-indented line follows it.
+                let mut probe = next_line(bytes, look);
+                while probe < len {
+                    let mut p = probe;
+                    while p < len && matches!(bytes[p], b' ' | b'\t' | b'\r') {
+                        p += 1;
+                    }
+                    if p >= len || bytes[p] != b'\n' {
+                        probe = p;
+                        break;
+                    }
+                    probe = next_line(bytes, p);
+                }
+                if probe < len {
+                    let line_begin = text[..probe].rfind('\n').map_or(0, |idx| idx + 1);
+                    if indent_width(&text[line_begin..probe]) > base_indent {
+                        cont_lines.push("");
+                        next = next_line(bytes, look);
+                        continue;
+                    }
+                }
+                break;
+            }
+            let next_indent = indent_width(&text[next..look]);
+            if next_indent <= base_indent {
+                break;
+            }
+            let cont_end = find_line_end(bytes, next);
+            cont_lines.push(strip_indent(&text[next..cont_end], content_indent));
+            item_end = cont_end;
+            next = next_line(bytes, cont_end);
+        }
+
+        let item_blocks = if cont_lines.is_empty() {
+            parse_blocks(first_line, base + content_start, depth + 1, diagnostics)
+        } else {
+            let mut joined = String::from(first_line);
+            for line in cont_lines {
+                joined.push('\n');
+                joined.push_str(line);
+            }
+            parse_blocks(&joined, base + content_start, depth + 1, diagnostics)
         };
-        items.push(vec![item_block]);
-        list_end = l_end;
-        cursor = next_line(bytes, l_end);
+        items.push(item_blocks);
+        list_end = item_end;
+        cursor = next;
     }
 
     (
         BlockPiece::List {
             ordered,
             items,
-            attrs,
+            attrs: Vec::new(),
             span: mk_span(base, list_start, list_end),
         },
         cursor,
@@ -637,14 +929,12 @@ fn trim_span(bytes: &[u8], mut s: usize, mut e: usize) -> (usize, usize) {
     (s, e)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn try_parse_table_at(
     text: &str,
     bytes: &[u8],
     line_start: usize,
     base: usize,
     depth: usize,
-    pending_attrs: &mut Vec<AttrEntry>,
     diagnostics: &mut Vec<ParseDiagnostic>,
 ) -> Option<(BlockPiece, usize)> {
     let mut first = line_start;
@@ -686,12 +976,11 @@ fn try_parse_table_at(
         cursor = next_line(bytes, r_end);
     }
 
-    let attrs = std::mem::take(pending_attrs);
     Some((
         BlockPiece::Table {
             headers,
             rows,
-            attrs,
+            attrs: Vec::new(),
             span: mk_span(base, first, table_end),
         },
         cursor,
@@ -712,7 +1001,6 @@ fn try_parse_block_math_at(
     bytes: &[u8],
     i: usize,
     base: usize,
-    pending_attrs: &mut Vec<AttrEntry>,
 ) -> Option<(BlockPiece, usize)> {
     let len = bytes.len();
     let l_end = find_line_end(bytes, i);
@@ -721,11 +1009,10 @@ fn try_parse_block_math_at(
     // Single-line `$ expr $` or `$$expr$$`
     if line.starts_with("$$") && line.ends_with("$$") && line.len() >= 4 {
         let content = line[2..line.len() - 2].trim().to_owned();
-        let attrs = std::mem::take(pending_attrs);
         return Some((
             BlockPiece::Math {
                 text: content,
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, i, l_end),
             },
             next_line(bytes, l_end),
@@ -733,11 +1020,10 @@ fn try_parse_block_math_at(
     }
     if line.starts_with("$ ") && line.ends_with(" $") && line.len() >= 4 {
         let content = line[2..line.len() - 2].trim().to_owned();
-        let attrs = std::mem::take(pending_attrs);
         return Some((
             BlockPiece::Math {
                 text: content,
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, i, l_end),
             },
             next_line(bytes, l_end),
@@ -762,11 +1048,10 @@ fn try_parse_block_math_at(
             cursor = next_line(bytes, c_end);
         }
         let math_text = text[body_start..body_end].trim().to_owned();
-        let attrs = std::mem::take(pending_attrs);
         return Some((
             BlockPiece::Math {
                 text: math_text,
-                attrs,
+                attrs: Vec::new(),
                 span: mk_span(base, i, closed_end),
             },
             cursor,
@@ -879,21 +1164,9 @@ fn parse_inlines(
             b'@' if i + 1 < len && bytes[i + 1] == b'(' => {
                 if let Some((attrs, next_i)) = parse_attr_list(text, i, base, diagnostics) {
                     flush_text(&mut pieces, &mut text_buf, text_start, i);
-                    let rest_pieces =
-                        parse_single_inline_target(text, next_i, base, depth, diagnostics);
-                    if let Some((target, after_target)) = rest_pieces {
-                        pieces.push(InlinePiece::Attributed {
-                            attrs,
-                            target: Box::new(target),
-                            span: mk_span(base, i, after_target),
-                        });
-                        i = after_target;
-                        continue;
-                    }
-                    // Trailing `@(...)` with nothing to attach to: emit diagnostic and skip.
-                    diagnostics.push(ParseDiagnostic {
+                    pieces.push(InlinePiece::Attr {
+                        attrs,
                         span: mk_span(base, i, next_i),
-                        message: "attribute annotation has no following content element".into(),
                     });
                     i = next_i;
                     continue;
@@ -1035,106 +1308,6 @@ fn parse_inlines(
 
     flush_text(&mut pieces, &mut text_buf, text_start, len);
     pieces
-}
-
-fn parse_single_inline_target(
-    text: &str,
-    start: usize,
-    base: usize,
-    depth: usize,
-    diagnostics: &mut Vec<ParseDiagnostic>,
-) -> Option<(InlinePiece, usize)> {
-    let bytes = text.as_bytes();
-    if start >= bytes.len() {
-        return None;
-    }
-    match bytes[start] {
-        b'#' => {
-            let (expr, next) = try_parse_hash_expr(text, start, base, depth, diagnostics)?;
-            Some((
-                InlinePiece::Expr(Box::new(expr), mk_span(base, start, next)),
-                next,
-            ))
-        }
-        b'*' => {
-            let close = find_closing_delim(bytes, start + 1, b'*')?;
-            let inner =
-                parse_inlines(&text[start + 1..close], base + start + 1, depth, diagnostics);
-            Some((
-                InlinePiece::Strong(inner, mk_span(base, start, close + 1)),
-                close + 1,
-            ))
-        }
-        b'_' => {
-            let close = find_closing_underscore(bytes, start + 1)?;
-            let inner =
-                parse_inlines(&text[start + 1..close], base + start + 1, depth, diagnostics);
-            Some((
-                InlinePiece::Emph(inner, mk_span(base, start, close + 1)),
-                close + 1,
-            ))
-        }
-        b'`' => {
-            let close = find_closing_backtick(bytes, start + 1)?;
-            Some((
-                InlinePiece::Raw(
-                    text[start + 1..close].to_owned(),
-                    mk_span(base, start, close + 1),
-                ),
-                close + 1,
-            ))
-        }
-        b'!' if start + 1 < bytes.len() && bytes[start + 1] == b'[' => {
-            let (alt_end, target_start, target_end) = parse_link_bounds(bytes, start + 1)?;
-            Some((
-                InlinePiece::Image {
-                    target: text[target_start..target_end].to_owned(),
-                    alt: text[start + 2..alt_end].to_owned(),
-                    span: mk_span(base, start, target_end + 1),
-                },
-                target_end + 1,
-            ))
-        }
-        b'[' => {
-            let (label_end, target_start, target_end) = parse_link_bounds(bytes, start)?;
-            let label = parse_inlines(
-                &text[start + 1..label_end],
-                base + start + 1,
-                depth,
-                diagnostics,
-            );
-            Some((
-                InlinePiece::Link {
-                    target: text[target_start..target_end].to_owned(),
-                    label,
-                    span: mk_span(base, start, target_end + 1),
-                },
-                target_end + 1,
-            ))
-        }
-        _ => {
-            // Attach attributes directly to a plain-text run (e.g. `@(collapsed: true)Label`).
-            let mut end = start;
-            while end < bytes.len() {
-                match bytes[end] {
-                    b'\n' | b'@' | b'#' | b'*' | b'_' | b'`' | b'[' | b'$' => break,
-                    b'!' if end + 1 < bytes.len() && bytes[end + 1] == b'[' => break,
-                    _ => {
-                        let ch = text[end..].chars().next().expect("valid utf-8");
-                        end += ch.len_utf8();
-                    }
-                }
-            }
-            if end > start && !text[start..end].trim().is_empty() {
-                Some((
-                    InlinePiece::Text(text[start..end].to_owned(), mk_span(base, start, end)),
-                    end,
-                ))
-            } else {
-                None
-            }
-        }
-    }
 }
 
 fn find_closing_delim(bytes: &[u8], start: usize, delim: u8) -> Option<usize> {
@@ -1314,85 +1487,8 @@ pub(crate) fn parse_attr_list_at(
             i += 1;
         }
 
-        let val_start = i;
-        let value = if i < len && bytes[i] == b'"' {
-            i += 1;
-            let mut s = String::new();
-            let mut closed = false;
-            while i < len {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    i += 1;
-                    match bytes[i] {
-                        b'"' => s.push('"'),
-                        b'\\' => s.push('\\'),
-                        b'n' => s.push('\n'),
-                        b't' => s.push('\t'),
-                        b'r' => s.push('\r'),
-                        other => s.push(other as char),
-                    }
-                    i += 1;
-                } else if bytes[i] == b'"' {
-                    i += 1;
-                    closed = true;
-                    break;
-                } else {
-                    let ch = text[i..].chars().next().expect("valid utf-8");
-                    s.push(ch);
-                    i += ch.len_utf8();
-                }
-            }
-            if !closed {
-                diagnostics.push(ParseDiagnostic {
-                    span: mk_span(base, val_start, i),
-                    message: "unterminated attribute string".into(),
-                });
-                return None;
-            }
-            AttrLiteral::String(s)
-        } else if text[i..].starts_with("true")
-            && !bytes.get(i + 4).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-        {
-            i += 4;
-            AttrLiteral::Bool(true)
-        } else if text[i..].starts_with("false")
-            && !bytes.get(i + 5).is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-        {
-            i += 5;
-            AttrLiteral::Bool(false)
-        } else if i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'-') {
-            if bytes[i] == b'-' {
-                i += 1;
-            }
-            let mut is_float = false;
-            while i < len && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i + 1 < len && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
-                is_float = true;
-                i += 1;
-                while i < len && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            let num = &text[val_start..i];
-            if is_float {
-                let Ok(v) = num.parse::<f64>() else {
-                    return None;
-                };
-                AttrLiteral::Float(v)
-            } else {
-                let Ok(v) = num.parse::<i64>() else {
-                    return None;
-                };
-                AttrLiteral::Int(v)
-            }
-        } else {
-            diagnostics.push(ParseDiagnostic {
-                span: mk_span(base, val_start, (val_start + 1).min(len)),
-                message: "expected literal attribute value".into(),
-            });
-            return None;
-        };
+        let (value, next_i) = parse_attr_literal(text, i, base, diagnostics)?;
+        i = next_i;
 
         entries.push(AttrEntry {
             key,
@@ -1414,5 +1510,153 @@ pub(crate) fn parse_attr_list_at(
             });
             return None;
         }
+    }
+}
+
+fn parse_attr_literal(
+    text: &str,
+    start: usize,
+    base: usize,
+    diagnostics: &mut Vec<ParseDiagnostic>,
+) -> Option<(AttrLiteral, usize)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = start;
+    while i < len && is_ws(bytes[i]) {
+        i += 1;
+    }
+    let val_start = i;
+    if i < len && bytes[i] == b'(' {
+        i += 1;
+        while i < len && is_ws(bytes[i]) {
+            i += 1;
+        }
+        if i < len && bytes[i] == b')' {
+            return Some((AttrLiteral::List(Vec::new()), i + 1));
+        }
+        let (first, next_i) = parse_attr_literal(text, i, base, diagnostics)?;
+        i = next_i;
+        while i < len && is_ws(bytes[i]) {
+            i += 1;
+        }
+        if i < len && bytes[i] == b',' {
+            i += 1;
+            let mut items = vec![first];
+            loop {
+                while i < len && is_ws(bytes[i]) {
+                    i += 1;
+                }
+                if i < len && bytes[i] == b')' {
+                    return Some((AttrLiteral::List(items), i + 1));
+                }
+                if i >= len {
+                    diagnostics.push(ParseDiagnostic {
+                        span: mk_span(base, val_start, i),
+                        message: "unterminated attribute list".into(),
+                    });
+                    return None;
+                }
+                let (item, item_end) = parse_attr_literal(text, i, base, diagnostics)?;
+                items.push(item);
+                i = item_end;
+                while i < len && is_ws(bytes[i]) {
+                    i += 1;
+                }
+                if i < len && bytes[i] == b',' {
+                    i += 1;
+                } else if i < len && bytes[i] == b')' {
+                    return Some((AttrLiteral::List(items), i + 1));
+                } else {
+                    diagnostics.push(ParseDiagnostic {
+                        span: mk_span(base, i, (i + 1).min(len)),
+                        message: "expected `,` or `)` in attribute list".into(),
+                    });
+                    return None;
+                }
+            }
+        } else if i < len && bytes[i] == b')' {
+            Some((first, i + 1))
+        } else {
+            diagnostics.push(ParseDiagnostic {
+                span: mk_span(base, val_start, i.min(len)),
+                message: "expected `,` or `)` in attribute list".into(),
+            });
+            None
+        }
+    } else if i < len && bytes[i] == b'"' {
+        i += 1;
+        let mut s = String::new();
+        let mut closed = false;
+        while i < len {
+            if bytes[i] == b'\\' && i + 1 < len {
+                i += 1;
+                match bytes[i] {
+                    b'"' => s.push('"'),
+                    b'\\' => s.push('\\'),
+                    b'n' => s.push('\n'),
+                    b't' => s.push('\t'),
+                    b'r' => s.push('\r'),
+                    other => s.push(other as char),
+                }
+                i += 1;
+            } else if bytes[i] == b'"' {
+                i += 1;
+                closed = true;
+                break;
+            } else {
+                let ch = text[i..].chars().next().expect("valid utf-8");
+                s.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        if !closed {
+            diagnostics.push(ParseDiagnostic {
+                span: mk_span(base, val_start, i),
+                message: "unterminated attribute string".into(),
+            });
+            return None;
+        }
+        Some((AttrLiteral::String(s), i))
+    } else if text[i..].starts_with("true")
+        && !bytes
+            .get(i + 4)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        Some((AttrLiteral::Bool(true), i + 4))
+    } else if text[i..].starts_with("false")
+        && !bytes
+            .get(i + 5)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        Some((AttrLiteral::Bool(false), i + 5))
+    } else if i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'-') {
+        if bytes[i] == b'-' {
+            i += 1;
+        }
+        let mut is_float = false;
+        while i < len && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i + 1 < len && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+            is_float = true;
+            i += 1;
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        let num = &text[val_start..i];
+        if is_float {
+            let v = num.parse::<f64>().ok()?;
+            Some((AttrLiteral::Float(v), i))
+        } else {
+            let v = num.parse::<i64>().ok()?;
+            Some((AttrLiteral::Int(v), i))
+        }
+    } else {
+        diagnostics.push(ParseDiagnostic {
+            span: mk_span(base, val_start, (val_start + 1).min(len)),
+            message: "expected literal attribute value".into(),
+        });
+        None
     }
 }

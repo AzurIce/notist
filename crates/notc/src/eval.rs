@@ -347,6 +347,7 @@ fn attr_to_arc_str(value: &AttrValue) -> Arc<str> {
         AttrValue::Bool(b) => Arc::from(b.to_string()),
         AttrValue::Int(n) => Arc::from(n.to_string()),
         AttrValue::Float(f) => Arc::from(f.to_string()),
+        AttrValue::List(_) => Arc::from(value.to_string()),
     }
 }
 

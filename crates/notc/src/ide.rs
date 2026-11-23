@@ -1182,7 +1182,7 @@ impl<'a> SemanticIndexer<'a> {
 
     fn index_expr(&mut self, expr: &Expr) -> Option<Type> {
         let inferred = match &expr.kind {
-            ExprKind::Unit => Some(Type::Unit),
+            ExprKind::Unit | ExprKind::EmptyParen => Some(Type::Unit),
             ExprKind::Bool(_) => Some(Type::Bool),
             ExprKind::Int(_) => Some(Type::Int),
             ExprKind::Float(_) => Some(Type::Float),
@@ -1529,7 +1529,8 @@ impl<'a> SemanticIndexer<'a> {
 
     fn index_inline_piece(&mut self, piece: &InlinePiece) {
         match piece {
-            InlinePiece::Text(_, _)
+            InlinePiece::Attr { .. }
+            | InlinePiece::Text(_, _)
             | InlinePiece::Raw(_, _)
             | InlinePiece::Math(_, _)
             | InlinePiece::Image { .. } => {}
@@ -1598,8 +1599,10 @@ impl<'a> SemanticIndexer<'a> {
                     }
                 }
             }
-            BlockPiece::CodeBlock { .. } | BlockPiece::Math { .. } | BlockPiece::Divider { .. } => {
-            }
+            BlockPiece::Attr { .. }
+            | BlockPiece::CodeBlock { .. }
+            | BlockPiece::Math { .. }
+            | BlockPiece::Divider { .. } => {}
         }
     }
 
@@ -1776,6 +1779,7 @@ fn collect_block_outline(
     ids: &mut HashMap<String, Span>,
 ) {
     let attrs = match block {
+        BlockPiece::Attr { .. } => None,
         BlockPiece::Paragraph { attrs, span, .. }
         | BlockPiece::CodeBlock { attrs, span, .. }
         | BlockPiece::List { attrs, span, .. }
@@ -1838,7 +1842,7 @@ fn inline_pieces_plain_text(pieces: &[InlinePiece]) -> String {
             InlinePiece::Attributed { target, .. } => {
                 out.push_str(&inline_pieces_plain_text(std::slice::from_ref(target)));
             }
-            InlinePiece::Expr(_, _) => {}
+            InlinePiece::Expr(_, _) | InlinePiece::Attr { .. } => {}
         }
     }
     out

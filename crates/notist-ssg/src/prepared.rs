@@ -495,10 +495,27 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
             }
         }
         BlockKind::Section { heading, body } => {
+            let id = ctx
+                .heading_ids
+                .get(ctx.heading_cursor)
+                .map(String::as_str)
+                .unwrap_or("");
+            ctx.heading_cursor += 1;
             out.push_str("<section");
-            write_common_attrs(&node.attrs, false, out);
+            if !id.is_empty() {
+                let _ = write!(out, " id=\"{}\"", notist_html::escape_attribute(id));
+            }
+            write_common_attrs(&node.attrs, true, out);
             out.push('>');
-            render_block(heading, ctx, out);
+            if let BlockKind::Heading { level, title } = &heading.node().kind {
+                let _ = write!(out, "<h{level}");
+                write_common_attrs(&heading.node().attrs, true, out);
+                out.push('>');
+                render_inline(title, ctx, out);
+                let _ = write!(out, "</h{level}>");
+            } else {
+                render_block(heading, ctx, out);
+            }
             render_block(body, ctx, out);
             out.push_str("</section>");
         }

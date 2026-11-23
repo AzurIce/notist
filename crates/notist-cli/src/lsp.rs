@@ -481,7 +481,8 @@ fn collect_block_link_paths(block: &BlockPiece, out: &mut Vec<String>) {
                 }
             }
         }
-        BlockPiece::CodeBlock { .. }
+        BlockPiece::Attr { .. }
+        | BlockPiece::CodeBlock { .. }
         | BlockPiece::Math { .. }
         | BlockPiece::Divider { .. }
         | BlockPiece::Expr { .. } => {}
@@ -507,7 +508,8 @@ fn collect_inline_link_paths(inline: &InlinePiece, out: &mut Vec<String>) {
             }
         }
         InlinePiece::Attributed { target, .. } => collect_inline_link_paths(target, out),
-        InlinePiece::Text(_, _)
+        InlinePiece::Attr { .. }
+        | InlinePiece::Text(_, _)
         | InlinePiece::Raw(_, _)
         | InlinePiece::Math(_, _)
         | InlinePiece::Image { .. }

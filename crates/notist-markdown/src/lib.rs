@@ -103,6 +103,7 @@ pub fn parse_markdown_document(source: &str) -> ParseResult {
         blocks,
         Span::new(0, full_len),
         full_len,
+        &mut lowerer.diagnostics,
     );
     ParseResult {
         program: Program { root: module },
@@ -142,7 +143,6 @@ impl<'a> Lowerer<'a> {
 
     fn lower_blocks(&mut self, parent: NodeRef) -> Vec<BlockPiece> {
         let mut blocks = Vec::new();
-        let mut pending_attrs: Vec<AttrEntry> = Vec::new();
         let mut child = self.node(parent).first_child();
 
         while let Some(c) = child {
@@ -181,7 +181,10 @@ impl<'a> Lowerer<'a> {
                                     nb_start,
                                     &mut self.diagnostics,
                                 ) {
-                                    pending_attrs.extend(attrs);
+                                    blocks.push(BlockPiece::Attr {
+                                        attrs,
+                                        span: nb_span,
+                                    });
                                 }
                             }
                             NotistBlockKind::Import => {
@@ -208,7 +211,7 @@ impl<'a> Lowerer<'a> {
                                 ) {
                                     blocks.push(BlockPiece::Expr {
                                         expr: Box::new(expr),
-                                        attrs: std::mem::take(&mut pending_attrs),
+                                        attrs: Vec::new(),
                                         span: nb_span,
                                     });
                                 }
@@ -234,12 +237,14 @@ impl<'a> Lowerer<'a> {
                                             &mut self.diagnostics,
                                         )
                                     {
-                                        let mut combined = std::mem::take(&mut pending_attrs);
-                                        combined.extend(attrs);
+                                        blocks.push(BlockPiece::Attr {
+                                            attrs,
+                                            span: Span::new(nb_start as u32, (nb_start + next_i) as u32),
+                                        });
                                         blocks.push(BlockPiece::Expr {
                                             expr: Box::new(expr),
-                                            attrs: combined,
-                                            span: nb_span,
+                                            attrs: Vec::new(),
+                                            span: Span::new((nb_start + pos) as u32, nb_end as u32),
                                         });
                                     }
                                 } else {
@@ -251,7 +256,7 @@ impl<'a> Lowerer<'a> {
                         let content = mb.lines.borrow().join("\n").trim().to_owned();
                         blocks.push(BlockPiece::Math {
                             text: content,
-                            attrs: std::mem::take(&mut pending_attrs),
+                            attrs: Vec::new(),
                             span: Span::new(mb.start as u32, *mb.end.borrow() as u32),
                         });
                     }
@@ -262,7 +267,7 @@ impl<'a> Lowerer<'a> {
                     blocks.push(BlockPiece::Heading {
                         level,
                         title,
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -276,7 +281,7 @@ impl<'a> Lowerer<'a> {
                     {
                         blocks.push(BlockPiece::Math {
                             text: m.text.clone(),
-                            attrs: std::mem::take(&mut pending_attrs),
+                            attrs: Vec::new(),
                             span: Span::new(m.start as u32, m.end as u32),
                         });
                     } else {
@@ -284,7 +289,7 @@ impl<'a> Lowerer<'a> {
                         if !inlines.is_empty() {
                             blocks.push(BlockPiece::Paragraph {
                                 inlines,
-                                attrs: std::mem::take(&mut pending_attrs),
+                                attrs: Vec::new(),
                                 span,
                             });
                         }
@@ -292,7 +297,7 @@ impl<'a> Lowerer<'a> {
                 }
                 KindData::ThematicBreak(_) => {
                     blocks.push(BlockPiece::Divider {
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -309,7 +314,7 @@ impl<'a> Lowerer<'a> {
                     blocks.push(BlockPiece::CodeBlock {
                         lang,
                         text,
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -317,7 +322,7 @@ impl<'a> Lowerer<'a> {
                     let body = self.lower_blocks(c);
                     blocks.push(BlockPiece::Quote {
                         body,
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -332,7 +337,7 @@ impl<'a> Lowerer<'a> {
                     blocks.push(BlockPiece::List {
                         ordered,
                         items,
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -363,7 +368,7 @@ impl<'a> Lowerer<'a> {
                     blocks.push(BlockPiece::Table {
                         headers,
                         rows,
-                        attrs: std::mem::take(&mut pending_attrs),
+                        attrs: Vec::new(),
                         span,
                     });
                 }
@@ -382,7 +387,6 @@ impl<'a> Lowerer<'a> {
 
     fn lower_inlines(&mut self, parent: NodeRef) -> Vec<InlinePiece> {
         let mut pieces: Vec<InlinePiece> = Vec::new();
-        let mut pending_attrs: Option<(Vec<AttrEntry>, u32)> = None;
         let mut text_buf = String::new();
         let mut text_start: Option<u32> = None;
         let mut text_end: u32 = 0;
@@ -390,21 +394,14 @@ impl<'a> Lowerer<'a> {
         let flush_text = |pieces: &mut Vec<InlinePiece>,
                           buf: &mut String,
                           start: &mut Option<u32>,
-                          end: u32,
-                          pending: &mut Option<(Vec<AttrEntry>, u32)>| {
+                          end: u32| {
             if let Some(s) = start.take() {
                 let raw = std::mem::take(buf);
                 if !raw.is_empty() {
-                    let piece = InlinePiece::Text(decode_md_text(&raw), Span::new(s, end.max(s)));
-                    if let Some((attrs, attr_start)) = pending.take() {
-                        pieces.push(InlinePiece::Attributed {
-                            attrs,
-                            target: Box::new(piece),
-                            span: Span::new(attr_start, end.max(attr_start)),
-                        });
-                    } else {
-                        pieces.push(piece);
-                    }
+                    pieces.push(InlinePiece::Text(
+                        decode_md_text(&raw),
+                        Span::new(s, end.max(s)),
+                    ));
                 }
             }
         };
@@ -431,25 +428,19 @@ impl<'a> Lowerer<'a> {
                 }
                 KindData::Extension(data) => {
                     if let Some(ni) = data.as_any().downcast_ref::<NotistInline>() {
-                        flush_text(
-                            &mut pieces,
-                            &mut text_buf,
-                            &mut text_start,
-                            text_end,
-                            &mut pending_attrs,
-                        );
+                        flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                         match ni {
                             NotistInline::Attr { text, start } => {
-                                if let Some((attrs, _)) = embedded::parse_attr_list(
+                                if let Some((attrs, end_rel)) = embedded::parse_attr_list(
                                     text,
                                     0,
                                     *start,
                                     &mut self.diagnostics,
                                 ) {
-                                    match &mut pending_attrs {
-                                        Some((existing, _)) => existing.extend(attrs),
-                                        None => pending_attrs = Some((attrs, *start as u32)),
-                                    }
+                                    pieces.push(InlinePiece::Attr {
+                                        attrs,
+                                        span: Span::new(*start as u32, (*start + end_rel) as u32),
+                                    });
                                 }
                             }
                             NotistInline::Call { text, start, end } => {
@@ -460,128 +451,65 @@ impl<'a> Lowerer<'a> {
                                     &mut self.diagnostics,
                                 ) {
                                     let call_span = Span::new(*start as u32, *end as u32);
-                                    let piece = InlinePiece::Expr(Box::new(expr), call_span);
-                                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                                    pieces.push(InlinePiece::Expr(Box::new(expr), call_span));
                                 }
                             }
                         }
                     } else if let Some(m) = data.as_any().downcast_ref::<MathInline>() {
-                        flush_text(
-                            &mut pieces,
-                            &mut text_buf,
-                            &mut text_start,
-                            text_end,
-                            &mut pending_attrs,
-                        );
-                        let piece = InlinePiece::Math(
+                        flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
+                        pieces.push(InlinePiece::Math(
                             m.text.clone(),
                             Span::new(m.start as u32, m.end as u32),
-                        );
-                        push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                        ));
                     } else if let Some(wl) = data.as_any().downcast_ref::<WikiLink>() {
-                        flush_text(
-                            &mut pieces,
-                            &mut text_buf,
-                            &mut text_start,
-                            text_end,
-                            &mut pending_attrs,
-                        );
+                        flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                         let wl_span = Span::new(wl.start as u32, wl.end as u32);
                         let label_text = wl.label.clone().unwrap_or_else(|| wl.target.clone());
-                        let piece = InlinePiece::Link {
+                        pieces.push(InlinePiece::Link {
                             target: wl.target.clone(),
                             label: vec![InlinePiece::Text(label_text, wl_span)],
                             span: wl_span,
-                        };
-                        push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                        });
                     }
                 }
                 KindData::CodeSpan(cs) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
-                    let piece = InlinePiece::Raw(cs.str(self.src).into_owned(), span);
-                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
+                    pieces.push(InlinePiece::Raw(cs.str(self.src).into_owned(), span));
                 }
                 KindData::Emphasis(_) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let inner = self.lower_inlines(c);
-                    let piece = InlinePiece::Emph(inner, span);
-                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                    pieces.push(InlinePiece::Emph(inner, span));
                 }
                 KindData::Strong(_) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let inner = self.lower_inlines(c);
-                    let piece = InlinePiece::Strong(inner, span);
-                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                    pieces.push(InlinePiece::Strong(inner, span));
                 }
                 KindData::Link(link) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let target = decode_md_text(link.destination().str(self.src));
                     let label = self.lower_inlines(c);
-                    let piece = InlinePiece::Link {
+                    pieces.push(InlinePiece::Link {
                         target,
                         label,
                         span,
-                    };
-                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                    });
                 }
                 KindData::Image(img) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let target = decode_md_text(img.destination().str(self.src));
                     let alt = self.collect_plain_text(c);
-                    let piece = InlinePiece::Image { target, alt, span };
-                    push_with_attrs(&mut pieces, piece, &mut pending_attrs);
+                    pieces.push(InlinePiece::Image { target, alt, span });
                 }
                 KindData::Strikethrough(_) => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
-                    // Preserve inner inlines cleanly.
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let inner = self.lower_inlines(c);
                     pieces.extend(inner);
                 }
                 KindData::RawHtml(_) => {}
                 _ => {
-                    flush_text(
-                        &mut pieces,
-                        &mut text_buf,
-                        &mut text_start,
-                        text_end,
-                        &mut pending_attrs,
-                    );
+                    flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
                     let inner = self.lower_inlines(c);
                     pieces.extend(inner);
                 }
@@ -590,13 +518,7 @@ impl<'a> Lowerer<'a> {
             child = next;
         }
 
-        flush_text(
-            &mut pieces,
-            &mut text_buf,
-            &mut text_start,
-            text_end,
-            &mut pending_attrs,
-        );
+        flush_text(&mut pieces, &mut text_buf, &mut text_start, text_end);
         pieces
     }
 
@@ -612,37 +534,6 @@ impl<'a> Lowerer<'a> {
             child = self.node(c).next_sibling();
         }
         out
-    }
-}
-
-fn push_with_attrs(
-    pieces: &mut Vec<InlinePiece>,
-    piece: InlinePiece,
-    pending: &mut Option<(Vec<AttrEntry>, u32)>,
-) {
-    if let Some((attrs, attr_start)) = pending.take() {
-        let end = inline_piece_span(&piece).end;
-        pieces.push(InlinePiece::Attributed {
-            attrs,
-            target: Box::new(piece),
-            span: Span::new(attr_start, end.max(attr_start)),
-        });
-    } else {
-        pieces.push(piece);
-    }
-}
-
-fn inline_piece_span(piece: &InlinePiece) -> Span {
-    match piece {
-        InlinePiece::Text(_, s)
-        | InlinePiece::Strong(_, s)
-        | InlinePiece::Emph(_, s)
-        | InlinePiece::Raw(_, s)
-        | InlinePiece::Math(_, s)
-        | InlinePiece::Expr(_, s)
-        | InlinePiece::Link { span: s, .. }
-        | InlinePiece::Image { span: s, .. }
-        | InlinePiece::Attributed { span: s, .. } => *s,
     }
 }
 

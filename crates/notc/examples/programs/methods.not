@@ -1,0 +1,36 @@
+// Type-associated methods: receiver-dispatched statically and lowered to plain calls.
+
+fn inc(x: Int) -> Int {
+    x + 100
+}
+
+fn Int.inc(self) -> Int {
+    self + 1
+}
+
+fn Int.add_to(self, delta: Int) -> Int {
+    self + delta
+}
+
+fn Bool.pick(self, yes: Int, no: Int) -> Int {
+    if self {
+        yes
+    } else {
+        no
+    }
+}
+
+fn (fn(Int) -> Int).twice(self, x: Int) -> Int {
+    self(self(x))
+}
+
+fn step_one(x: Int) -> Int {
+    x.inc()
+}
+
+fn main() -> Int {
+    let inc = 999; // Local value cannot hijack `.inc()` method dispatch.
+    let start = true.pick(38, inc);
+    let f = step_one;
+    f.twice(start).add_to(2)
+}

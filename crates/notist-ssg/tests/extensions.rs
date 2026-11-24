@@ -12,13 +12,13 @@ use std::{
 fn vault() -> Vault<MemoryResources> {
     let mut resources = MemoryResources::new("/site");
     for (path, source) in [
-        ("content/index.not", "= Original"),
+        ("content/index.md", "# Original"),
         ("content/removed.md", "# Removed"),
         ("data/original.toml", "value='original'"),
         ("Cargo.toml", "name='generated'"),
         (
-            "lib.notc",
-            "fn message() -> InlineContent { [from module] }",
+            "lib.not",
+            "fn message() -> Inline { [from module] }",
         ),
         (
             "templates/page.tera",
@@ -46,21 +46,25 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
             _: &SiteContext<'_>,
             input: &mut CompileInput,
         ) -> Result<(), Error> {
-            // Read a later-sorted virtual page and an edited on-disk page. All
-            // sources must be registered before the first page is evaluated.
-            input.documents.insert("a.not".into(), "#import \"../views/lib.notc\" as view;\n#view.show()\n\n#view.show(p\"./z.not\")\n\n#view.show(p\"./old.not\")".into());
+            input.documents.insert(
+                "a.md".into(),
+                "#import \"../views/lib.not\" as view\n#view.show(\"../private/input.txt\")".into(),
+            );
             input
                 .documents
-                .insert("z.not".into(), "virtual page text".into());
+                .insert("z.md".into(), "virtual page text".into());
             input
                 .documents
-                .insert("old.not".into(), "edited source text".into());
+                .insert("old.md".into(), "edited source text".into());
             Ok(())
         }
     }
     let mut resources = MemoryResources::new("/site");
-    resources.insert("content/old.not", "stale disk source");
-    resources.insert("views/lib.notc", "fn show(source: Path = p\"../private/input.txt\") -> BlockContent { [ #text(text: read_text(source)) ] }");
+    resources.insert("content/old.md", "stale disk source");
+    resources.insert(
+        "views/lib.not",
+        "fn show(source: String) -> Block { para(text(read_text(source))) }",
+    );
     resources.insert("private/input.txt", "private body <&>");
     let mut vault = Vault::new(resources);
     let site = Builder::default()
@@ -69,12 +73,11 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
         .unwrap();
     let output = html(&site, "a.html");
     assert!(output.contains("private body &lt;&amp;&gt;"));
-    assert!(output.contains("virtual page text"));
-    assert!(output.contains("edited source text"));
-    assert!(!output.contains("stale disk source"));
     assert!(!output.contains("input.txt"));
     assert!(!site.files.contains_key(Path::new("private/input.txt")));
-    assert_eq!(vault.input_session().dependencies().len(), 3);
+    assert!(html(&site, "z.html").contains("virtual page text"));
+    assert!(html(&site, "old.html").contains("edited source text"));
+    assert!(!html(&site, "old.html").contains("stale disk source"));
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,10 +93,10 @@ impl SiteExtension for Generate {
     ) -> Result<(), Error> {
         input.documents.remove(Path::new("removed.md"));
         input.documents.insert(
-            "index.not".into(),
-            "= Edited\n\n[Generated](new/deep/page.md#generated)".into(),
+            "index.md".into(),
+            "# Edited\n\n[Generated](new/deep/page.md#generated)".into(),
         );
-        input.documents.insert("new/deep/page.md".into(), "#import \"../../../lib.notc\" as demo;\n# Generated\n\n#demo.message()\n\n[Home](../../index.not)".into());
+        input.documents.insert("new/deep/page.md".into(), "#import \"../../../lib.not\" as demo;\n# Generated\n\n#demo.message()\n\n[Home](../../index.md)".into());
         Ok(())
     }
     fn before_template(
@@ -135,9 +138,9 @@ fn source_edits_use_normal_imports_routes_links_directories_and_template_data() 
     assert_eq!(
         vault
             .resources()
-            .source(Path::new("content/index.not"))
+            .source(Path::new("content/index.md"))
             .unwrap(),
-        "= Original"
+        "# Original"
     );
     assert!(
         vault
@@ -171,7 +174,7 @@ fn generated_documents_resolve_typed_and_sugar_embeds_without_source_files() {
                 "generated/deep/page.md".into(),
                 r#"# Generated
 
-#embed(p"../../image%20.svg", fragment: "one") ![Legacy](/image%2520.svg#two)"#
+![Rel](../../image%2520.svg#one) ![Abs](/image%2520.svg#two)"#
                     .into(),
             );
             Ok(())
@@ -219,13 +222,13 @@ impl SiteExtension for Record {
     ) -> Result<(), Error> {
         let mut events = self.events.lock().unwrap();
         assert_eq!(
-            input.documents.get(Path::new("previous.not")),
+            input.documents.get(Path::new("previous.md")),
             events.last().map(|id| id.to_string()).as_ref()
         );
         events.push(self.id);
         input
             .documents
-            .insert("previous.not".into(), self.id.into());
+            .insert("previous.md".into(), self.id.into());
         if self.fail {
             Err(Error::Message("failed deliberately".into()))
         } else {
@@ -291,9 +294,9 @@ fn invalid_paths_and_collisions_are_rejected_before_publication() {
         "a\\b.md",
         ".private/a.md",
         "_notist/a.md",
-        "module.notc",
+        "module.not",
         "file.json",
-        "index.md",
+        "index.markdown",
     ] {
         let error = Builder::default()
             .with_extension(Add {
@@ -331,7 +334,7 @@ fn generated_documents_can_supply_all_content_and_report_their_own_source_errors
     let site = generated.build(&mut vault, &SiteConfig::default()).unwrap();
     assert!(html(&site, "index.html").contains("Entirely generated"));
     let invalid = Builder::default().with_extension(Add {
-        path: "invalid.not",
+        path: "invalid.md",
         source: "#notist.missing()",
     });
     let Error::Diagnostics(errors) = invalid
@@ -340,7 +343,7 @@ fn generated_documents_can_supply_all_content_and_report_their_own_source_errors
     else {
         panic!("expected diagnostics");
     };
-    assert_eq!(errors[0].path, Path::new("/site/content/invalid.not"));
+    assert_eq!(errors[0].path, Path::new("/site/content/invalid.md"));
     assert_eq!(errors[0].source, "#notist.missing()");
 }
 
@@ -382,7 +385,7 @@ impl SiteExtension for Stateful {
             self.title.is_none(),
             "a build must not inherit the previous instance"
         );
-        self.title = input.documents.get(Path::new("index.not")).cloned();
+        self.title = input.documents.get(Path::new("index.md")).cloned();
         Ok(())
     }
     fn before_template(
@@ -401,9 +404,9 @@ impl SiteExtension for Stateful {
 fn native_state_is_build_scoped_even_after_compilation_failure() {
     let builder = Builder::default().with_extension(Stateful::default());
     let mut input = vault();
-    for (source, succeeds) in [("= First", true), ("#missing()", false), ("= Last", true)] {
+    for (source, succeeds) in [("# First", true), ("#missing()", false), ("# Last", true)] {
         let mut resources = input.resources().clone();
-        resources.insert("content/index.not", source);
+        resources.insert("content/index.md", source);
         input = Vault::new(resources);
         let result = builder.build(&mut input, &SiteConfig::default());
         if succeeds {

@@ -1,0 +1,9 @@
+fn graph(source: String) -> Block;
+
+fn diagram(source: String) -> Block {
+    [
+        #code_block("grammar", source)
+
+        #graph(source)
+    ]
+}

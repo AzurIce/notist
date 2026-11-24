@@ -1,1 +1,0 @@
-fn math<C: Type = InlineContent>(text: String) -> C;

@@ -1,0 +1,25 @@
+import "./labels.not" as labels;
+import "./labels.not": label as format_label;
+
+fn tag(text_val: String) -> Inline { format_label(text_val, true) }
+
+fn decorate<C: Type>(children: C) -> C
+where C == Inline || C == Block
+{
+    match C {
+        Inline => strong[#children],
+        Block => [ #children ],
+        _ => compile_error("decorate requires content"),
+    }
+}
+
+fn panel<C: Type>(children: C) -> Block
+where C == Inline || C == Block
+{
+    let blocks = match C {
+        Inline => para(children),
+        Block => children,
+        _ => compile_error("panel requires content"),
+    };
+    callout("note")[ #blocks ]
+}

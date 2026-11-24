@@ -1,0 +1,36 @@
+// Higher-order functions, local bindings, and lexical shadowing.
+
+fn inc(x: Int) -> Int {
+    x + 1
+}
+
+fn add2(x: Int) -> Int {
+    x + 2
+}
+
+fn identity(f: fn(Int) -> Int) -> fn(Int) -> Int {
+    f
+}
+
+fn choose_step(fast: Bool) -> fn(Int) -> Int {
+    if fast {
+        add2
+    } else {
+        inc
+    }
+}
+
+fn apply_twice(f: fn(Int) -> Int, x: Int) -> Int {
+    f(f(x))
+}
+
+fn main() -> Int {
+    let step = identity(choose_step(true));
+    let base = 38;
+    apply_twice(step, base)
+}
+
+fn shadow_demo() -> Int {
+    let inc = add2;
+    inc(40)
+}

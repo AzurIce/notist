@@ -27,46 +27,36 @@ fn html(site: &BuildOutput, path: &str) -> String {
 }
 
 #[test]
-fn publication_mounts_do_not_grant_text_reading_and_text_grants_do_not_publish_files() {
+fn publication_mounts_do_not_grant_text_reading_outside_project_root() {
     let files = resources(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         (
-            "../art/README.not",
-            "= Art\n\n#import \"view.notc\" as view;\n#view.show(p\"./private.txt\")",
+            "../art/README.md",
+            "#import \"./view.not\" as view\n\n# Art\n\n#view.show(\"./private.txt\")",
         ),
         (
-            "../art/view.notc",
-            "fn show(source: Path) -> BlockContent { [ #text(text: read_text(source)) ] }",
+            "../art/view.not",
+            "fn show(source: String) -> Block { para(text(read_text(source))) }",
         ),
         ("../art/private.txt", "mounted private input"),
     ]);
-    let failure = build(&mut Vault::new(files.clone()), &config())
+    let failure = build(&mut Vault::new(files), &config())
         .unwrap_err()
         .to_string();
-    assert!(failure.contains("access denied"), "{failure}");
-    let mut vault = Vault::new(files).with_read_roots(["/repo/docs".into(), "/repo/art".into()]);
-    let site = build(&mut vault, &config()).unwrap();
-    assert!(html(&site, "art/index.html").contains("mounted private input"));
-    assert!(!site.files.contains_key(Path::new("art/private.txt")));
+    assert!(failure.contains("escapes project root"), "{failure}");
 }
 
 #[test]
-fn typed_and_legacy_embed_identities_still_require_mount_authorization() {
+fn mounted_image_links_require_mount_authorization() {
     let files = resources(&[
         (
-            "README.not",
-            r#"= Home
-
-#embed(p"/art/a?b#c%.svg", fragment: "typed") ![Legacy](../art/a%3Fb%23c%25.svg#legacy)"#,
+            "README.md",
+            "# Home\n\n![Legacy](../art/a%3Fb%23c%25.svg#legacy)",
         ),
         ("../art/a?b#c%.svg", "mounted image"),
     ]);
     let site = build(&mut Vault::new(files.clone()), &config()).unwrap();
     let output = html(&site, "index.html");
-    assert!(
-        output.contains("src=\"art/a%3Fb%23c%25.svg#typed\""),
-        "{output}"
-    );
     assert!(
         output.contains("src=\"art/a%3Fb%23c%25.svg#legacy\""),
         "{output}"
@@ -76,21 +66,18 @@ fn typed_and_legacy_embed_identities_still_require_mount_authorization() {
 }
 
 #[test]
-fn mounted_documents_bind_path_literals_under_the_declared_mount_root() {
+fn mounted_documents_resolve_relative_images_under_their_mount_path() {
     let mut vault = Vault::new(resources(&[
-        ("README.not", "= Home"),
+        ("README.md", "# Home"),
         (
-            "../art/models/README.not",
-            r#"= Model
-
-#embed(p"./a?b#c%.svg", fragment: "one") #embed(p"/models/a?b#c%.svg", fragment: "two")"#,
+            "../art/models/README.md",
+            "# Model\n\n![One](./a%3Fb%23c%25.svg#one)",
         ),
         ("../art/models/a?b#c%.svg", "mounted image"),
     ]));
     let site = build(&mut vault, &config()).unwrap();
     let output = html(&site, "art/models/index.html");
     assert!(output.contains("src=\"a%3Fb%23c%25.svg#one\""), "{output}");
-    assert!(output.contains("src=\"a%3Fb%23c%25.svg#two\""), "{output}");
     assert_eq!(
         site.files[Path::new("art/models/a?b#c%.svg")],
         b"mounted image"
@@ -107,11 +94,11 @@ fn mounted_pages_resolve_real_and_mounted_links_and_copy_only_used_resources() {
             ),
             (
                 "../art/models/drill/README.md",
-                "# Drill\n\n## Details\n\n![Preview](renders/a%20b.svg?raw=1#image)\n\n[Model](model/drill.glb)\n\n[Home](../../../docs/README.md)\n\n[Next](../next.not#topic)",
+                "# Drill\n\n## Details\n\n![Preview](renders/a%20b.svg?raw=1#image)\n\n[Model](model/drill.glb)\n\n[Home](../../../docs/README.md)\n\n[Next](../next.md#topic)",
             ),
             (
-                "../art/models/next.not",
-                "= Next\n\n== Topic\n\n[Drill](drill/README.md#details)",
+                "../art/models/next.md",
+                "# Next\n\n## Topic\n\n[Drill](drill/README.md#details)",
             ),
             ("../art/models/drill/renders/a b.svg", "<svg/>"),
             ("../art/models/drill/model/drill.glb", "model bytes"),
@@ -213,7 +200,7 @@ fn summary_supports_virtual_parent_directories_and_specific_mount_claims() {
     let mut vault = Vault::new(resources(&[
         ("README.md", "# Home"),
         (
-            "SUMMARY.not",
+            "SUMMARY.md",
             "- [Home](README.md)\n- [Assets](assets/)\n- [Pinned](assets/art/models/)",
         ),
         ("../art/README.md", "# Art"),
@@ -238,7 +225,7 @@ fn summary_supports_virtual_parent_directories_and_specific_mount_claims() {
 #[test]
 fn mounts_do_not_open_unregistered_paths_or_hide_missing_resources() {
     for (target, expected) in [
-        ("missing.png", "missing embedded resource"),
+        ("missing.png", "missing local reference"),
         ("../../private/secret.png", "outside the content"),
     ] {
         let files = resources(&[
@@ -351,20 +338,12 @@ fn mounts_parse_without_changing_include_semantics() {
 }
 
 #[test]
-fn mounted_documents_keep_their_real_import_and_configuration_scope() {
-    let source = "= Art\n\n$x$";
+fn mounted_documents_keep_their_real_import_scope_and_component_assets() {
+    let source = "#import \"./lib.not\" as widget\n\n# Art\n\n#widget.formula(\"x\")";
     let mut vault = Vault::new(resources(&[
-        ("Notist.toml", ""),
         ("README.md", "# Home"),
-        ("../art/README.not", source),
-        (
-            "../art/Notist.toml",
-            "[[extensions]]\nkind='replace'\nimports={widget='lib.notc'}\nfrom='notist.math'\nto='widget.formula'",
-        ),
-        (
-            "../art/lib.notc",
-            "fn formula<C: Type = InlineContent>(text: String) -> C;",
-        ),
+        ("../art/README.md", source),
+        ("../art/lib.not", "fn formula(expr: String) -> Inline;"),
         (
             "../art/formula/index.js",
             "export default class extends HTMLElement {}",
@@ -372,20 +351,18 @@ fn mounted_documents_keep_their_real_import_and_configuration_scope() {
         ("../art/formula/helper.js", "export const value = 1;"),
     ]));
     let site = build(&mut vault, &config()).unwrap();
-    let key = notist_html::components::module_key("/repo/art/lib.notc");
-    assert!(site.files.contains_key(Path::new(&format!(
-        "_notist/modules/{key}/formula/helper.js"
-    ))));
     assert!(
-        html(&site, "_notist/pages/art/README.js")
-            .contains(&format!("../../modules/{key}/formula/index.js"))
+        site.files
+            .keys()
+            .any(|p| p.ends_with("formula/helper.js")),
+        "expected formula/helper.js in {:?}",
+        site.files.keys().collect::<Vec<_>>()
     );
-    let environment = vault
-        .environment_for("/repo/art/README.not", source)
-        .unwrap();
-    assert_eq!(
-        environment.config_path(),
-        Some(Path::new("/repo/art/Notist.toml"))
+    assert!(
+        site.files
+            .keys()
+            .any(|p| p.ends_with("formula/index.js")),
+        "expected formula/index.js"
     );
 }
 

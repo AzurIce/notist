@@ -11,7 +11,7 @@ fn setup(root: &Path, script: &str) -> SiteConfig {
     fs::create_dir_all(root.join("content")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::create_dir_all(root.join("templates")).unwrap();
-    fs::write(root.join("content/index.not"), "= Original").unwrap();
+    fs::write(root.join("content/index.md"), "# Original").unwrap();
     fs::write(root.join("data/physical.toml"), "value='loaded'").unwrap();
     fs::write(
         root.join("templates/page.tera"),
@@ -35,7 +35,7 @@ impl SiteExtension for Native {
     ) -> Result<(), Error> {
         input
             .documents
-            .insert("index.not".into(), "= Native".into());
+            .insert("index.md".into(), "# Native".into());
         Ok(())
     }
     fn before_template(
@@ -68,12 +68,12 @@ for line in sys.stdin:
     if r['event'] == 'before_compile':
         assert state is None
         assert 'data' not in r and 'pages' not in r
-        state = r['documents']['index.not']
-        docs = {'generated/page.md': '# Generated\n\n[Home](../index.not)',
-                'index.not': '= Modified\n\n[Generated](generated/page.md)'}
+        state = r['documents']['index.md']
+        docs = {'generated/page.md': '# Generated\n\n[Home](../index.md)',
+                'index.md': '# Modified\n\n[Generated](generated/page.md)'}
         response = dict(version=2, event=r['event'], documents=docs)
     else:
-        assert state == '= Native'
+        assert state == '# Native'
         assert 'documents' not in r
         assert all(p['html'] for p in r['pages'])
         assert r['data']['physical']['value'] == 'loaded'
@@ -127,7 +127,7 @@ for line in sys.stdin:
     r = json.loads(line)
     response = dict(version=2, event=r['event'])
     if r['event'] == 'before_compile':
-        assert len(r['documents']['index.not']) > 100000
+        assert len(r['documents']['index.md']) > 100000
         response['documents'] = None
     else:
         assert len(r['pages'][0]['html']) > 100000
@@ -136,7 +136,7 @@ for line in sys.stdin:
 "#,
     );
     let source = "body ".repeat(30_000);
-    fs::write(root.path().join("content/index.not"), &source).unwrap();
+    fs::write(root.path().join("content/index.md"), &source).unwrap();
     fs::write(
         root.path().join("templates/page.tera"),
         "{{page.html | safe}}",
@@ -219,7 +219,7 @@ signal.pause()
 "#,
     );
     fs::write(
-        root.path().join("content/index.not"),
+        root.path().join("content/index.md"),
         "body ".repeat(100_000),
     )
     .unwrap();
@@ -250,7 +250,7 @@ for line in sys.stdin:
 "#,
     );
     let builder = Builder::default();
-    fs::write(root.path().join("content/index.not"), "#missing()").unwrap();
+    fs::write(root.path().join("content/index.md"), "#missing()").unwrap();
     assert!(
         builder
             .build(&mut Vault::new(FsResources::new(root.path())), &config)
@@ -261,7 +261,7 @@ for line in sys.stdin:
         !Path::new("/proc").join(pid.trim()).exists(),
         "failed build left a live child or zombie"
     );
-    fs::write(root.path().join("content/index.not"), "= Fixed").unwrap();
+    fs::write(root.path().join("content/index.md"), "# Fixed").unwrap();
     fs::write(
         root.path().join("templates/page.tera"),
         "{{page.html | safe}}",
@@ -310,7 +310,7 @@ fn invalid_frames_fields_and_paths_abort_the_build() {
             "invalid site document path",
         ),
         (
-            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= One","index.md":"# Two"}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.markdown":"# One","index.md":"# Two"}}"##,
             "route collision",
         ),
     ] {

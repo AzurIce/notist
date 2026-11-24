@@ -1,0 +1,3 @@
+fn label(text_val: String, visible: Bool) -> Inline {
+    if visible { text(text_val) } else { [] }
+}

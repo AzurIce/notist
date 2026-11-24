@@ -1,0 +1,7 @@
+// Pure external content declarations — zero HTML or JS knowledge inside `notc`.
+// When building an SSG site, `notist-ssg` resolves matching `./badge.js`,
+// `./panel/index.js`, etc. by convention as Web Components.
+
+fn badge(label: String, count: Int) -> Inline;
+fn panel(title: String, body: Block) -> Block;
+fn diagram(source: String) -> Block;

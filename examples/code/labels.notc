@@ -1,3 +1,0 @@
-fn label(text: String, visible: Bool = true) -> InlineContent {
-    if visible { [#notist.text(text: text)] } else { [] }
-}

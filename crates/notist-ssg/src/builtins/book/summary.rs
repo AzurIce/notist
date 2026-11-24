@@ -1,10 +1,11 @@
-//! SUMMARY.not or SUMMARY.md: an optional declarative book structure at the Vault root.
+//! SUMMARY.md: an optional declarative book structure at the Vault root.
 //!
 //! The file is interpreted as data, never evaluated or rendered: an optional
 //! document title, prefix/suffix links, part headings, chapter lists
 //! and separators follow mdBook's SUMMARY structure. Directory discovery,
 //! unlinked chapters and collapsed branches extend the chapter-list syntax.
-use notist::{Ctor, Diagnostic, Item, Phase, Resources, TextRange, Value, resources::ResourceKind};
+use notc::{AttrValue, Block, BlockKind, Inline, InlineKind};
+use notist::{Diagnostic, Phase, Resources, TextRange, resources::ResourceKind};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -16,7 +17,7 @@ use super::{
 };
 use crate::mounts::Mounts;
 
-pub(crate) const FILE_NAMES: [&str; 2] = ["SUMMARY.not", "SUMMARY.md"];
+pub(crate) const FILE_NAMES: [&str; 1] = ["SUMMARY.md"];
 
 /// A declared entry before target resolution. A `None` target is an unlinked
 /// chapter; an empty target is a draft entry.
@@ -68,66 +69,82 @@ impl Plan {
     }
 }
 
+fn to_range(span: notc::Span) -> TextRange {
+    TextRange::new(span.start.into(), span.end.into())
+}
+
 fn diagnostic(span: TextRange, message: impl Into<String>) -> Diagnostic {
     Diagnostic::new(Phase::Semantic, span, message)
 }
 
-fn text_of(item: &Item) -> String {
-    let mut out = String::new();
-    fn walk(item: &Item, out: &mut String) {
-        if item.ctor() == Ctor::Text
-            && let Some(Value::Str(text)) = item.field("text")
-        {
-            out.push_str(text);
-        }
-        for child in item.children() {
-            walk(child, out);
-        }
-    }
-    walk(item, &mut out);
-    out.trim().to_string()
+fn is_blank_inline(inline: &Inline) -> bool {
+    matches!(&inline.node().kind, InlineKind::Text(t) if t.trim().is_empty())
 }
 
-fn blank(item: &Item) -> bool {
-    item.ctor() == Ctor::Text
-        && matches!(item.field("text"), Some(Value::Str(text)) if text.trim().is_empty())
+fn inline_children(inline: &Inline) -> Vec<&Inline> {
+    match &inline.node().kind {
+        InlineKind::Fragment(children) => children.iter().collect(),
+        _ => vec![inline],
+    }
+}
+
+fn collect_inline_links<'a>(inline: &'a Inline, out: &mut Vec<&'a Inline>, has_image: &mut Option<TextRange>) {
+    match &inline.node().kind {
+        InlineKind::Fragment(children) => {
+            for child in children.iter() {
+                collect_inline_links(child, out, has_image);
+            }
+        }
+        InlineKind::Strong(inner)
+        | InlineKind::Emph(inner)
+        | InlineKind::Strike(inner)
+        | InlineKind::Underline(inner) => {
+            collect_inline_links(inner, out, has_image);
+        }
+        InlineKind::Link { .. } => out.push(inline),
+        InlineKind::Image { .. } => {
+            if has_image.is_none() {
+                *has_image = Some(to_range(inline.node().span));
+            }
+        }
+        InlineKind::Text(_) | InlineKind::Raw(_) | InlineKind::Math(_) | InlineKind::Custom(_) => {}
+    }
 }
 
 /// Transparent containers carry no structure of their own.
-fn flatten<'a>(item: &'a Item, blocks: &mut Vec<&'a Item>) {
-    if matches!(item.ctor(), Ctor::Section | Ctor::Node | Ctor::Group) {
-        for child in item.children() {
-            flatten(child, blocks);
+fn flatten<'a>(block: &'a Block, blocks: &mut Vec<&'a Block>) {
+    match &block.node().kind {
+        BlockKind::Fragment(children) => {
+            for child in children.iter() {
+                flatten(child, blocks);
+            }
         }
-    } else {
-        blocks.push(item);
+        BlockKind::Section { heading, body } => {
+            flatten(heading, blocks);
+            flatten(body, blocks);
+        }
+        _ => blocks.push(block),
     }
 }
 
 fn interpret_label(
-    paragraph: &Item,
+    paragraph: &Inline,
+    para_span: TextRange,
     errors: &mut Vec<Diagnostic>,
 ) -> Option<(Option<String>, Option<String>)> {
-    let mut links = vec![];
-    for node in paragraph.descendants() {
-        match node.ctor() {
-            Ctor::Link => links.push(node),
-            Ctor::Embed => {
-                errors.push(diagnostic(
-                    node.span,
-                    "structure entries do not embed resources",
-                ));
-                return None;
-            }
-            _ => {}
-        }
+    let mut links = Vec::new();
+    let mut image_span = None;
+    collect_inline_links(paragraph, &mut links, &mut image_span);
+    if let Some(span) = image_span {
+        errors.push(diagnostic(span, "structure entries do not embed resources"));
+        return None;
     }
     match links.as_slice() {
         [] => {
-            let label = text_of(paragraph);
+            let label = paragraph.plain_text().trim().to_owned();
             if label.is_empty() {
                 errors.push(diagnostic(
-                    paragraph.span,
+                    para_span,
                     "structure entries need a link or a plain label",
                 ));
                 None
@@ -136,28 +153,30 @@ fn interpret_label(
             }
         }
         [link] => {
-            let meaningful: Vec<_> = paragraph
-                .children()
-                .iter()
-                .filter(|child| !blank(child))
+            let meaningful: Vec<_> = inline_children(paragraph)
+                .into_iter()
+                .filter(|child| !is_blank_inline(child))
                 .collect();
-            if meaningful.len() != 1 || meaningful[0].ctor() != Ctor::Link {
+            if meaningful.len() != 1 || !matches!(meaningful[0].node().kind, InlineKind::Link { .. })
+            {
                 errors.push(diagnostic(
-                    paragraph.span,
+                    para_span,
                     "a structure link must be the whole label",
                 ));
                 return None;
             }
-            let label = text_of(link);
-            let target = match link.field("target") {
-                Some(Value::Str(target)) => target.to_string(),
-                _ => String::new(),
+            let InlineKind::Link { target, label } = &link.node().kind else {
+                unreachable!()
             };
-            Some(((!label.is_empty()).then_some(label), Some(target)))
+            let label_text = label.plain_text().trim().to_owned();
+            Some((
+                (!label_text.is_empty()).then_some(label_text),
+                Some(target.to_string()),
+            ))
         }
         _ => {
             errors.push(diagnostic(
-                paragraph.span,
+                para_span,
                 "a structure entry has at most one link",
             ));
             None
@@ -165,64 +184,73 @@ fn interpret_label(
     }
 }
 
-fn chapter_list(list: &Item, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
-    if matches!(list.field("ordered"), Some(Value::Bool(true))) {
+fn chapter_list(list: &Block, errors: &mut Vec<Diagnostic>) -> Vec<Entry> {
+    let BlockKind::List { ordered, items, .. } = &list.node().kind else {
+        return Vec::new();
+    };
+    if *ordered {
         errors.push(diagnostic(
-            list.span,
+            to_range(list.node().span),
             "structure chapter lists use unordered markers; write chapter numbers in the label",
         ));
     }
-    list.children()
+    items
         .iter()
         .filter_map(|item| entry(item, errors))
         .collect()
 }
 
-fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
-    if item.ctor() != Ctor::ListItem {
-        errors.push(diagnostic(
-            item.span,
-            "structure entries must be list items",
-        ));
-        return None;
-    }
-    let mut label = None;
-    let mut nested = None;
-    for child in item.children() {
-        match child.ctor() {
-            Ctor::Paragraph if label.is_none() => label = Some(child),
-            Ctor::List if nested.is_none() => nested = Some(child),
+fn entry(item: &Block, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
+    let item_span = to_range(item.node().span);
+    let mut parts: Vec<&Block> = Vec::new();
+    flatten(item, &mut parts);
+
+    let mut label_block: Option<&Block> = None;
+    let mut nested: Option<&Block> = None;
+    for child in parts {
+        match &child.node().kind {
+            BlockKind::Paragraph(_) if label_block.is_none() => label_block = Some(child),
+            BlockKind::List { .. } if nested.is_none() => nested = Some(child),
             _ => errors.push(diagnostic(
-                child.span,
+                to_range(child.node().span),
                 "structure entries contain a label and at most one nested list",
             )),
         }
     }
-    let Some(label) = label else {
+    let Some(label_node) = label_block else {
         errors.push(diagnostic(
-            item.span,
+            item_span,
             "structure entries need a link or a plain label",
         ));
         return None;
     };
-    let collapsed = match label.attrs.get("collapsed").or_else(|| {
-        label
-            .children()
-            .iter()
-            .find(|child| !blank(child))
-            .and_then(|child| child.attrs.get("collapsed"))
-    }) {
+    let BlockKind::Paragraph(label_inline) = &label_node.node().kind else {
+        unreachable!()
+    };
+
+    let collapsed_attr = label_node
+        .node()
+        .attrs
+        .get("collapsed")
+        .or_else(|| {
+            inline_children(label_inline)
+                .into_iter()
+                .find(|child| !is_blank_inline(child))
+                .and_then(|child| child.node().attrs.get("collapsed"))
+        });
+    let collapsed = match collapsed_attr {
         None => false,
-        Some(Value::Bool(value)) => *value,
+        Some(AttrValue::Bool(value)) => *value,
         Some(_) => {
             errors.push(diagnostic(
-                item.span,
+                item_span,
                 "structure entry `collapsed` must be a boolean",
             ));
             false
         }
     };
-    let (label, target) = interpret_label(label, errors)?;
+
+    let (label, target) = interpret_label(label_inline, to_range(label_node.node().span), errors)?;
     let children = nested
         .map(|list| chapter_list(list, errors))
         .unwrap_or_default();
@@ -235,102 +263,107 @@ fn entry(item: &Item, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
         label,
         target,
         collapsed,
-        span: item.span,
+        span: item_span,
         children,
     })
 }
 
-/// Interpret the analyzed document as a structure declaration.
-pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> {
-    let mut blocks = vec![];
-    for child in document.children() {
-        flatten(child, &mut blocks);
-    }
-    let mut errors = vec![];
-    let mut entries = vec![];
+/// Interpret the parsed `notc::Block` document as a book structure declaration.
+pub(crate) fn interpret(document: &Block) -> Result<Vec<Entry>, Vec<Diagnostic>> {
+    let mut blocks = Vec::new();
+    flatten(document, &mut blocks);
+    let mut errors = Vec::new();
+    let mut entries = Vec::new();
     let mut chapters_started = false;
     let mut suffix = false;
     for (index, block) in blocks.iter().enumerate() {
-        match block.ctor() {
-            Ctor::Heading => {
-                if matches!(block.field("level"), Some(Value::Int(1))) && index != 0 {
+        let block_span = to_range(block.node().span);
+        match &block.node().kind {
+            BlockKind::Heading { level, title } => {
+                if *level == 1 && index != 0 {
                     if suffix {
                         errors.push(diagnostic(
-                            block.span,
+                            block_span,
                             "part titles cannot follow suffix chapters",
                         ));
                     }
-                    let label = text_of(block);
+                    let label = title.plain_text().trim().to_owned();
                     if label.is_empty() {
-                        errors.push(diagnostic(block.span, "part titles must not be empty"));
+                        errors.push(diagnostic(block_span, "part titles must not be empty"));
                     }
                     entries.push(Entry {
                         kind: NavigationKind::Part,
                         label: Some(label),
                         target: None,
                         collapsed: false,
-                        span: block.span,
+                        span: block_span,
                         children: vec![],
                     });
                 }
             }
-            Ctor::Divider => entries.push(Entry {
+            BlockKind::Divider => entries.push(Entry {
                 kind: NavigationKind::Separator,
                 label: None,
                 target: None,
                 collapsed: false,
-                span: block.span,
+                span: block_span,
                 children: vec![],
             }),
-            Ctor::List => {
+            BlockKind::List { .. } => {
                 if suffix {
                     errors.push(diagnostic(
-                        block.span,
+                        block_span,
                         "chapter lists cannot follow suffix chapters",
                     ));
                 }
                 chapters_started = true;
                 entries.extend(chapter_list(block, &mut errors));
             }
-            Ctor::Paragraph => {
-                let links: Vec<_> = block
-                    .children()
-                    .iter()
-                    .filter(|child| !blank(child))
+            BlockKind::Paragraph(inline) => {
+                let links: Vec<_> = inline_children(inline)
+                    .into_iter()
+                    .filter(|child| !is_blank_inline(child))
                     .collect();
-                if links.is_empty() || links.iter().any(|link| link.ctor() != Ctor::Link) {
+                if links.is_empty()
+                    || links
+                        .iter()
+                        .any(|link| !matches!(link.node().kind, InlineKind::Link { .. }))
+                {
                     errors.push(diagnostic(
-                        block.span,
+                        block_span,
                         "prefix and suffix chapters must contain only standalone links",
                     ));
                     continue;
                 }
                 suffix |= chapters_started;
                 for link in links {
-                    let target = match link.field("target") {
-                        Some(Value::Str(target)) => target.to_string(),
-                        _ => String::new(),
+                    let link_span = to_range(link.node().span);
+                    let InlineKind::Link { target, label } = &link.node().kind else {
+                        unreachable!()
                     };
                     if target.ends_with('/') {
-                        errors.push(diagnostic(link.span, "prefix and suffix chapters must reference a single document, not a directory"));
+                        errors.push(diagnostic(
+                            link_span,
+                            "prefix and suffix chapters must reference a single document, not a directory",
+                        ));
                     }
-                    let label = text_of(link);
+                    let label_text = label.plain_text().trim().to_owned();
                     entries.push(Entry {
                         kind: if target.is_empty() {
                             NavigationKind::Draft
                         } else {
                             NavigationKind::Chapter
                         },
-                        label: (!label.is_empty()).then_some(label),
-                        target: Some(target),
+                        label: (!label_text.is_empty()).then_some(label_text),
+                        target: Some(target.to_string()),
                         collapsed: false,
-                        span: link.span,
+                        span: link_span,
                         children: vec![],
                     });
                 }
             }
             _ => errors.push(diagnostic(
-                block.span,
+                block_span,
                 "structure allows only headings, chapter links, chapter lists and separators",
             )),
         }
@@ -341,7 +374,7 @@ pub(crate) fn interpret(document: &Item) -> Result<Vec<Entry>, Vec<Diagnostic>> 
         && errors.is_empty()
     {
         errors.push(diagnostic(
-            document.span,
+            to_range(document.node().span),
             "site structure declares no entries",
         ));
     }

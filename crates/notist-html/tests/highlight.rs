@@ -1,18 +1,6 @@
 #![cfg(feature = "highlight")]
 
-use notist_core::{
-    builtins::Level,
-    item::{Ctor, Item, Value},
-};
-use notist_html::{Renderer, highlight};
-
-fn raw(language: &str, text: &str) -> Item {
-    let mut item = Item::new(Ctor::RawInline, Default::default())
-        .with_field("lang", Value::Str(language.into()))
-        .with_field("text", Value::Str(text.into()));
-    item.level = Level::Block;
-    item
-}
+use notist_html::highlight;
 
 // Inspect the text represented by the generated spans, rather than depending
 // on a grammar's exact span boundaries or nesting.
@@ -69,7 +57,7 @@ fn common_languages_and_aliases_preserve_exact_code_text() {
     ] {
         for language in languages {
             for source in [source, source.trim_end_matches('\n')] {
-                let html = highlight::code(&raw(language, source))
+                let html = highlight::highlight_str(language, source)
                     .unwrap_or_else(|| panic!("missing language: {language}"));
                 assert!(html.contains("<span class="), "{language}: {html}");
                 assert_eq!(text(&html), source, "{language}: {html}");
@@ -81,7 +69,7 @@ fn common_languages_and_aliases_preserve_exact_code_text() {
 }
 
 #[test]
-fn plain_and_unknown_languages_fall_back_without_affecting_inline_code() {
+fn plain_and_unknown_languages_fall_back_to_none() {
     for language in [
         "",
         " ",
@@ -94,74 +82,45 @@ fn plain_and_unknown_languages_fall_back_without_affecting_inline_code() {
         "nohighlight",
         "unknown-language",
     ] {
-        let item = raw(language, "<script> &\n");
-        assert!(highlight::code(&item).is_none(), "{language}");
-        let html = Renderer::new()
-            .with_code_renderer(highlight::code)
-            .render(&item);
-        assert!(html.contains("&lt;script&gt; &amp;\n</code>"), "{html}");
-        assert!(!html.contains("<span"));
+        assert!(
+            highlight::highlight_str(language, "<script> &\n").is_none(),
+            "{language}"
+        );
     }
-    let mut item = raw("rust", "let x = 1;");
-    assert!(!Renderer::new().render(&item).contains("<span"));
-    item.level = Level::Inline;
-    let html = Renderer::new()
-        .with_code_renderer(highlight::code)
-        .render(&item);
-    assert_eq!(html, "<code class=\"language-rust\">let x = 1;</code>");
 }
 
 #[test]
-fn native_snippets_use_syntax_without_evaluation_or_losing_incomplete_input() {
+fn native_snippets_preserve_exact_bytes_and_highlight_scopes() {
     for (language, source, scopes) in [
         (
             "not",
-            "= 标题\r\n\r\n**粗体** #missing(label: \"<script>\", n: 2)\r\n// 注释\r\n",
-            &["z-heading", "z-bold", "z-string", "z-numeric", "z-comment"][..],
+            "import \"missing.not\" as demo;\nfn badge(label: String) -> Inline { [你好 #demo.f(label)] }\n",
+            &["z-keyword", "z-type", "z-function"][..],
         ),
         (
-            "notc",
-            "import \"missing.notc\" as demo;\nfn badge(label: String) -> InlineContent { [你好 #demo.f(label)] }\n",
-            &["z-keyword", "z-type", "z-function"],
-        ),
-        (
-            "notc",
+            "not",
             "fn unfinished(label: String = r#\"<script>&\"#",
             &["z-keyword", "z-string"],
         ),
-        ("not", "#call(\"未完成\"\n", &["z-string"]),
         (
-            "notc",
-            "fn source(p: Path = p\"./missing.json\") -> Path { p }",
+            "not",
+            "fn source(p: String) -> String { read_text(\"./missing.json\") }",
             &["z-type", "z-string"],
         ),
     ] {
-        let item = raw(language, source);
-        let before = item.clone();
-        let html = highlight::code(&item).unwrap();
+        let html = highlight::highlight_str(language, source).unwrap();
         assert_eq!(text(&html), source, "{language}: {html}");
         for scope in scopes {
             assert!(html.contains(scope), "missing {scope}: {html}");
         }
         assert!(!html.contains("<script>"));
-        assert_eq!(item, before);
     }
 }
 
 #[test]
-fn native_raw_payloads_do_not_become_calls_or_comments() {
-    let source = "```text\n#not_a_call(1) // not a comment\n```\n";
-    let html = highlight::code(&raw("not", source)).unwrap();
-    assert_eq!(text(&html), source);
-    assert!(html.contains("z-raw"));
-    assert!(!html.contains("z-function"));
-    assert!(!html.contains("z-comment"));
-}
-
-#[test]
 fn code_content_literals_keep_native_markup_highlighting() {
-    let source = "fn content() -> InlineContent { [**你好** #missing(label: \"world\")] }\n";
-    let html = highlight::code(&raw("notc", source)).unwrap();
+    let source = "fn content() -> Inline { [**你好** #missing(\"world\")] }\n";
+    let html = highlight::highlight_str("not", source).unwrap();
     assert_eq!(text(&html), source);
     assert!(html.contains("z-markup z-bold"), "{html}");
     assert!(html.contains("class=\"z-string\">\"world\""), "{html}");

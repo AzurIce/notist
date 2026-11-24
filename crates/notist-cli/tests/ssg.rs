@@ -37,7 +37,7 @@ fn request(address: &str, path: &str) -> String {
 fn site_commands_edit_inputs_in_order_and_preserve_publication_on_failure() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    write(root, "content/index.not", "= Original");
+    write(root, "content/index.md", "# Original");
     write(root, "edit.py", r#"
 import json, sys
 from pathlib import Path
@@ -61,12 +61,12 @@ for line in sys.stdin:
     write(
         root,
         "first-response.json",
-        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= First"}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.md":"# First"}}"##,
     );
     write(
         root,
         "second-response.json",
-        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Final\n\n[New](new/page.md)","new/page.md":"# New"}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Final\n\n[New](new/page.md)","new/page.md":"# New"}}"##,
     );
     let result = command(root).args(["build"]).output().unwrap();
     assert!(
@@ -77,7 +77,7 @@ for line in sys.stdin:
     let request: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(root.join("second-request.json")).unwrap())
             .unwrap();
-    assert_eq!(request["documents"]["index.not"], "= First");
+    assert_eq!(request["documents"]["index.md"], "# First");
     assert!(request.get("data").is_none());
     let request: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(root.join("second-request.json.template")).unwrap()
@@ -104,7 +104,7 @@ for line in sys.stdin:
     write(
         root,
         "second-response.json",
-        r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Latest"}}"##,
+        r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Latest"}}"##,
     );
     assert!(
         command(root)
@@ -123,7 +123,7 @@ fn preview_watches_external_extension_inputs_recursively_even_after_failure() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("site");
     std::fs::create_dir_all(temp.path().join("external")).unwrap();
-    write(&root, "content/index.not", "= Original");
+    write(&root, "content/index.md", "# Original");
     write(
         &root,
         "edit.py",
@@ -180,9 +180,9 @@ for line in sys.stdin:
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Generated"}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Generated"}}"##,
         );
-        wait("<h1 id=\"generated\">Generated");
+        wait("<section id=\"generated\"><h1>Generated");
         write(
             temp.path(),
             "external/nested/response.json",
@@ -193,7 +193,7 @@ for line in sys.stdin:
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Recovered"}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Recovered"}}"##,
         );
         wait("Recovered");
         std::fs::remove_dir_all(temp.path().join("external")).unwrap();
@@ -201,13 +201,13 @@ for line in sys.stdin:
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Restored"}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Restored"}}"##,
         );
         wait("Restored");
         write(
             temp.path(),
             "external/nested/response.json",
-            r##"{"version":2,"event":"before_compile","documents":{"index.not":"= Watched again"}}"##,
+            r##"{"version":2,"event":"before_compile","documents":{"index.md":"# Watched again"}}"##,
         );
         wait("Watched again");
         assert!(!root.join("public").exists());
@@ -228,13 +228,13 @@ fn preview_watches_concrete_hidden_data_inputs() {
     );
     write(
         root,
-        "content/index.not",
-        "#import \"../lib.notc\" as data;\n#data.view()\n",
+        "content/index.md",
+        "#import \"../lib.not\" as data\n#data.view()\n",
     );
     write(
         root,
-        "lib.notc",
-        "fn view() -> InlineContent { [#text(text: read_text(p\"content/.data/value.txt\"))] }",
+        "lib.not",
+        "fn view() -> Inline { text(read_text(\"./.data/value.txt\")) }",
     );
     write(root, "content/.data/value.txt", "original hidden value");
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -285,7 +285,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
         "Notist.toml",
         "[package]\nname='test'\n[site]\noutput='public'",
     );
-    write(root, "content/index.not", "= Home");
+    write(root, "content/index.md", "# Home");
     write(root, "content/sub/page.md", "# Page");
     write(root, "static/extra.txt", "asset");
     let result = command(root).args(["build"]).output().unwrap();
@@ -299,8 +299,8 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
     let original = std::fs::read(root.join("public/index.html")).unwrap();
     write(
         root,
-        "content/index.not",
-        "= Home\n\n![Missing](missing.png)",
+        "content/index.md",
+        "# Home\n\n![Missing](missing.png)",
     );
     assert!(
         !command(root)
@@ -314,7 +314,7 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
         std::fs::read(root.join("public/index.html")).unwrap(),
         original
     );
-    write(root, "content/index.not", "= Updated");
+    write(root, "content/index.md", "# Updated");
     std::fs::remove_file(root.join("content/sub/page.md")).unwrap();
     assert!(
         command(root)
@@ -349,7 +349,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
         "Notist.toml",
         "[package]\nname='test'\n[site]\nbase_url='https://example.com/project/'",
     );
-    write(root, "content/index.not", "= Home");
+    write(root, "content/index.md", "# Home");
     write(
         root,
         "templates/page.tera",
@@ -384,7 +384,7 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
                 std::thread::sleep(Duration::from_millis(30));
             }
         };
-        let home = wait("<h1 id=\"home\">Home");
+        let home = wait("<section id=\"home\"><h1>Home");
         assert!(home.contains("/style.css"));
         assert!(!home.contains("https://example.com"));
         assert!(home.contains("_notist/serve/client.js"));
@@ -396,12 +396,12 @@ fn site_preview_uses_local_urls_watches_templates_and_retains_failed_build() {
         wait("NEW");
         write(
             root,
-            "content/index.not",
-            "= Home\n\n![Missing](missing.png)",
+            "content/index.md",
+            "# Home\n\n![Missing](missing.png)",
         );
         std::thread::sleep(Duration::from_millis(500));
         assert!(request(&address, "/").contains("NEW"));
-        write(root, "content/index.not", "= Recovered");
+        write(root, "content/index.md", "# Recovered");
         wait("Recovered");
         assert!(request(&address, "/unknown/").starts_with("HTTP/1.1 404"));
         assert!(!root.join("public").exists());

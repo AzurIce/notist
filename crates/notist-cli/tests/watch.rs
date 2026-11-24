@@ -75,7 +75,7 @@ fn manifest(excluded: bool) -> String {
     format!(
         "[package]\nname='watch'\n[site]\noutput='public'\nexclude={}\n",
         if excluded {
-            "['excluded/**', 'skip.not']"
+            "['excluded/**', 'skip.md']"
         } else {
             "[]"
         }
@@ -87,32 +87,32 @@ fn excluded_events_do_not_rebuild_and_manifest_changes_refresh_the_watch_tree() 
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "Notist.toml", &manifest(true));
-    write(root, "content/index.not", "= Original");
-    write(root, "content/excluded/deep/page.not", "= Excluded");
-    write(root, "content/skip.not", "= Skipped file");
+    write(root, "content/index.md", "# Original");
+    write(root, "content/excluded/deep/page.md", "# Excluded");
+    write(root, "content/skip.md", "# Skipped file");
     let mut preview = Preview::start(root);
-    let initial = preview.wait("/", "<h1 id=\"original\"");
-    write(root, "content/excluded/deep/page.not", "= Excluded edit");
-    write(root, "content/skip.not", "= Excluded file edit");
+    let initial = preview.wait("/", "<section id=\"original\"><h1>Original</h1>");
+    write(root, "content/excluded/deep/page.md", "# Excluded edit");
+    write(root, "content/skip.md", "# Excluded file edit");
     std::thread::sleep(Duration::from_millis(700));
     assert_eq!(
         body(&preview.response("/").unwrap()),
         body(&initial),
         "excluded edits must not even increment the preview revision"
     );
-    write(root, "content/index.not", "= Included edit");
+    write(root, "content/index.md", "# Included edit");
     preview.wait("/", "Included edit");
     write(root, "Notist.toml", &manifest(false));
     preview.wait("/excluded/deep/page.html", "Excluded edit");
     // The published state is installed just before watcher synchronization.
     std::thread::sleep(Duration::from_millis(100));
-    write(root, "content/excluded/deep/page.not", "= Now watched");
+    write(root, "content/excluded/deep/page.md", "# Now watched");
     preview.wait("/excluded/deep/page.html", "Now watched");
     write(root, "Notist.toml", &manifest(true));
     preview.wait("/excluded/deep/page.html", "HTTP/1.1 404");
     std::thread::sleep(Duration::from_millis(100));
     let previous = preview.response("/").unwrap();
-    write(root, "content/excluded/deep/page.not", "= Excluded again");
+    write(root, "content/excluded/deep/page.md", "# Excluded again");
     std::thread::sleep(Duration::from_millis(700));
     assert_eq!(body(&preview.response("/").unwrap()), body(&previous));
 }
@@ -128,7 +128,7 @@ fn wine_style_symlinks_and_excluded_trees_consume_no_inotify_watches() {
         "Notist.toml",
         "[package]\nname='watch'\n[site]\ncontent='.'\noutput='public'\nexclude=['excluded/**']",
     );
-    write(&root, "index.not", "= Ready");
+    write(&root, "index.md", "# Ready");
     for index in 0..32 {
         write(
             temp.path(),
@@ -148,7 +148,7 @@ fn wine_style_symlinks_and_excluded_trees_consume_no_inotify_watches() {
     )
     .unwrap();
     let mut preview = Preview::start(&root);
-    preview.wait("/", "<h1 id=\"ready\"");
+    preview.wait("/", "<section id=\"ready\"><h1>Ready</h1>");
     let mut watched = Vec::new();
     for entry in std::fs::read_dir(format!("/proc/{}/fdinfo", preview.child.id()))
         .unwrap()
@@ -180,6 +180,6 @@ fn wine_style_symlinks_and_excluded_trees_consume_no_inotify_watches() {
             path.display()
         );
     }
-    write(&root, "index.not", "= Still watched");
+    write(&root, "index.md", "# Still watched");
     preview.wait("/", "Still watched");
 }

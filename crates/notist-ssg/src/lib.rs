@@ -17,6 +17,7 @@ pub use build::BuildOutput;
 pub use config::{Mount, SiteConfig};
 pub use document::{Heading, Page};
 pub use notist::Executor;
+pub use prepared::render_standalone_html;
 pub use routes::Route;
 use std::sync::Arc;
 
@@ -109,9 +110,8 @@ impl From<notist::resources::ResourceError> for Error {
 impl From<notist::VaultError> for Error {
     fn from(error: notist::VaultError) -> Self {
         match error {
-            notist::VaultError::Environment(errors) => Self::Diagnostics(errors),
             notist::VaultError::Resource(error) => Self::Resource(error),
-            error => Self::Message(error.to_string()),
+            notist::VaultError::Message(message) => Self::Message(message),
         }
     }
 }

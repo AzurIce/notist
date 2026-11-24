@@ -83,8 +83,8 @@ fn filesystem_discovery_exposes_portable_keys_with_and_without_book() {
                     "docs/SUMMARY.md",
                     "- [Home](README.md)\n- @(collapsed: true)[AI](ai/)",
                 );
-                write(root.path(), "docs/unlisted.not", "#missing[]");
-                expected.extend(["SUMMARY.md".into(), "unlisted.not".into()]);
+                write(root.path(), "docs/unlisted.md", "#missing[]");
+                expected.extend(["SUMMARY.md".into(), "unlisted.md".into()]);
             }
             expected.sort();
             let captured = Arc::new(Mutex::new(vec![]));

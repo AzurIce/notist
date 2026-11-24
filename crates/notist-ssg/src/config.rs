@@ -35,6 +35,9 @@ pub struct SiteConfig {
     pub copy_content_assets: bool,
     pub styles: Vec<PathBuf>,
     pub scripts: Vec<PathBuf>,
+    /// Optional JS Web Component entry (`.js` or `<dir>/index.js`) used to render
+    /// `$...$` and `$$...$$` math nodes in HTML output (e.g. `modules/typst/math/index.js`).
+    pub math_component: Option<PathBuf>,
 }
 impl Default for SiteConfig {
     fn default() -> Self {
@@ -58,6 +61,7 @@ impl Default for SiteConfig {
             copy_content_assets: true,
             styles: Vec::new(),
             scripts: Vec::new(),
+            math_component: None,
         }
     }
 }

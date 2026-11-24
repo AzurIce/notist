@@ -1,0 +1,42 @@
+// Demonstrates scalar types (Unit, Bool, Int, Float, String) and basic operators.
+
+fn fact(n: Int) -> Int {
+    if n <= 1 {
+        1
+    } else {
+        n * fact(n - 1)
+    }
+}
+
+fn Float.lerp(self, target: Float, t: Float) -> Float {
+    self + (target - self) * t
+}
+
+fn String.wrap(self, prefix: String, suffix: String) -> String {
+    prefix + self + suffix
+}
+
+fn side_step() -> Unit {
+    let _ignored = 1 + 2;
+}
+
+fn main() -> Int {
+    side_step();
+    let f = fact(5); // 120
+    let ok = !false && (1 + 2 * 3 == 7) && (10 / 3 == 3) && (10 % 3 == 1);
+    let mid = 1.5.lerp(5.5, 0.5); // 3.5
+    let label = "notc".wrap(r#"[""#, r#""]"#);
+    if ok && mid == 3.5 && label == "[\"notc\"]" {
+        f - 78
+    } else {
+        0
+    }
+}
+
+fn greeting() -> String {
+    let raw = r#"""
+Hello
+"Notist"
+"""#;
+    raw + "!"
+}

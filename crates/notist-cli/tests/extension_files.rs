@@ -14,7 +14,7 @@ fn contributed_files_publish_atomically_and_disappear_when_omitted_on_rebuild() 
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir(root.join("content")).unwrap();
-    fs::write(root.join("content/index.not"), "= Home").unwrap();
+    fs::write(root.join("content/index.md"), "# Home").unwrap();
     fs::write(root.join("Notist.toml"), "[package]\nname='test'\n[site]\noutput='public'\n[site.extensions.files]\ncommand=['python3','files.py']").unwrap();
     fs::write(
         root.join("files.py"),

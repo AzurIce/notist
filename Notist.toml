@@ -1,5 +1,5 @@
 [workspace]
-members = ["examples/site", "examples/ssg-extensions", "examples/extensions"]
+members = ["examples/site", "examples/ssg-extensions"]
 
 [package]
 name = "notist"
@@ -10,19 +10,7 @@ content = "docs"
 theme = "builtins.book"
 directory_urls = true
 copy_content_assets = false
-exclude = ["**/AGENTS.md"]
+exclude = ["**/AGENTS.md", "_logs/**"]
 
 [site.extensions.builtins.book]
 select = true
-
-[[extensions]]
-kind = "replace"
-imports = { typst = "modules/typst/lib.notc" }
-from = "notist.math"
-to = "typst.math"
-
-[[extensions]]
-kind = "replace"
-imports = { components = "docs/components/lib.notc", pele = "modules/pele/lib.notc" }
-from = "components.diagram"
-to = "pele.diagram"

@@ -1,0 +1,22 @@
+@!(title: "HTML 渲染")
+
+# HTML 渲染
+
+HTML 渲染属于后端展示层，独立于 `notc` 语言内核，直接消费求值并 `sectionize()` 后的不可变 `notc::Block` 树：
+
+| `notc` 节点 | HTML 输出 |
+| --- | --- |
+| `Section` | `<section id="...">...</section>`（`sectionize()` 将标题显式 `@(id: ...)` 与其它属性提升到 `<section>`，否则自动生成唯一 slug） |
+| `Heading` | `<h1>`..`<h6>`（位于 `Section` 内时 `id` 在外层 `<section>` 上） |
+| `Paragraph` | `<p>...</p>` |
+| `List` | `<ul>` / `<ol>`（非 `1` 起始时输出 `start="N"`）与 `<li>`（支持任意嵌套与多行块项） |
+| `Quote` / `Divider` | `<blockquote>` / `<hr>` |
+| `Table` | `<table><thead>...</thead><tbody>...</tbody></table>`（按列对齐输出 `style="text-align:..."`） |
+| `Strike` / `Underline` | `<del>...</del>` / `<u>...</u>` |
+| `Callout` | `<aside class="callout callout-{kind}">...</aside>` |
+| `CodeBlock` | `<pre><code class="language-...">`（自动剥离 `rust,ignore` 等围栏后缀，经 `notist-html` 构建期高亮，配套 `_notist/highlight.css`） |
+| `Math`（行内 / 块级） | `<span class="notist-math">` / `<div class="notist-math">` |
+| `Link` / `Image` | 经安全 URL 校验后输出 `<a href>` / `<img src alt>` |
+| `Custom` | SSG 存在对应 JS 实现时输出自定义元素标签，否则输出语义回退容器 |
+
+所有文本与属性均经转义处理，不安全协议 URL 会被过滤。

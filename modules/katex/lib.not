@@ -1,0 +1,2 @@
+fn math(text: String) -> Inline;
+fn math_block(text: String) -> Block;

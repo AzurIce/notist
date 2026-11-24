@@ -1,0 +1,13 @@
+// Multi-file example: math utilities and type methods.
+
+fn inc(x: Int) -> Int {
+    x + 1
+}
+
+fn Int.add_to(self, delta: Int) -> Int {
+    self + delta
+}
+
+fn (fn(Int) -> Int).twice(self, x: Int) -> Int {
+    self(self(x))
+}

@@ -1,4 +1,4 @@
-// Export modules/shader/README.not to target/shader-demo and serve the repo.
+// Export modules/shader/README.md to target/shader-demo and serve the repo.
 // Playwright must be on NODE_PATH; web/pkg is needed for the Worker preview.
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
@@ -319,15 +319,15 @@ async function pixel(node, x = 1, y = 1) {
     await page.waitForSelector("#core .kind");
     await page.fill("#root-url", "../modules/shader/");
       await page.fill("#config-url", "");
-    await page.fill("#path", "README.not");
+    await page.fill("#path", "README.md");
     await page.click("#load-project");
     await page.waitForFunction(() => {
       const nodes = [...(document.querySelector("#preview").contentDocument?.querySelectorAll("[notist-function*=shader]") ?? [])];
       return nodes.length === 2 && nodes.every(node => node.dataset.state === "ready");
     });
     assert.equal(await page.locator("#diags").textContent(), "✓ 无诊断");
-    assert.match(await page.locator("#core").textContent(), /lib\.notc\.canvas/);
-    await page.fill("#src", `#import "lib.notc" as shader;\n#shader.canvas("${red}", paused: true)`);
+    assert.match(await page.locator("#core").textContent(), /lib\.not\.canvas/);
+    await page.fill("#src", `#import "lib.not" as shader;\n#shader.canvas("${red}", paused: true)`);
     await page.waitForFunction(() => {
       const nodes = document.querySelector("#preview").contentDocument?.querySelectorAll("[notist-function*=shader]");
       return nodes?.length === 1 && nodes[0].dataset.state === "ready";

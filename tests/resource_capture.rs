@@ -171,8 +171,17 @@ fn native_capture_is_owned_and_checks_the_opened_file() {
 fn native_hints_preserve_non_utf8_and_do_not_classify_symlinks_as_files() {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     let temp = tempfile::tempdir().unwrap();
-    let name = std::ffi::OsString::from_vec(b"a-\xff".to_vec());
-    std::fs::write(temp.path().join(&name), b"bytes").unwrap();
+    let raw_name = std::ffi::OsString::from_vec(b"a-\xff".to_vec());
+    let name = match std::fs::write(temp.path().join(&raw_name), b"bytes") {
+        Ok(()) => raw_name,
+        // APFS/HFS+ on macOS rejects invalid UTF-8 filenames with EILSEQ.
+        Err(err) if cfg!(target_os = "macos") && err.raw_os_error() == Some(libc::EILSEQ) => {
+            let fallback = std::ffi::OsString::from("a-file");
+            std::fs::write(temp.path().join(&fallback), b"bytes").unwrap();
+            fallback
+        }
+        Err(err) => panic!("failed to write test file: {err}"),
+    };
     symlink(&name, temp.path().join("link")).unwrap();
     let resources = FsResources::new(temp.path());
     let entries = resources.entries_with_kind(Path::new(".")).unwrap();

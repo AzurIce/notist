@@ -24,7 +24,6 @@ pub(crate) fn assemble(
     preview: bool,
     executor: &Arc<notist::Executor>,
 ) -> Result<Build, (Error, BTreeSet<PathBuf>)> {
-    notist::evict_caches(10);
     let prepared = notist::progress::run_stage(
         "host.configuration",
         || "Load configuration".into(),
@@ -35,17 +34,7 @@ pub(crate) fn assemble(
     if preview {
         options.base_url = "/".into();
     }
-    // A generated site can have tens of thousands of pages, each loading the
-    // same shared modules. The default source/data request budget is sized for
-    // interactive documents, not one full site build.
-    let mut vault = Vault::new(prepared.files)
-        .with_input_limits(notist::InputLimits {
-            requests: 1_000_000,
-            ..Default::default()
-        })
-        // Per-page data projections accumulate across a large generated site.
-        .with_data_cache_limits(512 * 1024 * 1024, 65_536)
-        .with_config(prepared.config);
+    let mut vault = Vault::new(prepared.files);
     let builder = Builder::default().with_executor(executor.clone());
     let result = if preview {
         builder.serve(&mut vault, &options)
@@ -61,6 +50,39 @@ pub(crate) fn assemble(
         })
         .map_err(|e| (e, observed))
 }
+pub(crate) fn check_package(target: &Package, executor: &Arc<notist::Executor>) -> ExitCode {
+    let result = notist::progress::run_stage(
+        "host.check",
+        || format!("Check {}", target.name),
+        || assemble(target, false, executor).map_err(|(e, _)| e),
+    );
+    match result {
+        Ok(result) => {
+            crate::emit_source_diagnostics(
+                &result.artifact.warnings,
+                codespan_reporting::diagnostic::Severity::Warning,
+            );
+            println!(
+                "checked {} pages ({})",
+                result.artifact.pages.len(),
+                target.name
+            );
+            ExitCode::SUCCESS
+        }
+        Err(Error::Diagnostics(errors)) => {
+            crate::emit_source_diagnostics(
+                &errors,
+                codespan_reporting::diagnostic::Severity::Error,
+            );
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 pub(crate) fn build_package(target: &Package, executor: &Arc<notist::Executor>) -> ExitCode {
     let result = notist::progress::run_stage(
         "host.build",

@@ -12,8 +12,9 @@ default = ["lsp"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
 
 [dependencies]
+notc = { path = "../notc" }
 notist = { path = "../.." }
-notist-html = { path = "../notist-html" }
+notist-html = { path = "../notist-html", features = ["highlight"] }
 notist-ssg = { path = "../notist-ssg" }
 clap = { version = "4", features = ["derive"] }
 codespan-reporting = "0.12"

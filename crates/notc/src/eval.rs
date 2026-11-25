@@ -68,7 +68,7 @@ pub(crate) fn eval_expr_with_shared(
         doc_path,
         host,
     };
-    evaluate(&ctx, body, &mut Vec::new(), 0, 1)
+    evaluate(&ctx, body, &mut Vec::new(), 0, 1, Span::DUMMY)
 }
 
 impl CheckedProgram {
@@ -102,6 +102,7 @@ fn evaluate(
     stack: &mut Vec<Value>,
     base: usize,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, ExecutionError> {
     use CheckedExpr as C;
     match expr {
@@ -116,7 +117,7 @@ fn evaluate(
         C::InlineFragment(items, attrs, span) => {
             let mut inlines = Vec::with_capacity(items.len());
             for item in items {
-                let Value::Inline(inline) = evaluate(ctx, item, stack, base, depth)? else {
+                let Value::Inline(inline) = evaluate(ctx, item, stack, base, depth, call_span)? else {
                     unreachable!("checked inline fragment item")
                 };
                 inlines.push(inline);
@@ -130,30 +131,12 @@ fn evaluate(
         C::BlockFragment(items, attrs, span) => {
             let mut blocks = Vec::with_capacity(items.len());
             for item in items {
-                let Value::Block(block) = evaluate(ctx, item, stack, base, depth)? else {
+                let Value::Block(block) = evaluate(ctx, item, stack, base, depth, call_span)? else {
                     unreachable!("checked block fragment item")
                 };
                 blocks.push(block);
             }
             Ok(Value::Block(Block::fragment(blocks, attrs.clone(), *span)))
-        }
-        C::BlockList(ordered, start, items, attrs, span) => {
-            let mut blocks = Vec::with_capacity(items.len());
-            for item in items {
-                let Value::Block(block) = evaluate(ctx, item, stack, base, depth)? else {
-                    unreachable!("checked block list item")
-                };
-                blocks.push(block);
-            }
-            Ok(Value::Block(Block::new(
-                BlockKind::List {
-                    ordered: *ordered,
-                    start: *start,
-                    items: Arc::from(blocks),
-                },
-                attrs.clone(),
-                *span,
-            )))
         }
         C::BlockTable {
             headers,
@@ -164,7 +147,7 @@ fn evaluate(
         } => {
             let mut eval_headers = Vec::with_capacity(headers.len());
             for cell in headers {
-                let Value::Inline(inl) = evaluate(ctx, cell, stack, base, depth)? else {
+                let Value::Inline(inl) = evaluate(ctx, cell, stack, base, depth, call_span)? else {
                     unreachable!("checked table header cell")
                 };
                 eval_headers.push(inl);
@@ -173,7 +156,7 @@ fn evaluate(
             for row in rows {
                 let mut eval_row = Vec::with_capacity(row.len());
                 for cell in row {
-                    let Value::Inline(inl) = evaluate(ctx, cell, stack, base, depth)? else {
+                    let Value::Inline(inl) = evaluate(ctx, cell, stack, base, depth, call_span)? else {
                         unreachable!("checked table cell")
                     };
                     eval_row.push(inl);
@@ -193,18 +176,18 @@ fn evaluate(
         C::List(items) => {
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(evaluate(ctx, item, stack, base, depth)?);
+                out.push(evaluate(ctx, item, stack, base, depth, call_span)?);
             }
             Ok(Value::List(Arc::from(out)))
         }
         C::For(iterable, body) => {
-            let Value::List(items) = evaluate(ctx, iterable, stack, base, depth)? else {
+            let Value::List(items) = evaluate(ctx, iterable, stack, base, depth, call_span)? else {
                 unreachable!("checked for iterable")
             };
             let mut out = Vec::with_capacity(items.len());
             for item in items.iter() {
                 stack.push(item.clone());
-                let val = evaluate(ctx, body, stack, base, depth);
+                let val = evaluate(ctx, body, stack, base, depth, call_span);
                 stack.pop();
                 out.push(val?);
             }
@@ -219,7 +202,7 @@ fn evaluate(
         } => {
             let mut eval_props = Vec::with_capacity(props.len());
             for (k, expr) in props {
-                let val = match evaluate(ctx, expr, stack, base, depth)? {
+                let val = match evaluate(ctx, expr, stack, base, depth, call_span)? {
                     Value::Unit => CustomValue::Unit,
                     Value::Bool(b) => CustomValue::Bool(b),
                     Value::Int(n) => CustomValue::Int(n),
@@ -234,6 +217,11 @@ fn evaluate(
                 };
                 eval_props.push((Arc::clone(k), val));
             }
+            let node_span = if !call_span.is_empty() {
+                call_span
+            } else {
+                *span
+            };
             let custom = CustomNode {
                 module: Arc::clone(module),
                 name: Arc::clone(name),
@@ -243,34 +231,34 @@ fn evaluate(
                 Ok(Value::Block(Block::new(
                     BlockKind::Custom(custom),
                     Attrs::empty(),
-                    *span,
+                    node_span,
                 )))
             } else {
                 Ok(Value::Inline(Inline::new(
                     InlineKind::Custom(custom),
                     Attrs::empty(),
-                    *span,
+                    node_span,
                 )))
             }
         }
-        C::AttachAttrs(inner, attrs) => match evaluate(ctx, inner, stack, base, depth)? {
+        C::AttachAttrs(inner, attrs) => match evaluate(ctx, inner, stack, base, depth, call_span)? {
             Value::Inline(inline) => Ok(Value::Inline(inline.with_attrs(attrs.clone()))),
             Value::Block(block) => Ok(Value::Block(block.with_attrs(attrs.clone()))),
             _ => unreachable!("checked attribute target"),
         },
         C::Let(initializer, body) => {
-            let value = evaluate(ctx, initializer, stack, base, depth)?;
+            let value = evaluate(ctx, initializer, stack, base, depth, call_span)?;
             stack.push(value);
-            let result = evaluate(ctx, body, stack, base, depth);
+            let result = evaluate(ctx, body, stack, base, depth, call_span);
             stack.pop();
             result
         }
         C::Seq(first, second) => {
-            let _ = evaluate(ctx, first, stack, base, depth)?;
-            evaluate(ctx, second, stack, base, depth)
+            let _ = evaluate(ctx, first, stack, base, depth, call_span)?;
+            evaluate(ctx, second, stack, base, depth, call_span)
         }
         C::Unary(op, operand) => {
-            let value = evaluate(ctx, operand, stack, base, depth)?;
+            let value = evaluate(ctx, operand, stack, base, depth, call_span)?;
             match (op, value) {
                 (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                 (UnaryOp::Neg, Value::Int(n)) => n
@@ -282,41 +270,49 @@ fn evaluate(
             }
         }
         C::Binary(BinaryOp::And, left, right) => {
-            let Value::Bool(left) = evaluate(ctx, left, stack, base, depth)? else {
+            let Value::Bool(left) = evaluate(ctx, left, stack, base, depth, call_span)? else {
                 unreachable!("checked boolean operand")
             };
             if !left {
                 return Ok(Value::Bool(false));
             }
-            evaluate(ctx, right, stack, base, depth)
+            evaluate(ctx, right, stack, base, depth, call_span)
         }
         C::Binary(BinaryOp::Or, left, right) => {
-            let Value::Bool(left) = evaluate(ctx, left, stack, base, depth)? else {
+            let Value::Bool(left) = evaluate(ctx, left, stack, base, depth, call_span)? else {
                 unreachable!("checked boolean operand")
             };
             if left {
                 return Ok(Value::Bool(true));
             }
-            evaluate(ctx, right, stack, base, depth)
+            evaluate(ctx, right, stack, base, depth, call_span)
         }
         C::Binary(op, left, right) => {
-            let left = evaluate(ctx, left, stack, base, depth)?;
-            let right = evaluate(ctx, right, stack, base, depth)?;
+            let left = evaluate(ctx, left, stack, base, depth, call_span)?;
+            let right = evaluate(ctx, right, stack, base, depth, call_span)?;
             eval_binary(*op, left, right)
         }
         C::If(condition, yes, no) => {
-            let Value::Bool(condition) = evaluate(ctx, condition, stack, base, depth)? else {
+            let Value::Bool(condition) = evaluate(ctx, condition, stack, base, depth, call_span)? else {
                 unreachable!("checked condition")
             };
-            evaluate(ctx, if condition { yes } else { no }, stack, base, depth)
+            evaluate(
+                ctx,
+                if condition { yes } else { no },
+                stack,
+                base,
+                depth,
+                call_span,
+            )
         }
-        C::Call(callee, arguments) => {
-            let callee_value = evaluate(ctx, callee, stack, base, depth)?;
+        C::Call(callee, arguments, span) => {
+            let callee_value = evaluate(ctx, callee, stack, base, depth, call_span)?;
             let mut values = Vec::with_capacity(arguments.len());
             for argument in arguments {
-                values.push(evaluate(ctx, argument, stack, base, depth)?);
+                values.push(evaluate(ctx, argument, stack, base, depth, call_span)?);
             }
-            call_value(ctx, callee_value, values, stack, depth)
+            let effective_span = if !span.is_empty() { *span } else { call_span };
+            call_value(ctx, callee_value, values, stack, depth, effective_span)
         }
     }
 }
@@ -327,6 +323,7 @@ fn call_value(
     values: Vec<Value>,
     stack: &mut Vec<Value>,
     depth: usize,
+    call_span: Span,
 ) -> Result<Value, ExecutionError> {
     const MAX_CALL_DEPTH: usize = 64;
     if depth >= MAX_CALL_DEPTH {
@@ -336,11 +333,25 @@ fn call_value(
         Value::Function(FunctionValue(id)) => {
             let frame = stack.len();
             stack.extend(values);
-            let result = evaluate(ctx, &ctx.function(id).body, stack, frame, depth + 1);
+            let result = evaluate(
+                ctx,
+                &ctx.function(id).body,
+                stack,
+                frame,
+                depth + 1,
+                call_span,
+            );
             stack.truncate(frame);
             result
         }
-        Value::Builtin(builtin, span) => eval_builtin(ctx, builtin, span, values, stack, depth),
+        Value::Builtin(builtin, span) => {
+            let effective_span = if !call_span.is_empty() {
+                call_span
+            } else {
+                span
+            };
+            eval_builtin(ctx, builtin, effective_span, values, stack, depth)
+        }
         _ => unreachable!("checked call target"),
     }
 }
@@ -515,6 +526,27 @@ fn eval_builtin(
             Value::Block(Block::new(BlockKind::Quote(body), Attrs::empty(), span))
         }
         BuiltinFn::Divider => Value::Block(Block::new(BlockKind::Divider, Attrs::empty(), span)),
+        BuiltinFn::List => {
+            let ordered = take_bool(&mut args);
+            let start = take_int(&mut args).max(0) as u64;
+            let raw_items = take_list(&mut args);
+            let items: Vec<Block> = raw_items
+                .iter()
+                .map(|v| match v {
+                    Value::Block(b) => b.clone(),
+                    _ => unreachable!("checked List<Block>"),
+                })
+                .collect();
+            Value::Block(Block::new(
+                BlockKind::List {
+                    ordered,
+                    start,
+                    items: Arc::from(items),
+                },
+                Attrs::empty(),
+                span,
+            ))
+        }
         BuiltinFn::Table => {
             let raw_headers = take_list(&mut args);
             let raw_rows = take_list(&mut args);
@@ -667,7 +699,8 @@ fn eval_builtin(
             let inline = take_inline(&mut args);
             let func = args.next().expect("checked rewrite callback");
             let rewritten = inline.rewrite_bottom_up(&mut |node| {
-                match call_value(ctx, func.clone(), vec![Value::Inline(node)], stack, depth + 1)? {
+                let s = node.node().span;
+                match call_value(ctx, func.clone(), vec![Value::Inline(node)], stack, depth + 1, s)? {
                     Value::Inline(out) => Ok(out),
                     _ => unreachable!("checked inline rewrite return"),
                 }
@@ -723,7 +756,8 @@ fn eval_builtin(
             let block = take_block(&mut args);
             let func = args.next().expect("checked rewrite callback");
             let rewritten = block.rewrite_inlines(&mut |node| {
-                match call_value(ctx, func.clone(), vec![Value::Inline(node)], stack, depth + 1)? {
+                let s = node.node().span;
+                match call_value(ctx, func.clone(), vec![Value::Inline(node)], stack, depth + 1, s)? {
                     Value::Inline(out) => Ok(out),
                     _ => unreachable!("checked inline rewrite return"),
                 }
@@ -734,7 +768,8 @@ fn eval_builtin(
             let block = take_block(&mut args);
             let func = args.next().expect("checked rewrite callback");
             let rewritten = block.rewrite_blocks(&mut |node| {
-                match call_value(ctx, func.clone(), vec![Value::Block(node)], stack, depth + 1)? {
+                let s = node.node().span;
+                match call_value(ctx, func.clone(), vec![Value::Block(node)], stack, depth + 1, s)? {
                     Value::Block(out) => Ok(out),
                     _ => unreachable!("checked block rewrite return"),
                 }

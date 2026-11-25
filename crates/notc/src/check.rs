@@ -3,13 +3,20 @@ use crate::ast::{
     Method, Module, Program, Span, TableAlign, Type, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
-use crate::builtin::{BuiltinFn, lookup_builtin_method, lookup_prelude_function};
+use crate::builtin::{
+    BuiltinFn, lookup_builtin_method, notist_builtins, notist_direct_builtin,
+};
 use crate::content::{AttrValue, Attrs};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleId(pub(crate) usize);
+
+impl ModuleId {
+    /// Reserved built-in module identity for `notist.*` prelude/markup declarations.
+    pub(crate) const NOTIST: Self = Self(usize::MAX);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DeclId {
@@ -58,7 +65,6 @@ pub(crate) enum CheckedExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
-    BlockList(bool, u64, Vec<Self>, Attrs, Span),
     BlockTable {
         headers: Vec<Self>,
         alignments: Arc<[TableAlign]>,
@@ -81,7 +87,7 @@ pub(crate) enum CheckedExpr {
     Unary(UnaryOp, Box<Self>),
     Binary(BinaryOp, Box<Self>, Box<Self>),
     If(Box<Self>, Box<Self>, Box<Self>),
-    Call(Box<Self>, Vec<Self>),
+    Call(Box<Self>, Vec<Self>, Span),
 }
 
 /// Checked expression before specialization and entry-reachability lowering.
@@ -99,7 +105,6 @@ pub(crate) enum ModuleExpr {
     Builtin(BuiltinFn, Span),
     InlineFragment(Vec<Self>, Attrs, Span),
     BlockFragment(Vec<Self>, Attrs, Span),
-    BlockList(bool, u64, Vec<Self>, Attrs, Span),
     BlockTable {
         headers: Vec<Self>,
         alignments: Arc<[TableAlign]>,
@@ -131,7 +136,7 @@ pub(crate) enum ModuleExpr {
         message: String,
         span: Span,
     },
-    Call(Box<Self>, Vec<Self>),
+    Call(Box<Self>, Vec<Self>, Span),
 }
 
 #[derive(Debug)]
@@ -153,6 +158,7 @@ pub(crate) enum Binding {
 pub(crate) struct FunctionSig {
     pub(crate) name: String,
     pub(crate) type_params: Vec<String>,
+    pub(crate) type_param_defaults: Vec<Option<Type>>,
     pub(crate) parameters: Vec<Type>,
     pub(crate) returns: Type,
     pub(crate) where_clause: Option<WhereExpr>,
@@ -182,8 +188,26 @@ pub(crate) struct InterfaceView<'a> {
 }
 
 impl InterfaceView<'_> {
-    fn signature(&self, id: DeclId) -> &FunctionSig {
-        if id.module.0 == self.signatures.len() {
+    pub(crate) fn module_path(&self, id: ModuleId) -> &str {
+        if id == ModuleId::NOTIST {
+            "notist"
+        } else {
+            &self.module_paths[id.0]
+        }
+    }
+
+    pub(crate) fn module_exports(&self, id: ModuleId) -> &HashMap<String, Binding> {
+        if id == ModuleId::NOTIST {
+            &notist_builtins().exports
+        } else {
+            &self.exports[id.0]
+        }
+    }
+
+    pub(crate) fn signature(&self, id: DeclId) -> &FunctionSig {
+        if id.module == ModuleId::NOTIST {
+            &notist_builtins().signatures[id.index]
+        } else if id.module.0 == self.signatures.len() {
             &self.extra_signatures.expect("extra module signatures")[id.index]
         } else {
             &self.signatures[id.module.0][id.index]
@@ -198,7 +222,7 @@ pub struct Diagnostic {
     pub error: TypeError,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeError {
     DuplicateFunction,
     DuplicateMethod,
@@ -296,7 +320,7 @@ pub fn check(program: &Program) -> Result<CheckedProgram, Vec<Diagnostic>> {
     }
     roots.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    specialize_roots(&all_decls, &roots).map_err(|errs| {
+    specialize_roots(&all_decls, &roots, &HashMap::new()).map_err(|errs| {
         errs.into_iter()
             .map(|(_, diag)| diag)
             .collect::<Vec<_>>()
@@ -323,7 +347,9 @@ struct DeclStore<'a> {
 
 impl<'a> DeclStore<'a> {
     fn get(self, id: DeclId) -> &'a CheckedDecl {
-        if id.module.0 == self.shared.len() {
+        if id.module == ModuleId::NOTIST {
+            &notist_builtins().decls[id.index]
+        } else if id.module.0 == self.shared.len() {
             &self.extra.expect("extra module decls")[id.index]
         } else {
             &self.shared[id.module.0][id.index]
@@ -333,6 +359,7 @@ impl<'a> DeclStore<'a> {
 
 struct LowerCtx<'a> {
     decls: DeclStore<'a>,
+    replacements: &'a HashMap<DeclId, DeclId>,
     shared_mapping: Option<&'a HashMap<InstanceKey, FunctionId>>,
     id_offset: usize,
     mapping: HashMap<InstanceKey, FunctionId>,
@@ -343,16 +370,28 @@ struct LowerCtx<'a> {
 impl<'a> LowerCtx<'a> {
     fn new(
         decls: DeclStore<'a>,
+        replacements: &'a HashMap<DeclId, DeclId>,
         shared_mapping: Option<&'a HashMap<InstanceKey, FunctionId>>,
         id_offset: usize,
     ) -> Self {
         Self {
             decls,
+            replacements,
             shared_mapping,
             id_offset,
             mapping: HashMap::new(),
             order: Vec::new(),
             queue: VecDeque::new(),
+        }
+    }
+
+    fn resolve_decl(&self, decl: DeclId, current_owner: Option<DeclId>) -> DeclId {
+        if let Some(&target) = self.replacements.get(&decl)
+            && current_owner != Some(target)
+        {
+            target
+        } else {
+            decl
         }
     }
 
@@ -384,6 +423,7 @@ impl<'a> LowerCtx<'a> {
             let decl = self.decls.get(instance.decl);
             match lower_specialized_expr(
                 self,
+                Some(instance.decl),
                 &decl.body,
                 &decl.type_params,
                 &instance.type_args,
@@ -425,17 +465,23 @@ impl<'a> LowerCtx<'a> {
 pub(crate) fn specialize_shared_modules(
     decls: &[Vec<CheckedDecl>],
     roots: &[InstanceKey],
+    replacements: &HashMap<DeclId, DeclId>,
 ) -> Result<SharedLowered, Vec<(ModuleId, Diagnostic)>> {
     let mut ctx = LowerCtx::new(
         DeclStore {
             shared: decls,
             extra: None,
         },
+        replacements,
         None,
         0,
     );
     for key in roots {
-        ctx.intern(key.clone());
+        let resolved = ctx.resolve_decl(key.decl, None);
+        ctx.intern(InstanceKey {
+            decl: resolved,
+            type_args: key.type_args.clone(),
+        });
     }
     let mut errors = Vec::new();
     let functions = ctx.drain_queue(&mut errors);
@@ -454,12 +500,18 @@ pub(crate) fn specialize_shared_modules(
 pub(crate) fn specialize_roots(
     decls: &[Vec<CheckedDecl>],
     roots: &[(String, InstanceKey)],
+    replacements: &HashMap<DeclId, DeclId>,
 ) -> Result<CheckedProgram, Vec<(ModuleId, Diagnostic)>> {
     let keys: Vec<InstanceKey> = roots.iter().map(|(_, key)| key.clone()).collect();
-    let lowered = specialize_shared_modules(decls, &keys)?;
+    let lowered = specialize_shared_modules(decls, &keys, replacements)?;
     let mut function_names = HashMap::with_capacity(roots.len());
     for (entry_name, key) in roots {
-        function_names.insert(entry_name.clone(), lowered.mapping[key]);
+        let resolved = replacements.get(&key.decl).copied().unwrap_or(key.decl);
+        let mapped_key = InstanceKey {
+            decl: resolved,
+            type_args: key.type_args.clone(),
+        };
+        function_names.insert(entry_name.clone(), lowered.mapping[&mapped_key]);
     }
     Ok(CheckedProgram {
         function_names,
@@ -476,6 +528,7 @@ pub(crate) fn specialize_document_against_shared(
     shared_lowered: &SharedLowered,
     doc_decls: &[CheckedDecl],
     root_key: InstanceKey,
+    replacements: &HashMap<DeclId, DeclId>,
 ) -> Result<LoweredDocument, Vec<(ModuleId, Diagnostic)>> {
     let decls = DeclStore {
         shared: shared_decls,
@@ -483,12 +536,14 @@ pub(crate) fn specialize_document_against_shared(
     };
     let mut ctx = LowerCtx::new(
         decls,
+        replacements,
         Some(&shared_lowered.mapping),
         shared_lowered.functions.len(),
     );
     let root_decl = decls.get(root_key.decl);
     let entry_body = match lower_specialized_expr(
         &mut ctx,
+        Some(root_key.decl),
         &root_decl.body,
         &root_decl.type_params,
         &root_key.type_args,
@@ -518,6 +573,7 @@ pub(crate) fn specialize_document_against_shared(
 
 fn lower_specialized_expr(
     ctx: &mut LowerCtx<'_>,
+    current_owner: Option<DeclId>,
     expr: &ModuleExpr,
     type_params: &[String],
     type_args: &[Type],
@@ -537,7 +593,16 @@ fn lower_specialized_expr(
                 .iter()
                 .map(|ty| substitute_type(ty, type_params, type_args))
                 .collect();
-            let target_decl = ctx.decls.get(key.decl);
+            let resolved_decl = ctx.resolve_decl(key.decl, current_owner);
+            if resolved_decl.module == ModuleId::NOTIST {
+                let math_replaced = ctx.replacements.contains_key(&DeclId::NOTIST_MATH);
+                if !(resolved_decl == DeclId::NOTIST_DISPLAY_MATH && math_replaced)
+                    && let Some(builtin) = notist_direct_builtin(resolved_decl.index, &concrete_args)
+                {
+                    return Ok(C::Builtin(builtin, *span));
+                }
+            }
+            let target_decl = ctx.decls.get(resolved_decl);
             if let Some(where_expr) = &target_decl.where_clause
                 && eval_where(where_expr, &target_decl.type_params, &concrete_args) != Some(true)
             {
@@ -549,7 +614,7 @@ fn lower_specialized_expr(
                 ));
             }
             let id = ctx.intern(InstanceKey {
-                decl: key.decl,
+                decl: resolved_decl,
                 type_args: concrete_args,
             });
             C::Function(id)
@@ -558,23 +623,28 @@ fn lower_specialized_expr(
         M::InlineFragment(items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
+                lowered.push(lower_specialized_expr(
+                    ctx,
+                    current_owner,
+                    item,
+                    type_params,
+                    type_args,
+                )?);
             }
             C::InlineFragment(lowered, attrs.clone(), *span)
         }
         M::BlockFragment(items, attrs, span) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
+                lowered.push(lower_specialized_expr(
+                    ctx,
+                    current_owner,
+                    item,
+                    type_params,
+                    type_args,
+                )?);
             }
             C::BlockFragment(lowered, attrs.clone(), *span)
-        }
-        M::BlockList(ordered, start, items, attrs, span) => {
-            let mut lowered = Vec::with_capacity(items.len());
-            for item in items {
-                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
-            }
-            C::BlockList(*ordered, *start, lowered, attrs.clone(), *span)
         }
         M::BlockTable {
             headers,
@@ -585,39 +655,83 @@ fn lower_specialized_expr(
         } => {
             let mut lowered_headers = Vec::with_capacity(headers.len());
             for cell in headers {
-                lowered_headers.push(lower_specialized_expr(ctx, cell, type_params, type_args)?);
+                lowered_headers.push(lower_specialized_expr(
+                    ctx,
+                    current_owner,
+                    cell,
+                    type_params,
+                    type_args,
+                )?);
             }
             let mut lowered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let mut lowered_row = Vec::with_capacity(row.len());
                 for cell in row {
-                    lowered_row.push(lower_specialized_expr(ctx, cell, type_params, type_args)?);
+                    lowered_row.push(lower_specialized_expr(
+                        ctx,
+                        current_owner,
+                        cell,
+                        type_params,
+                        type_args,
+                    )?);
                 }
                 lowered_rows.push(lowered_row);
             }
-            C::BlockTable {
-                headers: lowered_headers,
-                alignments: Arc::clone(alignments),
-                rows: lowered_rows,
-                attrs: attrs.clone(),
-                span: *span,
+            let resolved_table = ctx.resolve_decl(DeclId::NOTIST_TABLE, current_owner);
+            if resolved_table != DeclId::NOTIST_TABLE {
+                let id = ctx.intern(InstanceKey {
+                    decl: resolved_table,
+                    type_args: Vec::new(),
+                });
+                let row_lists = lowered_rows.into_iter().map(C::List).collect();
+                let call = C::Call(
+                    Box::new(C::Function(id)),
+                    vec![C::List(lowered_headers), C::List(row_lists)],
+                    *span,
+                );
+                if attrs.is_empty() {
+                    call
+                } else {
+                    C::AttachAttrs(Box::new(call), attrs.clone())
+                }
+            } else {
+                C::BlockTable {
+                    headers: lowered_headers,
+                    alignments: Arc::clone(alignments),
+                    rows: lowered_rows,
+                    attrs: attrs.clone(),
+                    span: *span,
+                }
             }
         }
         M::List(items) => {
             let mut lowered = Vec::with_capacity(items.len());
             for item in items {
-                lowered.push(lower_specialized_expr(ctx, item, type_params, type_args)?);
+                lowered.push(lower_specialized_expr(
+                    ctx,
+                    current_owner,
+                    item,
+                    type_params,
+                    type_args,
+                )?);
             }
             C::List(lowered)
         }
         M::For(iterable, body) => C::For(
             Box::new(lower_specialized_expr(
                 ctx,
+                current_owner,
                 iterable,
                 type_params,
                 type_args,
             )?),
-            Box::new(lower_specialized_expr(ctx, body, type_params, type_args)?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                body,
+                type_params,
+                type_args,
+            )?),
         ),
         M::CustomNode {
             return_ty,
@@ -634,7 +748,7 @@ fn lower_specialized_expr(
             };
             let mut lowered_props = Vec::with_capacity(props.len());
             for (k, v) in props {
-                let lv = lower_specialized_expr(ctx, v, type_params, type_args)?;
+                let lv = lower_specialized_expr(ctx, current_owner, v, type_params, type_args)?;
                 lowered_props.push((Arc::clone(k), lv));
             }
             C::CustomNode {
@@ -648,6 +762,7 @@ fn lower_specialized_expr(
         M::AttachAttrs(target, attrs) => C::AttachAttrs(
             Box::new(lower_specialized_expr(
                 ctx,
+                current_owner,
                 target,
                 type_params,
                 type_args,
@@ -655,13 +770,32 @@ fn lower_specialized_expr(
             attrs.clone(),
         ),
         M::Let(init, body) => C::Let(
-            Box::new(lower_specialized_expr(ctx, init, type_params, type_args)?),
-            Box::new(lower_specialized_expr(ctx, body, type_params, type_args)?),
-        ),
-        M::Seq(first, second) => C::Seq(
-            Box::new(lower_specialized_expr(ctx, first, type_params, type_args)?),
             Box::new(lower_specialized_expr(
                 ctx,
+                current_owner,
+                init,
+                type_params,
+                type_args,
+            )?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                body,
+                type_params,
+                type_args,
+            )?),
+        ),
+        M::Seq(first, second) => C::Seq(
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                first,
+                type_params,
+                type_args,
+            )?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
                 second,
                 type_params,
                 type_args,
@@ -671,6 +805,7 @@ fn lower_specialized_expr(
             *op,
             Box::new(lower_specialized_expr(
                 ctx,
+                current_owner,
                 operand,
                 type_params,
                 type_args,
@@ -678,13 +813,43 @@ fn lower_specialized_expr(
         ),
         M::Binary(op, left, right) => C::Binary(
             *op,
-            Box::new(lower_specialized_expr(ctx, left, type_params, type_args)?),
-            Box::new(lower_specialized_expr(ctx, right, type_params, type_args)?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                left,
+                type_params,
+                type_args,
+            )?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                right,
+                type_params,
+                type_args,
+            )?),
         ),
         M::If(cond, yes, no) => C::If(
-            Box::new(lower_specialized_expr(ctx, cond, type_params, type_args)?),
-            Box::new(lower_specialized_expr(ctx, yes, type_params, type_args)?),
-            Box::new(lower_specialized_expr(ctx, no, type_params, type_args)?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                cond,
+                type_params,
+                type_args,
+            )?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                yes,
+                type_params,
+                type_args,
+            )?),
+            Box::new(lower_specialized_expr(
+                ctx,
+                current_owner,
+                no,
+                type_params,
+                type_args,
+            )?),
         ),
         M::TypeMatch {
             param_index,
@@ -697,18 +862,24 @@ fn lower_specialized_expr(
                 .find(|(pat_ty, _)| substitute_type(pat_ty, type_params, type_args) == *concrete_ty)
                 .map(|(_, body)| body)
                 .unwrap_or(wildcard.as_ref());
-            lower_specialized_expr(ctx, selected, type_params, type_args)?
+            lower_specialized_expr(ctx, current_owner, selected, type_params, type_args)?
         }
         M::CompileError { message, span } => {
             return Err((*span, TypeError::CompileError(message.clone())));
         }
-        M::Call(callee, args) => {
-            let callee = lower_specialized_expr(ctx, callee, type_params, type_args)?;
+        M::Call(callee, args, span) => {
+            let callee = lower_specialized_expr(ctx, current_owner, callee, type_params, type_args)?;
             let mut lowered_args = Vec::with_capacity(args.len());
             for arg in args {
-                lowered_args.push(lower_specialized_expr(ctx, arg, type_params, type_args)?);
+                lowered_args.push(lower_specialized_expr(
+                    ctx,
+                    current_owner,
+                    arg,
+                    type_params,
+                    type_args,
+                )?);
             }
-            C::Call(Box::new(callee), lowered_args)
+            C::Call(Box::new(callee), lowered_args, *span)
         }
     })
 }
@@ -754,6 +925,7 @@ pub(crate) fn collect_module_interface(
 
                 let mut seen_tparams = HashSet::new();
                 let mut type_params = Vec::with_capacity(function.type_params.len());
+                let mut type_param_defaults = Vec::with_capacity(function.type_params.len());
                 for tp in &function.type_params {
                     if !seen_tparams.insert(tp.name.as_str()) {
                         diagnostics.push(Diagnostic {
@@ -762,7 +934,17 @@ pub(crate) fn collect_module_interface(
                             error: TypeError::DuplicateTypeParam(tp.name.clone()),
                         });
                     }
+                    if let Some(default_ty) = &tp.default
+                        && let Err(unknown) = validate_type(default_ty, &type_params)
+                    {
+                        diagnostics.push(Diagnostic {
+                            declaration: function.name.clone(),
+                            span: tp.span,
+                            error: TypeError::UnknownType(unknown),
+                        });
+                    }
                     type_params.push(tp.name.clone());
+                    type_param_defaults.push(tp.default.clone());
                 }
 
                 for param in &function.parameters {
@@ -794,6 +976,7 @@ pub(crate) fn collect_module_interface(
                 signatures.push(FunctionSig {
                     name: function.name.clone(),
                     type_params,
+                    type_param_defaults,
                     parameters: function.parameters.iter().map(|p| p.ty.clone()).collect(),
                     returns: function.returns.clone(),
                     where_clause: function.where_clause.clone(),
@@ -855,6 +1038,7 @@ pub(crate) fn collect_module_interface(
                 signatures.push(FunctionSig {
                     name: decl_name,
                     type_params: Vec::new(),
+                    type_param_defaults: Vec::new(),
                     parameters: full_params,
                     returns: method.returns.clone(),
                     where_clause: None,
@@ -1326,20 +1510,22 @@ impl<'a> Checker<'a> {
                 }
                 match self.scope.bindings.get(name) {
                     Some(Binding::Namespace(module_id)) => Ok(Some(*module_id)),
-                    _ => Ok(None),
+                    Some(Binding::Function(_)) => Ok(None),
+                    None if name == "notist" => Ok(Some(ModuleId::NOTIST)),
+                    None => Ok(None),
                 }
             }
             ExprKind::Member(base, member) => {
                 let Some(module_id) = self.resolve_namespace(base)? else {
                     return Ok(None);
                 };
-                match self.view.exports[module_id.0].get(member) {
+                match self.view.module_exports(module_id).get(member) {
                     Some(Binding::Namespace(next)) => Ok(Some(*next)),
                     Some(Binding::Function(_)) => Ok(None),
                     None => Err((
                         expr.span,
                         TypeError::UnknownExport {
-                            module: self.view.module_paths[module_id.0].clone(),
+                            module: self.view.module_path(module_id).to_owned(),
                             name: member.clone(),
                         },
                     )),
@@ -1362,14 +1548,20 @@ impl<'a> Checker<'a> {
                     Some(Binding::Namespace(_)) => {
                         Err((expr.span, TypeError::NamespaceAsValue(name.clone())))
                     }
-                    None => Ok(None),
+                    None if name == "notist" => {
+                        Err((expr.span, TypeError::NamespaceAsValue(name.clone())))
+                    }
+                    None => match notist_builtins().exports.get(name) {
+                        Some(&Binding::Function(id)) => Ok(Some(id)),
+                        _ => Ok(None),
+                    },
                 }
             }
             ExprKind::Member(base, member) => {
                 let Some(module_id) = self.resolve_namespace(base)? else {
                     return Ok(None);
                 };
-                match self.view.exports[module_id.0].get(member) {
+                match self.view.module_exports(module_id).get(member) {
                     Some(Binding::Function(id)) => Ok(Some(*id)),
                     Some(Binding::Namespace(_)) => {
                         Err((expr.span, TypeError::NamespaceAsValue(member.clone())))
@@ -1377,7 +1569,7 @@ impl<'a> Checker<'a> {
                     None => Err((
                         expr.span,
                         TypeError::UnknownExport {
-                            module: self.view.module_paths[module_id.0].clone(),
+                            module: self.view.module_path(module_id).to_owned(),
                             name: member.clone(),
                         },
                     )),
@@ -1394,7 +1586,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
         let sig = self.view.signature(decl_id);
-        if sig.type_params.len() != raw_type_args.len() {
+        if raw_type_args.len() > sig.type_params.len() {
             return Err((
                 span,
                 TypeError::TypeArity {
@@ -1403,12 +1595,32 @@ impl<'a> Checker<'a> {
                 },
             ));
         }
-        let mut type_args = Vec::with_capacity(raw_type_args.len());
+        let mut type_args = Vec::with_capacity(sig.type_params.len());
         for ty in raw_type_args {
             if let Err(unknown) = validate_type(ty, self.type_params) {
                 return Err((span, TypeError::UnknownType(unknown)));
             }
             type_args.push(self.resolve_ty(ty));
+        }
+        for idx in raw_type_args.len()..sig.type_params.len() {
+            if let Some(default_ty) = &sig.type_param_defaults[idx] {
+                let resolved_default =
+                    substitute_type(default_ty, &sig.type_params[..idx], &type_args[..idx]);
+                type_args.push(resolved_default);
+            } else {
+                let min_expected = sig
+                    .type_param_defaults
+                    .iter()
+                    .rposition(Option::is_none)
+                    .map_or(0, |i| i + 1);
+                return Err((
+                    span,
+                    TypeError::TypeArity {
+                        expected: min_expected,
+                        actual: raw_type_args.len(),
+                    },
+                ));
+            }
         }
         if let Some(where_expr) = &sig.where_clause
             && eval_where(where_expr, &sig.type_params, &type_args) == Some(false)
@@ -1473,13 +1685,22 @@ impl<'a> Checker<'a> {
             match maybe {
                 Some(ty) => type_args.push(ty),
                 None => {
-                    return Err((
-                        call_span,
-                        TypeError::CannotInferTypeParam {
-                            function: sig.name,
-                            param: sig.type_params[idx].clone(),
-                        },
-                    ));
+                    if let Some(default_ty) = &sig.type_param_defaults[idx] {
+                        let resolved_default = substitute_type(
+                            default_ty,
+                            &sig.type_params[..idx],
+                            &type_args[..idx],
+                        );
+                        type_args.push(resolved_default);
+                    } else {
+                        return Err((
+                            call_span,
+                            TypeError::CannotInferTypeParam {
+                                function: sig.name,
+                                param: sig.type_params[idx].clone(),
+                            },
+                        ));
+                    }
                 }
             }
         }
@@ -1515,6 +1736,7 @@ impl<'a> Checker<'a> {
                     call_span,
                 )),
                 checked_args,
+                call_span,
             ),
             returns,
         ))
@@ -1619,7 +1841,13 @@ impl<'a> Checker<'a> {
             ExprKind::Name(name) => {
                 if let Some((slot, ty)) = self.locals.get(name.as_str()) {
                     (M::Local(*slot), self.resolve_ty(ty))
-                } else if let Some(&binding) = self.scope.bindings.get(name) {
+                } else if let Some(binding) = self
+                    .scope
+                    .bindings
+                    .get(name)
+                    .copied()
+                    .or_else(|| notist_builtins().exports.get(name).copied())
+                {
                     match binding {
                         Binding::Function(id) => {
                             let sig = self.view.signature(id);
@@ -1650,18 +1878,15 @@ impl<'a> Checker<'a> {
                             return Err((expr.span, TypeError::NamespaceAsValue(name.clone())));
                         }
                     }
-                } else if let Some((builtin, params, returns)) = lookup_prelude_function(name) {
-                    (
-                        M::Builtin(builtin, expr.span),
-                        Type::Function(params, Box::new(returns)),
-                    )
+                } else if name == "notist" {
+                    return Err((expr.span, TypeError::NamespaceAsValue(name.clone())));
                 } else {
                     return Err((expr.span, TypeError::UnknownName(name.clone())));
                 }
             }
             ExprKind::Member(base, member) => {
                 if let Some(module_id) = self.resolve_namespace(base)? {
-                    match self.view.exports[module_id.0].get(member) {
+                    match self.view.module_exports(module_id).get(member) {
                         Some(&Binding::Function(id)) => {
                             let sig = self.view.signature(id);
                             if !sig.type_params.is_empty() {
@@ -1694,7 +1919,7 @@ impl<'a> Checker<'a> {
                             return Err((
                                 expr.span,
                                 TypeError::UnknownExport {
-                                    module: self.view.module_paths[module_id.0].clone(),
+                                    module: self.view.module_path(module_id).to_owned(),
                                     name: member.clone(),
                                 },
                             ));
@@ -1889,11 +2114,11 @@ impl<'a> Checker<'a> {
                     .zip(&parameters)
                     .map(|(arg, ty)| self.expect_expr(arg, ty))
                     .collect::<Result<_, _>>()?;
-                (M::Call(Box::new(checked_callee), arguments), *returns)
+                (M::Call(Box::new(checked_callee), arguments, expr.span), *returns)
             }
             ExprKind::MethodCall(receiver, method_name, arguments) => {
                 if let Some(module_id) = self.resolve_namespace(receiver)? {
-                    match self.view.exports[module_id.0].get(method_name) {
+                    match self.view.module_exports(module_id).get(method_name) {
                         Some(&Binding::Function(id)) => {
                             let sig = self.view.signature(id);
                             if !sig.type_params.is_empty() {
@@ -1925,6 +2150,7 @@ impl<'a> Checker<'a> {
                                         expr.span,
                                     )),
                                     checked_args,
+                                    expr.span,
                                 ),
                                 returns,
                             ));
@@ -1939,7 +2165,7 @@ impl<'a> Checker<'a> {
                             return Err((
                                 expr.span,
                                 TypeError::UnknownExport {
-                                    module: self.view.module_paths[module_id.0].clone(),
+                                    module: self.view.module_path(module_id).to_owned(),
                                     name: method_name.clone(),
                                 },
                             ));
@@ -1977,6 +2203,7 @@ impl<'a> Checker<'a> {
                                 expr.span,
                             )),
                             call_args,
+                            expr.span,
                         ),
                         entry.returns.clone(),
                     )
@@ -1998,7 +2225,7 @@ impl<'a> Checker<'a> {
                         call_args.push(self.expect_expr(arg, ty)?);
                     }
                     (
-                        M::Call(Box::new(M::Builtin(builtin, expr.span)), call_args),
+                        M::Call(Box::new(M::Builtin(builtin, expr.span)), call_args, expr.span),
                         returns,
                     )
                 } else {
@@ -2012,6 +2239,19 @@ impl<'a> Checker<'a> {
                 }
             }
         })
+    }
+
+    fn call_notist(
+        decl: DeclId,
+        type_args: Vec<Type>,
+        args: Vec<ModuleExpr>,
+        span: Span,
+    ) -> ModuleExpr {
+        ModuleExpr::Call(
+            Box::new(ModuleExpr::Function(InstanceKey { decl, type_args }, span)),
+            args,
+            span,
+        )
     }
 
     fn check_inline_pieces(
@@ -2033,34 +2273,29 @@ impl<'a> Checker<'a> {
         use ModuleExpr as M;
         match piece {
             InlinePiece::Attr { span, .. } => Ok(M::InlineFragment(Vec::new(), Attrs::empty(), *span)),
-            InlinePiece::Text(text, span) => Ok(M::Call(
-                Box::new(M::Builtin(BuiltinFn::Text, *span)),
+            InlinePiece::Text(text, span) => Ok(Self::call_notist(
+                DeclId::NOTIST_TEXT,
+                Vec::new(),
                 vec![M::String(Arc::from(text.as_str()))],
+                *span,
             )),
             InlinePiece::Strong(items, span) => {
                 let inner = self.check_inline_pieces(items, *span)?;
-                Ok(M::Call(
-                    Box::new(M::Builtin(BuiltinFn::Strong, *span)),
-                    vec![inner],
-                ))
+                Ok(Self::call_notist(DeclId::NOTIST_STRONG, Vec::new(), vec![inner], *span))
             }
             InlinePiece::Emph(items, span) => {
                 let inner = self.check_inline_pieces(items, *span)?;
-                Ok(M::Call(
-                    Box::new(M::Builtin(BuiltinFn::Emph, *span)),
-                    vec![inner],
-                ))
+                Ok(Self::call_notist(DeclId::NOTIST_EMPH, Vec::new(), vec![inner], *span))
             }
             InlinePiece::Strike(items, span) => {
                 let inner = self.check_inline_pieces(items, *span)?;
-                Ok(M::Call(
-                    Box::new(M::Builtin(BuiltinFn::Strike, *span)),
-                    vec![inner],
-                ))
+                Ok(Self::call_notist(DeclId::NOTIST_STRIKE, Vec::new(), vec![inner], *span))
             }
-            InlinePiece::Raw(text, span) => Ok(M::Call(
-                Box::new(M::Builtin(BuiltinFn::Raw, *span)),
+            InlinePiece::Raw(text, span) => Ok(Self::call_notist(
+                DeclId::NOTIST_RAW,
+                Vec::new(),
                 vec![M::String(Arc::from(text.as_str()))],
+                *span,
             )),
             InlinePiece::Link {
                 target,
@@ -2068,21 +2303,27 @@ impl<'a> Checker<'a> {
                 span,
             } => {
                 let checked_label = self.check_inline_pieces(label, *span)?;
-                Ok(M::Call(
-                    Box::new(M::Builtin(BuiltinFn::Link, *span)),
+                Ok(Self::call_notist(
+                    DeclId::NOTIST_LINK,
+                    Vec::new(),
                     vec![M::String(Arc::from(target.as_str())), checked_label],
+                    *span,
                 ))
             }
-            InlinePiece::Image { target, alt, span } => Ok(M::Call(
-                Box::new(M::Builtin(BuiltinFn::Image, *span)),
+            InlinePiece::Image { target, alt, span } => Ok(Self::call_notist(
+                DeclId::NOTIST_IMAGE,
+                Vec::new(),
                 vec![
                     M::String(Arc::from(target.as_str())),
                     M::String(Arc::from(alt.as_str())),
                 ],
+                *span,
             )),
-            InlinePiece::Math(text, span) => Ok(M::Call(
-                Box::new(M::Builtin(BuiltinFn::Math, *span)),
+            InlinePiece::Math(text, span) => Ok(Self::call_notist(
+                DeclId::NOTIST_MATH,
+                vec![Type::Inline],
                 vec![M::String(Arc::from(text.as_str()))],
+                *span,
             )),
             InlinePiece::Expr(expr, _) => self.expect_expr(expr, &Type::Inline),
             InlinePiece::Attributed { attrs, target, .. } => {
@@ -2124,7 +2365,7 @@ impl<'a> Checker<'a> {
                 span,
             } => {
                 let body = self.check_inline_pieces(inlines, *span)?;
-                let para = M::Call(Box::new(M::Builtin(BuiltinFn::Para, *span)), vec![body]);
+                let para = Self::call_notist(DeclId::NOTIST_PARA, Vec::new(), vec![body], *span);
                 (para, attrs)
             }
             BlockPiece::Heading {
@@ -2134,9 +2375,11 @@ impl<'a> Checker<'a> {
                 span,
             } => {
                 let body = self.check_inline_pieces(title, *span)?;
-                let heading = M::Call(
-                    Box::new(M::Builtin(BuiltinFn::Heading, *span)),
+                let heading = Self::call_notist(
+                    DeclId::NOTIST_HEADING,
+                    Vec::new(),
                     vec![M::Int(i64::from(*level)), body],
+                    *span,
                 );
                 (heading, attrs)
             }
@@ -2146,12 +2389,14 @@ impl<'a> Checker<'a> {
                 attrs,
                 span,
             } => {
-                let code = M::Call(
-                    Box::new(M::Builtin(BuiltinFn::CodeBlock, *span)),
+                let code = Self::call_notist(
+                    DeclId::NOTIST_CODE_BLOCK,
+                    Vec::new(),
                     vec![
                         M::String(Arc::from(lang.as_str())),
                         M::String(Arc::from(text.as_str())),
                     ],
+                    *span,
                 );
                 (code, attrs)
             }
@@ -2166,16 +2411,25 @@ impl<'a> Checker<'a> {
                 for item in items {
                     checked_items.push(self.check_block_pieces(item, *span)?);
                 }
-                let lowered = lower_attrs(attrs);
-                return Ok(M::BlockList(*ordered, *start, checked_items, lowered, *span));
+                let list = Self::call_notist(
+                    DeclId::NOTIST_LIST,
+                    Vec::new(),
+                    vec![
+                        M::Bool(*ordered),
+                        M::Int(*start as i64),
+                        M::List(checked_items),
+                    ],
+                    *span,
+                );
+                (list, attrs)
             }
             BlockPiece::Quote { body, attrs, span } => {
                 let inner = self.check_block_pieces(body, *span)?;
-                let quote = M::Call(Box::new(M::Builtin(BuiltinFn::Quote, *span)), vec![inner]);
+                let quote = Self::call_notist(DeclId::NOTIST_QUOTE, Vec::new(), vec![inner], *span);
                 (quote, attrs)
             }
             BlockPiece::Divider { attrs, span } => {
-                let div = M::Call(Box::new(M::Builtin(BuiltinFn::Divider, *span)), vec![]);
+                let div = Self::call_notist(DeclId::NOTIST_DIVIDER, Vec::new(), vec![], *span);
                 (div, attrs)
             }
             BlockPiece::Table {
@@ -2206,9 +2460,11 @@ impl<'a> Checker<'a> {
                 });
             }
             BlockPiece::Math { text, attrs, span } => {
-                let math = M::Call(
-                    Box::new(M::Builtin(BuiltinFn::DisplayMath, *span)),
+                let math = Self::call_notist(
+                    DeclId::NOTIST_MATH,
+                    vec![Type::Block],
                     vec![M::String(Arc::from(text.as_str()))],
+                    *span,
                 );
                 (math, attrs)
             }
@@ -2216,10 +2472,9 @@ impl<'a> Checker<'a> {
                 let (checked, ty) = self.expression(expr, None)?;
                 let block_expr = match ty {
                     Type::Block | Type::Never => checked,
-                    Type::Inline => M::Call(
-                        Box::new(M::Builtin(BuiltinFn::Para, *span)),
-                        vec![checked],
-                    ),
+                    Type::Inline => {
+                        Self::call_notist(DeclId::NOTIST_PARA, Vec::new(), vec![checked], *span)
+                    }
                     other => {
                         return Err((
                             expr.span,
@@ -2395,4 +2650,184 @@ fn expect(expected: &Type, actual: Type, span: Span) -> Result<(), (Span, TypeEr
             },
         ))
     }
+}
+
+pub(crate) enum SignatureMismatch {
+    TypeArity { expected: usize, actual: usize },
+    TypeParamDefault { param_index: usize },
+    Signature { expected: String, actual: String },
+    WhereClause,
+}
+
+fn format_sig_types(params: &[Type], returns: &Type) -> String {
+    let ps = params.iter().map(format_type).collect::<Vec<_>>().join(", ");
+    format!("fn({ps}) -> {}", format_type(returns))
+}
+
+fn substitute_where(expr: &WhereExpr, params: &[String], args: &[Type]) -> WhereExpr {
+    let kind = match &expr.kind {
+        WhereExprKind::Bool(b) => WhereExprKind::Bool(*b),
+        WhereExprKind::TypeEq(a, b) => WhereExprKind::TypeEq(
+            substitute_type(a, params, args),
+            substitute_type(b, params, args),
+        ),
+        WhereExprKind::TypeNe(a, b) => WhereExprKind::TypeNe(
+            substitute_type(a, params, args),
+            substitute_type(b, params, args),
+        ),
+        WhereExprKind::Not(inner) => {
+            WhereExprKind::Not(Box::new(substitute_where(inner, params, args)))
+        }
+        WhereExprKind::And(a, b) => WhereExprKind::And(
+            Box::new(substitute_where(a, params, args)),
+            Box::new(substitute_where(b, params, args)),
+        ),
+        WhereExprKind::Or(a, b) => WhereExprKind::Or(
+            Box::new(substitute_where(a, params, args)),
+            Box::new(substitute_where(b, params, args)),
+        ),
+    };
+    WhereExpr::new(kind, expr.span)
+}
+
+fn where_structurally_eq(a: &WhereExpr, b: &WhereExpr) -> bool {
+    match (&a.kind, &b.kind) {
+        (WhereExprKind::Bool(x), WhereExprKind::Bool(y)) => x == y,
+        (WhereExprKind::TypeEq(a1, a2), WhereExprKind::TypeEq(b1, b2))
+        | (WhereExprKind::TypeNe(a1, a2), WhereExprKind::TypeNe(b1, b2)) => {
+            (a1 == b1 && a2 == b2) || (a1 == b2 && a2 == b1)
+        }
+        (WhereExprKind::Not(x), WhereExprKind::Not(y)) => where_structurally_eq(x, y),
+        (WhereExprKind::And(a1, a2), WhereExprKind::And(b1, b2))
+        | (WhereExprKind::Or(a1, a2), WhereExprKind::Or(b1, b2)) => {
+            (where_structurally_eq(a1, b1) && where_structurally_eq(a2, b2))
+                || (where_structurally_eq(a1, b2) && where_structurally_eq(a2, b1))
+        }
+        _ => false,
+    }
+}
+
+fn collect_where_concrete_types(expr: &WhereExpr, out: &mut Vec<Type>) {
+    let mut push_if_concrete = |ty: &Type| {
+        if !contains_param(ty) && !out.contains(ty) {
+            out.push(ty.clone());
+        }
+    };
+    match &expr.kind {
+        WhereExprKind::Bool(_) => {}
+        WhereExprKind::TypeEq(a, b) | WhereExprKind::TypeNe(a, b) => {
+            push_if_concrete(a);
+            push_if_concrete(b);
+        }
+        WhereExprKind::Not(inner) => collect_where_concrete_types(inner, out),
+        WhereExprKind::And(a, b) | WhereExprKind::Or(a, b) => {
+            collect_where_concrete_types(a, out);
+            collect_where_concrete_types(b, out);
+        }
+    }
+}
+
+fn where_implies(from_w: &WhereExpr, to_w: &WhereExpr, params: &[String]) -> bool {
+    if where_structurally_eq(from_w, to_w) {
+        return true;
+    }
+    if params.len() > 3 {
+        return false;
+    }
+    let mut candidates = vec![
+        Type::Inline,
+        Type::Block,
+        Type::Int,
+        Type::Float,
+        Type::Bool,
+        Type::String,
+        Type::Unit,
+        Type::Json,
+        Type::List(Box::new(Type::Never)),
+    ];
+    collect_where_concrete_types(from_w, &mut candidates);
+    collect_where_concrete_types(to_w, &mut candidates);
+
+    fn check_tuples(
+        from_w: &WhereExpr,
+        to_w: &WhereExpr,
+        params: &[String],
+        candidates: &[Type],
+        current: &mut Vec<Type>,
+    ) -> bool {
+        if current.len() == params.len() {
+            if eval_where(from_w, params, current) == Some(true) {
+                return eval_where(to_w, params, current) == Some(true);
+            }
+            return true;
+        }
+        for c in candidates {
+            current.push(c.clone());
+            let ok = check_tuples(from_w, to_w, params, candidates, current);
+            current.pop();
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
+    let mut scratch = Vec::with_capacity(params.len());
+    check_tuples(from_w, to_w, params, &candidates, &mut scratch)
+}
+
+pub(crate) fn validate_replacement_signatures(
+    from_sig: &FunctionSig,
+    to_sig: &FunctionSig,
+) -> Result<(), SignatureMismatch> {
+    if from_sig.type_params.len() != to_sig.type_params.len() {
+        return Err(SignatureMismatch::TypeArity {
+            expected: from_sig.type_params.len(),
+            actual: to_sig.type_params.len(),
+        });
+    }
+    let rename_args: Vec<Type> = from_sig
+        .type_params
+        .iter()
+        .map(|name| Type::Param(name.clone()))
+        .collect();
+
+    for (idx, (from_def, to_def)) in from_sig
+        .type_param_defaults
+        .iter()
+        .zip(&to_sig.type_param_defaults)
+        .enumerate()
+    {
+        let mapped_to = to_def
+            .as_ref()
+            .map(|t| substitute_type(t, &to_sig.type_params, &rename_args));
+        if *from_def != mapped_to {
+            return Err(SignatureMismatch::TypeParamDefault { param_index: idx });
+        }
+    }
+
+    let mapped_to_params: Vec<Type> = to_sig
+        .parameters
+        .iter()
+        .map(|p| substitute_type(p, &to_sig.type_params, &rename_args))
+        .collect();
+    let mapped_to_ret = substitute_type(&to_sig.returns, &to_sig.type_params, &rename_args);
+    if from_sig.parameters != mapped_to_params || from_sig.returns != mapped_to_ret {
+        return Err(SignatureMismatch::Signature {
+            expected: format_sig_types(&from_sig.parameters, &from_sig.returns),
+            actual: format_sig_types(&mapped_to_params, &mapped_to_ret),
+        });
+    }
+
+    if let Some(to_w) = &to_sig.where_clause {
+        let Some(from_w) = &from_sig.where_clause else {
+            return Err(SignatureMismatch::WhereClause);
+        };
+        let mapped_to_w = substitute_where(to_w, &to_sig.type_params, &rename_args);
+        if !where_implies(from_w, &mapped_to_w, &from_sig.type_params) {
+            return Err(SignatureMismatch::WhereClause);
+        }
+    }
+
+    Ok(())
 }

@@ -8,17 +8,20 @@
 //! 3. Reachability-driven specialization & lowering to a dense executable `CheckedProgram`.
 
 use crate::ast::{DOC_ENTRY, Decl, Import, ImportKind, Module, Span, Type};
+use crate::builtin::notist_builtins;
 use crate::check::{
-    Binding, CheckedDecl, CheckedExpr, CheckedFunction, CheckedProgram, FunctionSig, InstanceKey,
-    InterfaceView, MethodSig, ModuleId, ModuleScope, SharedLowered, TypeError, check_module_bodies,
-    collect_module_interface, specialize_document_against_shared, specialize_roots,
-    specialize_shared_modules,
+    Binding, CheckedDecl, CheckedExpr, CheckedFunction, CheckedProgram, DeclId, FunctionSig,
+    InstanceKey, InterfaceView, MethodSig, ModuleId, ModuleScope, SharedLowered, SignatureMismatch,
+    TypeError, check_module_bodies, collect_module_interface, format_type_error,
+    specialize_document_against_shared, specialize_roots, specialize_shared_modules,
+    validate_replacement_signatures,
 };
 use crate::content::Block;
 use crate::eval::{ExecutionError, Value, eval_expr_with_shared};
 use crate::lexer::ParseDiagnostic;
 use crate::parser::parse_file;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum DocumentError {
@@ -26,13 +29,13 @@ pub enum DocumentError {
     Execution(ExecutionError),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDiagnostic {
     pub module: String,
     pub kind: ProjectDiagnosticKind,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectDiagnosticKind {
     Parse(ParseDiagnostic),
     Type {
@@ -66,6 +69,127 @@ impl CheckedDocument {
     }
 }
 
+/// Specification for rebinding calls from `(from_module, from_name)` to
+/// `(to_module, to_name)` during specialization.
+///
+/// Pass `"notist"` for `from_module` or `to_module` to refer to the built-in
+/// `notist` module (e.g. `notist.math`, `notist.heading`, `notist.table`), or
+/// a virtual module path (e.g. `"modules/katex/lib.not"`) to refer to a `.not`
+/// module in the `CheckedProject`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementSpec {
+    pub from_module: String,
+    pub from_name: String,
+    pub to_module: String,
+    pub to_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementError {
+    pub index: usize,
+    pub kind: ReplacementErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplacementErrorKind {
+    UnknownModule {
+        module: String,
+    },
+    UnknownExport {
+        module: String,
+        name: String,
+    },
+    NotFunction {
+        module: String,
+        name: String,
+    },
+    TypeArityMismatch {
+        from: String,
+        to: String,
+        expected: usize,
+        actual: usize,
+    },
+    TypeParamDefaultMismatch {
+        from: String,
+        to: String,
+        param_index: usize,
+    },
+    SignatureMismatch {
+        from: String,
+        to: String,
+        expected: String,
+        actual: String,
+    },
+    WhereClauseMismatch {
+        from: String,
+        to: String,
+    },
+    SpecializationDiagnostic(ProjectDiagnostic),
+}
+
+pub fn format_replacement_error(error: &ReplacementError) -> String {
+    let idx = error.index;
+    match &error.kind {
+        ReplacementErrorKind::UnknownModule { module } => {
+            format!("replacement #{idx}: unknown module `{module}`")
+        }
+        ReplacementErrorKind::UnknownExport { module, name } => {
+            format!("replacement #{idx}: module `{module}` has no export `{name}`")
+        }
+        ReplacementErrorKind::NotFunction { module, name } => {
+            format!("replacement #{idx}: `{module}.{name}` is not a function")
+        }
+        ReplacementErrorKind::TypeArityMismatch {
+            from,
+            to,
+            expected,
+            actual,
+        } => format!(
+            "replacement #{idx}: `{to}` has {actual} type parameter(s), expected {expected} to match `{from}`"
+        ),
+        ReplacementErrorKind::TypeParamDefaultMismatch {
+            from,
+            to,
+            param_index,
+        } => format!(
+            "replacement #{idx}: `{to}` has a different default on type parameter #{param_index} than `{from}`"
+        ),
+        ReplacementErrorKind::SignatureMismatch {
+            from,
+            to,
+            expected,
+            actual,
+        } => format!(
+            "replacement #{idx}: `{to}` has signature `{actual}`, expected `{expected}` to match `{from}`"
+        ),
+        ReplacementErrorKind::WhereClauseMismatch { from, to } => format!(
+            "replacement #{idx}: `where` clause on `{to}` is stricter than `{from}`"
+        ),
+        ReplacementErrorKind::SpecializationDiagnostic(diag) => match &diag.kind {
+            ProjectDiagnosticKind::Parse(p) => {
+                format!("replacement #{idx}: {}: {}", diag.module, p.message)
+            }
+            ProjectDiagnosticKind::Type {
+                declaration, error, ..
+            } => format!(
+                "replacement #{idx}: {} ({declaration}): {}",
+                diag.module,
+                format_type_error(error)
+            ),
+        },
+    }
+}
+
+#[derive(Debug)]
+struct CheckedProjectInner {
+    module_paths: Vec<String>,
+    module_ids: HashMap<String, ModuleId>,
+    exports: Vec<HashMap<String, Binding>>,
+    signatures: Vec<Vec<FunctionSig>>,
+    local_methods: Vec<HashMap<(Type, String), MethodSig>>,
+    decls: Vec<Vec<CheckedDecl>>,
+}
+
 /// Checked multi-module semantic result. All modules and declarations have been
 /// statically checked, and monomorphic shared declarations have been pre-lowered
 /// once so standalone documents can reference them by `FunctionId` without
@@ -75,16 +199,224 @@ impl CheckedDocument {
 /// be checked and evaluated against it in parallel without cloning shared modules.
 #[derive(Debug)]
 pub struct CheckedProject {
-    module_paths: Vec<String>,
-    module_ids: HashMap<String, ModuleId>,
-    exports: Vec<HashMap<String, Binding>>,
-    signatures: Vec<Vec<FunctionSig>>,
-    local_methods: Vec<HashMap<(Type, String), MethodSig>>,
-    decls: Vec<Vec<CheckedDecl>>,
+    inner: Arc<CheckedProjectInner>,
+    replacements: HashMap<DeclId, DeclId>,
     shared_lowered: SharedLowered,
 }
 
+fn module_label(module_paths: &[String], id: ModuleId) -> String {
+    if id == ModuleId::NOTIST {
+        "notist".to_owned()
+    } else {
+        module_paths[id.0].clone()
+    }
+}
+
+fn build_shared_roots(
+    decls: &[Vec<CheckedDecl>],
+    replacements: &HashMap<DeclId, DeclId>,
+) -> Vec<InstanceKey> {
+    let mut roots = Vec::new();
+    for (m_idx, mod_decls) in decls.iter().enumerate() {
+        for (d_idx, decl) in mod_decls.iter().enumerate() {
+            if decl.type_params.is_empty() {
+                roots.push(InstanceKey {
+                    decl: DeclId {
+                        module: ModuleId(m_idx),
+                        index: d_idx,
+                    },
+                    type_args: Vec::new(),
+                });
+            }
+        }
+    }
+    for &from_id in replacements.keys() {
+        if from_id == DeclId::NOTIST_MATH {
+            roots.push(InstanceKey {
+                decl: DeclId::NOTIST_MATH,
+                type_args: vec![Type::Inline],
+            });
+            roots.push(InstanceKey {
+                decl: DeclId::NOTIST_MATH,
+                type_args: vec![Type::Block],
+            });
+            roots.push(InstanceKey {
+                decl: DeclId::NOTIST_DISPLAY_MATH,
+                type_args: Vec::new(),
+            });
+        } else if from_id.module == ModuleId::NOTIST
+            && notist_builtins().decls[from_id.index].type_params.is_empty()
+        {
+            roots.push(InstanceKey {
+                decl: from_id,
+                type_args: Vec::new(),
+            });
+        }
+    }
+    roots
+}
+
+fn resolve_replacement_endpoint<'a>(
+    inner: &'a CheckedProjectInner,
+    raw_module: &str,
+    name: &str,
+) -> Result<(DeclId, &'a FunctionSig, String), ReplacementErrorKind> {
+    if raw_module == "notist" {
+        let builtins = notist_builtins();
+        return match builtins.exports.get(name) {
+            Some(&Binding::Function(id)) => Ok((
+                id,
+                &builtins.signatures[id.index],
+                format!("notist.{name}"),
+            )),
+            Some(Binding::Namespace(_)) => Err(ReplacementErrorKind::NotFunction {
+                module: "notist".into(),
+                name: name.to_owned(),
+            }),
+            None => Err(ReplacementErrorKind::UnknownExport {
+                module: "notist".into(),
+                name: name.to_owned(),
+            }),
+        };
+    }
+
+    let mod_path = normalize_path(raw_module).unwrap_or_else(|| raw_module.to_owned());
+    let Some(&mod_id) = inner.module_ids.get(&mod_path) else {
+        return Err(ReplacementErrorKind::UnknownModule { module: mod_path });
+    };
+    match inner.exports[mod_id.0].get(name) {
+        Some(&Binding::Function(id)) => {
+            let sig = if id.module == ModuleId::NOTIST {
+                &notist_builtins().signatures[id.index]
+            } else {
+                &inner.signatures[id.module.0][id.index]
+            };
+            Ok((id, sig, format!("{mod_path}::{name}")))
+        }
+        Some(Binding::Namespace(_)) => Err(ReplacementErrorKind::NotFunction {
+            module: mod_path,
+            name: name.to_owned(),
+        }),
+        None => Err(ReplacementErrorKind::UnknownExport {
+            module: mod_path,
+            name: name.to_owned(),
+        }),
+    }
+}
+
 impl CheckedProject {
+    /// Produce a derived `CheckedProject` sharing the same checked module ASTs
+    /// (`Arc`) while rebinding calls according to `specs` during specialization.
+    ///
+    /// Rules are validated against static signatures/contracts and folded
+    /// sequentially in slice order without fixed-point looping (`A -> B` then
+    /// `B -> C` yields `A -> C`, whereas `B -> C` then `A -> B` yields `A -> B`
+    /// and `B -> C`). Calls to `from` inside `to`'s own body remain bound to the
+    /// original `from` so wrapper functions do not recurse infinitely.
+    pub fn with_replacements(
+        &self,
+        specs: &[ReplacementSpec],
+    ) -> Result<CheckedProject, Vec<ReplacementError>> {
+        let inner = &self.inner;
+        let mut errors = Vec::new();
+        let mut effective = self.replacements.clone();
+
+        for (index, spec) in specs.iter().enumerate() {
+            let (from_id, from_sig, from_label) =
+                match resolve_replacement_endpoint(inner, &spec.from_module, &spec.from_name) {
+                    Ok(v) => v,
+                    Err(kind) => {
+                        errors.push(ReplacementError { index, kind });
+                        continue;
+                    }
+                };
+            let (to_id, to_sig, to_label) =
+                match resolve_replacement_endpoint(inner, &spec.to_module, &spec.to_name) {
+                    Ok(v) => v,
+                    Err(kind) => {
+                        errors.push(ReplacementError { index, kind });
+                        continue;
+                    }
+                };
+
+            if let Err(mismatch) = validate_replacement_signatures(from_sig, to_sig) {
+                let kind = match mismatch {
+                    SignatureMismatch::TypeArity { expected, actual } => {
+                        ReplacementErrorKind::TypeArityMismatch {
+                            from: from_label,
+                            to: to_label,
+                            expected,
+                            actual,
+                        }
+                    }
+                    SignatureMismatch::TypeParamDefault { param_index } => {
+                        ReplacementErrorKind::TypeParamDefaultMismatch {
+                            from: from_label,
+                            to: to_label,
+                            param_index,
+                        }
+                    }
+                    SignatureMismatch::Signature { expected, actual } => {
+                        ReplacementErrorKind::SignatureMismatch {
+                            from: from_label,
+                            to: to_label,
+                            expected,
+                            actual,
+                        }
+                    }
+                    SignatureMismatch::WhereClause => ReplacementErrorKind::WhereClauseMismatch {
+                        from: from_label,
+                        to: to_label,
+                    },
+                };
+                errors.push(ReplacementError { index, kind });
+                continue;
+            }
+
+            for val in effective.values_mut() {
+                if *val == from_id {
+                    *val = to_id;
+                }
+            }
+            if from_id == to_id {
+                effective.remove(&from_id);
+            } else {
+                effective.insert(from_id, to_id);
+            }
+            effective.retain(|k, v| k != v);
+        }
+
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        let roots = build_shared_roots(&inner.decls, &effective);
+        let shared_lowered =
+            specialize_shared_modules(&inner.decls, &roots, &effective).map_err(|spec_errs| {
+                let last_index = specs.len().saturating_sub(1);
+                spec_errs
+                    .into_iter()
+                    .map(|(module_id, diag)| ReplacementError {
+                        index: last_index,
+                        kind: ReplacementErrorKind::SpecializationDiagnostic(ProjectDiagnostic {
+                            module: module_label(&inner.module_paths, module_id),
+                            kind: ProjectDiagnosticKind::Type {
+                                declaration: diag.declaration,
+                                span: diag.span,
+                                error: diag.error,
+                            },
+                        }),
+                    })
+                    .collect::<Vec<_>>()
+            })?;
+
+        Ok(CheckedProject {
+            inner: Arc::clone(&self.inner),
+            replacements: effective,
+            shared_lowered,
+        })
+    }
+
     /// Specialize and lower only functions and methods reachable from
     /// `(module_path, entry)` into a compact executable `CheckedProgram`.
     pub fn lower_entry(
@@ -92,20 +424,25 @@ impl CheckedProject {
         module_path: &str,
         entry: &str,
     ) -> Result<CheckedProgram, ExecutionError> {
+        let inner = &self.inner;
         let normalized = normalize_path(module_path)
             .ok_or_else(|| ExecutionError::UnknownEntry(format!("{module_path}::{entry}")))?;
-        let Some(&module_id) = self.module_ids.get(&normalized) else {
+        let Some(&module_id) = inner.module_ids.get(&normalized) else {
             return Err(ExecutionError::UnknownEntry(format!(
                 "{module_path}::{entry}"
             )));
         };
-        let Some(&Binding::Function(root_id)) = self.exports[module_id.0].get(entry) else {
+        let Some(&Binding::Function(root_id)) = inner.exports[module_id.0].get(entry) else {
             return Err(ExecutionError::UnknownEntry(entry.into()));
         };
-        if !self.decls[root_id.module.0][root_id.index]
-            .type_params
-            .is_empty()
-        {
+        let type_params_empty = if root_id.module == ModuleId::NOTIST {
+            notist_builtins().decls[root_id.index].type_params.is_empty()
+        } else {
+            inner.decls[root_id.module.0][root_id.index]
+                .type_params
+                .is_empty()
+        };
+        if !type_params_empty {
             return Err(ExecutionError::UnknownEntry(entry.into()));
         }
 
@@ -116,7 +453,7 @@ impl CheckedProject {
                 type_args: Vec::new(),
             },
         )];
-        specialize_roots(&self.decls, &roots)
+        specialize_roots(&inner.decls, &roots, &self.replacements)
             .map_err(|_| ExecutionError::UnknownEntry(entry.into()))
     }
 
@@ -173,8 +510,9 @@ impl CheckedProject {
         doc_path: &str,
         doc_module: &Module,
     ) -> Result<CheckedDocument, Vec<ProjectDiagnostic>> {
+        let inner = &self.inner;
         let doc_path_norm = normalize_path(doc_path).unwrap_or_else(|| doc_path.to_owned());
-        let doc_id = ModuleId(self.module_paths.len());
+        let doc_id = ModuleId(inner.module_paths.len());
         let mut diagnostics = Vec::new();
 
         let interface = collect_module_interface(doc_id, doc_module, true);
@@ -198,7 +536,7 @@ impl CheckedProject {
                 continue;
             };
             let target_id = match resolve_import_path(&doc_path_norm, &import.path) {
-                Ok(target_path) => match self.module_ids.get(&target_path) {
+                Ok(target_path) => match inner.module_ids.get(&target_path) {
                     Some(&id) => id,
                     None => {
                         diagnostics.push(ProjectDiagnostic {
@@ -225,7 +563,7 @@ impl CheckedProject {
                 }
             };
 
-            let target_exports = &self.exports[target_id.0];
+            let target_exports = &inner.exports[target_id.0];
             match &import.kind {
                 ImportKind::Default => match default_import_alias(&import.path) {
                     Ok(alias) => insert_binding(
@@ -273,7 +611,7 @@ impl CheckedProject {
                                     declaration: format!("import \"{}\"", import.path),
                                     span: member.name_span,
                                     error: TypeError::UnknownExport {
-                                        module: self.module_paths[target_id.0].clone(),
+                                        module: inner.module_paths[target_id.0].clone(),
                                         name: member.name.clone(),
                                     },
                                 },
@@ -302,7 +640,7 @@ impl CheckedProject {
             }
 
             let mut target_methods: Vec<(&(Type, String), &MethodSig)> =
-                self.local_methods[target_id.0].iter().collect();
+                inner.local_methods[target_id.0].iter().collect();
             target_methods.sort_by(|((_, a), _), ((_, b), _)| a.cmp(b));
             for (key, sig) in target_methods {
                 if interface.methods.contains_key(key) {
@@ -335,9 +673,9 @@ impl CheckedProject {
 
         let scope = ModuleScope { bindings, methods };
         let view = InterfaceView {
-            module_paths: &self.module_paths,
-            exports: &self.exports,
-            signatures: &self.signatures,
+            module_paths: &inner.module_paths,
+            exports: &inner.exports,
+            signatures: &inner.signatures,
             extra_signatures: Some(&interface.signatures),
         };
         let (doc_decls, body_diags) =
@@ -372,10 +710,11 @@ impl CheckedProject {
             type_args: Vec::new(),
         };
         let lowered = specialize_document_against_shared(
-            &self.decls,
+            &inner.decls,
             &self.shared_lowered,
             &doc_decls,
             root_key,
+            &self.replacements,
         )
         .map_err(|errs| {
             errs.into_iter()
@@ -383,7 +722,7 @@ impl CheckedProject {
                     let module = if module_id == doc_id {
                         doc_path_norm.clone()
                     } else {
-                        self.module_paths[module_id.0].clone()
+                        module_label(&inner.module_paths, module_id)
                     };
                     ProjectDiagnostic {
                         module,
@@ -725,44 +1064,36 @@ pub fn check_parsed_modules(
     // Pre-lower all concrete monomorphic shared declarations (and everything they
     // transitively call) once, validating that no reachable specialization hits
     // `compile_error(...)`. Standalone documents reuse this table by FunctionId.
-    let mut mono_roots = Vec::new();
-    for (m_idx, mod_decls) in decls.iter().enumerate() {
-        for (d_idx, decl) in mod_decls.iter().enumerate() {
-            if decl.type_params.is_empty() {
-                mono_roots.push(InstanceKey {
-                    decl: crate::check::DeclId {
-                        module: ModuleId(m_idx),
-                        index: d_idx,
-                    },
-                    type_args: Vec::new(),
-                });
+    let empty_replacements = HashMap::new();
+    let mono_roots = build_shared_roots(&decls, &empty_replacements);
+    let shared_lowered =
+        match specialize_shared_modules(&decls, &mono_roots, &empty_replacements) {
+            Ok(lowered) => lowered,
+            Err(spec_errors) => {
+                for (module_id, diag) in spec_errors {
+                    diagnostics.push(ProjectDiagnostic {
+                        module: module_label(&module_paths, module_id),
+                        kind: ProjectDiagnosticKind::Type {
+                            declaration: diag.declaration,
+                            span: diag.span,
+                            error: diag.error,
+                        },
+                    });
+                }
+                return Err(diagnostics);
             }
-        }
-    }
-    let shared_lowered = match specialize_shared_modules(&decls, &mono_roots) {
-        Ok(lowered) => lowered,
-        Err(spec_errors) => {
-            for (module_id, diag) in spec_errors {
-                diagnostics.push(ProjectDiagnostic {
-                    module: module_paths[module_id.0].clone(),
-                    kind: ProjectDiagnosticKind::Type {
-                        declaration: diag.declaration,
-                        span: diag.span,
-                        error: diag.error,
-                    },
-                });
-            }
-            return Err(diagnostics);
-        }
-    };
+        };
 
     Ok(CheckedProject {
-        module_paths,
-        module_ids,
-        exports,
-        signatures,
-        local_methods,
-        decls,
+        inner: Arc::new(CheckedProjectInner {
+            module_paths,
+            module_ids,
+            exports,
+            signatures,
+            local_methods,
+            decls,
+        }),
+        replacements: empty_replacements,
         shared_lowered,
     })
 }

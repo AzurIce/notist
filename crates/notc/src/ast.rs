@@ -106,6 +106,7 @@ pub enum Type {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeParam {
     pub name: String,
+    pub default: Option<Type>,
     pub span: Span,
 }
 

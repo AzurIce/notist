@@ -40,6 +40,7 @@ pub use json::{DataHost, JsonData, JsonValue, NoDataHost};
 pub use lexer::ParseDiagnostic;
 pub use module::{
     CheckedDocument, CheckedProject, DocumentError, ProjectDiagnostic, ProjectDiagnosticKind,
-    check_parsed_modules, check_project, normalize_path, resolve_import_path,
+    ReplacementError, ReplacementErrorKind, ReplacementSpec, check_parsed_modules, check_project,
+    format_replacement_error, normalize_path, resolve_import_path,
 };
 pub use parser::{ParseResult, parse, parse_document, parse_file, parse_file_with_frontends};

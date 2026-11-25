@@ -550,8 +550,15 @@ impl<'a> Parser<'a> {
                 );
                 return Err(());
             }
+            let default = if self.at(TokenKind::Eq) {
+                self.advance();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
             params.push(TypeParam {
                 name,
+                default,
                 span: name_tok.span,
             });
             if self.at(TokenKind::Comma) {

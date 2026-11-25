@@ -9,10 +9,7 @@ use crate::ast::{
     AttrLiteral, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, Import, ImportKind,
     InlinePiece, Method, Module, Span, Type, TypePattern, WhereExpr, WhereExprKind,
 };
-use crate::builtin::{
-    all_prelude_functions, builtin_methods_for_type, lookup_builtin_method,
-    lookup_prelude_function,
-};
+use crate::builtin::{builtin_methods_for_type, lookup_builtin_method, notist_builtins};
 use crate::check::{
     Binding, DeclId, FunctionSig, InstanceKey, InterfaceView, MethodSig, ModuleId, ModuleScope,
     TypeError, check_module_bodies, collect_module_interface, format_type, format_type_error,
@@ -443,10 +440,17 @@ impl WorkspaceAnalysis {
                     }
                 }
             }
-            if let Err(spec_errors) = specialize_roots(&checked_decls, &mono_roots) {
+            if let Err(spec_errors) =
+                specialize_roots(&checked_decls, &mono_roots, &HashMap::new())
+            {
                 for (module_id, diag) in spec_errors {
+                    let module = if module_id == ModuleId::NOTIST {
+                        "notist".to_owned()
+                    } else {
+                        module_paths[module_id.0].clone()
+                    };
                     diagnostics.push(IdeDiagnostic {
-                        module: module_paths[module_id.0].clone(),
+                        module,
                         span: diag.span,
                         message: format_type_error(&diag.error),
                         phase: DiagnosticPhase::Type,
@@ -576,9 +580,10 @@ impl WorkspaceAnalysis {
         let mut seen: HashSet<String> = HashSet::new();
 
         if let Some(receiver_expr_text) = ctx.dot_receiver {
-            // 1. Try namespace path resolution (e.g. `math.` or `a.b.`)
+            // 1. Try namespace path resolution (e.g. `math.`, `notist.`, or `a.b.`)
             if let Some(target_module) = self.resolve_namespace_chain(idx, &receiver_expr_text) {
-                let mut entries: Vec<(&String, &Binding)> = self.exports[target_module.0]
+                let mut entries: Vec<(&String, &Binding)> = self
+                    .exports_for(target_module)
                     .iter()
                     .filter(|(name, _)| name.as_str() != DOC_ENTRY)
                     .collect();
@@ -590,15 +595,11 @@ impl WorkspaceAnalysis {
                     let (kind, detail) = match binding {
                         Binding::Function(decl_id) => (
                             CompletionKind::Function,
-                            Some(
-                                self.decl_locations[decl_id.module.0][decl_id.index]
-                                    .signature
-                                    .clone(),
-                            ),
+                            Some(self.display_signature_for(*decl_id).to_owned()),
                         ),
                         Binding::Namespace(m) => (
                             CompletionKind::Module,
-                            Some(format!("module \"{}\"", self.module_paths[m.0])),
+                            Some(format!("module \"{}\"", self.module_path_for(*m))),
                         ),
                     };
                     items.push(CompletionCandidate {
@@ -618,12 +619,24 @@ impl WorkspaceAnalysis {
                     // Fallback: if receiver text is a bare function call `foo()`, lookup its return type.
                     let callee = receiver_expr_text.trim();
                     let name = callee.strip_suffix("()")?;
-                    if let Some(Binding::Function(id)) = module.scope.bindings.get(name) {
-                        Some(self.signatures[id.module.0][id.index].returns.clone())
-                    } else if let Some((_, _, ret)) = lookup_prelude_function(name) {
-                        Some(ret)
+                    let decl_id = match module.scope.bindings.get(name) {
+                        Some(&Binding::Function(id)) => Some(id),
+                        Some(_) => None,
+                        None => match notist_builtins().exports.get(name) {
+                            Some(&Binding::Function(id)) => Some(id),
+                            _ => None,
+                        },
+                    }?;
+                    let sig = self.signature_for(decl_id);
+                    if sig.type_params.is_empty() {
+                        Some(sig.returns.clone())
                     } else {
-                        None
+                        let defaults: Option<Vec<Type>> = sig
+                            .type_param_defaults
+                            .iter()
+                            .cloned()
+                            .collect();
+                        defaults.map(|args| substitute_type(&sig.returns, &sig.type_params, &args))
                     }
                 });
 
@@ -714,15 +727,11 @@ impl WorkspaceAnalysis {
             let (kind, detail) = match binding {
                 Binding::Function(decl_id) => (
                     CompletionKind::Function,
-                    Some(
-                        self.decl_locations[decl_id.module.0][decl_id.index]
-                            .signature
-                            .clone(),
-                    ),
+                    Some(self.display_signature_for(*decl_id).to_owned()),
                 ),
                 Binding::Namespace(m) => (
                     CompletionKind::Module,
-                    Some(format!("module \"{}\"", self.module_paths[m.0])),
+                    Some(format!("module \"{}\"", self.module_path_for(*m))),
                 ),
             };
             items.push(CompletionCandidate {
@@ -733,20 +742,24 @@ impl WorkspaceAnalysis {
             });
         }
 
-        // 3. Prelude built-in functions
-        for (name, _, params, ret) in all_prelude_functions() {
+        // 3. Built-in `notist` namespace & prelude built-in functions
+        if "notist".starts_with(&ctx.partial) && seen.insert("notist".to_owned()) {
+            items.push(CompletionCandidate {
+                label: "notist".to_owned(),
+                kind: CompletionKind::Module,
+                detail: Some("module \"notist\"".to_owned()),
+                replace_span: ctx.replace_span,
+            });
+        }
+        let builtins = notist_builtins();
+        for (idx, &name) in builtins.names.iter().enumerate() {
             if !name.starts_with(&ctx.partial) || !seen.insert(name.to_owned()) {
                 continue;
             }
-            let params_str = params
-                .iter()
-                .map(format_type)
-                .collect::<Vec<_>>()
-                .join(", ");
             items.push(CompletionCandidate {
                 label: name.to_owned(),
                 kind: CompletionKind::Function,
-                detail: Some(format!("fn {name}({params_str}) -> {}", format_type(&ret))),
+                detail: Some(builtins.display_signatures[idx].clone()),
                 replace_span: ctx.replace_span,
             });
         }
@@ -794,15 +807,49 @@ impl WorkspaceAnalysis {
         self.module_indices.get(&key).copied()
     }
 
+    fn exports_for(&self, module: ModuleId) -> &HashMap<String, Binding> {
+        if module == ModuleId::NOTIST {
+            &notist_builtins().exports
+        } else {
+            &self.exports[module.0]
+        }
+    }
+
+    fn signature_for(&self, id: DeclId) -> &FunctionSig {
+        if id.module == ModuleId::NOTIST {
+            &notist_builtins().signatures[id.index]
+        } else {
+            &self.signatures[id.module.0][id.index]
+        }
+    }
+
+    fn display_signature_for(&self, id: DeclId) -> &str {
+        if id.module == ModuleId::NOTIST {
+            &notist_builtins().display_signatures[id.index]
+        } else {
+            &self.decl_locations[id.module.0][id.index].signature
+        }
+    }
+
+    fn module_path_for(&self, module: ModuleId) -> &str {
+        if module == ModuleId::NOTIST {
+            "notist"
+        } else {
+            &self.module_paths[module.0]
+        }
+    }
+
     fn resolve_namespace_chain(&self, module_idx: usize, chain: &str) -> Option<ModuleId> {
         let mut parts = chain.split('.');
         let first = parts.next()?.trim();
-        let &Binding::Namespace(mut current) = self.modules[module_idx].scope.bindings.get(first)?
-        else {
-            return None;
+        let mut current = match self.modules[module_idx].scope.bindings.get(first) {
+            Some(&Binding::Namespace(id)) => id,
+            Some(_) => return None,
+            None if first == "notist" => ModuleId::NOTIST,
+            None => return None,
         };
         for seg in parts {
-            let Binding::Namespace(next) = self.exports[current.0].get(seg.trim())? else {
+            let Binding::Namespace(next) = self.exports_for(current).get(seg.trim())? else {
                 return None;
             };
             current = *next;
@@ -1137,12 +1184,14 @@ impl<'a> SemanticIndexer<'a> {
                 }
                 match self.scope.bindings.get(name) {
                     Some(&Binding::Namespace(id)) => Some(id),
-                    _ => None,
+                    Some(_) => None,
+                    None if name == "notist" => Some(ModuleId::NOTIST),
+                    None => None,
                 }
             }
             ExprKind::Member(base, member) => {
                 let module_id = self.resolve_namespace(base)?;
-                match self.view.exports[module_id.0].get(member) {
+                match self.view.module_exports(module_id).get(member) {
                     Some(&Binding::Namespace(next)) => Some(next),
                     _ => None,
                 }
@@ -1154,28 +1203,43 @@ impl<'a> SemanticIndexer<'a> {
     fn record_binding_info(&mut self, span: Span, binding: Binding) {
         match binding {
             Binding::Function(decl_id) => {
-                let loc = &self.decl_locations[decl_id.module.0][decl_id.index];
-                self.definitions.push(DefinitionLink {
-                    origin_span: span,
-                    target_module: loc.module.clone(),
-                    target_span: loc.name_span,
-                });
-                self.hovers.push(HoverInfo {
-                    span,
-                    contents: format!("```notc\n{}\n```", loc.signature),
-                });
+                if decl_id.module == ModuleId::NOTIST {
+                    let sig = &notist_builtins().display_signatures[decl_id.index];
+                    self.hovers.push(HoverInfo {
+                        span,
+                        contents: format!("```notc\n{sig}\n```"),
+                    });
+                } else {
+                    let loc = &self.decl_locations[decl_id.module.0][decl_id.index];
+                    self.definitions.push(DefinitionLink {
+                        origin_span: span,
+                        target_module: loc.module.clone(),
+                        target_span: loc.name_span,
+                    });
+                    self.hovers.push(HoverInfo {
+                        span,
+                        contents: format!("```notc\n{}\n```", loc.signature),
+                    });
+                }
             }
             Binding::Namespace(module_id) => {
-                let target_path = &self.view.module_paths[module_id.0];
-                self.definitions.push(DefinitionLink {
-                    origin_span: span,
-                    target_module: target_path.clone(),
-                    target_span: Span::new(0, 0),
-                });
-                self.hovers.push(HoverInfo {
-                    span,
-                    contents: format!("```notc\nmodule \"{target_path}\"\n```"),
-                });
+                if module_id == ModuleId::NOTIST {
+                    self.hovers.push(HoverInfo {
+                        span,
+                        contents: "```notc\nmodule \"notist\"\n```".to_owned(),
+                    });
+                } else {
+                    let target_path = self.view.module_path(module_id);
+                    self.definitions.push(DefinitionLink {
+                        origin_span: span,
+                        target_module: target_path.to_owned(),
+                        target_span: Span::new(0, 0),
+                    });
+                    self.hovers.push(HoverInfo {
+                        span,
+                        contents: format!("```notc\nmodule \"{target_path}\"\n```"),
+                    });
+                }
             }
         }
     }
@@ -1250,7 +1314,7 @@ impl<'a> SemanticIndexer<'a> {
                     self.record_binding_info(expr.span, binding);
                     match binding {
                         Binding::Function(id) => {
-                            let sig = &self.view.signatures[id.module.0][id.index];
+                            let sig = self.view.signature(id);
                             Some(Type::Function(
                                 sig.parameters.clone(),
                                 Box::new(sig.returns.clone()),
@@ -1258,20 +1322,21 @@ impl<'a> SemanticIndexer<'a> {
                         }
                         Binding::Namespace(_) => None,
                     }
-                } else if let Some((_, params, ret)) = lookup_prelude_function(name) {
-                    let params_str = params
-                        .iter()
-                        .map(format_type)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    self.hovers.push(HoverInfo {
-                        span: expr.span,
-                        contents: format!(
-                            "```notc\nfn {name}({params_str}) -> {}\n```",
-                            format_type(&ret)
-                        ),
-                    });
-                    Some(Type::Function(params, Box::new(ret)))
+                } else if name == "notist" {
+                    self.record_binding_info(expr.span, Binding::Namespace(ModuleId::NOTIST));
+                    None
+                } else if let Some(&binding) = notist_builtins().exports.get(name) {
+                    self.record_binding_info(expr.span, binding);
+                    match binding {
+                        Binding::Function(id) => {
+                            let sig = self.view.signature(id);
+                            Some(Type::Function(
+                                sig.parameters.clone(),
+                                Box::new(sig.returns.clone()),
+                            ))
+                        }
+                        Binding::Namespace(_) => None,
+                    }
                 } else {
                     None
                 }
@@ -1281,12 +1346,12 @@ impl<'a> SemanticIndexer<'a> {
                 let member_span = find_member_span(self.source, base.span.end, member)
                     .unwrap_or(expr.span);
                 if let Some(module_id) = self.resolve_namespace(base)
-                    && let Some(&binding) = self.view.exports[module_id.0].get(member)
+                    && let Some(&binding) = self.view.module_exports(module_id).get(member)
                 {
                     self.record_binding_info(member_span, binding);
                     match binding {
                         Binding::Function(id) => {
-                            let sig = &self.view.signatures[id.module.0][id.index];
+                            let sig = self.view.signature(id);
                             Some(Type::Function(
                                 sig.parameters.clone(),
                                 Box::new(sig.returns.clone()),
@@ -1304,11 +1369,15 @@ impl<'a> SemanticIndexer<'a> {
                     ExprKind::Name(name) if !self.locals.contains_key(name) => {
                         match self.scope.bindings.get(name) {
                             Some(&Binding::Function(id)) => Some(id),
-                            _ => None,
+                            Some(_) => None,
+                            None => match notist_builtins().exports.get(name) {
+                                Some(&Binding::Function(id)) => Some(id),
+                                _ => None,
+                            },
                         }
                     }
                     ExprKind::Member(base, member) => self.resolve_namespace(base).and_then(|m| {
-                        match self.view.exports[m.0].get(member) {
+                        match self.view.module_exports(m).get(member) {
                             Some(&Binding::Function(id)) => Some(id),
                             _ => None,
                         }
@@ -1316,17 +1385,31 @@ impl<'a> SemanticIndexer<'a> {
                     _ => None,
                 };
                 if let Some(id) = decl_id {
-                    let sig = &self.view.signatures[id.module.0][id.index];
-                    if sig.type_params.len() == raw_type_args.len() {
-                        let resolved_args: Vec<Type> =
+                    let sig = self.view.signature(id);
+                    if raw_type_args.len() <= sig.type_params.len() {
+                        let mut resolved_args: Vec<Type> =
                             raw_type_args.iter().map(|t| self.resolve_ty(t)).collect();
-                        let params = sig
-                            .parameters
-                            .iter()
-                            .map(|p| substitute_type(p, &sig.type_params, &resolved_args))
-                            .collect();
-                        let ret = substitute_type(&sig.returns, &sig.type_params, &resolved_args);
-                        Some(Type::Function(params, Box::new(ret)))
+                        let mut ok = true;
+                        for default in &sig.type_param_defaults[resolved_args.len()..] {
+                            if let Some(def_ty) = default {
+                                resolved_args.push(def_ty.clone());
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok {
+                            let params = sig
+                                .parameters
+                                .iter()
+                                .map(|p| substitute_type(p, &sig.type_params, &resolved_args))
+                                .collect();
+                            let ret =
+                                substitute_type(&sig.returns, &sig.type_params, &resolved_args);
+                            Some(Type::Function(params, Box::new(ret)))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1422,11 +1505,20 @@ impl<'a> SemanticIndexer<'a> {
                 // Generic return inference if calling a generic function directly.
                 if let ExprKind::Name(name) = &callee.kind
                     && !self.locals.contains_key(name)
-                    && let Some(&Binding::Function(id)) = self.scope.bindings.get(name)
                 {
-                    let sig = &self.view.signatures[id.module.0][id.index];
-                    if !sig.type_params.is_empty() {
-                        return self.infer_generic_call_return(sig, &arg_tys);
+                    let decl_id = match self.scope.bindings.get(name) {
+                        Some(&Binding::Function(id)) => Some(id),
+                        Some(_) => None,
+                        None => match notist_builtins().exports.get(name) {
+                            Some(&Binding::Function(id)) => Some(id),
+                            _ => None,
+                        },
+                    };
+                    if let Some(id) = decl_id {
+                        let sig = self.view.signature(id);
+                        if !sig.type_params.is_empty() {
+                            return self.infer_generic_call_return(sig, &arg_tys);
+                        }
                     }
                 }
                 match callee_ty {
@@ -1441,10 +1533,10 @@ impl<'a> SemanticIndexer<'a> {
                     self.index_expr(receiver);
                     let arg_tys: Vec<Option<Type>> =
                         args.iter().map(|a| self.index_expr(a)).collect();
-                    if let Some(&binding) = self.view.exports[module_id.0].get(method_name) {
+                    if let Some(&binding) = self.view.module_exports(module_id).get(method_name) {
                         self.record_binding_info(method_span, binding);
                         if let Binding::Function(id) = binding {
-                            let sig = &self.view.signatures[id.module.0][id.index];
+                            let sig = self.view.signature(id);
                             if !sig.type_params.is_empty() {
                                 return self.infer_generic_call_return(sig, &arg_tys);
                             }
@@ -1521,6 +1613,13 @@ impl<'a> SemanticIndexer<'a> {
                 && let Some(idx) = sig.type_params.iter().position(|tp| tp == p)
             {
                 inferred[idx] = Some(act.clone());
+            }
+        }
+        for (slot, default) in inferred.iter_mut().zip(&sig.type_param_defaults) {
+            if slot.is_none()
+                && let Some(def_ty) = default
+            {
+                *slot = Some(def_ty.clone());
             }
         }
         let concrete: Vec<Type> = inferred.into_iter().collect::<Option<_>>()?;
@@ -1685,6 +1784,10 @@ fn format_function_signature(func: &Function) -> String {
             }
             out.push_str(&tp.name);
             out.push_str(": Type");
+            if let Some(default) = &tp.default {
+                out.push_str(" = ");
+                out.push_str(&format_type(default));
+            }
         }
         out.push('>');
     }

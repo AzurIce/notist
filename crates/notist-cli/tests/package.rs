@@ -573,3 +573,92 @@ fn custom_workspace_collections_are_excluded_and_cannot_contain_package_inputs()
         "output collection must not contain package inputs",
     );
 }
+
+#[test]
+fn replace_extensions_apply_across_build_check_and_standalone_html_with_web_components() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        r#"
+[package]
+name = "math-demo"
+
+[[extensions]]
+kind = "replace"
+imports = { katex = "./modules/katex/lib.not" }
+from = "notist.math"
+to = "katex.math"
+
+[site]
+content = "content"
+"#,
+    );
+    write(
+        root,
+        "modules/katex/lib.not",
+        "fn math<C: Type = Inline>(text: String) -> C where C == Inline || C == Block;\n",
+    );
+    write(
+        root,
+        "modules/katex/math.js",
+        "export default class KatexMath extends HTMLElement {}\n",
+    );
+    write(
+        root,
+        "content/index.md",
+        "# Demo\n\nInline $a + b$.\n\n$$\nc = d\n$$\n",
+    );
+
+    // Site check & build
+    success(run(root, &["check"]));
+    success(run(root, &["build"]));
+    let site_html = std::fs::read_to_string(root.join("notist-output/math-demo/index.html")).unwrap();
+    assert!(site_html.contains(r#"<notist-modules-katex-math notist-content="inline""#));
+    assert!(site_html.contains(r#"notist-text="a + b""#));
+    assert!(site_html.contains(r#"<notist-modules-katex-math notist-content="block""#));
+    assert!(site_html.contains(r#"notist-text="c = d""#));
+    assert!(
+        root.join("notist-output/math-demo/_notist/components/modules/katex/math.js")
+            .is_file()
+    );
+
+    // Single-file check & html export with Web Component bundling
+    success(run(root, &["check", "content/index.md"]));
+    success(run(
+        root,
+        &["html", "content/index.md", "--out-dir", "single-html"],
+    ));
+    let single_html = std::fs::read_to_string(root.join("single-html/index.html")).unwrap();
+    assert!(single_html.contains(r#"<notist-modules-katex-math notist-content="inline""#));
+    assert!(single_html.contains(r#"<notist-modules-katex-math notist-content="block""#));
+    assert!(single_html.contains(r#"<script type="module" src="./_notist/page.js"></script>"#));
+    assert!(
+        root.join("single-html/_notist/components/modules/katex/math.js")
+            .is_file()
+    );
+    let reg_js = std::fs::read_to_string(root.join("single-html/_notist/page.js")).unwrap();
+    assert!(reg_js.contains("customElements.define(\"notist-modules-katex-math\""));
+
+    // Invalid replacement target fails both build and single-file check
+    write(
+        root,
+        "Notist.toml",
+        r#"
+[package]
+name = "math-demo"
+
+[[extensions]]
+kind = "replace"
+imports = { bad = "./missing.not" }
+from = "notist.math"
+to = "bad.math"
+
+[site]
+content = "content"
+"#,
+    );
+    failure(run(root, &["build"]), "missing.not");
+    failure(run(root, &["check", "content/index.md"]), "missing.not");
+}

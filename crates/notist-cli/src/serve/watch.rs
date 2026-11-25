@@ -84,6 +84,11 @@ impl Plan {
                     }
                 }
             }
+            for rule in &prepared.replacements {
+                for mod_path in [&rule.from_module, &rule.to_module].into_iter().flatten() {
+                    plan.files.insert(normalize(&target.root.join(mod_path)));
+                }
+            }
         }
         for (source, _) in plan.content.clone() {
             plan.anchor(&source);

@@ -17,14 +17,28 @@ pub use build::BuildOutput;
 pub use config::{Mount, SiteConfig};
 pub use document::{Heading, Page};
 pub use notist::Executor;
-pub use prepared::render_standalone_html;
+pub use prepared::{
+    collect_block_custom_nodes, render_standalone_html, render_standalone_html_with_components,
+};
 pub use routes::Route;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
+
+/// A declaration replacement rule applied by `notc` during site compilation.
+/// `None` for `from_module` / `to_module` refers to the built-in `notist` module;
+/// `Some(path)` refers to a `.not` module path (resolved relative to the vault root if relative).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementRule {
+    pub from_module: Option<PathBuf>,
+    pub from_name: String,
+    pub to_module: Option<PathBuf>,
+    pub to_name: String,
+}
 
 /// Site build driver, with native extensions followed by configured commands.
 #[derive(Debug, Default)]
 pub struct Builder {
     extensions: Vec<Box<dyn extensions::ExtensionFactory>>,
+    replacements: Vec<ReplacementRule>,
     executor: Option<Arc<Executor>>,
 }
 impl Builder {
@@ -40,6 +54,12 @@ impl Builder {
     /// ```
     pub fn with_executor(mut self, executor: Arc<Executor>) -> Self {
         self.executor = Some(executor);
+        self
+    }
+
+    /// Register `notc` declaration replacement rules (e.g. `notist.math` -> `katex.math`).
+    pub fn with_replacements(mut self, rules: Vec<ReplacementRule>) -> Self {
+        self.replacements.extend(rules);
         self
     }
 
@@ -67,7 +87,14 @@ impl Builder {
         config: &SiteConfig,
     ) -> Result<BuildOutput, Error> {
         let executor = self.executor()?;
-        build::build(vault, config, &self.extensions, false, &executor)
+        build::build(
+            vault,
+            config,
+            &self.extensions,
+            &self.replacements,
+            false,
+            &executor,
+        )
     }
 
     /// Preview retains recoverable content errors, but never publishes fatal failures.
@@ -77,7 +104,14 @@ impl Builder {
         config: &SiteConfig,
     ) -> Result<BuildOutput, Error> {
         let executor = self.executor()?;
-        build::build(vault, config, &self.extensions, true, &executor)
+        build::build(
+            vault,
+            config,
+            &self.extensions,
+            &self.replacements,
+            true,
+            &executor,
+        )
     }
 }
 

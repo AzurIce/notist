@@ -35,7 +35,9 @@ pub(crate) fn assemble(
         options.base_url = "/".into();
     }
     let mut vault = Vault::new(prepared.files);
-    let builder = Builder::default().with_executor(executor.clone());
+    let builder = Builder::default()
+        .with_executor(executor.clone())
+        .with_replacements(prepared.replacements);
     let result = if preview {
         builder.serve(&mut vault, &options)
     } else {

@@ -5,8 +5,8 @@ use crate::{
     templates,
 };
 use notc::{
-    CheckedDocument, DataHost, Decl, JsonValue, Module, ProjectDiagnosticKind,
-    check_parsed_modules, format_type_error, parse, parse_file,
+    CheckedDocument, DataHost, Decl, JsonValue, Module, ProjectDiagnosticKind, ReplacementSpec,
+    check_parsed_modules, format_replacement_error, format_type_error, parse, parse_file,
 };
 use notist::{
     Diagnostic, DiagnosticCode, InputRead, Phase, Resources, SourceDiagnostic, TextRange, Vault,
@@ -498,6 +498,7 @@ pub(crate) fn build<R: Resources + Send>(
     vault: &mut Vault<R>,
     config: &SiteConfig,
     extensions: &[Box<dyn crate::extensions::ExtensionFactory>],
+    replacements: &[crate::ReplacementRule],
     recover: bool,
     executor: &notist::Executor,
 ) -> Result<BuildOutput, Error> {
@@ -646,21 +647,16 @@ pub(crate) fn build<R: Resources + Send>(
             let mut errors = vec![];
             let mut outputs: BTreeSet<_> =
                 routes.iter().map(|route| route.output.clone()).collect();
-            let math_tag = if config
-                .math_component
-                .as_deref()
-                .is_some_and(|mc| has_math_component_entry(vault.resources(), mc))
-            {
-                Some("notist-math")
-            } else {
-                None
-            };
 
             let analysis_stage = notist::progress::Span::stage("site.analyze", || {
                 format!("Analyze modules and {} documents", routes.len())
             });
-            let (vroot, shared_project, shared_errors) =
-                compile_shared_notc_modules(vault.resources(), &routes, &input.documents)?;
+            let (vroot, shared_project, shared_errors) = compile_shared_notc_modules(
+                vault.resources(),
+                &routes,
+                &input.documents,
+                replacements,
+            )?;
             errors.extend(shared_errors);
             if !errors.is_empty() && !recover {
                 analysis_stage.finish();
@@ -812,7 +808,6 @@ pub(crate) fn build<R: Resources + Send>(
                             Arc::clone(&page.source),
                             block,
                             &config.title,
-                            math_tag,
                         )?;
                         chunk_docs.push(prepared);
                     }
@@ -931,7 +926,7 @@ pub(crate) fn build<R: Resources + Send>(
                         }
                     }
                 }
-                if !document.custom_nodes.is_empty() || (document.has_math && math_tag.is_some()) {
+                if !document.custom_nodes.is_empty() {
                     let mut page_web_components: BTreeMap<(String, String), String> =
                         BTreeMap::new();
                     let mut page_registrations = String::new();
@@ -957,23 +952,6 @@ pub(crate) fn build<R: Resources + Send>(
                             );
                             page_web_components.insert((module_rel.clone(), name.clone()), tag);
                         }
-                    }
-                    if document.has_math
-                        && let Some(math_comp) = &config.math_component
-                        && let Some(entry_out) = resolve_ssg_math_component(
-                            vault.resources(),
-                            math_comp,
-                            &mut assets,
-                            &mut published_component_files,
-                        )?
-                    {
-                        let import_rel = relative_url(&component_path, &entry_out, false);
-                        let _ = std::fmt::Write::write_fmt(
-                            &mut page_registrations,
-                            format_args!(
-                                "import * as _c_math from \"./{import_rel}\";\nif (!customElements.get(\"notist-math\")) {{ const C = _c_math.default ?? Object.values(_c_math).find(v => typeof v === 'function'); if (C) customElements.define(\"notist-math\", C); }}\n",
-                            ),
-                        );
                     }
                     if !page_registrations.is_empty() {
                         components.insert(
@@ -1028,8 +1006,7 @@ pub(crate) fn build<R: Resources + Send>(
                         }
                     }
                     let page_wcs = page_web_component_maps.get(&doc_idx).unwrap_or(&empty_wc);
-                    let page_math_tag = if document.has_math { math_tag } else { None };
-                    let html = document.render_html(&resolved, page_wcs, page_math_tag);
+                    let html = document.render_html(&resolved, page_wcs);
                     let mut page = document.page.clone();
                     page.html = html;
                     chunk_pages.push(page);
@@ -1141,47 +1118,6 @@ fn resolve_ssg_web_component<R: Resources>(
     Ok(Some((tag, entry_out)))
 }
 
-fn resolve_ssg_math_component<R: Resources>(
-    resources: &R,
-    math_component: &Path,
-    assets: &mut Assets,
-    published: &mut BTreeSet<PathBuf>,
-) -> Result<Option<PathBuf>, Error> {
-    let entry_fs = resources.resolve(math_component);
-    let kind = resources.kind(&entry_fs)?;
-    let out_base = PathBuf::from("_notist/components/math");
-    match kind {
-        Some(ResourceKind::File) => {
-            if entry_fs.file_name().is_some_and(|n| n == "index.js")
-                && let Some(dir) = entry_fs.parent()
-            {
-                copy_component_dir(resources, dir, &out_base, assets, published)?;
-                Ok(Some(out_base.join("index.js")))
-            } else {
-                let file_name = entry_fs
-                    .file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("math.js"));
-                let file_out = out_base.join(file_name);
-                if published.insert(file_out.clone()) {
-                    assets.copy(resources, &entry_fs, &file_out)?;
-                }
-                Ok(Some(file_out))
-            }
-        }
-        Some(ResourceKind::Directory) => {
-            let index = entry_fs.join("index.js");
-            if resources.kind(&index)? == Some(ResourceKind::File) {
-                copy_component_dir(resources, &entry_fs, &out_base, assets, published)?;
-                Ok(Some(out_base.join("index.js")))
-            } else {
-                Ok(None)
-            }
-        }
-        None => Ok(None),
-    }
-}
-
 fn copy_component_dir<R: Resources>(
     resources: &R,
     src_dir: &Path,
@@ -1209,17 +1145,6 @@ fn sanitize_tag_part(raw: &str) -> String {
         "mod".into()
     } else {
         trimmed.to_owned()
-    }
-}
-
-fn has_math_component_entry<R: Resources>(resources: &R, math_component: &Path) -> bool {
-    let entry_fs = resources.resolve(math_component);
-    match resources.kind(&entry_fs).ok().flatten() {
-        Some(ResourceKind::File) => true,
-        Some(ResourceKind::Directory) => {
-            resources.kind(&entry_fs.join("index.js")).ok().flatten() == Some(ResourceKind::File)
-        }
-        None => false,
     }
 }
 
@@ -1349,8 +1274,9 @@ fn compile_shared_notc_modules<R: Resources>(
     resources: &R,
     routes: &[crate::Route],
     documents: &BTreeMap<PathBuf, String>,
+    replacements: &[crate::ReplacementRule],
 ) -> Result<(PathBuf, notc::CheckedProject, Vec<SourceDiagnostic>), Error> {
-    if routes.is_empty() {
+    if routes.is_empty() && replacements.is_empty() {
         let empty = check_parsed_modules(&[]).expect("empty module set always checks");
         return Ok((resources.root().to_path_buf(), empty, Vec::new()));
     }
@@ -1364,6 +1290,18 @@ fn compile_shared_notc_modules<R: Resources>(
     let mut raw_modules: Vec<(PathBuf, Arc<str>, Module)> = Vec::new();
     let mut visited: HashSet<PathBuf> = HashSet::new();
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    let mut required_replacement_modules: HashSet<PathBuf> = HashSet::new();
+
+    // Seed `.not` modules referenced by declaration replacement rules.
+    for rule in replacements {
+        for mod_path in [&rule.from_module, &rule.to_module].into_iter().flatten() {
+            let target_fs = normalize(&resources.resolve(mod_path));
+            required_replacement_modules.insert(target_fs.clone());
+            if visited.insert(target_fs.clone()) {
+                queue.push_back(target_fs);
+            }
+        }
+    }
 
     // Seed shared `.not` module discovery on real normalized filesystem paths so
     // parent-relative imports (e.g. `../modules/widgets/lib.not`) resolve cleanly
@@ -1384,12 +1322,30 @@ fn compile_shared_notc_modules<R: Resources>(
 
     // Transitively load all shared `.not` modules through `resources`.
     while let Some(target_fs) = queue.pop_front() {
-        let Ok(bytes) = resources.read(&target_fs) else {
-            // Missing modules will be reported with exact import spans during document check.
-            continue;
+        let bytes = match resources.read(&target_fs) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if required_replacement_modules.contains(&target_fs) {
+                    return Err(Error::Message(format!(
+                        "cannot read replacement module `{}`: {err}",
+                        target_fs.display()
+                    )));
+                }
+                // Missing document imports will be reported with exact spans during document check.
+                continue;
+            }
         };
-        let Ok(text) = String::from_utf8(bytes) else {
-            continue;
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(err) => {
+                if required_replacement_modules.contains(&target_fs) {
+                    return Err(Error::Message(format!(
+                        "replacement module `{}` is not valid UTF-8: {err}",
+                        target_fs.display()
+                    )));
+                }
+                continue;
+            }
         };
         all_paths.push(target_fs.clone());
         let source_arc: Arc<str> = Arc::from(text.as_str());
@@ -1429,7 +1385,7 @@ fn compile_shared_notc_modules<R: Resources>(
         .map(|(rel, _, _, module)| (rel.as_str(), module))
         .collect();
 
-    let checked = match check_parsed_modules(&module_refs) {
+    let mut checked = match check_parsed_modules(&module_refs) {
         Ok(project) => project,
         Err(project_diags) => {
             for diag in project_diags {
@@ -1449,6 +1405,32 @@ fn compile_shared_notc_modules<R: Resources>(
             check_parsed_modules(&[]).expect("empty module set always checks")
         }
     };
+
+    if errors.is_empty() && !replacements.is_empty() {
+        let specs: Vec<ReplacementSpec> = replacements
+            .iter()
+            .map(|rule| ReplacementSpec {
+                from_module: match &rule.from_module {
+                    Some(path) => to_virtual_path(&vroot, &normalize(&resources.resolve(path))),
+                    None => "notist".to_owned(),
+                },
+                from_name: rule.from_name.clone(),
+                to_module: match &rule.to_module {
+                    Some(path) => to_virtual_path(&vroot, &normalize(&resources.resolve(path))),
+                    None => "notist".to_owned(),
+                },
+                to_name: rule.to_name.clone(),
+            })
+            .collect();
+        checked = checked.with_replacements(&specs).map_err(|rep_errs| {
+            let joined = rep_errs
+                .iter()
+                .map(format_replacement_error)
+                .collect::<Vec<_>>()
+                .join("\n");
+            Error::Message(joined)
+        })?;
+    }
 
     Ok((vroot, checked, errors))
 }

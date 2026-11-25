@@ -1,5 +1,5 @@
 use notist::{MemoryResources, Vault};
-use notist_ssg::{Builder, Error, SiteConfig};
+use notist_ssg::{Builder, Error, ReplacementRule, SiteConfig};
 use std::path::Path;
 
 fn vault(files: &[(&str, &str)]) -> Vault<MemoryResources> {
@@ -189,10 +189,17 @@ fn fallback_box(body: Block) -> Block;
 }
 
 #[test]
-fn ssg_routes_math_nodes_to_configured_math_component_and_supports_collapsed_plain_summary() {
+fn ssg_routes_math_nodes_via_notc_replacement_and_supports_collapsed_plain_summary() {
     let mut v = vault(&[
-        ("math/index.js", "export default class MathEl extends HTMLElement {}"),
-        ("math/helper.js", "export const ok = true;"),
+        (
+            "modules/katex/lib.not",
+            "fn math<C: Type = Inline>(text: String) -> C where C == Inline || C == Block;\n",
+        ),
+        (
+            "modules/katex/math/index.js",
+            "export default class MathEl extends HTMLElement {}",
+        ),
+        ("modules/katex/math/helper.js", "export const ok = true;"),
         (
             "content/SUMMARY.md",
             "# Book\n\n- @(collapsed: true)Section Group\n  - [Intro](./intro.md)\n",
@@ -203,21 +210,36 @@ fn ssg_routes_math_nodes_to_configured_math_component_and_supports_collapsed_pla
         ),
     ]);
 
-    let mut config = SiteConfig::default();
-    config.math_component = Some("math/index.js".into());
+    let config = SiteConfig::default();
 
     let output = Builder::default()
+        .with_replacements(vec![ReplacementRule {
+            from_module: None,
+            from_name: "math".into(),
+            to_module: Some("modules/katex/lib.not".into()),
+            to_name: "math".into(),
+        }])
         .build(&mut v, &config)
-        .expect("site with math_component and collapsed plain summary should build");
+        .expect("site with math replacement and collapsed plain summary should build");
 
     let intro_html = html(&output, "intro.html");
     assert!(intro_html.contains("<title>Math Intro · Site</title>"));
-    assert!(intro_html.contains(r#"<notist-math notist-content="inline" notist-text="x + 1"></notist-math>"#));
-    assert!(intro_html.contains(r#"<notist-math notist-content="block" notist-text="y = x^2"></notist-math>"#));
-    assert!(output.files.contains_key(Path::new("_notist/components/math/index.js")));
-    assert!(output.files.contains_key(Path::new("_notist/components/math/helper.js")));
+    assert!(intro_html.contains(r#"<notist-modules-katex-math notist-content="inline""#));
+    assert!(intro_html.contains(r#"notist-text="x + 1""#));
+    assert!(intro_html.contains(r#"<notist-modules-katex-math notist-content="block""#));
+    assert!(intro_html.contains(r#"notist-text="y = x^2""#));
+    assert!(
+        output
+            .files
+            .contains_key(Path::new("_notist/components/modules/katex/math/index.js"))
+    );
+    assert!(
+        output
+            .files
+            .contains_key(Path::new("_notist/components/modules/katex/math/helper.js"))
+    );
     let reg_js = html(&output, "_notist/pages/intro.js");
-    assert!(reg_js.contains("customElements.define(\"notist-math\""));
+    assert!(reg_js.contains("customElements.define(\"notist-modules-katex-math\""));
 }
 
 #[test]

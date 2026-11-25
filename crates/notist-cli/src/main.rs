@@ -208,10 +208,10 @@ fn run(cli: Cli) -> ExitCode {
             None => package::check(config, workspace, &packages, cli.jobs),
         },
         Command::Cst { file } => cmd_cst(&file),
-        Command::Core { file } => cmd_core(&file, evaluate),
-        Command::Json { file } => cmd_json(&file, evaluate),
-        Command::Query { file, selector } => cmd_query(&file, &selector),
-        Command::Html { file, out_dir } => render_html_notc(&file, &out_dir),
+        Command::Core { file } => cmd_core(&file, config, evaluate),
+        Command::Json { file } => cmd_json(&file, config, evaluate),
+        Command::Query { file, selector } => cmd_query(&file, config, &selector),
+        Command::Html { file, out_dir } => render_html_notc(&file, config, &out_dir),
         #[cfg(all(not(target_arch = "wasm32"), feature = "lsp"))]
         Command::Lsp => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -286,7 +286,26 @@ struct LoadedGraph {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
+fn canonical_or_norm(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| notist::resources::normalize(path))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_replacements_for_file(
+    file: &Path,
+    config: Option<&Path>,
+) -> Result<Vec<notist_ssg::ReplacementRule>, ExitCode> {
+    package::load_document_replacements(file, config).map_err(|err| {
+        eprintln!("{err}");
+        ExitCode::FAILURE
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_notc_graph(
+    entry: &Path,
+    replacements: &[notist_ssg::ReplacementRule],
+) -> Result<LoadedGraph, ExitCode> {
     use std::collections::{HashSet, VecDeque};
     let abs = std::fs::canonicalize(entry).unwrap_or_else(|_| {
         if entry.is_absolute() {
@@ -342,6 +361,18 @@ fn load_notc_graph(entry: &Path) -> Result<LoadedGraph, ExitCode> {
         visited.insert(norm.clone());
         queue.push_back(norm.clone());
         raw_files.push((norm, src));
+    }
+
+    // Seed `.not` modules referenced by `[[extensions]]` replacement rules.
+    for rule in replacements {
+        for mod_path in [&rule.from_module, &rule.to_module].into_iter().flatten() {
+            let norm = canonical_or_norm(mod_path);
+            if visited.insert(norm.clone()) {
+                let src = read(&norm)?;
+                queue.push_back(norm.clone());
+                raw_files.push((norm, src));
+            }
+        }
     }
 
     // Transitively load imported `.not` modules using real normalized filesystem paths
@@ -467,6 +498,38 @@ fn check_notc_project(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn apply_notc_replacements(
+    project: notc::CheckedProject,
+    vroot: &Path,
+    replacements: &[notist_ssg::ReplacementRule],
+) -> Result<notc::CheckedProject, ExitCode> {
+    if replacements.is_empty() {
+        return Ok(project);
+    }
+    let specs: Vec<notc::ReplacementSpec> = replacements
+        .iter()
+        .map(|rule| notc::ReplacementSpec {
+            from_module: match &rule.from_module {
+                Some(path) => to_virtual_path(vroot, &canonical_or_norm(path)),
+                None => "notist".to_owned(),
+            },
+            from_name: rule.from_name.clone(),
+            to_module: match &rule.to_module {
+                Some(path) => to_virtual_path(vroot, &canonical_or_norm(path)),
+                None => "notist".to_owned(),
+            },
+            to_name: rule.to_name.clone(),
+        })
+        .collect();
+    project.with_replacements(&specs).map_err(|errs| {
+        for err in &errs {
+            eprintln!("{}", notc::format_replacement_error(err));
+        }
+        ExitCode::FAILURE
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn cmd_cst(file: &Path) -> ExitCode {
     let Ok(src) = read(file) else {
         return ExitCode::FAILURE;
@@ -487,12 +550,15 @@ fn cmd_cst(file: &Path) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
+fn cmd_core(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
+    let Ok(replacements) = load_replacements_for_file(file, config) else {
+        return ExitCode::FAILURE;
+    };
     let Ok(LoadedGraph {
         vroot,
         entry_rel,
         files,
-    }) = load_notc_graph(file)
+    }) = load_notc_graph(file, &replacements)
     else {
         return ExitCode::FAILURE;
     };
@@ -528,6 +594,9 @@ fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
             && analysis.diagnostics().is_empty()
             && let Ok(project) = check_notc_project(&files)
         {
+            let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+                return ExitCode::FAILURE;
+            };
             let host = FsDataHost::new(vroot);
             match project.run_with_host(&entry_rel, "main", &host) {
                 Ok(value) => out.push_str(&format!("main => {value:#?}\n")),
@@ -542,6 +611,9 @@ fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
     if evaluate {
         match check_notc_project(&files) {
             Ok(project) => {
+                let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+                    return ExitCode::FAILURE;
+                };
                 let host = FsDataHost::new(vroot);
                 match project.eval_document_with_host(&entry_rel, &host) {
                     Ok(block) => out.push_str(&format!("{block}\n")),
@@ -561,12 +633,15 @@ fn cmd_core(file: &Path, evaluate: bool) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
+fn cmd_json(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
+    let Ok(replacements) = load_replacements_for_file(file, config) else {
+        return ExitCode::FAILURE;
+    };
     let Ok(LoadedGraph {
         vroot,
         entry_rel,
         files,
-    }) = load_notc_graph(file)
+    }) = load_notc_graph(file, &replacements)
     else {
         return ExitCode::FAILURE;
     };
@@ -614,6 +689,9 @@ fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
     let entry_src = files.first().map(|(_, _, s)| s.as_str()).unwrap_or("");
     if !is_module(file) && analysis.diagnostics().is_empty() {
         if let Ok(project) = check_notc_project(&files) {
+            let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+                return ExitCode::FAILURE;
+            };
             let host = FsDataHost::new(vroot);
             match project.eval_document_with_host(&entry_rel, &host) {
                 Ok(block) => {
@@ -629,6 +707,9 @@ fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
         && analysis.diagnostics().is_empty()
         && let Ok(project) = check_notc_project(&files)
     {
+        let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+            return ExitCode::FAILURE;
+        };
         let host = FsDataHost::new(vroot);
         if let Ok(val) = project.run_with_host(&entry_rel, "main", &host) {
             data["main"] = serde_json::json!(format!("{val:?}"));
@@ -640,12 +721,15 @@ fn cmd_json(file: &Path, evaluate: bool) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn cmd_query(file: &Path, selector: &str) -> ExitCode {
+fn cmd_query(file: &Path, config: Option<&Path>, selector: &str) -> ExitCode {
+    let Ok(replacements) = load_replacements_for_file(file, config) else {
+        return ExitCode::FAILURE;
+    };
     let Ok(LoadedGraph {
         vroot,
         entry_rel,
         files,
-    }) = load_notc_graph(file)
+    }) = load_notc_graph(file, &replacements)
     else {
         return ExitCode::FAILURE;
     };
@@ -655,6 +739,9 @@ fn cmd_query(file: &Path, selector: &str) -> ExitCode {
             emit_notc_diagnostics(&files, &diags);
             return ExitCode::FAILURE;
         }
+    };
+    let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+        return ExitCode::FAILURE;
     };
     let host = FsDataHost::new(vroot);
     let block = match project.eval_document_with_host(&entry_rel, &host) {
@@ -707,8 +794,11 @@ fn emit_notc_diagnostics(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
-    let Ok(LoadedGraph { files, .. }) = load_notc_graph(file) else {
+fn check(file: &Path, config: Option<&Path>) -> ExitCode {
+    let Ok(replacements) = load_replacements_for_file(file, config) else {
+        return ExitCode::FAILURE;
+    };
+    let Ok(LoadedGraph { vroot, files, .. }) = load_notc_graph(file, &replacements) else {
         return ExitCode::FAILURE;
     };
     let pairs: Vec<(&str, &str)> = files
@@ -717,9 +807,7 @@ fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
         .collect();
     let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
     let diags = analysis.diagnostics();
-    if diags.is_empty() {
-        ExitCode::SUCCESS
-    } else {
+    if !diags.is_empty() {
         emit_notc_diagnostics(&files, diags);
         eprintln!(
             "check: {} issue{} in {}",
@@ -727,8 +815,21 @@ fn check(file: &Path, _config: Option<&Path>) -> ExitCode {
             if diags.len() == 1 { "" } else { "s" },
             file.display()
         );
-        ExitCode::FAILURE
+        return ExitCode::FAILURE;
     }
+    if !replacements.is_empty() {
+        let project = match check_notc_project(&files) {
+            Ok(project) => project,
+            Err(diags) => {
+                emit_notc_diagnostics(&files, &diags);
+                return ExitCode::FAILURE;
+            }
+        };
+        if apply_notc_replacements(project, &vroot, &replacements).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -801,12 +902,53 @@ fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSe
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
+fn sanitize_tag_part(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "mod".into()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_dir_recursive(src_dir: &Path, dst_dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst_dir)?;
+    for entry in std::fs::read_dir(src_dir)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let meta = std::fs::symlink_metadata(&src_path)?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let dst_path = dst_dir.join(entry.file_name());
+        if meta.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if meta.is_file() {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn render_html_notc(file: &Path, config: Option<&Path>, out_dir: &Path) -> ExitCode {
+    let Ok(replacements) = load_replacements_for_file(file, config) else {
+        return ExitCode::FAILURE;
+    };
     let Ok(LoadedGraph {
         vroot,
         entry_rel,
         files,
-    }) = load_notc_graph(file)
+    }) = load_notc_graph(file, &replacements)
     else {
         return ExitCode::FAILURE;
     };
@@ -816,6 +958,9 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
             emit_notc_diagnostics(&files, &diags);
             return ExitCode::FAILURE;
         }
+    };
+    let Ok(project) = apply_notc_replacements(project, &vroot, &replacements) else {
+        return ExitCode::FAILURE;
     };
     let host = FsDataHost::new(vroot.clone());
     let block = match project.eval_document_with_host(&entry_rel, &host) {
@@ -861,9 +1006,65 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
         assets_to_copy.push((src, rel));
     }
 
-    let body = notist_ssg::render_standalone_html(&block);
+    // Discover Web Component JS modules by convention (`<dir>/<name>.js` or `<dir>/<name>/index.js`).
+    let custom_nodes = notist_ssg::collect_block_custom_nodes(&block);
+    let mut web_components = std::collections::BTreeMap::new();
+    let mut component_files_to_copy: Vec<(PathBuf, PathBuf, bool)> = Vec::new();
+    let mut page_registrations = String::new();
+    let page_script_path = PathBuf::from("_notist/page.js");
+    for (module_rel, name) in &custom_nodes {
+        let module_fs = vroot.join(module_rel);
+        let Some(module_dir) = module_fs.parent() else {
+            continue;
+        };
+        let single_file = module_dir.join(format!("{name}.js"));
+        let dir_entry = module_dir.join(name).join("index.js");
+        let (entry_out, src_path, is_dir) = if single_file.is_file() {
+            let mod_rel_dir = Path::new(module_rel).parent().unwrap_or(Path::new(""));
+            let out_rel = PathBuf::from("_notist/components")
+                .join(mod_rel_dir)
+                .join(format!("{name}.js"));
+            (out_rel, single_file, false)
+        } else if dir_entry.is_file() {
+            let mod_rel_dir = Path::new(module_rel).parent().unwrap_or(Path::new(""));
+            let dir_out = PathBuf::from("_notist/components")
+                .join(mod_rel_dir)
+                .join(name);
+            (dir_out.join("index.js"), module_dir.join(name), true)
+        } else {
+            continue;
+        };
+        let mod_rel_dir = Path::new(module_rel).parent().unwrap_or(Path::new(""));
+        let tag = format!(
+            "notist-{}-{}",
+            sanitize_tag_part(&mod_rel_dir.to_string_lossy()),
+            sanitize_tag_part(name)
+        );
+        let import_rel = notist::publication::url::relative_url(&page_script_path, &entry_out, false);
+        let _ = std::fmt::Write::write_fmt(
+            &mut page_registrations,
+            format_args!(
+                "import * as _c_{idx} from \"./{import_rel}\";\nif (!customElements.get(\"{tag}\")) {{ const C = _c_{idx}.default ?? Object.values(_c_{idx}).find(v => typeof v === 'function'); if (C) customElements.define(\"{tag}\", C); }}\n",
+                idx = web_components.len(),
+            ),
+        );
+        let dst_rel = if is_dir {
+            entry_out.parent().unwrap_or(Path::new("")).to_path_buf()
+        } else {
+            entry_out
+        };
+        component_files_to_copy.push((src_path, dst_rel, is_dir));
+        web_components.insert((module_rel.clone(), name.clone()), tag);
+    }
+
+    let body = notist_ssg::render_standalone_html_with_components(&block, &web_components);
+    let script_tag = if page_registrations.is_empty() {
+        ""
+    } else {
+        "\n<script type=\"module\" src=\"./_notist/page.js\"></script>"
+    };
     let html_doc = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<style>{}</style>\n</head>\n<body>\n<main>{body}</main>\n</body>\n</html>\n",
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<style>{}</style>{script_tag}\n</head>\n<body>\n<main>{body}</main>\n</body>\n</html>\n",
         notist_html::highlight::CSS
     );
     if let Err(err) = std::fs::create_dir_all(out_dir) {
@@ -880,6 +1081,39 @@ fn render_html_notc(file: &Path, out_dir: &Path) -> ExitCode {
         }
         if let Err(err) = std::fs::copy(&src, &dest) {
             eprintln!("{}: {err}", src.display());
+            return ExitCode::FAILURE;
+        }
+    }
+    for (src, rel, is_dir) in component_files_to_copy {
+        let dest = out_dir.join(&rel);
+        if is_dir {
+            if let Err(err) = copy_dir_recursive(&src, &dest) {
+                eprintln!("{}: {err}", src.display());
+                return ExitCode::FAILURE;
+            }
+        } else {
+            if let Some(parent) = dest.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("{err}");
+                return ExitCode::FAILURE;
+            }
+            if let Err(err) = std::fs::copy(&src, &dest) {
+                eprintln!("{}: {err}", src.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    if !page_registrations.is_empty() {
+        let script_out = out_dir.join(&page_script_path);
+        if let Some(parent) = script_out.parent()
+            && let Err(err) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+        if let Err(err) = std::fs::write(&script_out, page_registrations) {
+            eprintln!("{err}");
             return ExitCode::FAILURE;
         }
     }

@@ -939,10 +939,13 @@ fn additional_theme_assets_require_local_files_and_cannot_overlap_output() {
 }
 
 #[test]
-fn math_component_publishes_shared_resources_per_used_page() {
-    let mut config = book_config("target/book");
-    config.math_component = Some("../math/formula".into());
+fn math_replacement_publishes_shared_resources_per_used_page() {
+    let config = book_config("target/book");
     let mut vault = Vault::new(resources(&[
+        (
+            "/math/lib.not",
+            "fn formula<C: Type = Inline>(text: String) -> C where C == Inline || C == Block;\n",
+        ),
         (
             "/math/formula/index.js",
             "export default class extends HTMLElement {}",
@@ -953,11 +956,19 @@ fn math_component_publishes_shared_resources_per_used_page() {
         ("guide/deep/README.md", "# Nested\n\n$z$"),
         ("plain.md", "# Plain"),
     ]));
-    let site = build(&mut vault, &config).unwrap();
-    assert!(html(&site, "index.html").contains("<notist-math "));
+    let site = notist_ssg::Builder::default()
+        .with_replacements(vec![notist_ssg::ReplacementRule {
+            from_module: None,
+            from_name: "math".into(),
+            to_module: Some("../math/lib.not".into()),
+            to_name: "formula".into(),
+        }])
+        .build(&mut vault, &config)
+        .unwrap();
+    assert!(html(&site, "index.html").contains("<notist-math-formula "));
     assert!(
         site.files
-            .contains_key(Path::new("_notist/components/math/helper.js"))
+            .contains_key(Path::new("_notist/components/math/formula/helper.js"))
     );
     assert!(
         site.files

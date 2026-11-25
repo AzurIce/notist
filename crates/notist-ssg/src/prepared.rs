@@ -34,13 +34,32 @@ impl Reference {
 
 /// Render an evaluated `notc::Block` directly to standalone HTML without site routing.
 pub fn render_standalone_html(block: &Block) -> String {
+    render_standalone_html_with_components(block, &BTreeMap::new())
+}
+
+/// Render an evaluated `notc::Block` directly to standalone HTML with an optional
+/// `(module_virtual_path, name) -> custom_element_tag` map for Web Components.
+pub fn render_standalone_html_with_components(
+    block: &Block,
+    web_components: &BTreeMap<(String, String), String>,
+) -> String {
     let sectioned = block.sectionize();
     let route = Route::plan(PathBuf::from("./index.md"), std::path::Path::new("."), false)
         .expect("valid route");
-    match PreparedPage::new(route, Arc::from(""), sectioned, "Notist", None) {
-        Ok(prepared) => prepared.render_html(&[], &BTreeMap::new(), None),
+    match PreparedPage::new(route, Arc::from(""), sectioned, "Notist") {
+        Ok(prepared) => prepared.render_html(&[], web_components),
         Err(_) => String::new(),
     }
+}
+
+/// Collect unique `(module_virtual_path, name)` custom component nodes used in `block`.
+pub fn collect_block_custom_nodes(block: &Block) -> BTreeSet<(String, String)> {
+    let mut refs = Vec::new();
+    let mut customs = BTreeSet::new();
+    let origin = PathBuf::new();
+    let empty_src: Arc<str> = Arc::from("");
+    collect_block_references(block, &origin, &empty_src, &mut refs, &mut customs);
+    customs
 }
 
 enum HtmlPlan {
@@ -81,8 +100,6 @@ pub(crate) struct PreparedPage {
     /// Unique `(module_virtual_path, name)` custom content declarations used on this page.
     /// Used strictly by SSG to resolve optional web-component JS modules by convention.
     pub custom_nodes: BTreeSet<(String, String)>,
-    /// Whether this page contains any `$...$` or `$$...$$` math nodes.
-    pub has_math: bool,
 }
 
 impl PreparedPage {
@@ -91,26 +108,22 @@ impl PreparedPage {
         source_text: Arc<str>,
         block: Block,
         site_title: &str,
-        math_tag: Option<&str>,
     ) -> Result<Self, Error> {
         let document = Document::from_block(route, block, site_title)?;
         let mut references = Vec::new();
         let mut custom_nodes = BTreeSet::new();
-        let mut has_math = false;
         collect_block_references(
             &document.root,
             &document.page.route.source,
             &source_text,
             &mut references,
             &mut custom_nodes,
-            &mut has_math,
         );
         let (plan, heading_ids) = if custom_nodes.is_empty() {
             let mut buffer = String::new();
             let mut slots = Vec::with_capacity(references.len() * 2);
             let mut ctx = RenderCtx {
                 heading_ids: &document.heading_ids,
-                math_tag,
                 heading_cursor: 0,
                 ref_cursor: 0,
                 target: RenderTarget::Plan { slots: &mut slots },
@@ -134,7 +147,6 @@ impl PreparedPage {
             heading_ids,
             references,
             custom_nodes,
-            has_math,
         })
     }
 
@@ -142,7 +154,6 @@ impl PreparedPage {
         &self,
         resolved_urls: &[Option<String>],
         web_components: &BTreeMap<(String, String), String>,
-        math_tag: Option<&str>,
     ) -> String {
         match &self.plan {
             HtmlPlan::PreRendered { buffer, slots } => {
@@ -209,7 +220,6 @@ impl PreparedPage {
                 let mut html = String::new();
                 let mut ctx = RenderCtx {
                     heading_ids: &self.heading_ids,
-                    math_tag,
                     heading_cursor: 0,
                     ref_cursor: 0,
                     target: RenderTarget::Direct {
@@ -236,7 +246,6 @@ enum RenderTarget<'a> {
 
 struct RenderCtx<'a> {
     heading_ids: &'a [String],
-    math_tag: Option<&'a str>,
     heading_cursor: usize,
     ref_cursor: usize,
     target: RenderTarget<'a>,
@@ -248,39 +257,38 @@ fn collect_block_references(
     source_text: &Arc<str>,
     out: &mut Vec<Reference>,
     customs: &mut BTreeSet<(String, String)>,
-    has_math: &mut bool,
 ) {
     match &block.node().kind {
         BlockKind::Fragment(children) => {
             for child in children.iter() {
-                collect_block_references(child, origin, source_text, out, customs, has_math);
+                collect_block_references(child, origin, source_text, out, customs);
             }
         }
         BlockKind::Paragraph(inline) | BlockKind::Heading { title: inline, .. } => {
-            collect_inline_references(inline, origin, source_text, out, customs, has_math);
+            collect_inline_references(inline, origin, source_text, out, customs);
         }
         BlockKind::Section { heading, body } => {
-            collect_block_references(heading, origin, source_text, out, customs, has_math);
-            collect_block_references(body, origin, source_text, out, customs, has_math);
+            collect_block_references(heading, origin, source_text, out, customs);
+            collect_block_references(body, origin, source_text, out, customs);
         }
         BlockKind::Callout { body, .. }
         | BlockKind::Quote(body)
         | BlockKind::Div(body)
         | BlockKind::SectionBox(body) => {
-            collect_block_references(body, origin, source_text, out, customs, has_math);
+            collect_block_references(body, origin, source_text, out, customs);
         }
         BlockKind::List { items, .. } => {
             for item in items.iter() {
-                collect_block_references(item, origin, source_text, out, customs, has_math);
+                collect_block_references(item, origin, source_text, out, customs);
             }
         }
         BlockKind::Table { headers, rows, .. } => {
             for cell in headers.iter() {
-                collect_inline_references(cell, origin, source_text, out, customs, has_math);
+                collect_inline_references(cell, origin, source_text, out, customs);
             }
             for row in rows.iter() {
                 for cell in row.iter() {
-                    collect_inline_references(cell, origin, source_text, out, customs, has_math);
+                    collect_inline_references(cell, origin, source_text, out, customs);
                 }
             }
         }
@@ -289,19 +297,16 @@ fn collect_block_references(
             for (_, val) in custom.props.iter() {
                 match val {
                     CustomValue::Inline(i) => {
-                        collect_inline_references(i, origin, source_text, out, customs, has_math);
+                        collect_inline_references(i, origin, source_text, out, customs);
                     }
                     CustomValue::Block(b) => {
-                        collect_block_references(b, origin, source_text, out, customs, has_math);
+                        collect_block_references(b, origin, source_text, out, customs);
                     }
                     _ => {}
                 }
             }
         }
-        BlockKind::Math(_) => {
-            *has_math = true;
-        }
-        BlockKind::CodeBlock { .. } | BlockKind::Divider => {}
+        BlockKind::Math(_) | BlockKind::CodeBlock { .. } | BlockKind::Divider => {}
     }
 }
 
@@ -311,19 +316,18 @@ fn collect_inline_references(
     source_text: &Arc<str>,
     out: &mut Vec<Reference>,
     customs: &mut BTreeSet<(String, String)>,
-    has_math: &mut bool,
 ) {
     match &inline.node().kind {
         InlineKind::Fragment(children) => {
             for child in children.iter() {
-                collect_inline_references(child, origin, source_text, out, customs, has_math);
+                collect_inline_references(child, origin, source_text, out, customs);
             }
         }
         InlineKind::Strong(inner)
         | InlineKind::Emph(inner)
         | InlineKind::Strike(inner)
         | InlineKind::Underline(inner) => {
-            collect_inline_references(inner, origin, source_text, out, customs, has_math);
+            collect_inline_references(inner, origin, source_text, out, customs);
         }
         InlineKind::Link { target, label } => {
             out.push(Reference {
@@ -333,7 +337,7 @@ fn collect_inline_references(
                 span: inline.node().span,
                 source_text: Arc::clone(source_text),
             });
-            collect_inline_references(label, origin, source_text, out, customs, has_math);
+            collect_inline_references(label, origin, source_text, out, customs);
         }
         InlineKind::Image { target, .. } => {
             out.push(Reference {
@@ -349,19 +353,16 @@ fn collect_inline_references(
             for (_, val) in custom.props.iter() {
                 match val {
                     CustomValue::Inline(i) => {
-                        collect_inline_references(i, origin, source_text, out, customs, has_math);
+                        collect_inline_references(i, origin, source_text, out, customs);
                     }
                     CustomValue::Block(b) => {
-                        collect_block_references(b, origin, source_text, out, customs, has_math);
+                        collect_block_references(b, origin, source_text, out, customs);
                     }
                     _ => {}
                 }
             }
         }
-        InlineKind::Math(_) => {
-            *has_math = true;
-        }
-        InlineKind::Text(_) | InlineKind::Raw(_) => {}
+        InlineKind::Math(_) | InlineKind::Text(_) | InlineKind::Raw(_) => {}
     }
 }
 
@@ -618,21 +619,11 @@ fn render_block(block: &Block, ctx: &mut RenderCtx<'_>, out: &mut String) {
             out.push_str("</tbody></table>");
         }
         BlockKind::Math(expr) => {
-            if let Some(tag) = ctx.math_tag {
-                let _ = write!(
-                    out,
-                    "<{tag} notist-content=\"block\" notist-text=\"{}\"",
-                    notist_html::escape_attribute(expr)
-                );
-                write_common_attrs(&node.attrs, false, out);
-                let _ = write!(out, "></{tag}>");
-            } else {
-                out.push_str("<div class=\"notist-math\"");
-                write_common_attrs(&node.attrs, false, out);
-                out.push('>');
-                out.push_str(&notist_html::escape_text(expr));
-                out.push_str("</div>");
-            }
+            out.push_str("<div class=\"notist-math\"");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            out.push_str(&notist_html::escape_text(expr));
+            out.push_str("</div>");
         }
         BlockKind::Custom(custom) => {
             render_custom_node(custom, true, &node.attrs, ctx, out);
@@ -772,21 +763,11 @@ fn render_inline(inline: &Inline, ctx: &mut RenderCtx<'_>, out: &mut String) {
             out.push_str("</code>");
         }
         InlineKind::Math(expr) => {
-            if let Some(tag) = ctx.math_tag {
-                let _ = write!(
-                    out,
-                    "<{tag} notist-content=\"inline\" notist-text=\"{}\"",
-                    notist_html::escape_attribute(expr)
-                );
-                write_common_attrs(&node.attrs, false, out);
-                let _ = write!(out, "></{tag}>");
-            } else {
-                out.push_str("<span class=\"notist-math\"");
-                write_common_attrs(&node.attrs, false, out);
-                out.push('>');
-                out.push_str(&notist_html::escape_text(expr));
-                out.push_str("</span>");
-            }
+            out.push_str("<span class=\"notist-math\"");
+            write_common_attrs(&node.attrs, false, out);
+            out.push('>');
+            out.push_str(&notist_html::escape_text(expr));
+            out.push_str("</span>");
         }
         InlineKind::Link { target, label } => {
             let idx = ctx.ref_cursor;

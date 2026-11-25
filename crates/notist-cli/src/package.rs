@@ -17,7 +17,17 @@ struct Manifest {
     workspace: Option<Workspace>,
     site: Option<toml::Table>,
     #[serde(default)]
-    extensions: Vec<toml::Value>,
+    extensions: Vec<DocumentExtension>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentExtension {
+    kind: String,
+    #[serde(default)]
+    imports: BTreeMap<String, PathBuf>,
+    from: String,
+    to: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +60,7 @@ pub(crate) struct Package {
 pub(crate) struct Prepared {
     pub files: Files,
     pub options: notist_ssg::SiteConfig,
+    pub replacements: Vec<notist_ssg::ReplacementRule>,
 }
 
 struct Scope {
@@ -97,6 +108,104 @@ fn read(path: &Path) -> Result<Manifest, String> {
         return Err("workspace output must not be empty".into());
     }
     Ok(manifest)
+}
+
+fn resolve_extensions(
+    manifest_path: &Path,
+    extensions: &[DocumentExtension],
+) -> Result<Vec<notist_ssg::ReplacementRule>, String> {
+    let base_dir = manifest_path.parent().unwrap_or(Path::new("."));
+    let mut rules = Vec::with_capacity(extensions.len());
+    for (idx, ext) in extensions.iter().enumerate() {
+        if ext.kind != "replace" {
+            return Err(format!(
+                "{}: extension #{idx}: unsupported kind `{}` (expected \"replace\")",
+                manifest_path.display(),
+                ext.kind
+            ));
+        }
+        let (from_module, from_name) =
+            resolve_extension_target(manifest_path, idx, "from", &ext.from, &ext.imports, base_dir)?;
+        let (to_module, to_name) =
+            resolve_extension_target(manifest_path, idx, "to", &ext.to, &ext.imports, base_dir)?;
+        rules.push(notist_ssg::ReplacementRule {
+            from_module,
+            from_name,
+            to_module,
+            to_name,
+        });
+    }
+    Ok(rules)
+}
+
+fn resolve_extension_target(
+    manifest_path: &Path,
+    idx: usize,
+    field: &str,
+    spec: &str,
+    imports: &BTreeMap<String, PathBuf>,
+    base_dir: &Path,
+) -> Result<(Option<PathBuf>, String), String> {
+    let Some((alias, name)) = spec.split_once('.') else {
+        return Err(format!(
+            "{}: extension #{idx}: `{field}` must be `<module>.<function>`, got `{spec}`",
+            manifest_path.display()
+        ));
+    };
+    if alias.is_empty() || name.is_empty() || name.contains('.') {
+        return Err(format!(
+            "{}: extension #{idx}: invalid `{field}` target `{spec}`",
+            manifest_path.display()
+        ));
+    }
+    if alias == "notist" && !imports.contains_key("notist") {
+        return Ok((None, name.to_owned()));
+    }
+    let Some(rel_path) = imports.get(alias) else {
+        return Err(format!(
+            "{}: extension #{idx}: `{field}` references unknown import alias `{alias}`",
+            manifest_path.display()
+        ));
+    };
+    Ok((Some(normalize(&base_dir.join(rel_path))), name.to_owned()))
+}
+
+/// Load `[[extensions]]` replacement rules from an explicit `--config` manifest
+/// or from the nearest ancestor `Notist.toml` containing `file`.
+pub(crate) fn load_document_replacements(
+    file: &Path,
+    config: Option<&Path>,
+) -> Result<Vec<notist_ssg::ReplacementRule>, String> {
+    let manifest_path = match config {
+        Some(path) => std::fs::canonicalize(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?,
+        None => {
+            let abs = std::fs::canonicalize(file).unwrap_or_else(|_| {
+                if file.is_absolute() {
+                    file.to_path_buf()
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join(file)
+                }
+            });
+            let start_dir = if abs.is_dir() {
+                abs.as_path()
+            } else {
+                abs.parent().unwrap_or(Path::new("."))
+            };
+            let Some(found) = start_dir
+                .ancestors()
+                .map(|dir| dir.join("Notist.toml"))
+                .find(|p| p.is_file())
+            else {
+                return Ok(Vec::new());
+            };
+            found
+        }
+    };
+    let manifest = read(&manifest_path)?;
+    resolve_extensions(&manifest_path, &manifest.extensions)
 }
 
 fn locate(config: Option<&Path>) -> Result<PathBuf, String> {
@@ -362,11 +471,18 @@ impl Package {
                 relative.to_string_lossy().replace('\\', "/")
             ));
         }
+        let replacements = resolve_extensions(&self.manifest, &manifest.extensions)?;
         let mut inputs = fresh.inputs();
         inputs.extend(scope.packages.iter().map(|p| p.manifest.clone()));
+        for rule in &replacements {
+            for mod_path in [&rule.from_module, &rule.to_module].into_iter().flatten() {
+                inputs.insert(mod_path.clone());
+            }
+        }
         Ok(Prepared {
             files: Files::new(&self.root).with_inputs(inputs),
             options,
+            replacements,
         })
     }
 }

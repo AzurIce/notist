@@ -4,11 +4,12 @@
 modules/typst/ 提供浏览器端的 Typst 数学与通用 SVG 呈现。lib.not 声明：
 
 ```markdown
-fn math<C: Type = InlineContent>(text: String) -> C;
-fn svg(source: String) -> BlockContent;
+fn math<C: Type = Inline>(text: String) -> C
+where C == Inline || C == Block;
+fn svg(source: String) -> Block;
 ```
 
-组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。它与 notist.math、katex.math 具有相同的调用契约，可直接调用或通过 replace 扩展 替换内置节点。
+组件接收不带外围 `$` 的 Typst 数学源码，经 WASM 编译为 SVG。C 是编译期 Type 参数，默认 Inline；`<Block>` 显式选择块级结果。它与 notist.math、katex.math 具有相同的调用契约，可直接调用或通过 replace 扩展 替换内置节点。
 
 ## 数学
 
@@ -18,11 +19,11 @@ Sum: #typst.math("sum_(i=1)^n i = frac(n(n+1), 2)"). Matrix: #typst.math("mat(1,
 
 块级公式显式选择输出类别：
 
-#typst.math<BlockContent>("sum_(i=1)^n i = frac(n(n+1), 2)")
+#typst.math<Block>("sum_(i=1)^n i = frac(n(n+1), 2)")
 
 另一个块级实例：
 
-#typst.math<BlockContent>("frac(a, b)")
+#typst.math<Block>("frac(a, b)")
 
 ## 完整 Typst 源码
 

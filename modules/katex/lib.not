@@ -1,2 +1,2 @@
-fn math(text: String) -> Inline;
-fn math_block(text: String) -> Block;
+fn math<C: Type = Inline>(text: String) -> C
+where C == Inline || C == Block;

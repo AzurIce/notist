@@ -4,10 +4,11 @@
 lib.not 定义数学函数：
 
 ```markdown
-fn math<C: Type = InlineContent>(text: String) -> C;
+fn math<C: Type = Inline>(text: String) -> C
+where C == Inline || C == Block;
 ```
 
-text 是不带外围 `$` 的 LaTeX 数学源码。C 是编译期 Type 参数，默认 InlineContent；`<BlockContent>` 显式选择块级结果。math.js 默认导出 HTMLElement 类，由 HTML host 按规范函数身份注册；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
+text 是不带外围 `$` 的 LaTeX 数学源码。C 是编译期 Type 参数，默认 Inline；`<Block>` 显式选择块级结果。math.js 默认导出 HTMLElement 类，由 HTML host 按规范函数身份注册；组件使用 KaTeX 0.19.0 的浏览器 ESM、CSS 与字体资源，来自固定版本 CDN。
 
 ## 模块使用与输出选择
 
@@ -37,11 +38,11 @@ Builtin call: #katex.math("E = mc^2"). Direct call: #katex.math(r#"\frac{a}{b}"#
 
 块级公式显式选择输出类别：
 
-#katex.math<BlockContent>(r#"\sum_{i=1}^{n} i = \frac{n(n+1)}{2}"#)
+#katex.math<Block>(r#"\sum_{i=1}^{n} i = \frac{n(n+1)}{2}"#)
 
 另一个块级实例：
 
-#katex.math<BlockContent>(r#"\frac{a}{b}"#)
+#katex.math<Block>(r#"\frac{a}{b}"#)
 
 ## 组件行为
 

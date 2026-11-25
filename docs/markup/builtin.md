@@ -14,13 +14,16 @@
 3. **结构相等与结构共享**：`==` / `!=` 仅比较语义（`kind` 与 `attrs`），忽略源码 `span`；复用绑定或局部重写未改动子树时保持 `Arc` 指针共享。
 4. **显式 `sectionize()`**：按标题层级折叠 `Section` 并提升标题属性到外层 `Section` 是 `Block` 上的纯库方法，不硬编码在编译期。
 
-## 内置 Prelude 构造函数
+## 内置 `notist` 模块与 Prelude 构造函数
+
+所有内置内容构造函数均注册在内置根模块 `notist` 下，既可以通过 prelude 直接调用（如 `math("x")`），也可以通过 `notist.` 限定调用（如 `notist.math("x")`）。Markup 语法糖（如 `$x$`、`$$x$$`、`**a**`、`# Title`、列表等）在检查期直接绑定到 `notist` 模块对应声明，不受局部同名绑定遮蔽。
 
 | 函数 | 签名 |
 | --- | --- |
 | `text` | `(String) -> Inline` |
 | `strong` / `emph` / `strike` / `underline` | `(Inline) -> Inline` |
-| `raw` / `math` | `(String) -> Inline` |
+| `raw` | `(String) -> Inline` |
+| `math` | `<C: Type = Inline>(String) -> C where C == Inline || C == Block` |
 | `link` | `(String, Inline) -> Inline` |
 | `image` | `(String, String) -> Inline` |
 | `inlines` | `(List<Inline>) -> Inline` |
@@ -28,9 +31,10 @@
 | `heading` | `(Int, Inline) -> Block` |
 | `callout` | `(String, Block) -> Block` |
 | `code_block` | `(String, String) -> Block` |
-| `display_math` | `(String) -> Block` |
+| `display_math` | `(String) -> Block`（转发到 `notist.math<Block>`） |
 | `quote` / `div` / `section` | `(Block) -> Block` |
 | `divider` | `() -> Block` |
+| `list` | `(Bool, Int, List<Block>) -> Block` |
 | `table` | `(List<Inline>, List<List<Inline>>) -> Block` |
 | `blocks` | `(List<Block>) -> Block` |
 | `read_text` | `(String) -> String` |

@@ -16,6 +16,10 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct CompileInput {
     pub documents: BTreeMap<PathBuf, String>,
+    /// Read-only content-relative files visible to `read_text` / `read_json`.
+    /// They overlay the resource backend for evaluation and are never published.
+    #[serde(default)]
+    pub data_files: BTreeMap<PathBuf, String>,
 }
 
 /// Final pages are read-only; extensions edit template data and contributed files.
@@ -155,6 +159,18 @@ fn validate<R: Resources>(
     Ok(routes)
 }
 
+fn validate_data_files(input: &CompileInput) -> Result<(), Error> {
+    for path in input.data_files.keys() {
+        if !valid_path(path) {
+            return Err(Error::Message(format!(
+                "invalid site data file path `{}`",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_data(data: &BTreeMap<String, serde_json::Value>) -> Result<(), Error> {
     for key in data.keys() {
         if !valid_path(Path::new(key)) {
@@ -203,6 +219,7 @@ pub(crate) fn before_compile<R: Resources>(
         let routes = extension
             .before_compile(&context, &mut candidate)
             .and_then(|()| validate(vault, config, &candidate))
+            .and_then(|routes| validate_data_files(&candidate).map(|()| routes))
             .map_err(|error| contextualize(extension, "before_compile", error))?;
         *input = candidate;
         progress.finish();

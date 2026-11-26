@@ -80,6 +80,88 @@ fn generated_documents_share_fixed_text_inputs_without_publication() {
     assert!(!html(&site, "old.html").contains("stale disk source"));
 }
 
+#[test]
+fn compile_extensions_overlay_virtual_data_files_for_read_json_without_publishing() {
+    #[derive(Debug, Clone)]
+    struct Data;
+    impl SiteExtension for Data {
+        fn name(&self) -> &str {
+            "data"
+        }
+        fn before_compile(
+            &mut self,
+            _: &SiteContext<'_>,
+            input: &mut CompileInput,
+        ) -> Result<(), Error> {
+            input.documents.insert(
+                "index.md".into(),
+                "#import \"../views/lib.not\" as view\n#view.show(\".data/runtime.json\")".into(),
+            );
+            input.data_files.insert(
+                ".data/runtime.json".into(),
+                r#"{"name":"virtual <&>"}"#.into(),
+            );
+            input.documents.insert(
+                "nested/page.md".into(),
+                "#import \"../../views/lib.not\" as view\n#view.show(\"../.data/runtime.json\")"
+                    .into(),
+            );
+            Ok(())
+        }
+    }
+    let mut resources = MemoryResources::new("/site");
+    resources.insert(
+        "views/lib.not",
+        "fn show(source: String) -> Block { para(text(read_json(source).get(\"name\").as_string(\"\"))) }",
+    );
+    let mut vault = Vault::new(resources);
+    let site = Builder::default()
+        .with_extension(Data)
+        .build(&mut vault, &SiteConfig::default())
+        .unwrap();
+    assert!(html(&site, "index.html").contains("virtual &lt;&amp;&gt;"));
+    assert!(html(&site, "nested/page.html").contains("virtual &lt;&amp;&gt;"));
+    assert!(!site.files.keys().any(|path| path.starts_with(".data")));
+    assert!(
+        vault
+            .resources()
+            .kind(Path::new("content/.data/runtime.json"))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn compile_extensions_reject_invalid_virtual_data_paths() {
+    #[derive(Debug, Clone)]
+    struct Data;
+    impl SiteExtension for Data {
+        fn name(&self) -> &str {
+            "data"
+        }
+        fn before_compile(
+            &mut self,
+            _: &SiteContext<'_>,
+            input: &mut CompileInput,
+        ) -> Result<(), Error> {
+            input
+                .data_files
+                .insert("../escape.json".into(), "{}".into());
+            Ok(())
+        }
+    }
+    let error = Builder::default()
+        .with_extension(Data)
+        .build(&mut vault(), &SiteConfig::default())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("site extension `data` (before_compile): invalid site data file path"),
+        "{error}"
+    );
+}
+
 #[derive(Debug, Clone, Default)]
 struct Generate;
 impl SiteExtension for Generate {

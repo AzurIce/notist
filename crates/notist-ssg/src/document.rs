@@ -22,6 +22,8 @@ pub struct Page {
     pub attrs: BTreeMap<String, serde_json::Value>,
     pub headings: Vec<Heading>,
     pub html: String,
+    /// Relative URL prefix from this page's output file to the output root.
+    pub root: String,
     /// Content-relative directory; the root is the empty string.
     pub directory: String,
     pub ancestors: Vec<String>,
@@ -233,6 +235,7 @@ impl Document {
             .collect();
         ancestors.reverse();
 
+        let page_root = crate::templates::page_root(&route.output);
         Ok(Self {
             page: Page {
                 route,
@@ -240,6 +243,7 @@ impl Document {
                 attrs,
                 headings: outline,
                 html: String::new(),
+                root: page_root,
                 directory,
                 ancestors,
             },

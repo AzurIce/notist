@@ -58,6 +58,8 @@ pub struct Request {
 pub enum Event {
     BeforeCompile {
         documents: BTreeMap<PathBuf, String>,
+        #[serde(default)]
+        data_files: BTreeMap<PathBuf, String>,
     },
     BeforeTemplate {
         pages: Vec<Page>,
@@ -72,6 +74,7 @@ pub enum Event {
 enum EventRef<'a> {
     BeforeCompile {
         documents: &'a BTreeMap<PathBuf, String>,
+        data_files: &'a BTreeMap<PathBuf, String>,
     },
     BeforeTemplate {
         pages: &'a [Page],
@@ -87,6 +90,8 @@ pub enum Response {
         version: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         documents: Option<BTreeMap<PathBuf, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_files: Option<BTreeMap<PathBuf, String>>,
         #[serde(default)]
         errors: Vec<String>,
     },
@@ -200,11 +205,19 @@ impl SiteExtension for CommandExtension {
     ) -> Result<(), Error> {
         let event = EventRef::BeforeCompile {
             documents: &input.documents,
+            data_files: &input.data_files,
         };
         match self.exchange(context, event)? {
-            Response::BeforeCompile { documents, .. } => {
+            Response::BeforeCompile {
+                documents,
+                data_files,
+                ..
+            } => {
                 if let Some(documents) = documents {
                     input.documents = documents;
+                }
+                if let Some(data_files) = data_files {
+                    input.data_files = data_files;
                 }
                 Ok(())
             }

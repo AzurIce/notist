@@ -1,6 +1,6 @@
 use crate::Error;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Paths are relative to the resource root. Content paths map directly to HTML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +35,8 @@ pub struct SiteConfig {
     pub copy_content_assets: bool,
     pub styles: Vec<PathBuf>,
     pub scripts: Vec<PathBuf>,
+    /// Build-time template parameters, exposed as `site.params`.
+    pub params: BTreeMap<String, serde_json::Value>,
 }
 impl Default for SiteConfig {
     fn default() -> Self {
@@ -58,6 +60,7 @@ impl Default for SiteConfig {
             copy_content_assets: true,
             styles: Vec::new(),
             scripts: Vec::new(),
+            params: BTreeMap::new(),
         }
     }
 }
@@ -110,7 +113,9 @@ impl SiteConfig {
                 ));
             }
         }
-        if !config.base_url.starts_with('/') || config.base_url.starts_with("//") {
+        if config.base_url == Self::RELATIVE_BASE_URL {
+            // Every page resolves `url()` against its own output location.
+        } else if !config.base_url.starts_with('/') || config.base_url.starts_with("//") {
             let url = url::Url::parse(&config.base_url)
                 .map_err(|e| Error::Message(format!("invalid site base_url: {e}")))?;
             if !matches!(url.scheme(), "http" | "https")
@@ -119,7 +124,8 @@ impl SiteConfig {
                 || url.fragment().is_some()
             {
                 return Err(Error::Message(
-                    "site base_url must be an HTTP(S) URL or a root-relative path".into(),
+                    "site base_url must be `relative`, an HTTP(S) URL or a root-relative path"
+                        .into(),
                 ));
             }
         } else if config.base_url.contains(['?', '#', '\\']) {
@@ -136,5 +142,13 @@ impl SiteConfig {
             self.base_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         )
+    }
+}
+
+impl SiteConfig {
+    /// Emit page-relative template URLs instead of prefixing `base_url`.
+    pub const RELATIVE_BASE_URL: &'static str = "relative";
+    pub(crate) fn uses_relative_urls(&self) -> bool {
+        self.base_url == Self::RELATIVE_BASE_URL
     }
 }

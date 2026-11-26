@@ -150,6 +150,43 @@ for line in sys.stdin:
 }
 
 #[test]
+fn command_extensions_return_virtual_data_files_without_writing_the_source_tree() {
+    let root = tempfile::tempdir().unwrap();
+    let config = setup(
+        root.path(),
+        r#"
+import json, sys
+for line in sys.stdin:
+    r = json.loads(line)
+    response = dict(version=2, event=r['event'])
+    if r['event'] == 'before_compile':
+        assert r['data_files'] == {}
+        response['documents'] = {'index.md': '#import "../views/lib.not" as view\n#view.show(".data/virtual.json")'}
+        response['data_files'] = {'.data/virtual.json': '{"name": "command <&>"}'}
+    print(json.dumps(response), flush=True)
+"#,
+    );
+    fs::create_dir_all(root.path().join("views")).unwrap();
+    fs::write(
+        root.path().join("views/lib.not"),
+        "fn show(source: String) -> Block { para(text(read_json(source).get(\"name\").as_string(\"\"))) }",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("templates/page.tera"),
+        "{{page.html | safe}}",
+    )
+    .unwrap();
+    let site = Builder::default()
+        .build(&mut Vault::new(FsResources::new(root.path())), &config)
+        .unwrap();
+    let html = String::from_utf8(site.files[Path::new("index.html")].clone()).unwrap();
+    assert!(html.contains("command &lt;&amp;&gt;"), "{html}");
+    assert!(!root.path().join("content/.data/virtual.json").exists());
+    assert!(!site.files.keys().any(|path| path.starts_with(".data")));
+}
+
+#[test]
 fn command_files_round_trip_text_and_binary_and_follow_replacement_semantics() {
     let root = tempfile::tempdir().unwrap();
     for mode in ["omit", "null", "empty", "edit"] {

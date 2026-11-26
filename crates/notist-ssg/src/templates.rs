@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use tera::{Kwargs, State, Tera};
+use tera::{Filter, Kwargs, State, Tera};
 
 pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut found = vec![];
@@ -33,6 +33,43 @@ pub(crate) fn files(resources: &impl Resources, root: &Path) -> Result<Vec<PathB
     }
     found.sort();
     Ok(found)
+}
+
+/// Relative prefix from a page's output file to the output root.
+pub(crate) fn page_root(output: &Path) -> String {
+    notist::publication::url::relative_url(output, Path::new(""), true)
+}
+
+fn external(path: &str) -> bool {
+    path.starts_with("//")
+        || path
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .contains(':')
+}
+
+fn state_page_root(state: &State) -> Option<String> {
+    let page = state.get::<tera::Value>("page").ok().flatten()?;
+    page.as_map()?
+        .get(&tera::value::Key::from("root".to_owned()))?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// JSON-encode a template value for embedding in an HTML document. Escaping
+/// `</` keeps the result inert inside `<script type="application/json">`.
+struct JsonEncode;
+
+impl Filter<tera::Value, Result<tera::Value, tera::Error>> for JsonEncode {
+    fn call(&self, value: tera::Value, _: Kwargs, _: &State) -> Result<tera::Value, tera::Error> {
+        let encoded = serde_json::to_string(&value).map_err(tera::Error::message)?;
+        Ok(tera::Value::from(encoded.replace("</", "<\\/")))
+    }
+
+    fn is_safe(&self) -> bool {
+        true
+    }
 }
 
 pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Tera, Error> {
@@ -68,16 +105,18 @@ pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Te
     }
     let mut engine = Tera::default();
     engine.autoescape_on([""]);
+    engine.register_filter("to_json", JsonEncode);
+    engine.register_filter("json_encode", JsonEncode);
     let config = config.clone();
     engine.register_function(
         "url",
-        move |args: Kwargs, _: &State| -> Result<String, tera::Error> {
+        move |args: Kwargs, state: &State| -> Result<String, tera::Error> {
             let path = args.must_get::<&str>("path")?;
             if !notist_html::is_safe_url(path) {
                 return Err(tera::Error::message("unsafe site URL"));
             }
             if let Some(from) = args.get::<&str>("relative_to")? {
-                if !path.starts_with("//") && !path.split('/').next().unwrap_or("").contains(':') {
+                if !external(path) {
                     let target = percent_encoding::percent_decode_str(path.trim_start_matches('/'))
                         .decode_utf8()
                         .map_err(|_| tera::Error::message("invalid UTF-8 in site URL"))?;
@@ -88,6 +127,14 @@ pub(crate) fn load(resources: &impl Resources, config: &SiteConfig) -> Result<Te
                     ));
                 }
                 return Ok(path.into());
+            }
+            if config.uses_relative_urls() && !external(path) {
+                let root = state_page_root(state).ok_or_else(|| {
+                    tera::Error::message("relative url() requires a page context")
+                })?;
+                let mut url = root;
+                url.push_str(path.trim_start_matches('/'));
+                return Ok(url);
             }
             Ok(config.url(path))
         },

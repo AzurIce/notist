@@ -177,6 +177,63 @@ fn templates_consume_the_directory_tree_data_and_override_the_theme() {
 }
 
 #[test]
+fn relative_base_url_exposes_page_roots_params_and_safe_json_filters() {
+    let mut vault = vault(&[
+        ("content/index.md", "# Home"),
+        ("content/items/a.md", "# A"),
+        ("content/items/page/2.md", "# Two"),
+        ("data/raw.toml", "text = '</script><&>'"),
+        (
+            "templates/page.tera",
+            "{{page.root}}|{{url(path='style.css')}}|{{url(path='/')}}|{{url(path='next.html')}}|{{site.params.target}}|{{site.data.raw | to_json}}|{{site.data.raw | json_encode}}",
+        ),
+    ]);
+    let mut config = SiteConfig {
+        base_url: SiteConfig::RELATIVE_BASE_URL.into(),
+        ..SiteConfig::default()
+    };
+    config
+        .params
+        .insert("target".into(), serde_json::Value::from("cn"));
+    let site = Builder::default().build(&mut vault, &config).unwrap();
+    assert!(html(&site, "index.html").starts_with("./|./style.css|./|./next.html|cn|"));
+    assert!(html(&site, "items/a.html").starts_with("../|../style.css|../|../next.html|cn|"));
+    assert!(
+        html(&site, "items/page/2.html")
+            .starts_with("../../|../../style.css|../../|../../next.html|cn|")
+    );
+    for path in ["index.html", "items/a.html", "items/page/2.html"] {
+        let output = html(&site, path);
+        assert!(output.contains(r#"{"text":"<\/script><&>"}"#), "{output}");
+        assert!(!output.contains("</script>"), "{output}");
+    }
+}
+
+#[test]
+fn relative_base_url_rejects_external_urls_from_page_relative_rewrites() {
+    let mut vault = vault(&[
+        ("content/index.md", "# Home"),
+        (
+            "templates/page.tera",
+            "{{url(path='https://example.test/a')}}|{{url(path='//cdn.test/a.js')}}",
+        ),
+    ]);
+    let site = Builder::default()
+        .build(
+            &mut vault,
+            &SiteConfig {
+                base_url: SiteConfig::RELATIVE_BASE_URL.into(),
+                ..SiteConfig::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        html(&site, "index.html"),
+        "https://example.test/a|//cdn.test/a.js"
+    );
+}
+
+#[test]
 fn shared_template_context_keeps_page_directory_and_root_lookups_isolated() {
     let mut vault = vault(&[
         ("content/index.md", "# Home"),

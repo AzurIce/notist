@@ -9,7 +9,7 @@
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `title` | `"Site"` | 站点标题 |
-| `base_url` | `"/"` | 站点的根路径或 `http(s)://` 地址 |
+| `base_url` | `"/"` | 站点的根路径、`http(s)://` 地址，或 `"relative"`（模板 URL 按页面输出位置生成，见下） |
 | `content` | `"content"` | 文档源目录 |
 | `output` | `"public"` | 构建输出目录 |
 | `theme` | 无 | 内置主题（如 `"builtins.book"`）或本地主题目录 |
@@ -21,6 +21,19 @@
 | `copy_content_assets` | `true` | 是否全量复制内容目录中的非文档资源；设为 `false` 时仅复制被显式引用的资源 |
 | `include` / `exclude` | `["**"]` / `[]` | 内容目录相对路径 glob 过滤 |
 | `mounts` | `[]` | 将外部目录挂载到站点内容路径下 |
+| `params` | `{}` | 构建期模板参数，模板中通过 `site.params` 读取；`-D KEY=VALUE` 可覆盖同名项 |
+
+## 相对 URL
+
+`base_url = "relative"` 时，`url(path=...)` 不再拼接站点根路径，而是按当前页面的输出位置生成相对 URL，同时模板可读取 `page.root`：
+
+```tera
+<link rel="stylesheet" href="{{url(path='style.css')}}">
+<link rel="icon" href="{{page.root}}favicon.ico">
+<a href="{{url(path='/')}}">首页</a>
+```
+
+该模式适合同时发布到不同域名/子路径、且希望构建产物不携带绝对根路径的站点。
 
 ## `[[extensions]]` 声明替换
 

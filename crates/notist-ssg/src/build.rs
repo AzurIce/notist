@@ -106,6 +106,11 @@ impl TemplateContext {
             ("pages", Value::from(pages.clone())),
             ("directories", Value::from(directories.clone())),
             (
+                "params",
+                Value::try_from_serializable(&config.params)
+                    .map_err(|e| Error::Message(e.to_string()))?,
+            ),
+            (
                 "data",
                 Value::try_from_serializable(data).map_err(|e| Error::Message(e.to_string()))?,
             ),
@@ -618,6 +623,7 @@ pub(crate) fn build<R: Resources + Send>(
                         Ok((PathBuf::from(path.into_string()), vault.source(&source)?))
                     })
                     .collect::<Result<_, Error>>()?,
+                data_files: BTreeMap::new(),
             };
             discovery.finish();
             let routes = notist::progress::run_stage(
@@ -768,7 +774,17 @@ pub(crate) fn build<R: Resources + Send>(
             let evaluation_stage = notist::progress::Span::stage("site.evaluate", || {
                 format!("Evaluate and prepare {} pages", checked_pages.len())
             });
-            let data_host = SsgDataHost::new(vroot.clone(), vault.resources());
+            let data_host = {
+                // Extensions contribute in-memory data inputs. Keep the source
+                // tree untouched while `read_text` / `read_json` see them.
+                let overlays: BTreeMap<_, _> = input
+                    .data_files
+                    .iter()
+                    .map(|(path, source)| (content.join(path), source.clone()))
+                    .collect();
+                let resources = notist::OverlayResources::new(vault.resources(), &overlays);
+                SsgDataHost::new(vroot.clone(), &resources)
+            };
             let eval_chunk_size = checked_pages.len().div_ceil(executor.jobs()).max(64);
             let eval_chunks = executor.map_chunks(
                 &checked_pages,
@@ -1541,6 +1557,7 @@ mod tests {
                 )]),
                 headings: vec![],
                 html: "<strong>body</strong>".into(),
+                root: String::new(),
                 directory: Path::new(path)
                     .parent()
                     .unwrap()
@@ -1624,6 +1641,7 @@ mod tests {
                 attrs: BTreeMap::new(),
                 headings: vec![],
                 html: format!("<strong>{i}</strong>"),
+                root: String::new(),
                 directory: String::new(),
                 ancestors: vec![],
             })

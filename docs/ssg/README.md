@@ -13,4 +13,13 @@
 5. **HTML 渲染与 Web Components**：单遍将 `notist_core::Block` 渲染为 HTML，代码块走构建期语法高亮；对存在同目录 JS 实现的 `Custom` 节点按约定生成自定义元素标签并打包注册脚本。
 6. **模板渲染**：运行 `before_template` 扩展，通过 Tera 模板（支持内置或自定义主题覆盖）并行渲染全部页面并输出。
 
+## 模板上下文
+
+每个页面渲染时提供：
+
+- `page`：当前页面（`route`、`title`、`attrs`、`headings`、`html`、`directory`、`ancestors`、`root`）。`page.root` 是当前输出文件到输出根目录的相对前缀（根页面 `./`，`items/a.html` 为 `../`）。
+- `site`：`title`、`base_url`、`pages`、`directories`、`params`、`data`。`site.params` 来自 `[site.params]` 与 `-D KEY=VALUE`。
+- `url(path=..., relative_to=...)`：生成站点 URL。省略 `relative_to` 时按 `base_url` 拼接；`base_url = "relative"` 时按当前页面生成相对 URL。
+- `to_json` / `json_encode`：把值编码为 JSON，并把 `</` 转义为 `<\/`，可直接嵌入 `<script type="application/json">`。
+
 相关文档：[Book 导航与主题](../book.md)、[站点扩展](extensions.md)、[HTML 渲染](../html.md)、[Web Components 约定](../components/README.md)。

@@ -352,6 +352,10 @@ fn rejects_incompatible_replacement_contracts() {
         fn wrong_arity(text: String) -> Inline;
         fn wrong_default<C: Type = Block>(text: String) -> C where C == Inline || C == Block;
         fn wrong_param<C: Type = Inline>(n: Int) -> C where C == Inline || C == Block;
+        fn wrong_value_default<C: Type = Inline>(text: String, extra: String) -> C
+        where C == Inline || C == Block;
+        fn origin_target<C: Type = Inline>(text: String, extra: String = "") -> C
+        where C == Inline || C == Block;
         fn stricter_where<C: Type = Inline>(text: String) -> C where C == Inline;
     "#;
     let project = check_project(&[("bad.not", bad)]).expect("bad module checks on its own");
@@ -378,6 +382,18 @@ fn rejects_incompatible_replacement_contracts() {
     assert!(matches!(
         check_err("wrong_param")[0].kind,
         ReplacementErrorKind::SignatureMismatch { .. }
+    ));
+    let value_default_err = project
+        .with_replacements(&[ReplacementSpec {
+            from_module: "bad.not".into(),
+            from_name: "origin_target".into(),
+            to_module: "bad.not".into(),
+            to_name: "wrong_value_default".into(),
+        }])
+        .expect_err("different value-default arity should be rejected");
+    assert!(matches!(
+        value_default_err[0].kind,
+        ReplacementErrorKind::ValueDefaultsMismatch { .. }
     ));
     assert!(matches!(
         check_err("stricter_where")[0].kind,

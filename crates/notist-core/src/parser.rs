@@ -711,14 +711,31 @@ impl<'a> Parser<'a> {
 
     fn param_list(&mut self) -> Result<Vec<Param>, ()> {
         let mut params = Vec::new();
+        let mut saw_default = false;
         while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
             let name_tok = self.expect(TokenKind::Ident)?;
             let name = self.text(name_tok.span).to_owned();
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type()?;
+            let default = if self.at(TokenKind::Eq) {
+                self.advance();
+                saw_default = true;
+                Some(self.expression()?)
+            } else {
+                if saw_default {
+                    self.error(
+                        name_tok.span,
+                        format!(
+                            "parameter `{name}` without a default cannot follow a parameter with a default"
+                        ),
+                    );
+                }
+                None
+            };
             params.push(Param {
                 name,
                 ty,
+                default,
                 span: name_tok.span,
             });
             if self.at(TokenKind::Comma) {

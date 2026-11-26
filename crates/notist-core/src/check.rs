@@ -1,6 +1,6 @@
 use crate::ast::{
     AttrEntry, AttrLiteral, BinaryOp, BlockPiece, Decl, Expr, ExprKind, Function, InlinePiece,
-    Method, Module, Program, Span, TableAlign, Type, TypePattern, UnaryOp, WhereExpr,
+    Method, Module, Param, Program, Span, TableAlign, Type, TypePattern, UnaryOp, WhereExpr,
     WhereExprKind,
 };
 use crate::builtin::{
@@ -49,7 +49,11 @@ impl CheckedProgram {
 
 #[derive(Debug)]
 pub(crate) struct CheckedFunction {
-    pub(crate) arity: usize,
+    /// Number of leading parameters that must be supplied at a call site.
+    pub(crate) required: usize,
+    /// Default expressions aligned with the full parameter list. Entries for
+    /// required parameters are `None`.
+    pub(crate) defaults: Vec<Option<CheckedExpr>>,
     pub(crate) body: CheckedExpr,
 }
 
@@ -144,7 +148,8 @@ pub(crate) struct CheckedDecl {
     pub(crate) name: String,
     pub(crate) type_params: Vec<String>,
     pub(crate) where_clause: Option<WhereExpr>,
-    pub(crate) arity: usize,
+    pub(crate) required: usize,
+    pub(crate) defaults: Vec<Option<ModuleExpr>>,
     pub(crate) body: ModuleExpr,
 }
 
@@ -160,6 +165,8 @@ pub(crate) struct FunctionSig {
     pub(crate) type_params: Vec<String>,
     pub(crate) type_param_defaults: Vec<Option<Type>>,
     pub(crate) parameters: Vec<Type>,
+    /// Number of leading parameters that must be supplied.
+    pub(crate) required: usize,
     pub(crate) returns: Type,
     pub(crate) where_clause: Option<WhereExpr>,
 }
@@ -168,6 +175,8 @@ pub(crate) struct FunctionSig {
 pub(crate) struct MethodSig {
     pub(crate) id: DeclId,
     pub(crate) parameters: Vec<Type>,
+    /// Number of leading parameters (excluding the receiver) that must be supplied.
+    pub(crate) required: usize,
     pub(crate) returns: Type,
 }
 
@@ -261,6 +270,12 @@ pub enum TypeError {
     NotIterable(Type),
     CannotInferEmptyList,
     Arity { expected: usize, actual: usize },
+    /// Arity failure for a function whose trailing parameters have defaults.
+    ArityRange {
+        required: usize,
+        total: usize,
+        actual: usize,
+    },
     Mismatch { expected: Type, actual: Type },
 }
 
@@ -421,21 +436,39 @@ impl<'a> LowerCtx<'a> {
             let fn_id = self.mapping[&instance];
             let local_idx = fn_id.0 - self.id_offset;
             let decl = self.decls.get(instance.decl);
-            match lower_specialized_expr(
-                self,
-                Some(instance.decl),
-                &decl.body,
-                &decl.type_params,
-                &instance.type_args,
-            ) {
-                Ok(body) => {
+            let lowered = (|| {
+                let body = lower_specialized_expr(
+                    self,
+                    Some(instance.decl),
+                    &decl.body,
+                    &decl.type_params,
+                    &instance.type_args,
+                )?;
+                let mut defaults = Vec::with_capacity(decl.defaults.len());
+                for default in &decl.defaults {
+                    defaults.push(match default {
+                        Some(expr) => Some(lower_specialized_expr(
+                            self,
+                            Some(instance.decl),
+                            expr,
+                            &decl.type_params,
+                            &instance.type_args,
+                        )?),
+                        None => None,
+                    });
+                }
+                Ok(CheckedFunction {
+                    required: decl.required,
+                    defaults,
+                    body,
+                })
+            })();
+            match lowered {
+                Ok(function) => {
                     if lowered_bodies.len() <= local_idx {
                         lowered_bodies.resize_with(local_idx + 1, || None);
                     }
-                    lowered_bodies[local_idx] = Some(CheckedFunction {
-                        arity: decl.arity,
-                        body,
-                    });
+                    lowered_bodies[local_idx] = Some(function);
                 }
                 Err((span, error)) => {
                     errors.push((
@@ -978,6 +1011,7 @@ pub(crate) fn collect_module_interface(
                     type_params,
                     type_param_defaults,
                     parameters: function.parameters.iter().map(|p| p.ty.clone()).collect(),
+                    required: required_param_count(&function.parameters),
                     returns: function.returns.clone(),
                     where_clause: function.where_clause.clone(),
                 });
@@ -1015,12 +1049,14 @@ pub(crate) fn collect_module_interface(
                 let key = (method.receiver_type.clone(), method.name.clone());
                 let parameters: Vec<Type> =
                     method.parameters.iter().map(|p| p.ty.clone()).collect();
+                let required = required_param_count(&method.parameters);
                 if methods
                     .insert(
                         key,
                         MethodSig {
                             id,
                             parameters: parameters.clone(),
+                            required,
                             returns: method.returns.clone(),
                         },
                     )
@@ -1040,6 +1076,7 @@ pub(crate) fn collect_module_interface(
                     type_params: Vec::new(),
                     type_param_defaults: Vec::new(),
                     parameters: full_params,
+                    required: 1 + required,
                     returns: method.returns.clone(),
                     where_clause: None,
                 });
@@ -1052,6 +1089,39 @@ pub(crate) fn collect_module_interface(
         bindings,
         methods,
         diagnostics,
+    }
+}
+
+fn required_param_count(params: &[Param]) -> usize {
+    params
+        .iter()
+        .rposition(|p| p.default.is_none())
+        .map_or(0, |index| index + 1)
+}
+
+fn arity_mismatch(
+    required: usize,
+    total: usize,
+    actual: usize,
+    span: Span,
+) -> (Span, TypeError) {
+    if required == total {
+        (
+            span,
+            TypeError::Arity {
+                expected: total,
+                actual,
+            },
+        )
+    } else {
+        (
+            span,
+            TypeError::ArityRange {
+                required,
+                total,
+                actual,
+            },
+        )
     }
 }
 
@@ -1402,6 +1472,11 @@ pub fn format_type_error(error: &TypeError) -> String {
         TypeError::Arity { expected, actual } => {
             format!("expected {expected} argument(s), found {actual}")
         }
+        TypeError::ArityRange {
+            required,
+            total,
+            actual,
+        } => format!("expected {required} to {total} argument(s), found {actual}"),
         TypeError::Mismatch { expected, actual } => format!(
             "type mismatch: expected `{}`, found `{}`",
             format_type(expected),
@@ -1426,14 +1501,20 @@ impl<'a> Checker<'a> {
     }
 
     fn function(&mut self, function: &'a Function) -> Result<CheckedDecl, (Span, TypeError)> {
+        let mut defaults = Vec::with_capacity(function.parameters.len());
         for param in &function.parameters {
-            if self
-                .locals
-                .insert(param.name.as_str(), (self.depth, param.ty.clone()))
-                .is_some()
-            {
+            if self.locals.contains_key(param.name.as_str()) {
                 return Err((param.span, TypeError::DuplicateParameter(param.name.clone())));
             }
+            // Check the default before binding this parameter, so a default can
+            // only refer to parameters declared before it.
+            let default = match &param.default {
+                Some(expr) => Some(self.expect_expr(expr, &param.ty)?),
+                None => None,
+            };
+            defaults.push(default);
+            self.locals
+                .insert(param.name.as_str(), (self.depth, param.ty.clone()));
             self.depth += 1;
         }
         let body = match &function.body {
@@ -1468,7 +1549,8 @@ impl<'a> Checker<'a> {
             name: function.name.clone(),
             type_params: self.type_params.to_vec(),
             where_clause: function.where_clause.clone(),
-            arity: function.parameters.len(),
+            required: required_param_count(&function.parameters),
+            defaults,
             body,
         })
     }
@@ -1479,14 +1561,19 @@ impl<'a> Checker<'a> {
             (self.depth, method.receiver_type.clone()),
         );
         self.depth += 1;
+        let mut defaults = Vec::with_capacity(1 + method.parameters.len());
+        defaults.push(None);
         for param in &method.parameters {
-            if self
-                .locals
-                .insert(param.name.as_str(), (self.depth, param.ty.clone()))
-                .is_some()
-            {
+            if self.locals.contains_key(param.name.as_str()) {
                 return Err((param.span, TypeError::DuplicateParameter(param.name.clone())));
             }
+            let default = match &param.default {
+                Some(expr) => Some(self.expect_expr(expr, &param.ty)?),
+                None => None,
+            };
+            defaults.push(default);
+            self.locals
+                .insert(param.name.as_str(), (self.depth, param.ty.clone()));
             self.depth += 1;
         }
         let body = self.expect_expr(&method.body, &method.returns)?;
@@ -1494,7 +1581,8 @@ impl<'a> Checker<'a> {
             name: method_declaration_name(method),
             type_params: Vec::new(),
             where_clause: None,
-            arity: 1 + method.parameters.len(),
+            required: 1 + required_param_count(&method.parameters),
+            defaults,
             body,
         })
     }
@@ -1579,13 +1667,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn instantiate_function(
+    fn resolve_type_args(
         &self,
-        decl_id: DeclId,
+        sig: &FunctionSig,
         raw_type_args: &[Type],
         span: Span,
-    ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
-        let sig = self.view.signature(decl_id);
+    ) -> Result<Vec<Type>, (Span, TypeError)> {
         if raw_type_args.len() > sig.type_params.len() {
             return Err((
                 span,
@@ -1632,6 +1719,17 @@ impl<'a> Checker<'a> {
                 },
             ));
         }
+        Ok(type_args)
+    }
+
+    fn instantiate_function(
+        &self,
+        decl_id: DeclId,
+        raw_type_args: &[Type],
+        span: Span,
+    ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
+        let sig = self.view.signature(decl_id);
+        let type_args = self.resolve_type_args(sig, raw_type_args, span)?;
         let concrete_params = sig
             .parameters
             .iter()
@@ -1650,6 +1748,94 @@ impl<'a> Checker<'a> {
         ))
     }
 
+    fn call_instantiated_function(
+        &mut self,
+        decl_id: DeclId,
+        raw_type_args: &[Type],
+        arguments: &'a [Expr],
+        call_span: Span,
+    ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
+        let sig = self.view.signature(decl_id).clone();
+        let type_args = self.resolve_type_args(&sig, raw_type_args, call_span)?;
+        if arguments.len() < sig.required || arguments.len() > sig.parameters.len() {
+            return Err(arity_mismatch(
+                sig.required,
+                sig.parameters.len(),
+                arguments.len(),
+                call_span,
+            ));
+        }
+        let checked_args = arguments
+            .iter()
+            .zip(&sig.parameters)
+            .map(|(arg, param)| {
+                let expected = substitute_type(param, &sig.type_params, &type_args);
+                self.expect_expr(arg, &expected)
+            })
+            .collect::<Result<_, _>>()?;
+        let returns = substitute_type(&sig.returns, &sig.type_params, &type_args);
+        Ok((
+            ModuleExpr::Call(
+                Box::new(ModuleExpr::Function(
+                    InstanceKey {
+                        decl: decl_id,
+                        type_args,
+                    },
+                    call_span,
+                )),
+                checked_args,
+                call_span,
+            ),
+            returns,
+        ))
+    }
+
+    fn call_plain_function(
+        &mut self,
+        decl_id: DeclId,
+        arguments: &'a [Expr],
+        call_span: Span,
+    ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
+        let sig = self.view.signature(decl_id).clone();
+        if arguments.len() < sig.required || arguments.len() > sig.parameters.len() {
+            return Err(arity_mismatch(
+                sig.required,
+                sig.parameters.len(),
+                arguments.len(),
+                call_span,
+            ));
+        }
+        if let Some(where_expr) = &sig.where_clause
+            && eval_where(where_expr, &[], &[]) == Some(false)
+        {
+            return Err((
+                call_span,
+                TypeError::WhereUnsatisfied {
+                    function: sig.name,
+                },
+            ));
+        }
+        let checked_args = arguments
+            .iter()
+            .zip(&sig.parameters)
+            .map(|(arg, ty)| self.expect_expr(arg, ty))
+            .collect::<Result<_, _>>()?;
+        Ok((
+            ModuleExpr::Call(
+                Box::new(ModuleExpr::Function(
+                    InstanceKey {
+                        decl: decl_id,
+                        type_args: Vec::new(),
+                    },
+                    call_span,
+                )),
+                checked_args,
+                call_span,
+            ),
+            sig.returns,
+        ))
+    }
+
     fn call_generic_function(
         &mut self,
         decl_id: DeclId,
@@ -1657,13 +1843,12 @@ impl<'a> Checker<'a> {
         call_span: Span,
     ) -> Result<(ModuleExpr, Type), (Span, TypeError)> {
         let sig = self.view.signature(decl_id).clone();
-        if sig.parameters.len() != arguments.len() {
-            return Err((
+        if arguments.len() < sig.required || arguments.len() > sig.parameters.len() {
+            return Err(arity_mismatch(
+                sig.required,
+                sig.parameters.len(),
+                arguments.len(),
                 call_span,
-                TypeError::Arity {
-                    expected: sig.parameters.len(),
-                    actual: arguments.len(),
-                },
             ));
         }
 
@@ -2095,6 +2280,17 @@ impl<'a> Checker<'a> {
                     if !sig.type_params.is_empty() {
                         return self.call_generic_function(decl_id, arguments, expr.span);
                     }
+                    return self.call_plain_function(decl_id, arguments, expr.span);
+                }
+                if let ExprKind::Instantiate(target, raw_type_args) = &callee.kind
+                    && let Some(decl_id) = self.resolve_function_target(target)?
+                {
+                    return self.call_instantiated_function(
+                        decl_id,
+                        raw_type_args,
+                        arguments,
+                        expr.span,
+                    );
                 }
                 let (checked_callee, ty) = self.expression(callee, None)?;
                 let Type::Function(parameters, returns) = ty else {
@@ -2124,36 +2320,7 @@ impl<'a> Checker<'a> {
                             if !sig.type_params.is_empty() {
                                 return self.call_generic_function(id, arguments, expr.span);
                             }
-                            let parameters = sig.parameters.clone();
-                            let returns = sig.returns.clone();
-                            if parameters.len() != arguments.len() {
-                                return Err((
-                                    expr.span,
-                                    TypeError::Arity {
-                                        expected: parameters.len(),
-                                        actual: arguments.len(),
-                                    },
-                                ));
-                            }
-                            let checked_args = arguments
-                                .iter()
-                                .zip(&parameters)
-                                .map(|(arg, ty)| self.expect_expr(arg, ty))
-                                .collect::<Result<_, _>>()?;
-                            return Ok((
-                                M::Call(
-                                    Box::new(M::Function(
-                                        InstanceKey {
-                                            decl: id,
-                                            type_args: Vec::new(),
-                                        },
-                                        expr.span,
-                                    )),
-                                    checked_args,
-                                    expr.span,
-                                ),
-                                returns,
-                            ));
+                            return self.call_plain_function(id, arguments, expr.span);
                         }
                         Some(Binding::Namespace(_)) => {
                             return Err((
@@ -2179,13 +2346,14 @@ impl<'a> Checker<'a> {
                     .methods
                     .get(&(receiver_ty.clone(), method_name.clone()))
                 {
-                    if entry.parameters.len() != arguments.len() {
-                        return Err((
+                    if arguments.len() < entry.required
+                        || arguments.len() > entry.parameters.len()
+                    {
+                        return Err(arity_mismatch(
+                            entry.required,
+                            entry.parameters.len(),
+                            arguments.len(),
                             expr.span,
-                            TypeError::Arity {
-                                expected: entry.parameters.len(),
-                                actual: arguments.len(),
-                            },
                         ));
                     }
                     let mut call_args = Vec::with_capacity(1 + arguments.len());
@@ -2655,6 +2823,7 @@ fn expect(expected: &Type, actual: Type, span: Span) -> Result<(), (Span, TypeEr
 pub(crate) enum SignatureMismatch {
     TypeArity { expected: usize, actual: usize },
     TypeParamDefault { param_index: usize },
+    ValueDefaults { expected: usize, actual: usize },
     Signature { expected: String, actual: String },
     WhereClause,
 }
@@ -2804,6 +2973,13 @@ pub(crate) fn validate_replacement_signatures(
         if *from_def != mapped_to {
             return Err(SignatureMismatch::TypeParamDefault { param_index: idx });
         }
+    }
+
+    if from_sig.required != to_sig.required {
+        return Err(SignatureMismatch::ValueDefaults {
+            expected: from_sig.required,
+            actual: to_sig.required,
+        });
     }
 
     let mapped_to_params: Vec<Type> = to_sig

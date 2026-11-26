@@ -46,6 +46,9 @@
 | 接收者 | 方法 | 签名 |
 | --- | --- | --- |
 | `Int` / `Float` / `Bool` | `to_string` | `(self) -> String` |
+| `String` | `starts_with` / `ends_with` / `contains` | `(self, String) -> Bool` |
+| `String` | `replace` | `(self, String, String) -> String`（替换全部匹配） |
+| `String` | `trim` | `(self) -> String` |
 | `List<T>` | `len` | `(self) -> Int` |
 | `Json` | `get` / `at` | `(self, String) -> Json` / `(self, Int) -> Json` |
 | `Json` | `as_string` / `as_int` / `as_bool` | 带默认回退值的类型提取 |

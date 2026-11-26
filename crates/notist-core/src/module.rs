@@ -114,6 +114,12 @@ pub enum ReplacementErrorKind {
         to: String,
         param_index: usize,
     },
+    ValueDefaultsMismatch {
+        from: String,
+        to: String,
+        expected: usize,
+        actual: usize,
+    },
     SignatureMismatch {
         from: String,
         to: String,
@@ -153,6 +159,14 @@ pub fn format_replacement_error(error: &ReplacementError) -> String {
             param_index,
         } => format!(
             "replacement #{idx}: `{to}` has a different default on type parameter #{param_index} than `{from}`"
+        ),
+        ReplacementErrorKind::ValueDefaultsMismatch {
+            from,
+            to,
+            expected,
+            actual,
+        } => format!(
+            "replacement #{idx}: `{to}` requires {actual} parameter(s), expected {expected} to match `{from}`"
         ),
         ReplacementErrorKind::SignatureMismatch {
             from,
@@ -354,6 +368,14 @@ impl CheckedProject {
                             from: from_label,
                             to: to_label,
                             param_index,
+                        }
+                    }
+                    SignatureMismatch::ValueDefaults { expected, actual } => {
+                        ReplacementErrorKind::ValueDefaultsMismatch {
+                            from: from_label,
+                            to: to_label,
+                            expected,
+                            actual,
                         }
                     }
                     SignatureMismatch::Signature { expected, actual } => {

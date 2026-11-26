@@ -19,6 +19,7 @@ fn def<const N: usize>(
             .map(|(name, ty)| Param {
                 name: name.into(),
                 ty,
+                default: None,
                 span: Span::DUMMY,
             })
             .collect(),
@@ -48,6 +49,7 @@ fn method<const N: usize>(
             .map(|(name, ty)| Param {
                 name: name.into(),
                 ty,
+                default: None,
                 span: Span::DUMMY,
             })
             .collect(),

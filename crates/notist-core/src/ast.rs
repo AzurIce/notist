@@ -136,6 +136,10 @@ pub enum WhereExprKind {
 pub struct Param {
     pub name: String,
     pub ty: Type,
+    /// Optional value used when the argument is omitted at a call site.
+    /// Defaults are trailing-only and are evaluated in the callee frame, so
+    /// they may refer to parameters declared before this one.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 

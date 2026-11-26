@@ -39,6 +39,12 @@ pub enum BuiltinFn {
     IntToString,
     FloatToString,
     BoolToString,
+    // String methods
+    StringStartsWith,
+    StringEndsWith,
+    StringContains,
+    StringReplace,
+    StringTrim,
     // List methods
     ListLen,
     // Json methods
@@ -502,11 +508,13 @@ fn build_notist_builtins() -> NotistBuiltins {
         names.push(spec.name);
         display_signatures.push(spec.display_sig.to_owned());
         exports.insert(spec.name.to_owned(), Binding::Function(spec.id));
+        let required = spec.params.len();
         decls.push(CheckedDecl {
             name: spec.name.to_owned(),
             type_params: spec.type_params.clone(),
             where_clause: spec.where_clause.clone(),
-            arity: spec.params.len(),
+            required,
+            defaults: spec.params.iter().map(|_| None).collect(),
             body: spec.body,
         });
         signatures.push(FunctionSig {
@@ -514,6 +522,7 @@ fn build_notist_builtins() -> NotistBuiltins {
             type_params: spec.type_params,
             type_param_defaults: spec.type_param_defaults,
             parameters: spec.params,
+            required,
             returns: spec.returns,
             where_clause: spec.where_clause,
         });
@@ -537,6 +546,11 @@ pub(crate) fn lookup_builtin_method(
         (Int, "to_string") => Some((BuiltinFn::IntToString, vec![], String)),
         (Float, "to_string") => Some((BuiltinFn::FloatToString, vec![], String)),
         (Bool, "to_string") => Some((BuiltinFn::BoolToString, vec![], String)),
+        (String, "starts_with") => Some((BuiltinFn::StringStartsWith, vec![String], Bool)),
+        (String, "ends_with") => Some((BuiltinFn::StringEndsWith, vec![String], Bool)),
+        (String, "contains") => Some((BuiltinFn::StringContains, vec![String], Bool)),
+        (String, "replace") => Some((BuiltinFn::StringReplace, vec![String, String], String)),
+        (String, "trim") => Some((BuiltinFn::StringTrim, vec![], String)),
         (List(_), "len") => Some((BuiltinFn::ListLen, vec![], Int)),
         (Json, "get") => Some((BuiltinFn::JsonGet, vec![String], Json)),
         (Json, "at") => Some((BuiltinFn::JsonAt, vec![Int], Json)),
@@ -581,6 +595,13 @@ pub(crate) fn builtin_methods_for_type(
 ) -> Vec<(&'static str, BuiltinFn, Vec<Type>, Type)> {
     let names: &[&str] = match receiver {
         Type::Int | Type::Float | Type::Bool => &["to_string"],
+        Type::String => &[
+            "starts_with",
+            "ends_with",
+            "contains",
+            "replace",
+            "trim",
+        ],
         Type::List(_) => &["len"],
         Type::Json => &[
             "get",

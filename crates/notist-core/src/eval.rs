@@ -72,12 +72,12 @@ pub(crate) fn eval_expr_with_shared(
 }
 
 impl CheckedProgram {
-    /// Execute a zero-argument entry in a fresh session without an external data host.
+    /// Execute an entry with no required arguments in a fresh session without an external data host.
     pub fn run(&self, entry: &str) -> Result<Value, ExecutionError> {
         self.run_with_host(entry, "", &NoDataHost)
     }
 
-    /// Execute a zero-argument entry with a read-only external `DataHost`.
+    /// Execute an entry with no required arguments using a read-only external `DataHost`.
     pub fn run_with_host(
         &self,
         entry: &str,
@@ -89,10 +89,23 @@ impl CheckedProgram {
             .get(entry)
             .ok_or_else(|| ExecutionError::UnknownEntry(entry.into()))?;
         let function = &self.functions[id.0];
-        if function.arity != 0 {
-            return Err(ExecutionError::EntryRequiresArguments(function.arity));
+        if function.required != 0 {
+            return Err(ExecutionError::EntryRequiresArguments(function.required));
         }
-        eval_expr_with_shared(&self.functions, &[], &function.body, doc_path, host)
+        let ctx = EvalCtx {
+            shared_functions: &self.functions,
+            extra_functions: &[],
+            doc_path,
+            host,
+        };
+        call_value(
+            &ctx,
+            Value::Function(FunctionValue(id)),
+            Vec::new(),
+            &mut Vec::new(),
+            0,
+            Span::DUMMY,
+        )
     }
 }
 
@@ -331,11 +344,25 @@ fn call_value(
     }
     match callee {
         Value::Function(FunctionValue(id)) => {
+            let function = ctx.function(id);
             let frame = stack.len();
+            let supplied = values.len();
             stack.extend(values);
+            for default in &function.defaults[supplied..] {
+                let Some(default) = default else {
+                    unreachable!("checked call arity")
+                };
+                match evaluate(ctx, default, stack, frame, depth + 1, call_span) {
+                    Ok(value) => stack.push(value),
+                    Err(error) => {
+                        stack.truncate(frame);
+                        return Err(error);
+                    }
+                }
+            }
             let result = evaluate(
                 ctx,
-                &ctx.function(id).body,
+                &function.body,
                 stack,
                 frame,
                 depth + 1,
@@ -628,6 +655,28 @@ fn eval_builtin(
         BuiltinFn::IntToString => Value::String(Arc::from(take_int(&mut args).to_string())),
         BuiltinFn::FloatToString => Value::String(Arc::from(take_float(&mut args).to_string())),
         BuiltinFn::BoolToString => Value::String(Arc::from(take_bool(&mut args).to_string())),
+        BuiltinFn::StringStartsWith => {
+            let text = take_string(&mut args);
+            let prefix = take_string(&mut args);
+            Value::Bool(text.starts_with(&*prefix))
+        }
+        BuiltinFn::StringEndsWith => {
+            let text = take_string(&mut args);
+            let suffix = take_string(&mut args);
+            Value::Bool(text.ends_with(&*suffix))
+        }
+        BuiltinFn::StringContains => {
+            let text = take_string(&mut args);
+            let needle = take_string(&mut args);
+            Value::Bool(text.contains(&*needle))
+        }
+        BuiltinFn::StringReplace => {
+            let text = take_string(&mut args);
+            let from = take_string(&mut args);
+            let to = take_string(&mut args);
+            Value::String(Arc::from(text.replace(&*from, &*to)))
+        }
+        BuiltinFn::StringTrim => Value::String(Arc::from(take_string(&mut args).trim())),
         BuiltinFn::ListLen => Value::Int(take_list(&mut args).len() as i64),
         BuiltinFn::JsonGet => {
             let json = take_json(&mut args);

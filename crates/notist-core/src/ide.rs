@@ -6,8 +6,8 @@
 //! hovers, go-to-definition targets, and type-aware completions remain queryable.
 
 use crate::ast::{
-    AttrLiteral, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, Import, ImportKind,
-    InlinePiece, Method, Module, Span, Type, TypePattern, WhereExpr, WhereExprKind,
+    AttrLiteral, BinaryOp, BlockPiece, DOC_ENTRY, Decl, Expr, ExprKind, Function, Import, ImportKind,
+    InlinePiece, Method, Module, Span, Type, TypePattern, UnaryOp, WhereExpr, WhereExprKind,
 };
 use crate::builtin::{builtin_methods_for_type, lookup_builtin_method, notist_builtins};
 use crate::check::{
@@ -1799,6 +1799,10 @@ fn format_function_signature(func: &Function) -> String {
         out.push_str(&p.name);
         out.push_str(": ");
         out.push_str(&format_type(&p.ty));
+        if let Some(default) = &p.default {
+            out.push_str(" = ");
+            out.push_str(&format_expr(default));
+        }
     }
     out.push_str(") -> ");
     out.push_str(&format_type(&func.returns));
@@ -1821,10 +1825,84 @@ fn format_method_signature(method: &Method) -> String {
         out.push_str(&p.name);
         out.push_str(": ");
         out.push_str(&format_type(&p.ty));
+        if let Some(default) = &p.default {
+            out.push_str(" = ");
+            out.push_str(&format_expr(default));
+        }
     }
     out.push_str(") -> ");
     out.push_str(&format_type(&method.returns));
     out
+}
+
+/// Compact expression display for hover signatures; complex defaults fall back
+/// to `...` rather than duplicating the full formatter.
+fn format_expr(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Unit | ExprKind::EmptyParen => "()".into(),
+        ExprKind::Bool(value) => value.to_string(),
+        ExprKind::Int(value) => value.to_string(),
+        ExprKind::Float(value) => value.to_string(),
+        ExprKind::String(value) => format!("{value:?}"),
+        ExprKind::InlineLiteral(_) => "[...]".into(),
+        ExprKind::BlockLiteral(_) => "[ ... ]".into(),
+        ExprKind::ListLiteral(items) => {
+            let items = items
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if items.is_empty() {
+                "()".into()
+            } else {
+                format!("({items},)")
+            }
+        }
+        ExprKind::Name(name) => name.clone(),
+        ExprKind::Member(base, member) => format!("{}.{member}", format_expr(base)),
+        ExprKind::Unary(op, operand) => {
+            let op = match op {
+                UnaryOp::Not => "!",
+                UnaryOp::Neg => "-",
+            };
+            format!("{op}{}", format_expr(operand))
+        }
+        ExprKind::Binary(op, left, right) => {
+            let op = match op {
+                BinaryOp::Or => "||",
+                BinaryOp::And => "&&",
+                BinaryOp::Eq => "==",
+                BinaryOp::Ne => "!=",
+                BinaryOp::Lt => "<",
+                BinaryOp::Le => "<=",
+                BinaryOp::Gt => ">",
+                BinaryOp::Ge => ">=",
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Mul => "*",
+                BinaryOp::Div => "/",
+                BinaryOp::Rem => "%",
+            };
+            format!("{} {op} {}", format_expr(left), format_expr(right))
+        }
+        ExprKind::Call(callee, args) => {
+            let args = args
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({args})", format_expr(callee))
+        }
+        ExprKind::MethodCall(receiver, name, args) => {
+            let args = args
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}.{name}({args})", format_expr(receiver))
+        }
+        _ => "...".into(),
+    }
 }
 
 fn format_where(expr: &WhereExpr) -> String {

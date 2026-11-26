@@ -1,4 +1,4 @@
-use notc::ide::{CompletionKind, SymbolKind, WorkspaceAnalysis};
+use notist_core::ide::{CompletionKind, SymbolKind, WorkspaceAnalysis};
 
 #[test]
 fn ide_provides_cross_file_hover_goto_def_symbols_and_type_aware_completions() {

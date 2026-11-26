@@ -4,7 +4,7 @@
 //! document title, prefix/suffix links, part headings, chapter lists
 //! and separators follow mdBook's SUMMARY structure. Directory discovery,
 //! unlinked chapters and collapsed branches extend the chapter-list syntax.
-use notc::{AttrValue, Block, BlockKind, Inline, InlineKind};
+use notist_core::{AttrValue, Block, BlockKind, Inline, InlineKind};
 use notist::{Diagnostic, Phase, Resources, TextRange, resources::ResourceKind};
 use std::{
     collections::BTreeSet,
@@ -69,7 +69,7 @@ impl Plan {
     }
 }
 
-fn to_range(span: notc::Span) -> TextRange {
+fn to_range(span: notist_core::Span) -> TextRange {
     TextRange::new(span.start.into(), span.end.into())
 }
 
@@ -268,7 +268,7 @@ fn entry(item: &Block, errors: &mut Vec<Diagnostic>) -> Option<Entry> {
     })
 }
 
-/// Interpret the parsed `notc::Block` document as a book structure declaration.
+/// Interpret the parsed `notist_core::Block` document as a book structure declaration.
 pub(crate) fn interpret(document: &Block) -> Result<Vec<Entry>, Vec<Diagnostic>> {
     let mut blocks = Vec::new();
     flatten(document, &mut blocks);

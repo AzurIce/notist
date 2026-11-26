@@ -1,5 +1,5 @@
 [package]
-name = "notc"
+name = "notist-core"
 version = "0.1.0"
 edition = "2024"
 description = "Notist's pure-library .not language core, frontend-agnostic content IR, and built-in Markdown document frontend"

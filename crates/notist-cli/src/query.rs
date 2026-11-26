@@ -1,6 +1,6 @@
-//! Serialization and selector queries over evaluated `notc` content trees.
+//! Serialization and selector queries over evaluated `notist-core` content trees.
 
-use notc::{AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span};
+use notist_core::{AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span};
 use serde_json::{Map, Value, json};
 
 fn attr_value_json(v: &AttrValue) -> Value {
@@ -13,7 +13,7 @@ fn attr_value_json(v: &AttrValue) -> Value {
     }
 }
 
-fn attrs_json(attrs: &notc::Attrs) -> Value {
+fn attrs_json(attrs: &notist_core::Attrs) -> Value {
     let mut map = Map::new();
     for (k, v) in attrs.entries() {
         map.insert(k.to_string(), attr_value_json(v));
@@ -200,10 +200,10 @@ pub fn serialize_block(block: &Block, source: &str) -> Value {
                     alignments
                         .iter()
                         .map(|a| match a {
-                            notc::TableAlign::None => json!("none"),
-                            notc::TableAlign::Left => json!("left"),
-                            notc::TableAlign::Center => json!("center"),
-                            notc::TableAlign::Right => json!("right"),
+                            notist_core::TableAlign::None => json!("none"),
+                            notist_core::TableAlign::Left => json!("left"),
+                            notist_core::TableAlign::Center => json!("center"),
+                            notist_core::TableAlign::Right => json!("right"),
                         })
                         .collect(),
                 ),
@@ -230,11 +230,11 @@ pub fn serialize_block(block: &Block, source: &str) -> Value {
     Value::Object(obj)
 }
 
-fn matches_attr_id(attrs: &notc::Attrs, needle: &str) -> bool {
+fn matches_attr_id(attrs: &notist_core::Attrs, needle: &str) -> bool {
     matches!(attrs.get("id"), Some(AttrValue::String(id)) if id.as_ref() == needle)
 }
 
-fn matches_attr_tag(attrs: &notc::Attrs, needle: &str) -> bool {
+fn matches_attr_tag(attrs: &notist_core::Attrs, needle: &str) -> bool {
     match attrs.get("tags").or_else(|| attrs.get("tag")) {
         Some(AttrValue::String(s)) => s.split(',').map(str::trim).any(|t| t == needle),
         Some(AttrValue::List(items)) => items
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn query_selects_by_id_tag_ctor_and_level_on_notc_block() {
         let source = "@(id: \"x\", tags: \"a, b\")_目标_\n\n**粗**\n";
-        let project = notc::check_project(&[("test.md", source)]).expect("checks");
+        let project = notist_core::check_project(&[("test.md", source)]).expect("checks");
         let block = project.eval_document("test.md").expect("evaluates");
 
         let by_id: Value = serde_json::from_str(&select_json(&block, "id:x", source).unwrap()).unwrap();
@@ -409,7 +409,7 @@ mod tests {
     fn output_serialization_handles_deep_notc_blocks() {
         let mut block = Block::empty(Span::DUMMY);
         for _ in 0..80 {
-            block = Block::new(BlockKind::Div(block), notc::Attrs::empty(), Span::DUMMY);
+            block = Block::new(BlockKind::Div(block), notist_core::Attrs::empty(), Span::DUMMY);
         }
         let json = serde_json::to_string(&serialize_block(&block, "")).unwrap();
         assert!(json.contains("\"ctor\":\"div\""));

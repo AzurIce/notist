@@ -12,7 +12,7 @@ default = ["lsp"]
 lsp = ["dep:tower-lsp", "dep:tokio"]
 
 [dependencies]
-notc = { path = "../notc" }
+notist-core = { path = "../notist-core" }
 notist = { path = "../.." }
 notist-html = { path = "../notist-html", features = ["highlight"] }
 notist-ssg = { path = "../notist-ssg" }

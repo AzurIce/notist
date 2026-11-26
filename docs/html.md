@@ -2,9 +2,9 @@
 
 # HTML 渲染
 
-HTML 渲染属于后端展示层，独立于 `notc` 语言内核，直接消费求值并 `sectionize()` 后的不可变 `notc::Block` 树：
+HTML 渲染属于后端展示层，独立于 `notist-core` 语言内核，直接消费求值并 `sectionize()` 后的不可变 `notist_core::Block` 树：
 
-| `notc` 节点 | HTML 输出 |
+| `notist-core` 节点 | HTML 输出 |
 | --- | --- |
 | `Section` | `<section id="...">...</section>`（`sectionize()` 将标题显式 `@(id: ...)` 与其它属性提升到 `<section>`，否则自动生成唯一 slug） |
 | `Heading` | `<h1>`..`<h6>`（位于 `Section` 内时 `id` 在外层 `<section>` 上） |

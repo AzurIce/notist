@@ -1,6 +1,6 @@
-use notc::{BinaryOp, ExecutionError, Type, TypeError, UnaryOp, Value, check, parse};
+use notist_core::{BinaryOp, ExecutionError, Type, TypeError, UnaryOp, Value, check, parse};
 
-fn slice(source: &str, span: notc::Span) -> &str {
+fn slice(source: &str, span: notist_core::Span) -> &str {
     &source[span.start as usize..span.end as usize]
 }
 

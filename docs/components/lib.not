@@ -1,4 +1,4 @@
-// Pure external content declarations — zero HTML or JS knowledge inside `notc`.
+// Pure external content declarations — zero HTML or JS knowledge inside `notist-core`.
 // When building an SSG site, `notist-ssg` resolves matching `./badge.js`,
 // `./panel/index.js`, etc. by convention as Web Components.
 

@@ -1,4 +1,4 @@
-use notc::{BinaryOp, ProjectDiagnosticKind, Type, TypeError, Value, check, check_project, parse};
+use notist_core::{BinaryOp, ProjectDiagnosticKind, Type, TypeError, Value, check, check_project, parse};
 
 #[test]
 fn checks_uncalled_generic_bodies_and_every_match_arm_at_definition_site() {

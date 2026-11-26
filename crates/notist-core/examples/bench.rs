@@ -3,7 +3,7 @@
 //! Run with:
 //!   cargo run --release -p notc --example bench
 
-use notc::{Value, check, parse};
+use notist_core::{Value, check, parse};
 use std::fmt::Write as _;
 use std::hint::black_box;
 use std::time::{Duration, Instant};

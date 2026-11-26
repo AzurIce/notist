@@ -1,4 +1,4 @@
-use notc::{AttrValue, BlockKind, InlineKind, Type, TypeError, Value, check, parse};
+use notist_core::{AttrValue, BlockKind, InlineKind, Type, TypeError, Value, check, parse};
 
 fn eval_entry(source: &str, entry: &str) -> Value {
     let parsed = parse(source);
@@ -475,7 +475,7 @@ fn plain_text_inline_attrs_and_single_line_block_attr_expr() {
     Body text.
 ]
 "#;
-    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let project = notist_core::check_project(&[("index.md", doc_src)]).expect("checks");
     let doc = project.eval_document("index.md").expect("evaluates");
     let BlockKind::Fragment(children) = &doc.node().kind else {
         panic!("expected fragment");
@@ -519,7 +519,7 @@ fn ast_level_attrs_support_multiline_list_items_soft_breaks_stacking_and_lists()
 @(k: "v")soft
 wrapped
 "#;
-    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let project = notist_core::check_project(&[("index.md", doc_src)]).expect("checks");
     let doc = project.eval_document("index.md").expect("evaluates");
     assert_eq!(
         doc.node().attrs.get("tags"),
@@ -579,7 +579,7 @@ Text with ~~deleted~~ and #strike[also deleted] and #underline[underlined].
 | :--- | :---: | ---: | --- |
 | a | b | c | d |
 "#;
-    let project = notc::check_project(&[("index.md", doc_src)]).expect("checks");
+    let project = notist_core::check_project(&[("index.md", doc_src)]).expect("checks");
     let doc = project.eval_document("index.md").expect("evaluates");
     let BlockKind::Fragment(children) = &doc.node().kind else {
         panic!("expected fragment, got {doc}");
@@ -633,10 +633,10 @@ Text with ~~deleted~~ and #strike[also deleted] and #underline[underlined].
     assert_eq!(
         alignments.as_ref(),
         &[
-            notc::TableAlign::Left,
-            notc::TableAlign::Center,
-            notc::TableAlign::Right,
-            notc::TableAlign::None,
+            notist_core::TableAlign::Left,
+            notist_core::TableAlign::Center,
+            notist_core::TableAlign::Right,
+            notist_core::TableAlign::None,
         ]
     );
 }

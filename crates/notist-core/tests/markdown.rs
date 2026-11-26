@@ -1,4 +1,4 @@
-use notc::{
+use notist_core::{
     AttrValue, BlockKind, InlineKind, MarkdownFrontend, TableAlign, parse_file_with_frontends,
     parse_markdown_document,
 };
@@ -37,12 +37,12 @@ $$
 
 [r1]: https://example.com#L10
 "#;
-    let parsed_ui = notc::parse(ui);
+    let parsed_ui = notist_core::parse(ui);
     assert!(parsed_ui.diagnostics.is_empty(), "{:?}", parsed_ui.diagnostics);
     let parsed_md = parse_markdown_document(md);
     assert!(parsed_md.diagnostics.is_empty(), "{:?}", parsed_md.diagnostics);
 
-    let project = notc::check_parsed_modules(&[
+    let project = notist_core::check_parsed_modules(&[
         ("ui.not", &parsed_ui.program.root),
         ("post.md", &parsed_md.program.root),
     ])
@@ -90,8 +90,8 @@ fn markdown_supports_inline_and_block_attrs_plus_mid_doc_import_and_ide_analysis
     let parsed_md = parse_file_with_frontends("doc.md", md, &[&MarkdownFrontend]);
     assert!(parsed_md.diagnostics.is_empty(), "{:?}", parsed_md.diagnostics);
 
-    let parsed_ui = notc::parse(ui);
-    let project = notc::check_parsed_modules(&[
+    let parsed_ui = notist_core::parse(ui);
+    let project = notist_core::check_parsed_modules(&[
         ("ui.not", &parsed_ui.program.root),
         ("doc.md", &parsed_md.program.root),
     ])
@@ -115,7 +115,7 @@ fn markdown_supports_inline_and_block_attrs_plus_mid_doc_import_and_ide_analysis
     );
     assert_eq!(label.plain_text().trim(), "Section Group");
 
-    let analysis = notc::ide::WorkspaceAnalysis::analyze(&[("ui.not", ui), ("doc.md", md)]);
+    let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&[("ui.not", ui), ("doc.md", md)]);
     assert!(
         analysis.diagnostics().is_empty(),
         "ide diagnostics: {:?}",
@@ -139,7 +139,7 @@ Some ~~removed~~ text.
 "#;
     let parsed = parse_markdown_document(md);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let project = notc::check_parsed_modules(&[("post.md", &parsed.program.root)])
+    let project = notist_core::check_parsed_modules(&[("post.md", &parsed.program.root)])
         .expect("checks cleanly");
     let doc = project.eval_document("post.md").expect("evaluates");
     let BlockKind::Fragment(children) = &doc.node().kind else {

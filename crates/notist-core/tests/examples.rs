@@ -1,4 +1,4 @@
-use notc::{Type, TypeError, Value, check, check_project, parse};
+use notist_core::{Type, TypeError, Value, check, check_project, parse};
 
 #[test]
 fn multi_file_example_runs_main() {

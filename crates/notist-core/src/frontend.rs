@@ -1,6 +1,6 @@
 //! Pluggable document frontend boundary and fine-grained one-way embedded code API.
 //!
-//! `notc`'s AST IR (`BlockPiece` / `InlinePiece` / `Module`) and content model
+//! `notist-core`'s AST IR (`BlockPiece` / `InlinePiece` / `Module`) and content model
 //! (`Block` / `Inline`) are strictly frontend-agnostic. Markdown (`.md` / `.markdown`)
 //! is shipped as the built-in default [`DocumentFrontend`] ([`MarkdownFrontend`]),
 //! and any other markup language can plug in by implementing [`DocumentFrontend`]
@@ -18,17 +18,17 @@ use crate::parser::{
 pub use crate::markdown::{MarkdownFrontend, parse_markdown_document};
 
 /// A pluggable document-level markup frontend that parses source text into a
-/// standard `notc::Module` AST (with any `Decl::Import`s plus `fn __doc__() -> Block`).
+/// standard `notist_core::Module` AST (with any `Decl::Import`s plus `fn __doc__() -> Block`).
 pub trait DocumentFrontend: Send + Sync {
     /// File extensions (without leading dot, e.g. `["md", "markdown"]`) handled by this frontend.
     fn extensions(&self) -> &[&str];
 
-    /// Parse a document into a `notc::Module` AST with exact source spans.
+    /// Parse a document into a `notist_core::Module` AST with exact source spans.
     fn parse_document(&self, source: &str) -> ParseResult;
 }
 
 /// Package a frontend's parsed imports, optional document-level attributes, and
-/// top-level block pieces into a standard `notc::Module` exporting `fn __doc__() -> Block`.
+/// top-level block pieces into a standard `notist_core::Module` exporting `fn __doc__() -> Block`.
 ///
 /// Runs the unified AST-level attribute attachment pass so `@(...)` annotations
 /// attach identically across all [`DocumentFrontend`] implementations.

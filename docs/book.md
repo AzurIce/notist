@@ -18,7 +18,7 @@ select = true
 ```
 
 - `select = true` 时，仅发布 `SUMMARY.md` 中声明的页面与目录子树；否则所有文档照常发布，`SUMMARY.md` 仅提供侧边栏导航、面包屑与上下页链接。
-- `SUMMARY.md` 本身作为声明式数据由 `notc` 解析，不作为页面发布。
+- `SUMMARY.md` 本身作为声明式数据由 `notist-core` 解析，不作为页面发布。
 
 ## `SUMMARY.md` 写法
 

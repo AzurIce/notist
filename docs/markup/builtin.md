@@ -2,7 +2,7 @@
 
 # 内容模型与内置方法
 
-`notc` 采用**不可变单节点内容模型**，所有内容值底层均由 `Arc` 共享指针支撑：
+`notist-core` 采用**不可变单节点内容模型**，所有内容值底层均由 `Arc` 共享指针支撑：
 
 - `Inline`（`Arc<InlineNode>`）：`Fragment`、`Text`、`Strong`、`Emph`、`Strike`、`Underline`、`Raw`、`Math`、`Link`、`Image`、`Custom`
 - `Block`（`Arc<BlockNode>`）：`Fragment`、`Paragraph`、`Heading`、`Callout`、`CodeBlock`、`List`（含 `ordered` 与 `start`）、`Quote`、`Divider`、`Table`（含列对齐 `alignments`）、`Math`、`Div`、`SectionBox`、`Section`、`Custom`

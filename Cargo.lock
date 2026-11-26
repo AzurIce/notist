@@ -927,13 +927,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notc"
-version = "0.1.0"
-dependencies = [
- "rushdown",
-]
-
-[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -981,9 +974,9 @@ dependencies = [
  "codespan-reporting",
  "globset",
  "indicatif",
- "notc",
  "notify",
  "notist",
+ "notist-core",
  "notist-html",
  "notist-ssg",
  "percent-encoding",
@@ -995,6 +988,13 @@ dependencies = [
  "toml",
  "tower-lsp",
  "url",
+]
+
+[[package]]
+name = "notist-core"
+version = "0.1.0"
+dependencies = [
+ "rushdown",
 ]
 
 [[package]]
@@ -1029,8 +1029,8 @@ dependencies = [
  "base64",
  "globset",
  "grass",
- "notc",
  "notist",
+ "notist-core",
  "notist-html",
  "percent-encoding",
  "relative-path",

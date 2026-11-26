@@ -390,10 +390,10 @@ fn load_notc_graph(
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let parsed = notc::parse_file(&hint, &src);
+        let parsed = notist_core::parse_file(&hint, &src);
         let parent = fs_path.parent().unwrap_or(Path::new("."));
         for decl in &parsed.program.root.declarations {
-            if let notc::Decl::Import(import) = decl {
+            if let notist_core::Decl::Import(import) = decl {
                 let target_fs = notist::resources::normalize(&parent.join(&import.path));
                 if visited.insert(target_fs.clone())
                     && let Ok(target_src) = std::fs::read_to_string(&target_fs)
@@ -455,14 +455,14 @@ impl FsDataHost {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl notc::DataHost for FsDataHost {
+impl notist_core::DataHost for FsDataHost {
     fn read_text(&self, from_doc: &str, rel_path: &str) -> Result<String, String> {
         self.read_regular_text(from_doc, rel_path, "text")
     }
 
-    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<notc::JsonValue, String> {
+    fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<notist_core::JsonValue, String> {
         let text = self.read_regular_text(from_doc, rel_path, "JSON")?;
-        notc::JsonValue::parse(&text)
+        notist_core::JsonValue::parse(&text)
             .map_err(|err| format!("invalid JSON in `{rel_path}`: {err}"))
     }
 }
@@ -470,10 +470,10 @@ impl notc::DataHost for FsDataHost {
 #[cfg(not(target_arch = "wasm32"))]
 fn check_notc_project(
     files: &[(String, PathBuf, String)],
-) -> Result<notc::CheckedProject, Vec<notc::ide::IdeDiagnostic>> {
-    let parsed_files: Vec<(String, notc::ParseResult)> = files
+) -> Result<notist_core::CheckedProject, Vec<notist_core::ide::IdeDiagnostic>> {
+    let parsed_files: Vec<(String, notist_core::ParseResult)> = files
         .iter()
-        .map(|(rel, _, src)| (rel.clone(), notc::parse_file(rel, src)))
+        .map(|(rel, _, src)| (rel.clone(), notist_core::parse_file(rel, src)))
         .collect();
     let has_parse_errors = parsed_files.iter().any(|(_, p)| !p.diagnostics.is_empty());
     let pairs: Vec<(&str, &str)> = files
@@ -481,17 +481,17 @@ fn check_notc_project(
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
     if has_parse_errors {
-        let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+        let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&pairs);
         return Err(analysis.diagnostics().to_vec());
     }
-    let module_refs: Vec<(&str, &notc::Module)> = parsed_files
+    let module_refs: Vec<(&str, &notist_core::Module)> = parsed_files
         .iter()
         .map(|(rel, p)| (rel.as_str(), &p.program.root))
         .collect();
-    match notc::check_parsed_modules(&module_refs) {
+    match notist_core::check_parsed_modules(&module_refs) {
         Ok(project) => Ok(project),
         Err(_) => {
-            let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+            let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&pairs);
             Err(analysis.diagnostics().to_vec())
         }
     }
@@ -499,16 +499,16 @@ fn check_notc_project(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_notc_replacements(
-    project: notc::CheckedProject,
+    project: notist_core::CheckedProject,
     vroot: &Path,
     replacements: &[notist_ssg::ReplacementRule],
-) -> Result<notc::CheckedProject, ExitCode> {
+) -> Result<notist_core::CheckedProject, ExitCode> {
     if replacements.is_empty() {
         return Ok(project);
     }
-    let specs: Vec<notc::ReplacementSpec> = replacements
+    let specs: Vec<notist_core::ReplacementSpec> = replacements
         .iter()
-        .map(|rule| notc::ReplacementSpec {
+        .map(|rule| notist_core::ReplacementSpec {
             from_module: match &rule.from_module {
                 Some(path) => to_virtual_path(vroot, &canonical_or_norm(path)),
                 None => "notist".to_owned(),
@@ -523,7 +523,7 @@ fn apply_notc_replacements(
         .collect();
     project.with_replacements(&specs).map_err(|errs| {
         for err in &errs {
-            eprintln!("{}", notc::format_replacement_error(err));
+            eprintln!("{}", notist_core::format_replacement_error(err));
         }
         ExitCode::FAILURE
     })
@@ -539,7 +539,7 @@ fn cmd_cst(file: &Path) -> ExitCode {
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    let parsed = notc::parse_file(&name, &src);
+    let parsed = notist_core::parse_file(&name, &src);
     println!("{:#?}", parsed.program.root);
     if !parsed.diagnostics.is_empty() {
         for d in &parsed.diagnostics {
@@ -566,12 +566,12 @@ fn cmd_core(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+    let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&pairs);
     let mut out = String::new();
     for d in analysis.diagnostics() {
         let phase = match d.phase {
-            notc::ide::DiagnosticPhase::Parse => "syntax",
-            notc::ide::DiagnosticPhase::Type => "type",
+            notist_core::ide::DiagnosticPhase::Parse => "syntax",
+            notist_core::ide::DiagnosticPhase::Type => "type",
         };
         out.push_str(&format!(
             "error[{phase}] {}@{}..{}: {}\n",
@@ -600,7 +600,7 @@ fn cmd_core(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
             let host = FsDataHost::new(vroot);
             match project.run_with_host(&entry_rel, "main", &host) {
                 Ok(value) => out.push_str(&format!("main => {value:#?}\n")),
-                Err(notc::ExecutionError::UnknownEntry(_)) => {}
+                Err(notist_core::ExecutionError::UnknownEntry(_)) => {}
                 Err(err) => out.push_str(&format!("error[eval]: {err:?}\n")),
             }
         }
@@ -625,7 +625,7 @@ fn cmd_core(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
             }
         }
     } else if let Some((_, _, src)) = files.first() {
-        let parsed = notc::parse_file(&entry_rel, src);
+        let parsed = notist_core::parse_file(&entry_rel, src);
         out.push_str(&format!("{:#?}\n", parsed.program.root));
     }
     print!("{out}");
@@ -649,7 +649,7 @@ fn cmd_json(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+    let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&pairs);
     let diagnostics: Vec<serde_json::Value> = analysis
         .diagnostics()
         .iter()
@@ -657,8 +657,8 @@ fn cmd_json(file: &Path, config: Option<&Path>, evaluate: bool) -> ExitCode {
             serde_json::json!({
                 "module": d.module,
                 "phase": match d.phase {
-                    notc::ide::DiagnosticPhase::Parse => "syntax",
-                    notc::ide::DiagnosticPhase::Type => "type",
+                    notist_core::ide::DiagnosticPhase::Parse => "syntax",
+                    notist_core::ide::DiagnosticPhase::Type => "type",
                 },
                 "start": d.span.start,
                 "end": d.span.end,
@@ -767,7 +767,7 @@ fn cmd_query(file: &Path, config: Option<&Path>, selector: &str) -> ExitCode {
 #[cfg(not(target_arch = "wasm32"))]
 fn emit_notc_diagnostics(
     files: &[(String, PathBuf, String)],
-    diagnostics: &[notc::ide::IdeDiagnostic],
+    diagnostics: &[notist_core::ide::IdeDiagnostic],
 ) {
     let writer = StandardStream::stderr(stderr_color_choice());
     let mut lock = writer.lock();
@@ -780,8 +780,8 @@ fn emit_notc_diagnostics(
             .unwrap_or_else(|| (d.module.clone(), ""));
         let simple = SimpleFile::new(display_path, src);
         let phase = match d.phase {
-            notc::ide::DiagnosticPhase::Parse => "syntax",
-            notc::ide::DiagnosticPhase::Type => "type",
+            notist_core::ide::DiagnosticPhase::Parse => "syntax",
+            notist_core::ide::DiagnosticPhase::Type => "type",
         };
         let start = (d.span.start as usize).min(src.len());
         let end = (d.span.end as usize).min(src.len()).max(start);
@@ -805,7 +805,7 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
         .iter()
         .map(|(rel, _, src)| (rel.as_str(), src.as_str()))
         .collect();
-    let analysis = notc::ide::WorkspaceAnalysis::analyze(&pairs);
+    let analysis = notist_core::ide::WorkspaceAnalysis::analyze(&pairs);
     let diags = analysis.diagnostics();
     if !diags.is_empty() {
         emit_notc_diagnostics(&files, diags);
@@ -833,27 +833,27 @@ fn check(file: &Path, config: Option<&Path>) -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSet<String>) {
-    fn walk_inline(inline: &notc::Inline, out: &mut std::collections::BTreeSet<String>) {
+fn collect_local_images(block: &notist_core::Block, out: &mut std::collections::BTreeSet<String>) {
+    fn walk_inline(inline: &notist_core::Inline, out: &mut std::collections::BTreeSet<String>) {
         match &inline.node().kind {
-            notc::InlineKind::Image { target, .. } => {
+            notist_core::InlineKind::Image { target, .. } => {
                 out.insert(target.to_string());
             }
-            notc::InlineKind::Fragment(items) => {
+            notist_core::InlineKind::Fragment(items) => {
                 for item in items.iter() {
                     walk_inline(item, out);
                 }
             }
-            notc::InlineKind::Strong(inner)
-            | notc::InlineKind::Emph(inner)
-            | notc::InlineKind::Strike(inner)
-            | notc::InlineKind::Underline(inner)
-            | notc::InlineKind::Link { label: inner, .. } => walk_inline(inner, out),
-            notc::InlineKind::Custom(custom) => {
+            notist_core::InlineKind::Strong(inner)
+            | notist_core::InlineKind::Emph(inner)
+            | notist_core::InlineKind::Strike(inner)
+            | notist_core::InlineKind::Underline(inner)
+            | notist_core::InlineKind::Link { label: inner, .. } => walk_inline(inner, out),
+            notist_core::InlineKind::Custom(custom) => {
                 for (_, v) in custom.props.iter() {
                     match v {
-                        notc::CustomValue::Inline(inl) => walk_inline(inl, out),
-                        notc::CustomValue::Block(blk) => collect_local_images(blk, out),
+                        notist_core::CustomValue::Inline(inl) => walk_inline(inl, out),
+                        notist_core::CustomValue::Block(blk) => collect_local_images(blk, out),
                         _ => {}
                     }
                 }
@@ -862,23 +862,23 @@ fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSe
         }
     }
     match &block.node().kind {
-        notc::BlockKind::Fragment(items) | notc::BlockKind::List { items, .. } => {
+        notist_core::BlockKind::Fragment(items) | notist_core::BlockKind::List { items, .. } => {
             for item in items.iter() {
                 collect_local_images(item, out);
             }
         }
-        notc::BlockKind::Paragraph(inl) | notc::BlockKind::Heading { title: inl, .. } => {
+        notist_core::BlockKind::Paragraph(inl) | notist_core::BlockKind::Heading { title: inl, .. } => {
             walk_inline(inl, out);
         }
-        notc::BlockKind::Callout { body, .. }
-        | notc::BlockKind::Quote(body)
-        | notc::BlockKind::Div(body)
-        | notc::BlockKind::SectionBox(body) => collect_local_images(body, out),
-        notc::BlockKind::Section { heading, body } => {
+        notist_core::BlockKind::Callout { body, .. }
+        | notist_core::BlockKind::Quote(body)
+        | notist_core::BlockKind::Div(body)
+        | notist_core::BlockKind::SectionBox(body) => collect_local_images(body, out),
+        notist_core::BlockKind::Section { heading, body } => {
             collect_local_images(heading, out);
             collect_local_images(body, out);
         }
-        notc::BlockKind::Table { headers, rows, .. } => {
+        notist_core::BlockKind::Table { headers, rows, .. } => {
             for cell in headers.iter() {
                 walk_inline(cell, out);
             }
@@ -888,11 +888,11 @@ fn collect_local_images(block: &notc::Block, out: &mut std::collections::BTreeSe
                 }
             }
         }
-        notc::BlockKind::Custom(custom) => {
+        notist_core::BlockKind::Custom(custom) => {
             for (_, v) in custom.props.iter() {
                 match v {
-                    notc::CustomValue::Inline(inl) => walk_inline(inl, out),
-                    notc::CustomValue::Block(blk) => collect_local_images(blk, out),
+                    notist_core::CustomValue::Inline(inl) => walk_inline(inl, out),
+                    notist_core::CustomValue::Block(blk) => collect_local_images(blk, out),
                     _ => {}
                 }
             }

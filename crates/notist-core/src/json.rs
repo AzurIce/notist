@@ -1,10 +1,10 @@
-//! Zero-dependency, immutable JSON value model and read-only `DataHost` trait for `notc`.
+//! Zero-dependency, immutable JSON value model and read-only `DataHost` trait for `notist-core`.
 
 use std::fmt;
 use std::sync::Arc;
 
 /// Read-only external data host supplied by an embedder (such as `notist-ssg`)
-/// during document evaluation. `notc` itself performs zero filesystem IO.
+/// during document evaluation. `notist-core` itself performs zero filesystem IO.
 pub trait DataHost: Sync {
     /// Read and parse a JSON document located at `rel_path` relative to `from_doc`.
     fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String>;

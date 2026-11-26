@@ -23,7 +23,7 @@ pub use prepared::{
 pub use routes::Route;
 use std::{path::PathBuf, sync::Arc};
 
-/// A declaration replacement rule applied by `notc` during site compilation.
+/// A declaration replacement rule applied by `notist-core` during site compilation.
 /// `None` for `from_module` / `to_module` refers to the built-in `notist` module;
 /// `Some(path)` refers to a `.not` module path (resolved relative to the vault root if relative).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +57,7 @@ impl Builder {
         self
     }
 
-    /// Register `notc` declaration replacement rules (e.g. `notist.math` -> `katex.math`).
+    /// Register `notist-core` declaration replacement rules (e.g. `notist.math` -> `katex.math`).
     pub fn with_replacements(mut self, rules: Vec<ReplacementRule>) -> Self {
         self.replacements.extend(rules);
         self

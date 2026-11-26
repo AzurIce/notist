@@ -4,7 +4,7 @@
 //! Usage:
 //!   cargo run -p notc --example run -- <path.not> [entry]
 
-use notc::{
+use notist_core::{
     Decl, ProjectDiagnosticKind, Span, TypeError, Value, check_project, parse,
     resolve_import_path,
 };
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     };
 
     // Host responsibility: discover and read transitively imported `.not` files.
-    // The `notc` library itself performs zero filesystem IO.
+    // The `notist-core` library itself performs zero filesystem IO.
     let mut loaded: Vec<(String, String)> = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut queue: VecDeque<String> = VecDeque::new();
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
                     eprintln!("error: failed to read `{}`: {err}", fs_path.display());
                     return ExitCode::FAILURE;
                 }
-                // Let `notc::check_project` report `MissingModule` with the exact import span.
+                // Let `notist_core::check_project` report `MissingModule` with the exact import span.
                 continue;
             }
         };
@@ -140,7 +140,7 @@ fn print_diagnostic(path: &str, source: &str, span: Span, kind: &str, message: &
 }
 
 fn format_type_error(error: &TypeError) -> String {
-    notc::format_type_error(error)
+    notist_core::format_type_error(error)
 }
 
 fn format_value(value: Value) -> String {

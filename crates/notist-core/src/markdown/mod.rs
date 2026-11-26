@@ -2,7 +2,7 @@
 //!
 //! `rushdown` types are strictly encapsulated inside this module: both `.md`
 //! documents and `[...]` content literals inside `.not` code lower directly
-//! into `notc`'s frontend-agnostic AST IR (`BlockPiece` / `InlinePiece` / `Module`).
+//! into `notist-core`'s frontend-agnostic AST IR (`BlockPiece` / `InlinePiece` / `Module`).
 
 mod math;
 mod notist_ext;
@@ -46,7 +46,7 @@ impl DocumentFrontend for MarkdownFrontend {
     }
 }
 
-/// Parse a Markdown document into a standard `notc::ParseResult` exporting `fn __doc__() -> Block`.
+/// Parse a Markdown document into a standard `notist_core::ParseResult` exporting `fn __doc__() -> Block`.
 pub fn parse_markdown_document(source: &str) -> ParseResult {
     let source_arc: Arc<str> = Arc::from(source);
     let (arena, root) = parse_with_rushdown(source_arc, false, true, false);

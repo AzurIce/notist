@@ -27,5 +27,5 @@ fn diagram(source: String) -> Block;
 ```
 
 - 外部声明必须返回 `Inline` 或 `Block`（或受限的类型参数），参数不能为函数类型。
-- `notc` 内核对调用做完整的静态类型检查，并在求值时产出纯数据节点 `CustomNode { module, name, props }`。
-- `notc` 本身完全不感知 HTML、JS 或 Web Components；具体呈现完全交由渲染后端决定。
+- `notist-core` 内核对调用做完整的静态类型检查，并在求值时产出纯数据节点 `CustomNode { module, name, props }`。
+- `notist-core` 本身完全不感知 HTML、JS 或 Web Components；具体呈现完全交由渲染后端决定。

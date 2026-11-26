@@ -8,9 +8,9 @@
 
 1. **发现源文件**：按 `include` / `exclude` 和 `mounts` 收集文档与静态资源。
 2. **站点前置扩展**：运行配置的 `before_compile` 扩展（如 `builtins.book` 解析 `SUMMARY.md` 并筛选页面）。
-3. **全站 `notc` 编译**：解析全部文档与递归导入的 `.not` 模块，执行一次性静态类型检查，逐页求值并调用 `sectionize()`。
+3. **全站 `notist-core` 编译**：解析全部文档与递归导入的 `.not` 模块，执行一次性静态类型检查，逐页求值并调用 `sectionize()`。
 4. **全站链接与资源校验**：汇总全站页面路由与元素 `id`，解析相对链接、校验 `#anchor`、按需拷贝引用资源（缺失本地图片直接报错，断链发出告警）。
-5. **HTML 渲染与 Web Components**：单遍将 `notc::Block` 渲染为 HTML，代码块走构建期语法高亮；对存在同目录 JS 实现的 `Custom` 节点按约定生成自定义元素标签并打包注册脚本。
+5. **HTML 渲染与 Web Components**：单遍将 `notist_core::Block` 渲染为 HTML，代码块走构建期语法高亮；对存在同目录 JS 实现的 `Custom` 节点按约定生成自定义元素标签并打包注册脚本。
 6. **模板渲染**：运行 `before_template` 扩展，通过 Tera 模板（支持内置或自定义主题覆盖）并行渲染全部页面并输出。
 
 相关文档：[Book 导航与主题](../book.md)、[站点扩展](extensions.md)、[HTML 渲染](../html.md)、[Web Components 约定](../components/README.md)。

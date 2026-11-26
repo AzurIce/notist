@@ -1,6 +1,6 @@
 # Notist
 
-Notist 是基于前端无关内容树 IR 的文档工具链，内置 Markdown（`.md`）文档前端与 `.not` 编程模块，由纯库内核 `notc` 驱动，对外提供统一命令行工具 `notist`。
+Notist 是基于前端无关内容树 IR 的文档工具链，内置 Markdown（`.md`）文档前端与 `.not` 编程模块，由纯库内核 `notist-core` 驱动，对外提供统一命令行工具 `notist`。
 
 - [Documentation](docs/README.md)：语法、内置函数、IR、模块与工具使用。
 - [Notist CLI](docs/cli.md)：包/workspace 构建、站点预览、单文件检查、诊断与 LSP。

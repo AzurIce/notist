@@ -4,7 +4,7 @@
 
 Notist 将**内容抽象定义**与 **Web Component 运行时实现**彻底解耦：
 
-1. **`notc` 只负责类型签名与数据树**：模块作者在 `.not` 中写无函数体的外部声明（例如 `docs/components/lib.not`），`notc` 对调用进行完整静态类型检查，并产出纯数据节点 `CustomNode { module, name, props }`。
+1. **`notist-core` 只负责类型签名与数据树**：模块作者在 `.not` 中写无函数体的外部声明（例如 `docs/components/lib.not`），`notist-core` 对调用进行完整静态类型检查，并产出纯数据节点 `CustomNode { module, name, props }`。
 2. **SSG 按目录约定加载 Web Components**：仅在 SSG 渲染 HTML 时，`notist-ssg` 检查声明模块所在目录是否存在 `<name>.js` 或 `<name>/index.js`。
 
 ## 示例
@@ -24,7 +24,7 @@ fn panel(title: String, body: Block) -> Block;
 状态：#ui.badge("beta", 2)
 
 #ui.panel("说明")[
-  子内容仍然是完整的 `notc` 内容树，链接与标题照常校验。
+  子内容仍然是完整的 `notist-core` 内容树，链接与标题照常校验。
 ]
 ```
 

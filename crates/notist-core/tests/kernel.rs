@@ -1,5 +1,5 @@
 use Type::{Bool, Int};
-use notc::{
+use notist_core::{
     BinaryOp, CheckedProgram, Decl, Diagnostic, ExecutionError, Expr, ExprKind, Function, Method,
     Module, Param, Program, Span, Type, TypeError, Value, check,
 };

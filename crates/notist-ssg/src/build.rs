@@ -4,7 +4,7 @@ use crate::{
     prepared::{PreparedPage, Reference},
     templates,
 };
-use notc::{
+use notist_core::{
     CheckedDocument, DataHost, Decl, JsonValue, Module, ProjectDiagnosticKind, ReplacementSpec,
     check_parsed_modules, format_replacement_error, format_type_error, parse, parse_file,
 };
@@ -792,7 +792,7 @@ pub(crate) fn build<R: Resources + Send>(
                                                 format!("runtime error evaluating document: {err:?}"),
                                             ),
                                         ));
-                                        notc::Block::empty(notc::Span::DUMMY)
+                                        notist_core::Block::empty(notist_core::Span::DUMMY)
                                     } else {
                                         return Err(Error::Message(format!(
                                             "{}: runtime error evaluating document: {err:?}",
@@ -801,7 +801,7 @@ pub(crate) fn build<R: Resources + Send>(
                                     }
                                 }
                             },
-                            None => notc::Block::empty(notc::Span::DUMMY),
+                            None => notist_core::Block::empty(notist_core::Span::DUMMY),
                         };
                         let prepared = PreparedPage::new(
                             page.route.clone(),
@@ -1148,7 +1148,7 @@ fn sanitize_tag_part(raw: &str) -> String {
     }
 }
 
-/// Thread-safe cached data host for `notc` evaluation inside `notist-ssg`.
+/// Thread-safe cached data host for `notist-core` evaluation inside `notist-ssg`.
 /// Reads each referenced file at most once across all parallel page workers.
 struct SsgDataHost {
     vroot: PathBuf,
@@ -1275,7 +1275,7 @@ fn compile_shared_notc_modules<R: Resources>(
     routes: &[crate::Route],
     documents: &BTreeMap<PathBuf, String>,
     replacements: &[crate::ReplacementRule],
-) -> Result<(PathBuf, notc::CheckedProject, Vec<SourceDiagnostic>), Error> {
+) -> Result<(PathBuf, notist_core::CheckedProject, Vec<SourceDiagnostic>), Error> {
     if routes.is_empty() && replacements.is_empty() {
         let empty = check_parsed_modules(&[]).expect("empty module set always checks");
         return Ok((resources.root().to_path_buf(), empty, Vec::new()));
@@ -1493,8 +1493,8 @@ mod tests {
         ]
         .into_iter()
         .map(|(source, id)| {
-            let root = notc::Block::empty(notc::Span::DUMMY)
-                .with_attr(Arc::from("id"), notc::AttrValue::String(Arc::from(id)));
+            let root = notist_core::Block::empty(notist_core::Span::DUMMY)
+                .with_attr(Arc::from("id"), notist_core::AttrValue::String(Arc::from(id)));
             Document::from_block(
                 Route::new(content.join(source), content).unwrap(),
                 root,

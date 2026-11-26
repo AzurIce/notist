@@ -1,5 +1,5 @@
-use notc::ide::{CompletionKind, WorkspaceAnalysis};
-use notc::{
+use notist_core::ide::{CompletionKind, WorkspaceAnalysis};
+use notist_core::{
     BlockKind, CustomValue, InlineKind, NoDataHost, ReplacementErrorKind, ReplacementSpec, Value,
     check_project, parse_document,
 };

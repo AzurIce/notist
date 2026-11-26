@@ -1,6 +1,6 @@
 # 构建期读取单条记录
 
-在仓库根运行 `cargo run --example structured_data`。示例将相同的 notc 函数用于两个页面，在同一 Vault 输入批次中共享 JSON／TOML 的解析结果，打印静态 HTML。
+在仓库根运行 `cargo run --example structured_data`。示例将相同的 notist-core 函数用于两个页面，在同一 Vault 输入批次中共享 JSON／TOML 的解析结果，打印静态 HTML。
 
 - `page.md` 只传递字面量路径和记录 ID。
 - `views.not` 选择字段、显式解码，再使用正常内容函数构造正文。

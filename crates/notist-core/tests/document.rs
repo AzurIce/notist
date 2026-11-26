@@ -1,4 +1,4 @@
-use notc::{AttrValue, BlockKind, CustomValue, InlineKind, check_project};
+use notist_core::{AttrValue, BlockKind, CustomValue, InlineKind, check_project};
 
 #[test]
 fn parses_checks_and_evaluates_md_document_with_imports_and_doc_attrs() {

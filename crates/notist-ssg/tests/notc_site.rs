@@ -41,7 +41,7 @@ fn Block.banner(self) -> Block {
 Read [the architecture guide](./guide.md#arch) or view ![logo](./logo.svg).
 
 #ui.decorate[
-    Powered by the new statically typed `notc` engine.
+    Powered by the new statically typed `notist-core` engine.
 ]
 
 ```notc
@@ -94,7 +94,7 @@ fn id<T: Type>(x: T) -> T { x }
     assert!(index_html.contains(r#"<section id="welcome"><h1>Welcome to <strong>⚡ Notist</strong></h1>"#));
     assert!(index_html.contains(r#"href="guide/#arch""#));
     assert!(index_html.contains(r#"<img src="logo.svg" alt="logo">"#));
-    assert!(index_html.contains(r#"<aside class="callout callout-tip"><p>Powered by the new statically typed <code>notc</code> engine.</p></aside>"#));
+    assert!(index_html.contains(r#"<aside class="callout callout-tip"><p>Powered by the new statically typed <code>notist-core</code> engine.</p></aside>"#));
     assert!(index_html.contains(r#"class="language-notc""#));
 
     let guide_html = html(&output, "guide/index.html");

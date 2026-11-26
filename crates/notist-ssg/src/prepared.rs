@@ -1,11 +1,11 @@
-//! The ownership boundary between evaluated `notc::Block` IR and whole-site
+//! The ownership boundary between evaluated `notist_core::Block` IR and whole-site
 //! link resolution + HTML rendering.
 
 use crate::{
     Error, Page, Route,
     document::{Document, diagnostic},
 };
-use notc::{
+use notist_core::{
     AttrValue, Block, BlockKind, CustomNode, CustomValue, Inline, InlineKind, Span, TableAlign,
 };
 use notist::{Diagnostic, Phase, SourceDiagnostic, TextRange};
@@ -32,12 +32,12 @@ impl Reference {
     }
 }
 
-/// Render an evaluated `notc::Block` directly to standalone HTML without site routing.
+/// Render an evaluated `notist_core::Block` directly to standalone HTML without site routing.
 pub fn render_standalone_html(block: &Block) -> String {
     render_standalone_html_with_components(block, &BTreeMap::new())
 }
 
-/// Render an evaluated `notc::Block` directly to standalone HTML with an optional
+/// Render an evaluated `notist_core::Block` directly to standalone HTML with an optional
 /// `(module_virtual_path, name) -> custom_element_tag` map for Web Components.
 pub fn render_standalone_html_with_components(
     block: &Block,
@@ -366,7 +366,7 @@ fn collect_inline_references(
     }
 }
 
-fn has_html_wrapper_attrs(attrs: &notc::Attrs) -> bool {
+fn has_html_wrapper_attrs(attrs: &notist_core::Attrs) -> bool {
     attrs.entries().iter().any(|(k, v)| {
         matches!(v, AttrValue::String(_))
             && (k.as_ref() == "id"
@@ -376,7 +376,7 @@ fn has_html_wrapper_attrs(attrs: &notc::Attrs) -> bool {
     })
 }
 
-fn write_common_attrs(attrs: &notc::Attrs, skip_id: bool, out: &mut String) {
+fn write_common_attrs(attrs: &notist_core::Attrs, skip_id: bool, out: &mut String) {
     if !skip_id
         && let Some(AttrValue::String(id)) = attrs.get("id")
     {
@@ -397,7 +397,7 @@ fn write_common_attrs(attrs: &notc::Attrs, skip_id: bool, out: &mut String) {
 fn render_custom_node(
     custom: &CustomNode,
     is_block: bool,
-    attrs: &notc::Attrs,
+    attrs: &notist_core::Attrs,
     ctx: &mut RenderCtx<'_>,
     out: &mut String,
 ) {

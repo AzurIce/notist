@@ -7,7 +7,7 @@ use rushdown::parser::{BlockParser, Context, InlineParser, State};
 use rushdown::text::{BasicReader, BlockReader, Reader};
 
 /// Opaque block-level Notist directive or invocation captured verbatim by `rushdown`
-/// and lowered into frontend-agnostic `notc::ast` nodes.
+/// and lowered into frontend-agnostic `notist_core::ast` nodes.
 #[derive(Debug)]
 pub(crate) struct NotistBlock {
     pub kind: NotistBlockKind,

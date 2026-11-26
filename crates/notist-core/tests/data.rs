@@ -1,4 +1,4 @@
-use notc::{
+use notist_core::{
     AttrValue, BlockKind, DataHost, JsonValue, ProjectDiagnosticKind, TypeError, Value,
     check_project,
 };
@@ -34,7 +34,7 @@ impl MemoryDataHost {
 
 impl DataHost for MemoryDataHost {
     fn read_text(&self, from_doc: &str, rel_path: &str) -> Result<String, String> {
-        let resolved = notc::resolve_import_path(from_doc, rel_path)
+        let resolved = notist_core::resolve_import_path(from_doc, rel_path)
             .map_err(|_| format!("invalid path `{rel_path}` from `{from_doc}`"))?;
         self.text_files
             .get(&resolved)
@@ -43,7 +43,7 @@ impl DataHost for MemoryDataHost {
     }
 
     fn read_json(&self, from_doc: &str, rel_path: &str) -> Result<JsonValue, String> {
-        let resolved = notc::resolve_import_path(from_doc, rel_path)
+        let resolved = notist_core::resolve_import_path(from_doc, rel_path)
             .map_err(|_| format!("invalid path `{rel_path}` from `{from_doc}`"))?;
         self.json_files
             .get(&resolved)
@@ -243,7 +243,7 @@ where C == Inline || C == Block
 "#;
     let project = check_project(&[("lib/shared.not", shared_src)]).expect("shared project checks");
 
-    let doc1 = notc::parse_document(
+    let doc1 = notist_core::parse_document(
         "#import \"../lib/shared.not\" as shared\n#shared.load_item(\"./item.json\")\n",
     );
     assert!(doc1.diagnostics.is_empty());
@@ -256,9 +256,9 @@ where C == Inline || C == Block
 
     // Evaluation happens separately and hits DataHost only now.
     let err = project
-        .eval_checked_document(&checked1, &notc::NoDataHost)
+        .eval_checked_document(&checked1, &notist_core::NoDataHost)
         .expect_err("evaluating without JSON fails at runtime");
-    assert!(matches!(err, notc::ExecutionError::HostError(_)));
+    assert!(matches!(err, notist_core::ExecutionError::HostError(_)));
 
     let host = MemoryDataHost::new(&[("content/item.json", r#"{"name": "Potion"}"#)]);
     let block1 = project
@@ -267,7 +267,7 @@ where C == Inline || C == Block
     assert_eq!(block1.plain_text(), "Potion");
 
     // Document calling a shared generic function lowers only that new specialization.
-    let doc2 = notc::parse_document(
+    let doc2 = notist_core::parse_document(
         "#import \"../lib/shared.not\" as shared\n#shared.wrap[\nHello\n]\n",
     );
     assert!(doc2.diagnostics.is_empty());
@@ -276,7 +276,7 @@ where C == Inline || C == Block
         .expect("generic document checks");
     assert_eq!(checked2.extra_function_count(), 1);
     let block2 = project
-        .eval_checked_document(&checked2, &notc::NoDataHost)
+        .eval_checked_document(&checked2, &notist_core::NoDataHost)
         .expect("generic document evaluates");
     assert_eq!(block2.plain_text(), "Hello");
 }
@@ -319,6 +319,6 @@ fn checked_text(path: String, must_exist: Bool) -> Block {
         .expect_err("panic aborts evaluation");
     assert_eq!(
         err,
-        notc::ExecutionError::Panic("refused to load: ./.data/greeting.txt".into())
+        notist_core::ExecutionError::Panic("refused to load: ./.data/greeting.txt".into())
     );
 }

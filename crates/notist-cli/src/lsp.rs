@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use notc::ide::{
+use notist_core::ide::{
     CompletionKind, DiagnosticPhase, DocumentSymbol as NotcSymbol, SymbolKind as NotcSymbolKind,
     WorkspaceAnalysis,
 };
-use notc::{
+use notist_core::{
     BlockPiece, Decl, Expr, ExprKind, InlinePiece, Span, parse_file, resolve_import_path,
 };
 use tower_lsp::jsonrpc::Result;
@@ -22,7 +22,7 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-/// Run the language server over stdio backed by `notc`.
+/// Run the language server over stdio backed by `notist-core`.
 pub async fn serve(_config: Option<PathBuf>) {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -417,7 +417,7 @@ fn build_snapshot(
         }
     }
 
-    // 3. Run pure in-memory `notc::ide::WorkspaceAnalysis`.
+    // 3. Run pure in-memory `notist_core::ide::WorkspaceAnalysis`.
     let mut pairs: Vec<(&str, &str)> = files
         .iter()
         .map(|(rel, file)| (rel.as_str(), file.source.as_str()))

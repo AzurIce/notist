@@ -2,7 +2,7 @@
 
 # Markup 语法（Markdown 扩展）
 
-`.md` / `.markdown` 文件是面向写作的文档入口。它兼容标准 CommonMark 与 GFM，并扩展了文档元数据 `@!(...)`、元素属性 `@(...)`、数学公式、WikiLink 以及 `#import` / `#call` 模块调用，最终通过前端无关的 `notc::Module` IR 静态检查并求值为一个 `Block`。
+`.md` / `.markdown` 文件是面向写作的文档入口。它兼容标准 CommonMark 与 GFM，并扩展了文档元数据 `@!(...)`、元素属性 `@(...)`、数学公式、WikiLink 以及 `#import` / `#call` 模块调用，最终通过前端无关的 `notist_core::Module` IR 静态检查并求值为一个 `Block`。
 
 ## 文档头：元数据与导入
 

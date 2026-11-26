@@ -84,8 +84,8 @@ impl SiteExtension for Book {
             let source = summary_source
                 .map(Ok)
                 .unwrap_or_else(|| context.resources.source(&path))?;
-            // SUMMARY is parsed declaratively via `notc`, never evaluated with side effects.
-            let parsed = notc::parse_markdown_document(&source);
+            // SUMMARY is parsed declaratively via `notist-core`, never evaluated with side effects.
+            let parsed = notist_core::parse_markdown_document(&source);
             let mut errors: Vec<Diagnostic> = parsed
                 .diagnostics
                 .into_iter()
@@ -98,7 +98,7 @@ impl SiteExtension for Book {
                 })
                 .collect();
             let virtual_name = "SUMMARY.md";
-            let block = match notc::check_parsed_modules(&[(virtual_name, &parsed.program.root)]) {
+            let block = match notist_core::check_parsed_modules(&[(virtual_name, &parsed.program.root)]) {
                 Ok(project) => match project.eval_document(virtual_name) {
                     Ok(block) => Some(block),
                     Err(err) => {
@@ -113,11 +113,11 @@ impl SiteExtension for Book {
                 Err(diags) => {
                     for d in diags {
                         let (phase, span, msg) = match d.kind {
-                            notc::ProjectDiagnosticKind::Parse(p) => {
+                            notist_core::ProjectDiagnosticKind::Parse(p) => {
                                 (Phase::Syntax, p.span, p.message)
                             }
-                            notc::ProjectDiagnosticKind::Type { span, error, .. } => {
-                                (Phase::Type, span, notc::format_type_error(&error))
+                            notist_core::ProjectDiagnosticKind::Type { span, error, .. } => {
+                                (Phase::Type, span, notist_core::format_type_error(&error))
                             }
                         };
                         errors.push(Diagnostic::new(

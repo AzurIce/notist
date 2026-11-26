@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-notc = { path = "../notc" }
+notist-core = { path = "../notist-core" }
 notist = { path = "../.." }
 notist-html = { path = "../notist-html", features = ["highlight"] }
 serde = { version = "1", features = ["derive"] }

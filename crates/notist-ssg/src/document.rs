@@ -1,5 +1,5 @@
 use crate::{Error, Route};
-use notc::{AttrValue, Block, BlockKind};
+use notist_core::{AttrValue, Block, BlockKind};
 use notist::{Diagnostic, SourceDiagnostic};
 use serde::Serialize;
 use std::{
@@ -153,7 +153,7 @@ fn collect_headings(
         }
         BlockKind::Custom(custom) => {
             for (_, val) in custom.props.iter() {
-                if let notc::CustomValue::Block(b) = val {
+                if let notist_core::CustomValue::Block(b) = val {
                     collect_headings(b, ids, heading_ids, out);
                 }
             }
@@ -253,7 +253,7 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notc::check_project;
+    use notist_core::check_project;
     use std::path::PathBuf;
 
     #[test]

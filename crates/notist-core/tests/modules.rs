@@ -1,4 +1,4 @@
-use notc::{
+use notist_core::{
     ProjectDiagnosticKind, Type, TypeError, Value, check_project,
 };
 

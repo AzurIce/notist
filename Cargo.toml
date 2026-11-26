@@ -17,6 +17,8 @@ members = [
 ]
 
 [dependencies]
+globset = "0.4"
+notist-core = { path = "crates/notist-core" }
 notist-observe = { path = "crates/notist-observe" }
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }

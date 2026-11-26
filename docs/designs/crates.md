@@ -11,4 +11,4 @@ Notist 工作区采用“前端无关语言内核 + 薄宿主与站点层”的�
 | `crates/notist-cli` | 统一命令行入口 `notist`：`build`、`serve`、`check`、`cst`、`core`、`json`、`query`、`html`、`lsp`（全量基于 `notist-core`） |
 | `crates/notist-html` | HTML 转义、安全 URL 校验与基于 `syntect` 的构建期代码高亮（`highlight::highlight_str` + `CSS`） |
 | `crates/notist-observe` | 构建阶段耗时采集与进度观测 |
-| 根 `notist`（`src/`） | 宿主通用基础设施：`Resources` 虚拟文件系统（磁盘/内存/监听观察）、`Executor` 并行执行器、`Assets` 资产与 URL 工具、`Diagnostic` 与 `Vault` |
+| 根 `notist`（`src/`） | 完整编译器编排与宿主底座：`Compiler`（组合 `notist-core`、`Resources` 与 `Executor`，提供并行分析、声明替换与求值到 Content 树集的 Rust API）、`Resources` 虚拟文件系统、`Executor` 并行执行器、`Assets` 资产与 URL 工具、`Diagnostic` 与 `Vault` |

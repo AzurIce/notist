@@ -958,7 +958,9 @@ name = "notist"
 version = "0.1.0"
 dependencies = [
  "cap-std",
+ "globset",
  "libc",
+ "notist-core",
  "notist-observe",
  "percent-encoding",
  "rayon",

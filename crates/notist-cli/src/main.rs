@@ -45,6 +45,9 @@ struct Cli {
     /// Inspect the representation tree after Code evaluation and extensions
     #[arg(long, global = true)]
     eval: bool,
+    /// Define a site template parameter, exposed as site.params.KEY
+    #[arg(short = 'D', long = "define", global = true, value_name = "KEY=VALUE")]
+    defines: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -66,6 +69,9 @@ enum Command {
         /// Select a workspace package by name
         #[arg(short = 'p', long = "package")]
         package: Option<String>,
+        /// Serve an extra directory at a URL prefix (dev preview only, repeatable)
+        #[arg(long = "mount", value_name = "URL=DIR")]
+        mounts: Vec<String>,
         #[command(flatten)]
         listen: ListenOptions,
         #[arg(long)]
@@ -172,23 +178,54 @@ fn main() -> ExitCode {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn definitions(values: &[String]) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut params = std::collections::BTreeMap::new();
+    for value in values {
+        let Some((key, value)) = value.split_once('=') else {
+            return Err(format!("invalid -D `{value}`: expected KEY=VALUE"));
+        };
+        if key.is_empty() || key.contains('\0') {
+            return Err(format!("invalid -D key `{key}`"));
+        }
+        params.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(params)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn run(cli: Cli) -> ExitCode {
     let config = cli.config.as_deref();
     let evaluate = cli.eval;
+    let params = match definitions(&cli.defines) {
+        Ok(params) => params,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match cli.command {
         Command::Build {
             out_dir,
             workspace,
             packages,
-        } => package::build(config, out_dir.as_deref(), workspace, &packages, cli.jobs),
+        } => package::build(
+            config,
+            out_dir.as_deref(),
+            workspace,
+            &packages,
+            cli.jobs,
+            &params,
+        ),
         Command::Serve {
             package,
             listen,
+            mounts,
             no_clear_screen,
-        } => match package::Package::load(config, None, package.as_deref()) {
+        } => match package::Package::load(config, None, package.as_deref(), &params) {
             Ok(package) => serve::serve_package(
                 package,
                 &listen,
+                &mounts,
                 no_clear_screen,
                 cli.verbose,
                 cli.jobs,
@@ -205,7 +242,7 @@ fn run(cli: Cli) -> ExitCode {
             packages,
         } => match file {
             Some(file) => check(&file, config),
-            None => package::check(config, workspace, &packages, cli.jobs),
+            None => package::check(config, workspace, &packages, cli.jobs, &params),
         },
         Command::Cst { file } => cmd_cst(&file),
         Command::Core { file } => cmd_core(&file, config, evaluate),

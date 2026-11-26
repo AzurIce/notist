@@ -1,14 +1,15 @@
 //! HTTP server for the same publication artifact produced by static builds.
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Write,
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Component, Path, PathBuf},
     sync::{Arc, RwLock, mpsc},
     thread,
     time::{Duration, Instant},
 };
-use tiny_http::{Header, Method, Request, Response, Server};
+use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 mod report;
 mod terminal;
@@ -45,6 +46,62 @@ struct Build {
     artifact: BuildOutput,
     output: PathBuf,
     observed: BTreeSet<PathBuf>,
+}
+
+/// A dev-only URL prefix served directly from a directory. Mounted trees are
+/// never copied into build output or watched.
+#[derive(Debug, Clone)]
+struct Mount {
+    prefix: PathBuf,
+    root: PathBuf,
+}
+
+fn parse_mounts(specs: &[String]) -> Result<Vec<Mount>, Error> {
+    let cwd = std::env::current_dir().map_err(|e| Error::Message(e.to_string()))?;
+    let mut mounts = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let (url, directory) = spec
+            .split_once('=')
+            .ok_or_else(|| Error::Message(format!("invalid --mount `{spec}`: expected URL=DIR")))?;
+        let decoded = percent_encoding::percent_decode_str(url.trim_start_matches('/'))
+            .decode_utf8()
+            .map_err(|_| Error::Message(format!("invalid UTF-8 in --mount URL `{url}`")))?;
+        let prefix = PathBuf::from(decoded.as_ref());
+        if !url.starts_with('/')
+            || url.starts_with("//")
+            || url.contains(['?', '#', '\\', '\0'])
+            || prefix.as_os_str().is_empty()
+            || prefix.starts_with("_notist")
+            || prefix
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(Error::Message(format!(
+                "invalid --mount URL `{url}`: expected a relative path starting with `/`"
+            )));
+        }
+        if directory.is_empty() {
+            return Err(Error::Message(format!(
+                "invalid --mount `{spec}`: empty directory"
+            )));
+        }
+        let root = std::fs::canonicalize(cwd.join(directory))
+            .map_err(|e| Error::Message(format!("invalid --mount directory `{directory}`: {e}")))?;
+        if !root.is_dir() {
+            return Err(Error::Message(format!(
+                "--mount directory `{directory}` is not a directory"
+            )));
+        }
+        if mounts.iter().any(|mount: &Mount| {
+            prefix.starts_with(&mount.prefix) || mount.prefix.starts_with(&prefix)
+        }) {
+            return Err(Error::Message(format!(
+                "overlapping --mount URL prefix `{url}`"
+            )));
+        }
+        mounts.push(Mount { prefix, root });
+    }
+    Ok(mounts)
 }
 fn assemble(
     target: &crate::package::Package,
@@ -92,12 +149,24 @@ const CLIENT: &str = include_str!("serve.js");
 pub(crate) fn serve_package(
     target: crate::package::Package,
     listen: &crate::ListenOptions,
+    mounts: &[String],
     no_clear_screen: bool,
     verbose: bool,
     jobs: Option<std::num::NonZeroUsize>,
     timings: bool,
 ) -> std::process::ExitCode {
-    match run(target, listen, no_clear_screen, verbose, jobs, timings) {
+    let result = parse_mounts(mounts).and_then(|mounts| {
+        run(
+            target,
+            listen,
+            mounts,
+            no_clear_screen,
+            verbose,
+            jobs,
+            timings,
+        )
+    });
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -125,6 +194,63 @@ fn bind_default(host: &str, preferred_port: u16) -> std::io::Result<TcpListener>
             }
             result => return result,
         }
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    fn range(start: u64, end: u64) -> (u64, u64) {
+        match parse_range(Some(&format!("bytes={start}-{end}")), 10) {
+            Ranged::Partial(range) => (range.start, range.end),
+            other => panic!("expected a partial range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_explicit_open_and_suffix_single_ranges() {
+        assert_eq!(range(2, 5), (2, 5));
+        assert_eq!(range(2, 99), (2, 9));
+        assert!(matches!(
+            parse_range(Some("bytes=2-"), 10),
+            Ranged::Partial(ByteRange { start: 2, end: 9 })
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=-3"), 10),
+            Ranged::Partial(ByteRange { start: 7, end: 9 })
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=-30"), 10),
+            Ranged::Partial(ByteRange { start: 0, end: 9 })
+        ));
+    }
+
+    #[test]
+    fn ignores_malformed_units_and_marks_out_of_bounds_unsatisfiable() {
+        for value in [
+            None,
+            Some("items=0-1"),
+            Some("bytes=0-1,3-4"),
+            Some("bytes=nope"),
+            Some("bytes=1-x"),
+        ] {
+            assert!(matches!(parse_range(value, 10), Ranged::Full), "{value:?}");
+        }
+        for value in ["bytes=10-", "bytes=11-20", "bytes=-0", "bytes=5-4"] {
+            assert!(
+                matches!(parse_range(Some(value), 10), Ranged::Unsatisfiable),
+                "{value}"
+            );
+        }
+        assert!(matches!(
+            parse_range(Some("bytes=0-"), 10),
+            Ranged::Partial(ByteRange { start: 0, end: 9 })
+        ));
+        assert!(matches!(
+            parse_range(Some("bytes=0-"), 0),
+            Ranged::Unsatisfiable
+        ));
     }
 }
 
@@ -200,11 +326,13 @@ mod listen_tests {
 fn run(
     target: crate::package::Package,
     listen: &crate::ListenOptions,
+    mounts: Vec<Mount>,
     no_clear_screen: bool,
     verbose: bool,
     jobs: Option<std::num::NonZeroUsize>,
     timings: bool,
 ) -> Result<(), Error> {
+    let mounts = Arc::new(mounts);
     // One pool for the initial build and every subsequent watcher rebuild.
     let executor = crate::ssg::executor(jobs).map_err(Error::Message)?;
     // Keep the bound listener: probing and then rebinding would race other processes.
@@ -300,7 +428,8 @@ fn run(
         .map_err(|error| Error::Message(error.to_string()))?;
     for request in server.incoming_requests() {
         let state = state.clone();
-        thread::spawn(move || respond(request, state));
+        let mounts = mounts.clone();
+        thread::spawn(move || respond(request, state, mounts));
     }
     Ok(())
 }
@@ -418,7 +547,265 @@ fn simple(request: Request, code: u16, bytes: Vec<u8>, content_type: &str) {
         .with_header(header("Cache-Control", "no-store"));
     let _ = request.respond(response);
 }
-fn respond(request: Request, state: State) {
+
+#[derive(Debug, Clone, Copy)]
+struct ByteRange {
+    start: u64,
+    end: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Ranged {
+    Full,
+    Partial(ByteRange),
+    Unsatisfiable,
+}
+
+/// Single `bytes=` ranges only. Multipart and malformed headers fall back to a
+/// full response; syntactically valid but out-of-bounds ranges are unsatisfiable.
+fn parse_range(value: Option<&str>, length: u64) -> Ranged {
+    let Some(value) = value else {
+        return Ranged::Full;
+    };
+    let Some((unit, spec)) = value.trim().split_once('=') else {
+        return Ranged::Full;
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") || spec.contains(',') {
+        return Ranged::Full;
+    }
+    let Some((start, end)) = spec.trim().split_once('-') else {
+        return Ranged::Full;
+    };
+    let (start, end) = if start.trim().is_empty() {
+        let Ok(suffix) = end.trim().parse::<u64>() else {
+            return Ranged::Full;
+        };
+        if suffix == 0 || length == 0 {
+            return Ranged::Unsatisfiable;
+        }
+        (length.saturating_sub(suffix), length - 1)
+    } else {
+        let Ok(start) = start.trim().parse::<u64>() else {
+            return Ranged::Full;
+        };
+        if start >= length {
+            return Ranged::Unsatisfiable;
+        }
+        let end = if end.trim().is_empty() {
+            length - 1
+        } else {
+            let Ok(end) = end.trim().parse::<u64>() else {
+                return Ranged::Full;
+            };
+            end.min(length - 1)
+        };
+        if end < start {
+            return Ranged::Unsatisfiable;
+        }
+        (start, end)
+    };
+    Ranged::Partial(ByteRange { start, end })
+}
+
+fn unsatisfiable(request: Request, length: u64) {
+    let value = format!("bytes */{length}");
+    let response = Response::from_data(Vec::new())
+        .with_status_code(416)
+        .with_header(header("Content-Range", &value))
+        .with_header(header("Accept-Ranges", "bytes"))
+        .with_header(header("Cache-Control", "no-store"));
+    let _ = request.respond(response);
+}
+
+fn respond_bytes(
+    request: Request,
+    code: u16,
+    bytes: Vec<u8>,
+    content_type: &str,
+    range: Option<&str>,
+) {
+    let length = bytes.len() as u64;
+    match parse_range(range, length) {
+        Ranged::Full => {
+            let response = Response::from_data(bytes)
+                .with_status_code(code)
+                .with_header(header("Content-Type", content_type))
+                .with_header(header("Accept-Ranges", "bytes"))
+                .with_header(header("Cache-Control", "no-store"));
+            let _ = request.respond(response);
+        }
+        Ranged::Partial(range) => {
+            let body = bytes[range.start as usize..=range.end as usize].to_vec();
+            let value = format!("bytes {}-{}/{}", range.start, range.end, length);
+            let response = Response::from_data(body)
+                .with_status_code(206)
+                .with_header(header("Content-Type", content_type))
+                .with_header(header("Content-Range", &value))
+                .with_header(header("Accept-Ranges", "bytes"))
+                .with_header(header("Cache-Control", "no-store"));
+            let _ = request.respond(response);
+        }
+        Ranged::Unsatisfiable => unsatisfiable(request, length),
+    }
+}
+
+fn redirect(request: Request, location: &str) {
+    let _ = request.respond(Response::empty(308).with_header(header("Location", location)));
+}
+
+fn respond_mount(request: Request, mount: &Mount, relative: &Path, directory_request: bool) {
+    if relative.as_os_str().is_empty() && !directory_request {
+        redirect(
+            request,
+            &format!("/{}/", notist::publication::url::encode_path(&mount.prefix)),
+        );
+        return;
+    }
+    let target = mount.root.join(relative);
+    let Ok(mut target) = std::fs::canonicalize(&target) else {
+        simple(
+            request,
+            404,
+            b"Not found".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    };
+    if !target.starts_with(&mount.root) {
+        simple(
+            request,
+            404,
+            b"Not found".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    }
+    let Ok(metadata) = std::fs::metadata(&target) else {
+        simple(
+            request,
+            404,
+            b"Not found".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    };
+    if metadata.is_dir() {
+        if !directory_request {
+            redirect(
+                request,
+                &format!(
+                    "/{}/",
+                    notist::publication::url::encode_path(&mount.prefix.join(relative))
+                ),
+            );
+            return;
+        }
+        target.push("index.html");
+        let Ok(canonical) = std::fs::canonicalize(&target) else {
+            simple(
+                request,
+                404,
+                b"Not found".to_vec(),
+                "text/plain; charset=utf-8",
+            );
+            return;
+        };
+        if !canonical.starts_with(&mount.root) {
+            simple(
+                request,
+                404,
+                b"Not found".to_vec(),
+                "text/plain; charset=utf-8",
+            );
+            return;
+        }
+        target = canonical;
+    }
+    let Ok(metadata) = std::fs::metadata(&target) else {
+        simple(
+            request,
+            404,
+            b"Not found".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    };
+    if !metadata.is_file() {
+        simple(
+            request,
+            404,
+            b"Not found".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    }
+    let Ok(file) = File::open(&target) else {
+        simple(
+            request,
+            500,
+            b"Cannot read mounted file".to_vec(),
+            "text/plain; charset=utf-8",
+        );
+        return;
+    };
+    let range = request.headers().iter().find_map(|header| {
+        header
+            .field
+            .equiv("Range")
+            .then(|| header.value.as_str().to_owned())
+    });
+    respond_file(request, file, mime(&target), range.as_deref());
+}
+
+fn respond_file(request: Request, mut file: File, content_type: &str, range: Option<&str>) {
+    let length = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    match parse_range(range, length) {
+        Ranged::Full => {
+            let response = Response::from_file(file)
+                .with_header(header("Content-Type", content_type))
+                .with_header(header("Accept-Ranges", "bytes"))
+                .with_header(header("Cache-Control", "no-store"));
+            let _ = request.respond(response);
+        }
+        Ranged::Partial(range) => {
+            if file.seek(SeekFrom::Start(range.start)).is_err() {
+                simple(
+                    request,
+                    500,
+                    b"Cannot read mounted file".to_vec(),
+                    "text/plain; charset=utf-8",
+                );
+                return;
+            }
+            let count = range.end - range.start + 1;
+            let Ok(count) = usize::try_from(count) else {
+                simple(
+                    request,
+                    500,
+                    b"Mounted range is too large".to_vec(),
+                    "text/plain; charset=utf-8",
+                );
+                return;
+            };
+            let value = format!("bytes {}-{}/{}", range.start, range.end, length);
+            let response = Response::new(
+                StatusCode(206),
+                vec![
+                    header("Content-Type", content_type),
+                    header("Content-Range", &value),
+                    header("Accept-Ranges", "bytes"),
+                    header("Cache-Control", "no-store"),
+                ],
+                file.take(count as u64),
+                Some(count),
+                None,
+            );
+            let _ = request.respond(response);
+        }
+        Ranged::Unsatisfiable => unsatisfiable(request, length),
+    }
+}
+fn respond(request: Request, state: State, mounts: Arc<Vec<Mount>>) {
     if request.method() != &Method::Get && request.method() != &Method::Head {
         simple(
             request,
@@ -428,8 +815,16 @@ fn respond(request: Request, state: State) {
         );
         return;
     }
-    let raw = request.url().split('?').next().unwrap();
-    let Ok(decoded) = percent_encoding::percent_decode_str(raw).decode_utf8() else {
+    let raw = request
+        .url()
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let Ok(decoded) = percent_encoding::percent_decode_str(&raw)
+        .decode_utf8()
+        .map(|decoded| decoded.into_owned())
+    else {
         simple(request, 400, b"Invalid URL".to_vec(), "text/plain");
         return;
     };
@@ -441,6 +836,14 @@ fn respond(request: Request, state: State) {
             .any(|part| !matches!(part, Component::Normal(_)))
     {
         simple(request, 400, b"Invalid URL".to_vec(), "text/plain");
+        return;
+    }
+    if let Some((mount, relative)) = mounts.iter().find_map(|mount| {
+        path.strip_prefix(&mount.prefix)
+            .ok()
+            .map(|rel| (mount, rel))
+    }) {
+        respond_mount(request, mount, relative, decoded.ends_with('/'));
         return;
     }
     if path == Path::new("_notist/timings") || path.starts_with("_notist/timings") {
@@ -524,7 +927,17 @@ fn respond(request: Request, state: State) {
             format!("{html}{script}").into_bytes()
         };
     }
-    simple(request, status, bytes, content_type);
+    if status == 200 && content_type != "text/html; charset=utf-8" {
+        let range = request.headers().iter().find_map(|header| {
+            header
+                .field
+                .equiv("Range")
+                .then(|| header.value.as_str().to_owned())
+        });
+        respond_bytes(request, status, bytes, content_type, range.as_deref());
+    } else {
+        simple(request, status, bytes, content_type);
+    }
 }
 fn serve_url(file: &Path, revision: u64) -> String {
     format!(

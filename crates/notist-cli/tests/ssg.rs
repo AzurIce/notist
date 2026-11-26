@@ -17,6 +17,10 @@ fn command(root: &Path) -> Command {
     command
 }
 fn request(address: &str, path: &str) -> String {
+    request_with(address, path, "")
+}
+
+fn request_with(address: &str, path: &str, headers: &str) -> String {
     use std::io::Write;
     let mut stream = TcpStream::connect(address).unwrap();
     stream
@@ -24,7 +28,7 @@ fn request(address: &str, path: &str) -> String {
         .unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n"
     )
     .unwrap();
     let mut result = String::new();
@@ -338,6 +342,80 @@ fn site_publication_prunes_stale_files_and_keeps_last_success_on_failure() {
         std::fs::read_to_string(root.join("unowned/keep.txt")).unwrap(),
         "keep"
     );
+}
+
+#[test]
+fn preview_serves_byte_ranges_and_dev_only_mounts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("site");
+    write(&root, "Notist.toml", "[package]\nname='test'\n[site]");
+    write(&root, "content/index.md", "# Home");
+    write(&root, "static/media.bin", "0123456789");
+    let mounted = temp.path().join("game-assets");
+    std::fs::create_dir_all(&mounted).unwrap();
+    std::fs::write(mounted.join("a.bin"), "abcd").unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let address = format!("127.0.0.1:{port}");
+    let mount = format!("/game={}", mounted.display());
+    let mut child = command(&root)
+        .args([
+            "serve",
+            "--address",
+            &address,
+            "--no-clear-screen",
+            "--mount",
+            &mount,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let result = std::panic::catch_unwind(|| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if TcpStream::connect(&address).is_ok() && request(&address, "/").contains("Home") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "preview did not start");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let body = |response: &str| response.rsplit_once("\r\n\r\n").unwrap().1.to_owned();
+        let full = request(&address, "/media.bin");
+        assert!(full.starts_with("HTTP/1.1 200"), "{full}");
+        assert!(full.contains("Accept-Ranges: bytes"));
+        assert_eq!(body(&full), "0123456789");
+        let partial = request_with(&address, "/media.bin", "Range: bytes=2-5\r\n");
+        assert!(partial.starts_with("HTTP/1.1 206"), "{partial}");
+        assert!(partial.contains("Content-Range: bytes 2-5/10"), "{partial}");
+        assert_eq!(body(&partial), "2345");
+        let suffix = request_with(&address, "/media.bin", "Range: bytes=-3\r\n");
+        assert!(suffix.starts_with("HTTP/1.1 206"), "{suffix}");
+        assert!(suffix.contains("Content-Range: bytes 7-9/10"), "{suffix}");
+        assert_eq!(body(&suffix), "789");
+        let invalid = request_with(&address, "/media.bin", "Range: bytes=99-\r\n");
+        assert!(invalid.starts_with("HTTP/1.1 416"), "{invalid}");
+        assert!(invalid.contains("Content-Range: bytes */10"), "{invalid}");
+        let mounted_range = request_with(&address, "/game/a.bin", "Range: bytes=1-2\r\n");
+        assert!(mounted_range.starts_with("HTTP/1.1 206"), "{mounted_range}");
+        assert!(
+            mounted_range.contains("Content-Range: bytes 1-2/4"),
+            "{mounted_range}"
+        );
+        assert_eq!(body(&mounted_range), "bc");
+        assert!(
+            request(&address, "/game").starts_with("HTTP/1.1 308"),
+            "mount prefix should redirect to a directory URL"
+        );
+        assert!(!root.join("public").exists());
+        assert!(!root.join("media.bin").exists());
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    result.unwrap();
 }
 
 #[test]

@@ -91,6 +91,33 @@ fn global_jobs_controls_builds_without_the_obsolete_evaluation_environment() {
 }
 
 #[test]
+fn define_flags_expose_build_time_site_params_and_override_manifest_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "Notist.toml",
+        "[package]\nname='manual'\n[site]\n[site.params]\ntarget='manifest'\n",
+    );
+    write(root, "content/index.md", "# Home");
+    write(
+        root,
+        "templates/page.tera",
+        "{{site.params.target}}|{{site.params.note}}|{{page.html | safe}}",
+    );
+    success(run(
+        root,
+        &["build", "-D", "target=cn", "--define", "note=a=b"],
+    ));
+    assert!(
+        std::fs::read_to_string(root.join("notist-output/manual/index.html"))
+            .unwrap()
+            .starts_with("cn|a=b|")
+    );
+    failure(run(root, &["build", "-D", "broken"]), "expected KEY=VALUE");
+}
+
+#[test]
 fn workspace_build_accepts_the_same_global_jobs_option() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();

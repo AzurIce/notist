@@ -307,7 +307,13 @@ mod tests {
             "Notist.toml",
             &format!("[package]\nname='watch'\n[site]\noutput='public'\n{site}"),
         );
-        crate::package::Package::load(Some(&root.join("Notist.toml")), None, None).unwrap()
+        crate::package::Package::load(
+            Some(&root.join("Notist.toml")),
+            None,
+            None,
+            &Default::default(),
+        )
+        .unwrap()
     }
 
     #[test]

@@ -55,6 +55,7 @@ pub(crate) struct Package {
     pub root: PathBuf,
     output: Option<PathBuf>,
     output_override: Option<PathBuf>,
+    params: BTreeMap<String, String>,
 }
 
 pub(crate) struct Prepared {
@@ -314,6 +315,7 @@ fn discover(current: &Path) -> Result<Scope, String> {
             root,
             output,
             output_override: None,
+            params: BTreeMap::new(),
         });
     }
     let scope = Scope {
@@ -381,6 +383,7 @@ impl Package {
         config: Option<&Path>,
         output: Option<&Path>,
         name: Option<&str>,
+        params: &BTreeMap<String, String>,
     ) -> Result<Self, String> {
         let current = locate(config)?;
         let mut scope = discover(&current)?;
@@ -403,6 +406,7 @@ impl Package {
             scope.packages[index].output_override = Some(output);
             scope.validate()?;
         }
+        scope.packages[index].params = params.clone();
         Ok(scope.packages.remove(index))
     }
 
@@ -458,6 +462,11 @@ impl Package {
         let mut options: notist_ssg::SiteConfig = toml::Value::Table(site)
             .try_into()
             .map_err(|e: toml::de::Error| format!("{}: {e}", self.manifest.display()))?;
+        options.params.extend(
+            self.params
+                .iter()
+                .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone()))),
+        );
         options.validate().map_err(|e| e.to_string())?;
         let content = normalize(&self.root.join(&options.content));
         if let Ok(relative) = scope.output_root.strip_prefix(&content)
@@ -493,8 +502,9 @@ pub(crate) fn build(
     all: bool,
     names: &[String],
     jobs: Option<std::num::NonZeroUsize>,
+    params: &BTreeMap<String, String>,
 ) -> ExitCode {
-    run_site(config, output, all, names, jobs, false)
+    run_site(config, output, all, names, jobs, params, false)
 }
 
 pub(crate) fn check(
@@ -502,8 +512,9 @@ pub(crate) fn check(
     all: bool,
     names: &[String],
     jobs: Option<std::num::NonZeroUsize>,
+    params: &BTreeMap<String, String>,
 ) -> ExitCode {
-    run_site(config, None, all, names, jobs, true)
+    run_site(config, None, all, names, jobs, params, true)
 }
 
 fn run_site(
@@ -512,6 +523,7 @@ fn run_site(
     all: bool,
     names: &[String],
     jobs: Option<std::num::NonZeroUsize>,
+    params: &BTreeMap<String, String>,
     dry_run: bool,
 ) -> ExitCode {
     let result = (|| {
@@ -563,6 +575,7 @@ fn run_site(
             scope.validate()?;
         }
         for &index in &indices {
+            scope.packages[index].params = params.clone();
             scope.packages[index].prepare()?;
         }
         let executor = crate::ssg::executor(jobs)?;

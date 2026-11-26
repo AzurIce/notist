@@ -322,7 +322,7 @@ pub(crate) fn is_url_or_ident_byte(b: u8) -> bool {
 }
 
 /// Determine whether `#...` at `hash_pos` begins a Notist interpolation/invocation.
-/// - `#(expr)` is always accepted.
+/// - `#(expr)` and `#[...]` are always accepted.
 /// - When `allow_bare_ident` is `true` (inside `.not` `[...]` content literals),
 ///   any `#ident...` is accepted (including bare `#x` or `#a.b`).
 /// - When `allow_bare_ident` is `false` (top-level `.md` documents), `#ident(.ident)*`
@@ -333,7 +333,7 @@ pub(crate) fn is_hash_invocation(bytes: &[u8], hash_pos: usize, allow_bare_ident
     if j >= len {
         return false;
     }
-    if bytes[j] == b'(' {
+    if matches!(bytes[j], b'(' | b'[') {
         return true;
     }
     if !(bytes[j].is_ascii_alphabetic() || bytes[j] == b'_') {
@@ -382,13 +382,23 @@ pub(crate) fn scan_call_end(bytes: &[u8], hash_pos: usize, allow_bare_ident: boo
             None => CallScan::Incomplete,
         };
     }
-    if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
-        return CallScan::Invalid;
-    }
-    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-        i += 1;
-    }
     let mut had_call = allow_bare_ident;
+    if bytes[i] == b'[' {
+        match find_balanced_delim(bytes, i, b'[', b']') {
+            Some(close) => {
+                i = close + 1;
+                had_call = true;
+            }
+            None => return CallScan::Incomplete,
+        }
+    } else {
+        if !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+            return CallScan::Invalid;
+        }
+        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+    }
     loop {
         if i < len && bytes[i] == b'.' {
             let next = i + 1;

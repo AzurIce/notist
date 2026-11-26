@@ -176,12 +176,18 @@ fn offset_diagnostics(diags: &mut [ParseDiagnostic], offset: u32) {
 fn scan_embedded_postfix_end(bytes: &[u8]) -> usize {
     let len = bytes.len();
     let mut i = 0;
-    if i >= len || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
-        return 0;
-    }
-    i += 1;
-    while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+    if i < len && bytes[i] == b'[' {
+        let Some(next) = scan_balanced_delims(bytes, i, b'[', b']') else {
+            return 0;
+        };
+        i = next;
+    } else if i < len && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
         i += 1;
+        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+    } else {
+        return 0;
     }
     loop {
         if i >= len {

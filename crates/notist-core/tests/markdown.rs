@@ -182,3 +182,57 @@ Some ~~removed~~ text.
         ]
     );
 }
+
+#[test]
+fn markdown_supports_hash_content_literals_for_block_and_inline_grouping() {
+    let md = r#"
+@(agents: "keep")
+#[
+First paragraph.
+
+Second paragraph.
+]
+
+Inline @(class: "badge")#[**hi**] and #[chained].with_attr("role", "note").
+"#;
+    let parsed = parse_markdown_document(md);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let project = notist_core::check_parsed_modules(&[("doc.md", &parsed.program.root)])
+        .expect("checks cleanly");
+    let doc = project.eval_document("doc.md").expect("evaluates");
+
+    let BlockKind::Fragment(children) = &doc.node().kind else {
+        panic!("expected root fragment, got {doc}");
+    };
+    assert_eq!(children.len(), 2);
+
+    // 1. Block-level `#[...]` preserves its annotated fragment shell.
+    assert_eq!(
+        children[0].node().attrs.get("agents"),
+        Some(&AttrValue::String("keep".into()))
+    );
+    let BlockKind::Fragment(grouped) = &children[0].node().kind else {
+        panic!("expected grouped block fragment, got {}", children[0]);
+    };
+    assert_eq!(grouped.len(), 2);
+
+    // 2. Inline-level `#[...]` with `@(...)` and chained `.with_attr(...)`.
+    let BlockKind::Paragraph(para) = &children[1].node().kind else {
+        panic!("expected paragraph, got {}", children[1]);
+    };
+    let InlineKind::Fragment(inlines) = &para.node().kind else {
+        panic!("expected inline fragment, got {para}");
+    };
+    assert!(
+        inlines
+            .iter()
+            .any(|node| node.node().attrs.get("class") == Some(&AttrValue::String("badge".into()))),
+        "expected inline badge group in {para}"
+    );
+    assert!(
+        inlines
+            .iter()
+            .any(|node| node.node().attrs.get("role") == Some(&AttrValue::String("note".into()))),
+        "expected chained .with_attr inline group in {para}"
+    );
+}

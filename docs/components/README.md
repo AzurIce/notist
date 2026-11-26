@@ -31,5 +31,5 @@ fn panel(title: String, body: Block) -> Block;
 SSG 构建时会自动完成：
 
 - 将 `<name>.js` 或整个 `<name>/` 目录复制到 `_notist/components/...`。
-- 为使用了该组件的页面生成 `_notist/pages/<page>.js` 注册脚本，并通过 `<script type="module">` 注入模板。
+- 生成全站共享的 `_notist/components.js` 注册脚本，并通过 `<script type="module">` 注入使用了组件的页面模板。
 - 输出 `<notist-<module>-<name> data-props="...">...</notist-<module>-<name>>`；若未提供 JS 实现，则回退为普通 `<div class="notist-component">` / `<span>`，不阻塞构建。

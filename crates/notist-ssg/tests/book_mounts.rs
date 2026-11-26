@@ -114,7 +114,7 @@ fn mounted_pages_resolve_real_and_mounted_links_and_copy_only_used_resources() {
         assert!(site.warnings.is_empty(), "{:?}", site.warnings);
         assert!(html(&site, "index.html").contains("href=\"art/models/drill/?view=full#details\""));
         let drill = html(&site, "art/models/drill/index.html");
-        assert!(drill.contains("<img src=\"renders/a%20b.svg?raw=1#image\" alt=\"Preview\">"));
+        assert!(drill.contains("<img src=\"renders/a%20b.svg?raw=1#image\" alt=\"Preview\" loading=\"lazy\" decoding=\"async\">"));
         assert!(drill.contains("href=\"model/drill.glb\""));
         assert!(drill.contains("href=\"../../../\""));
         assert!(drill.contains("href=\"../next/#topic\""));
@@ -405,7 +405,7 @@ fn mounted_references_cross_between_independently_mapped_directories() {
     let site = build(&mut vault, &options).unwrap();
     assert!(
         html(&site, "art/index.html")
-            .contains("<img src=\"../shared/textures/stone.png\" alt=\"Texture\">")
+            .contains("<img src=\"../shared/textures/stone.png\" alt=\"Texture\" loading=\"lazy\" decoding=\"async\">")
     );
     assert_eq!(
         site.files[Path::new("shared/textures/stone.png")],

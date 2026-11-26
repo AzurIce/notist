@@ -896,6 +896,8 @@ pub(crate) fn build<R: Resources + Send>(
             let mut pages = vec![];
             let mut components: BTreeMap<PathBuf, String> = BTreeMap::new();
             let mut published_component_files: BTreeSet<PathBuf> = BTreeSet::new();
+            let mut site_web_components: BTreeMap<(String, String), (String, PathBuf)> =
+                BTreeMap::new();
             let rendering = notist::progress::Span::stage("site.render", || {
                 "Resolve links and render HTML".into()
             });
@@ -945,12 +947,11 @@ pub(crate) fn build<R: Resources + Send>(
                 if !document.custom_nodes.is_empty() {
                     let mut page_web_components: BTreeMap<(String, String), String> =
                         BTreeMap::new();
-                    let mut page_registrations = String::new();
-                    let component_path = PathBuf::from("_notist/pages")
-                        .join(&document.page.route.path)
-                        .with_extension("js");
                     for (module_rel, name) in &document.custom_nodes {
-                        if let Some((tag, entry_out)) = resolve_ssg_web_component(
+                        let key = (module_rel.clone(), name.clone());
+                        if let Some((tag, _)) = site_web_components.get(&key) {
+                            page_web_components.insert(key, tag.clone());
+                        } else if let Some((tag, entry_out)) = resolve_ssg_web_component(
                             vault.resources(),
                             &vroot,
                             module_rel,
@@ -958,28 +959,36 @@ pub(crate) fn build<R: Resources + Send>(
                             &mut assets,
                             &mut published_component_files,
                         )? {
-                            let import_rel = relative_url(&component_path, &entry_out, false);
-                            let _ = std::fmt::Write::write_fmt(
-                                &mut page_registrations,
-                                format_args!(
-                                    "import * as _c_{idx} from \"./{import_rel}\";\nif (!customElements.get(\"{tag}\")) {{ const C = _c_{idx}.default ?? Object.values(_c_{idx}).find(v => typeof v === 'function'); if (C) customElements.define(\"{tag}\", C); }}\n",
-                                    idx = page_web_components.len(),
-                                ),
-                            );
-                            page_web_components.insert((module_rel.clone(), name.clone()), tag);
+                            site_web_components.insert(key.clone(), (tag.clone(), entry_out));
+                            page_web_components.insert(key, tag);
                         }
                     }
-                    if !page_registrations.is_empty() {
+                    if !page_web_components.is_empty() {
                         components.insert(
                             document.page.route.path.clone(),
-                            relative_url(&document.page.route.output, &component_path, false),
+                            relative_url(
+                                &document.page.route.output,
+                                Path::new("_notist/components.js"),
+                                false,
+                            ),
                         );
-                        assets.generated(component_path, page_registrations.into_bytes())?;
-                    }
-                    if !page_web_components.is_empty() {
                         page_web_component_maps.insert(doc_idx, page_web_components);
                     }
                 }
+            }
+            if !site_web_components.is_empty() {
+                let component_path = PathBuf::from("_notist/components.js");
+                let mut registrations = String::new();
+                for (idx, (_, (tag, entry_out))) in site_web_components.iter().enumerate() {
+                    let import_rel = relative_url(&component_path, entry_out, false);
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut registrations,
+                        format_args!(
+                            "import * as _c_{idx} from \"./{import_rel}\";\nif (!customElements.get(\"{tag}\")) {{ const C = _c_{idx}.default ?? Object.values(_c_{idx}).find(v => typeof v === 'function'); if (C) customElements.define(\"{tag}\", C); }}\n",
+                        ),
+                    );
+                }
+                assets.generated(component_path, registrations.into_bytes())?;
             }
 
             // Parallel link resolution and HTML splicing across all CPU cores.

@@ -309,7 +309,7 @@ fn mixed_frontends_share_directory_routes_anchors_and_assets() {
     assert!(html(&site, "index.html").contains("href=\"guide/?mode=1#topic\""));
     let guide = html(&site, "guide/index.html");
     assert!(guide.contains("href=\"../\""));
-    assert!(guide.contains("<img src=\"../media/a%20b.svg\" alt=\"Picture\">"));
+    assert!(guide.contains("<img src=\"../media/a%20b.svg\" alt=\"Picture\" loading=\"lazy\" decoding=\"async\">"));
     assert!(guide.contains("id=\"topic\""));
     assert!(guide.contains("href=\"#topic\""));
     assert_eq!(site.files[Path::new("media/a b.svg")], b"<svg/>");
@@ -625,10 +625,10 @@ fn images_render_with_published_urls_in_build_and_serve_for_both_frontends() {
             for (page, prefix) in [("index.html", ""), ("guide/start/index.html", "../../")] {
                 let output = html(&site, page);
                 assert!(output.contains(&format!(
-                    "<img src=\"{prefix}assets/a%20b.SVG?raw=1&amp;v=2#icon\" alt=\"A &amp; &quot;B&quot;\">"
+                    "<img src=\"{prefix}assets/a%20b.SVG?raw=1&amp;v=2#icon\" alt=\"A &amp; &quot;B&quot;\" loading=\"lazy\" decoding=\"async\">"
                 )), "{extension} {page}: {output}");
                 assert!(output.contains(
-                    "<img src=\"https://example.com/image.PNG?size=2&amp;v=3#detail\" alt=\"\">"
+                    "<img src=\"https://example.com/image.PNG?size=2&amp;v=3#detail\" alt=\"\" loading=\"lazy\" decoding=\"async\">"
                 ));
                 assert!(output.contains(&format!("<a href=\"{prefix}file.pdf\">Document</a>")));
                 assert!(
@@ -970,16 +970,18 @@ fn math_replacement_publishes_shared_resources_per_used_page() {
         site.files
             .contains_key(Path::new("_notist/components/math/formula/helper.js"))
     );
+    assert!(site.files.contains_key(Path::new("_notist/components.js")));
     assert!(
-        site.files
-            .contains_key(Path::new("_notist/pages/README.js"))
+        !site
+            .files
+            .keys()
+            .any(|p| p.starts_with("_notist/pages"))
     );
-    assert!(site.files.contains_key(Path::new("_notist/pages/other.js")));
-    assert!(!site.files.contains_key(Path::new("_notist/pages/plain.js")));
+    assert!(!html(&site, "plain/index.html").contains("_notist/components.js"));
     let nested = html(&site, "guide/deep/index.html");
     assert!(nested.contains("href=\"../../book.css\""));
     assert!(nested.contains("src=\"../../book.js\""));
-    assert!(nested.contains("src=\"../../_notist/pages/guide/deep/README.js\""));
+    assert!(nested.contains("src=\"../../_notist/components.js\""));
 }
 
 #[test]

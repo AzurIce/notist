@@ -204,7 +204,7 @@ impl PreparedPage {
                             if notist_html::is_safe_url(url) {
                                 let _ = write!(
                                     out,
-                                    "<img src=\"{}\" alt=\"{}\"{}>",
+                                    "<img src=\"{}\" alt=\"{}\" loading=\"lazy\" decoding=\"async\"{}>",
                                     notist_html::escape_attribute(url),
                                     alt,
                                     attrs
@@ -824,7 +824,7 @@ fn render_inline(inline: &Inline, ctx: &mut RenderCtx<'_>, out: &mut String) {
                     if notist_html::is_safe_url(url) {
                         let _ = write!(
                             out,
-                            "<img src=\"{}\" alt=\"{}\"",
+                            "<img src=\"{}\" alt=\"{}\" loading=\"lazy\" decoding=\"async\"",
                             notist_html::escape_attribute(url),
                             notist_html::escape_attribute(alt)
                         );

@@ -138,7 +138,7 @@ fn maps_sources_without_inventing_directory_pages_and_resolves_links() {
     let guide = html(&site, "guide/start.html");
     assert!(guide.contains("href=\"../index.html\""));
     assert!(guide.contains("id=\"topic\""));
-    assert!(guide.contains("<img src=\"a%20b.svg\" alt=\"Picture\">"));
+    assert!(guide.contains("<img src=\"a%20b.svg\" alt=\"Picture\" loading=\"lazy\" decoding=\"async\">"));
     assert!(site.files.contains_key(Path::new("README.html")));
     assert!(!site.files.contains_key(Path::new("guide/index.html")));
     assert!(!site.files.contains_key(Path::new("guide/module.not")));
@@ -458,8 +458,8 @@ fn native_components_publish_their_resources_and_registration_script() {
         .unwrap();
     let page = html(&site, "index.html");
     assert!(page.contains("data-props="), "{page}");
-    assert!(page.contains("src=\"_notist/pages/index.js\""), "{page}");
-    let registrations = html(&site, "_notist/pages/index.js");
+    assert!(page.contains("src=\"_notist/components.js\""), "{page}");
+    let registrations = html(&site, "_notist/components.js");
     assert!(registrations.contains("customElements.define"));
     assert!(
         site.files

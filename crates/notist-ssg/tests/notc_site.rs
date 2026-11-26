@@ -93,7 +93,7 @@ fn id<T: Type>(x: T) -> T { x }
     assert!(index_html.contains("<title>Notist Home · Notist Docs</title>"));
     assert!(index_html.contains(r#"<section id="welcome"><h1>Welcome to <strong>⚡ Notist</strong></h1>"#));
     assert!(index_html.contains(r#"href="guide/#arch""#));
-    assert!(index_html.contains(r#"<img src="logo.svg" alt="logo">"#));
+    assert!(index_html.contains(r#"<img src="logo.svg" alt="logo" loading="lazy" decoding="async">"#));
     assert!(index_html.contains(r#"<aside class="callout callout-tip"><p>Powered by the new statically typed <code>notist-core</code> engine.</p></aside>"#));
     assert!(index_html.contains(r#"class="language-notc""#));
 
@@ -169,7 +169,7 @@ fn fallback_box(body: Block) -> Block;
     // Web components with JS files get custom element tags + registration script
     assert!(index_html.contains("<notist-components-badge "));
     assert!(index_html.contains("<notist-components-panel "));
-    assert!(index_html.contains(r#"<script type="module" src="_notist/pages/index.js"></script>"#));
+    assert!(index_html.contains(r#"<script type="module" src="_notist/components.js"></script>"#));
     // Custom node without JS file renders semantic fallback without failing
     assert!(index_html.contains(r#"class="notist-component notist-fallback_box""#));
     // Math rendered cleanly inside component children
@@ -179,7 +179,7 @@ fn fallback_box(body: Block) -> Block;
     assert!(output.files.contains_key(Path::new("_notist/components/components/badge.js")));
     assert!(output.files.contains_key(Path::new("_notist/components/components/panel/index.js")));
     assert!(output.files.contains_key(Path::new("_notist/components/components/panel/style.js")));
-    let reg_js = html(&output, "_notist/pages/index.js");
+    let reg_js = html(&output, "_notist/components.js");
     assert!(reg_js.contains("customElements.define(\"notist-components-badge\""));
     assert!(reg_js.contains("customElements.define(\"notist-components-panel\""));
     // Web component attributes include notist-<prop> and notist-content for modules/* compatibility
@@ -238,7 +238,7 @@ fn ssg_routes_math_nodes_via_notc_replacement_and_supports_collapsed_plain_summa
             .files
             .contains_key(Path::new("_notist/components/modules/katex/math/helper.js"))
     );
-    let reg_js = html(&output, "_notist/pages/intro.js");
+    let reg_js = html(&output, "_notist/components.js");
     assert!(reg_js.contains("customElements.define(\"notist-modules-katex-math\""));
 }
 
